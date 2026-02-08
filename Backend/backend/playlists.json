@@ -1,5 +1,36 @@
 [
   {
+    "id": "1770562365471",
+    "name": "Ex name",
+    "desc": "Cyber",
+    "owner": "admin",
+    "ownerUID": 1,
+    "score": 0,
+    "voters": {},
+    "comments": [
+      {
+        "id": "1770562410490",
+        "userUID": 1,
+        "username": "admin",
+        "text": "Epic",
+        "createdAt": "2026-02-08T14:53:30.490Z",
+        "upvotes": 1,
+        "voters": {
+          "1": true
+        }
+      }
+    ],
+    "movies": [
+      {
+        "movieId": "1",
+        "movieTitle": "The Shawshank Redemption",
+        "poster": "https://image.tmdb.org/t/p/w500/9cqNxx0GxF0bflZmeSMuL5tnGzr.jpg",
+        "genre": "Drama"
+      }
+    ],
+    "createdAt": "2026-02-08T14:52:45.471Z"
+  },
+  {
     "id": "1770140406540",
     "name": "ex namedwdw",
     "desc": "dwd",

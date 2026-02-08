@@ -132,6 +132,8 @@
         allSettings.forEach(item => {
             const label = item.querySelector('label');
             if (label && label.textContent.trim().toLowerCase().includes('tmdb global database') && !item.querySelector('.api-status-panel')) {
+                // Change label text to 'Service Availability Checker'
+                label.textContent = 'Service Availability Checker';
                 // Remove all children except the label
                 Array.from(item.children).forEach(child => {
                     if (child !== label) item.removeChild(child);

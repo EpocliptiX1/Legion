@@ -20,11 +20,16 @@ document.addEventListener('DOMContentLoaded', () => {
             sourceInput.value = localStorage.getItem('movieSource');
         }
 
-        // Set stats
-        const statSearch = document.getElementById('statSearch');
+        // Set stats (remove search limit, keep only view limit)
         const statView = document.getElementById('statView');
-        if (statSearch) statSearch.innerText = localStorage.getItem('searches') || '0/5';
         if (statView) statView.innerText = localStorage.getItem('views') || '0/3';
+
+        // Hide ad section for Gold/Premium users
+        const userTier = localStorage.getItem('userTier');
+        if (userTier === 'Gold' || userTier === 'Premium') {
+            const adSection = document.getElementById('adSection');
+            if (adSection) adSection.style.display = 'none';
+        }
 
         // Set API status (standardize to apiStatusText)
         const apiStatusText = document.getElementById('apiStatusText');

@@ -57,10 +57,6 @@
                     </div>
                     <div class="dropdown-stats">
                         <div class="stat-line">
-                            <span data-i18n="nav_searches">Searches:</span>
-                            <span id="statSearch">0/5</span>
-                        </div>
-                        <div class="stat-line">
                             <span data-i18n="nav_views">Views:</span>
                             <span id="statView">0/3</span>
                         </div>
@@ -99,7 +95,7 @@
 
     <!-- Create Playlist Modal -->
     <div id="createPlaylistModal" class="settings-modal-overlay create-playlist-modal">
-        <div class="settings-content" style="max-width:520px;">
+        <div class="settings-content" style=" width: 50%;">
             <div class="modal-header">
                 <h2 class="modal-title">Create Playlist</h2>
                 <span class="close-settings" id="closeCreatePlaylistModal">&times;</span>
@@ -120,7 +116,7 @@
 
     <!-- Playlist Detail Modal -->
     <div id="playlistModal" class="settings-modal-overlay">
-        <div class="settings-content">
+        <div class="settings-content" style="width: 50%;">
             <div class="modal-header">
                 <div>
                     <h2 id="playlistTitle" class="modal-title">Playlist Name - Username</h2>
@@ -147,7 +143,7 @@
 
     <!-- Add Movies Modal -->
     <div id="addMoviesModal" class="settings-modal-overlay">
-        <div class="settings-content">
+        <div class="settings-content" style="width: 50%;">
             <div class="modal-header">
                 <h2 class="modal-title">Add Movies to Playlist</h2>
                 <span class="close-settings" id="closeAddMoviesModal">&times;</span>
@@ -261,8 +257,8 @@
                 </div>
                 <div class="input-group">
                     <select id="signupTier" class="styled-select" style="width: 100%; margin-top: 10px;">
-                        <option value="Free">Free (5 Searches / 3 Views)</option>
-                        <option value="Premium">Premium (50 Searches / 20 Views)</option>
+                        <option value="Free">Free (3 Views)</option>
+                        <option value="Premium">Premium (20 Views)</option>
                         <option value="Gold">Gold (Unlimited)</option>
                     </select>
                 </div>

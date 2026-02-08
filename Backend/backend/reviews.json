@@ -2,6 +2,15 @@
   {
     "user": "admin",
     "pfp": null,
+    "movieTitle": "The Shawshank Redemption",
+    "movieId": "278",
+    "stars": 5,
+    "text": "Found it really comfy to watch",
+    "createdAt": "2026-02-08T14:47:14.914Z"
+  },
+  {
+    "user": "admin",
+    "pfp": null,
     "movieTitle": "Chainsaw Man - The Movie: Reze Arc",
     "movieId": "1218925",
     "stars": 5,
