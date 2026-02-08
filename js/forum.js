@@ -82,7 +82,14 @@ function renderMoviesList() {
 // Select a movie and load its threads
 async function selectMovie(movieId, movieTitle, evt) {
     currentMovieId = movieId;
-    
+
+    // Close thread detail modal if open
+    if (typeof closeThreadDetailModal === 'function') closeThreadDetailModal();
+    else {
+        const threadDetailModal = document.getElementById('threadDetailModal');
+        threadDetailModal?.classList.remove('active');
+    }
+
     // Update UI
     const titleEl = document.getElementById('currentMovieTitle');
     if (titleEl) {
@@ -92,13 +99,13 @@ async function selectMovie(movieId, movieTitle, evt) {
     }
     document.getElementById('currentMovieDesc').textContent = 'Discussion threads for this movie';
     document.getElementById('createThreadBtn').style.display = 'block';
-    
+
     // Update active state
     document.querySelectorAll('.movie-item').forEach(item => {
         item.classList.remove('active');
     });
     evt?.target?.closest('.movie-item')?.classList.add('active');
-    
+
     // Load threads for this movie
     await loadThreads(movieId);
 }
@@ -615,7 +622,13 @@ async function voteOnThread(threadId, vote) {
 async function submitComment(event) {
     if (event) event.preventDefault();
     
-    const text = document.getElementById('commentInput').value.trim();
+    const commentInput = document.getElementById('commentInput');
+    if (!commentInput) {
+        console.warn('[Forum] commentInput not found in DOM when submitting comment.');
+        showLimitToast('❌ Comment box missing! Please reload.');
+        return;
+    }
+    const text = commentInput.value.trim();
     const userUID = localStorage.getItem('userUID');
     const username = localStorage.getItem('username');
 
@@ -638,8 +651,17 @@ async function submitComment(event) {
         if (!response.ok) throw new Error('Failed to post comment');
 
         const newComment = await response.json();
-        currentComments.unshift(newComment);
-        renderComments(currentComments);
+        // Reload the page and scroll to the new comment after posting
+        if (newComment && newComment.id) {
+            // Store pending navigation info in localStorage
+            localStorage.setItem('pendingForumNav', JSON.stringify({
+                movieId: currentMovieId,
+                threadId: currentThreadId,
+                commentId: newComment.id,
+                openThreadDetail: true
+            }));
+        }
+        location.reload();
 
         const thread = forumThreads.find(t => t.id === currentThreadId);
         if (thread) {
@@ -647,7 +669,7 @@ async function submitComment(event) {
             renderThreads();
         }
 
-        document.getElementById('commentInput').value = '';
+        if (commentInput) commentInput.value = '';
         showLimitToast('✅ Comment posted!');
 
         setPendingForumNav({

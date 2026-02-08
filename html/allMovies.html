@@ -92,34 +92,125 @@
                 
                 <div class="filter-group">
                     <label>Sort By</label>
-                    <select id="sortBy" class="filter-input">
-                        <option value="rating_desc">⭐ Highest Rated</option>
-                        <option value="date_desc">📅 Newest First</option>
-                        <option value="duration_desc">⏳ Longest Duration</option>
-                        <option value="success_desc">💰 Most Successful</option>
-                        <option value="success_asc">💸 Least Successful (Flops)</option>
-                    </select>
+                    <select id="sortBy" class="filter-input"></select>
                 </div>
 
                 <div class="filter-group">
-                    <label>Released After: <span id="yearValue" style="color:#f96d00">1930</span></label>
-                    <input type="range" id="yearSlider" min="1930" max="2025" value="1930" class="orange-slider">
+                    <label style="margin-bottom: 6px;">Released Between:</label>
+                    <div class="year-picker-row">
+                        <select id="yearPickerMin" class="year-picker filter-input"></select>
+                        <span style="margin: 0 6px;">—</span>
+                        <select id="yearPickerMax" class="year-picker filter-input"></select>
+                    </div>
                 </div>
+                <style>
+                .filter-grid {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 18px 24px;
+                    align-items: flex-end;
+                }
+                .filter-group {
+                    display: flex;
+                    flex-direction: column;
+                    min-width: 180px;
+                    margin-bottom: 0;
+                }
+                .year-picker-row {
+                    display: flex;
+                    align-items: center;
+                }
+                .year-picker {
+                    width: 100%;
+                    min-width: 120px;
+                    max-width: 140px;
+                    padding: 8px 12px;
+                    border: 1px solid #444;
+                    border-radius: 6px;
+                    background: var(--bg-tertiary, #181818);
+                    color: var(--text-primary, #fff);
+                    font-size: 1em;
+                    margin: 0;
+                    transition: border 0.2s;
+                    box-sizing: border-box;
+                    /* For Firefox */
+                    scrollbar-width: thin;
+                    scrollbar-color: #f96d00 #232323;
+                }
+                .year-picker:focus {
+                    border: 1.5px solid #f96d00;
+                    outline: none;
+                    background: #232323;
+                }
+                /* Custom scrollbar for WebKit browsers */
+                .year-picker::-webkit-scrollbar {
+                    width: 8px;
+                    background: #232323;
+                }
+                .year-picker::-webkit-scrollbar-thumb {
+                    background: #f96d00;
+                    border-radius: 6px;
+                }
+                .year-picker::-webkit-scrollbar-thumb:hover {
+                    background: #ff8800;
+                }
+                .year-picker::-webkit-scrollbar-track {
+                    background: #232323;
+                    border-radius: 6px;
+                }
+                </style>
+                <script>
+                // Populate year pickers
+                document.addEventListener('DOMContentLoaded', function() {
+                    const minYear = 1930, maxYear = 2026;
+                    const minSel = document.getElementById('yearPickerMin');
+                    const maxSel = document.getElementById('yearPickerMax');
+                    if (!minSel || !maxSel) return;
+                    minSel.innerHTML = '';
+                    maxSel.innerHTML = '';
+                    for (let y = minYear; y <= maxYear; y++) {
+                        minSel.innerHTML += `<option value="${y}">${y}</option>`;
+                        maxSel.innerHTML += `<option value="${y}">${y}</option>`;
+                    }
+                    minSel.value = minYear;
+                    maxSel.value = maxYear;
 
+                    function ensureOrder() {
+                        let minVal = parseInt(minSel.value);
+                        let maxVal = parseInt(maxSel.value);
+                        if (minVal > maxVal) {
+                            // Swap values
+                            [minSel.value, maxSel.value] = [maxSel.value, minSel.value];
+                        }
+                    }
+
+                    minSel.addEventListener('change', ensureOrder);
+                    maxSel.addEventListener('change', ensureOrder);
+                });
+                </script>
                 <div class="filter-group">
-                    <label>All Visual Styles</label>
+                    <label>Genre</label>
                     <select id="genreInput" class="filter-input">
-                        <option value="">All Visual Styles</option>
-                        <option value="Action">Visually Intense (High Contrast)</option>
-                        <option value="Adventure">Epic Landscapes & Journeys</option>
-                        <option value="Animation">Vibrant Stylized Worlds</option>
-                        <option value="Comedy">Light & High-Key Palette</option>
-                        <option value="Crime">Gritty & Low-Light (Noir)</option>
-                        <option value="Drama">Emotional / Human Experience</option>
-                        <option value="Fantasy">Whimsical & Surreal Frames</option>
-                        <option value="Horror">Atmospheric & Chilling Shadows</option>
-                        <option value="Sci-Fi">Futuristic / Neon Aesthetic</option>
-                        <option value="Thriller">Tense & Dynamic Framing</option>
+                        <option value="">All Genres</option>
+                        <option value="Action">Action</option>
+                        <option value="Adventure">Adventure</option>
+                        <option value="Animation">Animation</option>
+                        <option value="Comedy">Comedy</option>
+                        <option value="Crime">Crime</option>
+                        <option value="Documentary">Documentary</option>
+                        <option value="Drama">Drama</option>
+                        <option value="Family">Family</option>
+                        <option value="Fantasy">Fantasy</option>
+                        <option value="History">History</option>
+                        <option value="Horror">Horror</option>
+                        <option value="Music">Music</option>
+                        <option value="Mystery">Mystery</option>
+                        <option value="Romance">Romance</option>
+                        <option value="Science Fiction">Science Fiction</option>
+                        <option value="TV Movie">TV Movie</option>
+                        <option value="Thriller">Thriller</option>
+                        <option value="War">War</option>
+                        <option value="Western">Western</option>
                     </select>
                 </div>
 
@@ -170,7 +261,7 @@
                     </p>
                     <div class="social-links">
                         <a href="https://instagram.com" class="social-btn" title="Instagram">
-                            <svg viewBox="0 0 24 24"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>
+                            <svg viewBox="0 0 24 24"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>
                         </a>
                         <a href="https://youtube.com" class="social-btn" title="YouTube">
                             <svg viewBox="0 0 24 24"><path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z"/></svg>
@@ -305,14 +396,14 @@
                     </div>
                     <div class="setting-item">
                         <label>Language</label>
-                        <select id="settingsLanguage" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;" onchange="selectLanguage(this.value)">
+                        <select id="settingsLanguage" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary, #181818); color: var(--text-primary, #fff); border: 1px solid var(--border-color, #333); border-radius: 6px;" onchange="selectLanguage(this.value)">
                             <option value="en">🇬🇧 English</option>
                             <option value="ru">🇷🇺 Русский</option>
                         </select>
                     </div>                    
                     <div class="setting-item">
                         <label>Movie Data Source</label>
-                        <select id="settingsMovieSource" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;">
+                        <select id="settingsMovieSource" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary, #181818); color: var(--text-primary, #fff); border: 1px solid var(--border-color, #333); border-radius: 6px;">
                             <option value="local">Local Database</option>
                             <option value="api">External API (TMDB)</option>
                         </select>

@@ -1,5 +1,14 @@
 [
   {
+    "movieId": "243",
+    "movieTitle": "Batman Begins",
+    "poster": "https://image.tmdb.org/t/p/w500/sPX89Td70IDDjVr85jdSBb4rWGr.jpg",
+    "genre": "Action, Crime, Drama",
+    "addedBy": "tatyanadwwd",
+    "addedByUID": 2,
+    "createdAt": "2026-02-06T18:30:33.467Z"
+  },
+  {
     "movieId": "1",
     "movieTitle": "The Shawshank Redemption",
     "poster": "https://image.tmdb.org/t/p/w500/9cqNxx0GxF0bflZmeSMuL5tnGzr.jpg",

@@ -5,11 +5,24 @@
     "userEmail": "LegionCinemaAdmin@gmail.com",
     "userTier": "Free",
     "userLanguage": "en",
-    "searchCount": 3,
+    "searchCount": 4,
     "viewCount": 0,
     "allUIDs": [
       1
     ],
     "userPassword": "$2b$10$cNEPvsPkiIiwzSqw1A.qEutpmYK..DtbImPv.xz/VOMzMNMN/xf3a"
+  },
+  {
+    "username": "tatyanadwwd",
+    "userUID": 2,
+    "userEmail": "ddwdwwdsh@gmail.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 1,
+    "viewCount": 0,
+    "allUIDs": [
+      2
+    ],
+    "userPassword": "$2b$10$oUvwnuW7CsP4PTCgh.98dO0SttgRMsuRzGch9/xyuICk7GulCe1Km"
   }
 ]

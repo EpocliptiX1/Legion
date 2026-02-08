@@ -3,21 +3,24 @@
 */
 //     AIzaSyCGg0QqAURfPOs5OoCemTRBMrOxqtbw0tg
 // 1. GLOBAL CONFIGURATION
-if (!window.YT_API_KEY || window.YT_API_KEY.length < 10) {
-    window.YT_API_KEY = '';
-}
+// (YouTube API key is now only in backend)
 let currentPlaylist = []; 
 let activeTrailerIdx = -1; 
  
 // 2. GLOBAL TRAILER FETCHER (Used by this file AND mainPageControls.js)
 window.fetchYTId = async function(name) {
-    const API_KEY = ''; 
     try {
         const query = encodeURIComponent(name + " official trailer");
-        const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&q=${query}&maxResults=1&type=video&key=${API_KEY}`);
+        // Use backend proxy endpoint to keep API key secret
+        const res = await fetch(`/youtube/search?name=${query}`);
+        if (!res.ok) {
+            console.error('[YouTube API] Backend error. Status:', res.status);
+            return "";
+        }
         const data = await res.json();
-        return data.items?.[0]?.id?.videoId || "";
+        return data.videoId || "";
     } catch (e) {
+        console.error('[YouTube API] Error:', e);
         return "";
     }
 }

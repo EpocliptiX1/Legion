@@ -276,13 +276,10 @@
                         <label>Username</label>
                         <input type="text" id="settingsUsername" placeholder="Enter new username">
                     </div>
-                    
                     <div class="setting-item">
                         <label>Profile Picture</label>
                         <div class="large-profile-icon" style="margin-bottom: 10px;"></div>
-                        
                         <button class="btn-small" onclick="document.getElementById('pfpInput').click()">Upload New Image (1MB)</button>
-                        
                         <input type="file" id="pfpInput" accept="image/*" style="display: none;" onchange="handlePFPUpload(event)">
                     </div>
                     <div class="beta-notice-box">
@@ -302,42 +299,39 @@
                         </select>
                     </div>                    
                     <div class="setting-item">
-                        <!-- Moved Movie Data Source dropdown into TMDB section below -->
-                    </div>
-                    <div class="settings-section">
-                        <h3><i class="icon-paint"></i> Roadmap & Advanced Features</h3>
-
-                        <div class="setting-item coming-soon">
-                            <label>Custom Themes</label>
-                            <div class="blurred-preview">
-                                <img src="https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=400&auto=format&fit=crop" alt="Preview">
-                                <div class="blur-overlay"><span>COMING SOON</span></div>
-                            </div>
-                        </div>
-
-                        <div class="setting-item coming-soon" style="margin-top: 15px;">
-                            <label>Cloud Sync (Multi-Device)</label>
-                            <div class="blurred-preview" style="height: 60px; background: #1a1a1a; display: flex; align-items: center; justify-content: center;">
-                                <span style="font-size: 24px;">☁️</span>
-                                <div class="blur-overlay"><span>PLANNED v2.0</span></div>
-                            </div>
-                        </div>
-
-                        <div class="setting-item" style="margin-bottom: 0;">
-                            <label>TMDB Global Database</label>
-                            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
-                                <span id="apiStatusCircle" style="width: 14px; height: 14px; border-radius: 50%; display: inline-block; background: #aaa; border: 1px solid #333;"></span>
-                                <span id="apiStatusText" style="font-size: 0.95em; color: #888;">Checking API...</span>
-                            </div>
-                            <select id="settingsMovieSource" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;">
-                                <option value="local">Local Database</option>
-                                <option value="api">External API (TMDB)</option>
-                            </select>
-                        </div>
-
+                        <label>Movie Data Source</label>
+                        <select id="settingsMovieSource" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;">
+                            <option value="local">Local Database</option>
+                            <option value="api">External API (TMDB)</option>
+                        </select>
                     </div>
                 </div>
-
+                <div class="settings-section">
+                    <h3><i class="icon-paint"></i> Roadmap & Advanced Features</h3>
+                    <div class="setting-item coming-soon">
+                        <label>Custom Themes</label>
+                        <div class="blurred-preview">
+                            <img src="https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=400&auto=format&fit=crop" alt="Preview">
+                            <div class="blur-overlay"><span>COMING SOON</span></div>
+                        </div>
+                    </div>
+                    <div class="setting-item coming-soon" style="margin-top: 15px;">
+                        <label>Cloud Sync (Multi-Device)</label>
+                        <div class="blurred-preview" style="height: 60px; background: #1a1a1a; display: flex; align-items: center; justify-content: center;">
+                            <span style="font-size: 24px;">☁️</span>
+                            <div class="blur-overlay"><span>PLANNED v2.0</span></div>
+                        </div>
+                    </div>
+                    <div class="setting-item" style="margin-bottom: 0;">
+                        <label>TMDB Global Database</label>
+                        <div style="display: flex; align-items: center; gap: 12px; margin: 30px 0 30px 0; justify-content: center;">
+                            <span id="tmdbApiStatusCircle" style="width: 22px; height: 22px; border-radius: 50%; display: inline-block; background: #aaa; border: 2px solid #333;"></span>
+                            <span id="tmdbApiStatusText" style="font-size: 1.1em; color: #888;">Checking API...</span>
+                        </div>
+                        <div style="text-align: center; color: #aaa; font-size: 0.95em;">Checks if TMDB API key is valid and online.</div>
+                    </div>
+                </div>
+            </div>
             <div class="settings-footer">
                 <button class="btn-save" onclick="saveSettings()">Save Changes</button>
             </div>
@@ -355,7 +349,7 @@
         </div>
  
 <script src="/js/myList.js"></script>
-<script src="/js/apiStatus.js"></script>
+<script src="/js/apiStatusPanel.js"></script>
 
 <script src="/js/mainPageControls.js"></script>
 </body>

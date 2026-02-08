@@ -1,16 +1,75 @@
+// ...existing code...
+
+
+function loadLocalMoviesCsv() {
+    console.log("\n------------------------------------------------");
+    console.log("📂 DEBUG: SEARCHING FOR DATABASE...");
+    console.log("   Server is running in:", __dirname);
+
+    // We define 3 likely spots. The first one is the one you described.
+    const candidates = [
+        path.join(__dirname, '..', 'datasets', 'AITUCAP_Final_Database.csv'),       // 1. Up one level (Your setup)
+        path.join(__dirname, '..', '..', 'datasets', 'AITUCAP_Final_Database.csv'), // 2. Up two levels (Just in case)
+        path.join(__dirname, 'datasets', 'AITUCAP_Final_Database.csv')              // 3. Inside a 'datasets' folder in the CURRENT directory
+    ];
+
+    let foundPath = null;
+
+    // Check each candidate
+    for (const p of candidates) {
+        // console.log(`   Checking: ${p}`); // Uncomment to see every attempt
+        if (fs.existsSync(p)) {
+            foundPath = p;
+            break;
+        }
+    }
+
+    if (!foundPath) {
+        console.error("❌ FATAL: Could not find 'AITUCAP_Final_Database.csv'.");
+        console.error("   I looked in these folders relative to server.js:");
+        candidates.forEach(p => console.error(`   - ${p}`));
+        console.log("------------------------------------------------\n");
+        return [];
+    }
+
+    console.log(`✅ FOUND FILE AT: ${foundPath}`);
+
+    try {
+        const csvData = fs.readFileSync(foundPath, 'utf8');
+        // Check if file is empty
+        if (csvData.length === 0) {
+            console.error("❌ ERROR: File exists but is EMPTY (0 bytes).");
+            return [];
+        }
+
+        const records = csvParse.parse(csvData, { 
+            columns: true, 
+            skip_empty_lines: true 
+        });
+        
+        console.log(`🎉 SUCCESS! Loaded ${records.length} movies.`);
+        console.log("------------------------------------------------\n");
+        return records;
+
+    } catch (err) {
+        console.error("❌ ERROR PARSING CSV:", err.message);
+        return [];
+    }
+}
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const fetch = require('node-fetch');
+const csvParse = require('csv-parse/sync');
+const localCsvPath = path.join(__dirname, '..', 'datasets', 'AITUCAP_Final_Database.csv');
 const bcrypt = require('bcrypt');
 const rateLimit = require('express-rate-limit');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 
 const app = express();
-const YT_API_KEY = 'AIzaSyB6Gco_FfC6l4AH5xLnEU2To8jaUwH2fqak';
+const YT_API_KEY = 'AIzaSyCGg0QqAURfPOs5OoCemTRBMrOxqtbw0tg';
 const YOUTUBE_CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 const BCRYPT_SALT_ROUNDS = 10;
 const GOOGLE_TRANSLATE_API_KEY = process.env.GOOGLE_TRANSLATE_API_KEY || '';
@@ -263,6 +322,27 @@ app.get('/api/tmdb-key-status', async (req, res) => {
         return res.json({ valid: false, message: err.response?.data?.status_message || 'TMDB API key check failed.' });
     }
 });
+
+// --- YOUTUBE API KEY CHECK ENDPOINT ---
+app.get('/api/youtube-key-status', async (req, res) => {
+    try {
+        if (!YT_API_KEY || YT_API_KEY.length < 10) {
+            return res.json({ valid: false, error: 'No API key set' });
+        }
+        // Make a simple API call to YouTube Data API
+        const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=test&type=video&maxResults=1&key=${YT_API_KEY}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        if (response.ok && data.items && data.items.length > 0) {
+            return res.json({ valid: true });
+        } else {
+            return res.json({ valid: false, error: data.error || 'Invalid or quota-exceeded key' });
+        }
+    } catch (err) {
+        return res.json({ valid: false, error: err.message });
+    }
+});
+
 // --- 1.5 TRANSLATION PROXY ---
 app.post('/translate', async (req, res) => {
     try {
@@ -557,17 +637,55 @@ app.get('/movies/library', async (req, res) => {
     const source = String(req.query.source || 'local').toLowerCase();
     const hydrate = String(req.query.hydrate || '') === '1';
 
-    if (source === 'api') {
+    if (source === 'local') {
+        // Serve from CSV, not movies.db
+        let movies = loadLocalMoviesCsv();
+        // Filter
+        const minYear = parseInt(req.query.minYear || req.query.year) || 1900;
+        const maxYear = parseInt(req.query.maxYear) || new Date().getFullYear();
+        const genre = req.query.genre || '';
+        const actor = req.query.actor || '';
+        const director = req.query.director || '';
+        const sortMode = req.query.sort || 'rating_desc';
+        const limit = parseInt(req.query.limit) || 50;
+        const offset = parseInt(req.query.offset) || 0;
+        movies = movies.filter(m => {
+            const y = parseInt(m.release_date ? m.release_date.split('/').pop() : m.Year || m.year || '');
+            if (isNaN(y) || y < minYear || y > maxYear) return false;
+            if (genre && (!m.Genre || !m.Genre.toLowerCase().includes(genre.toLowerCase()))) return false;
+            if (actor && (!m.Stars || !m.Stars.toLowerCase().includes(actor.toLowerCase()))) return false;
+            if (director && (!m.Directors || !m.Directors.toLowerCase().includes(director.toLowerCase()))) return false;
+            return true;
+        });
+        // Sort
+        if (sortMode === 'rating_desc') {
+            movies.sort((a, b) => parseFloat(b.Rating || 0) - parseFloat(a.Rating || 0));
+        } else if (sortMode === 'date_desc') {
+            movies.sort((a, b) => {
+                const ay = parseInt(a.release_date ? a.release_date.split('/').pop() : a.Year || a.year || 0);
+                const by = parseInt(b.release_date ? b.release_date.split('/').pop() : b.Year || b.year || 0);
+                return by - ay;
+            });
+        } // Add more sort modes as needed
+        // Paginate
+        movies = movies.slice(offset, offset + limit);
+        res.json(movies);
+        return;
+    } else if (source === 'api') {
         try {
             const today = new Date().toISOString().slice(0, 10);
+            // Map sort modes to TMDB API sort parameters
+            // 'rating_desc' (Top Rated) uses vote_average.desc, but we enforce a vote_count.gte floor to avoid obscure movies
+            // 'popularity_desc' and 'clicks_desc' use popularity.desc, which is heavily influenced by vote count and recent activity
             const sortMap = {
-                rating_desc: 'vote_average.desc',
+                rating_desc: 'vote_average.desc', // Top Rated (with vote_count.gte floor)
+                popularity_desc: 'popularity.desc', // Most Popular (Most Votes/Activity)
+                clicks_desc: 'popularity.desc',
                 date_desc: 'primary_release_date.desc',
                 date_new: 'primary_release_date.desc',
                 date_old: 'primary_release_date.asc',
                 duration_desc: 'popularity.desc',
-                success_desc: 'revenue.desc',
-                clicks_desc: 'popularity.desc'
+                success_desc: 'revenue.desc'
             };
 
             const genreKey = String(genre || '').trim().toLowerCase();
@@ -586,16 +704,23 @@ app.get('/movies/library', async (req, res) => {
             const startPage = Math.floor(start / pageSize) + 1;
             const endPage = Math.floor((end - 1) / pageSize) + 1;
 
-            const voteCountFloor = sortMode === 'rating_desc' ? 500 : 100;
+            // Set minimum vote count for sorts to avoid obscure movies
+            let voteCountFloor = 100;
+            if (sortMode === 'rating_desc') voteCountFloor = 500; // Top Rated: only show movies with at least 500 votes
+            if (sortMode === 'rating_asc') voteCountFloor = 2000;
+            if (sortMode === 'success_asc') voteCountFloor = 2000; // Least Successful: only show movies with at least 2000 votes
             const params = {
                 sort_by: sortMap[sortMode] || 'vote_average.desc',
                 include_adult: false,
                 page: startPage,
                 'primary_release_date.lte': today,
                 'with_runtime.gte': 60,
-                'vote_count.gte': voteCountFloor,
-                'vote_average.gte': 4.5
+                'vote_count.gte': voteCountFloor
             };
+            // Only apply rating filter if not lowest rated
+            if (sortMode !== 'rating_asc') {
+                params['vote_average.gte'] = 4.5;
+            }
 
             if (minYear) {
                 params['primary_release_date.gte'] = `${minYear}-01-01`;
@@ -645,13 +770,15 @@ app.get('/movies/library', async (req, res) => {
         return;
     }
 
+
     // Start building the query - join with click tracking
     let sql = `SELECT m.*, COALESCE(c.click_count, 0) as clicks FROM movies m LEFT JOIN movie_clicks c ON m.ID = c.movie_id WHERE 1=1`;
     let params = [];
 
     const currentYear = new Date().getFullYear();
     // 1. Filter by Year (Released after X) + exclude future
-    sql += ` AND CAST(SUBSTR(m.release_date, -4) AS INTEGER) >= ? AND CAST(SUBSTR(m.release_date, -4) AS INTEGER) <= ?`;
+    // Extract year from MM/DD/YYYY format (last 4 chars)
+    sql += ` AND CAST(SUBSTR(m.release_date, LENGTH(m.release_date) - 3, 4) AS INTEGER) >= ? AND CAST(SUBSTR(m.release_date, LENGTH(m.release_date) - 3, 4) AS INTEGER) <= ?`;
     params.push(minYear, currentYear);
 
     // 2. Filter by Genre
@@ -672,23 +799,58 @@ app.get('/movies/library', async (req, res) => {
         params.push(`%${director}%`);
     }
 
+    // 5. Filter out movies with missing or zero revenue/rating/votes/status for relevant sorts
+    if (["success_desc","success_asc"].includes(sortMode)) {
+        sql += ` AND m.revenue IS NOT NULL AND m.revenue != '' AND m.revenue != 'N/A' AND CAST(m.revenue AS FLOAT) > 0`;
+        // Sort by box office return (revenue)
+    }
+    if (["rating_desc","rating_income_desc","rating_asc"].includes(sortMode)) {
+        sql += ` AND m.Rating IS NOT NULL AND m.Rating != '' AND m.Rating != 'N/A' AND CAST(m.Rating AS FLOAT) > 0`;
+    }
+    if (["popularity_desc"].includes(sortMode)) {
+        sql += ` AND m.Votes IS NOT NULL AND m.Votes != '' AND m.Votes != 'N/A' AND CAST(m.Votes AS INTEGER) >= 50`;
+    }
+    // Filter out movies with low votes, unknown status, or missing/invalid data for all sorts
+    sql += ` AND m.Votes IS NOT NULL AND m.Votes != '' AND m.Votes != 'N/A' AND CAST(m.Votes AS INTEGER) >= 50`;
+    // Only filter by Status if column exists
+    try {
+        db.get("SELECT Status FROM movies LIMIT 1", (err, row) => {
+            if (!err && row && typeof row.Status !== 'undefined') {
+                sql += ` AND m.Status IS NOT NULL AND m.Status != '' AND m.Status != 'N/A' AND m.Status = 'Released'`;
+            }
+        });
+    } catch (e) { /* ignore if column missing */ }
+
     // 5. Apply Sorting
-    let orderBy = `CAST(m.Rating AS FLOAT) * LOG(CAST(m.Votes AS FLOAT) + 1) DESC`; // Default weighted by votes
+    let orderBy = `CAST(m.Rating AS FLOAT) DESC`; // Default weighted by votes
 
     if (sortMode === 'date_desc') {
-        orderBy = `CAST(SUBSTR(m.release_date, -4) AS INTEGER) DESC`;
+        orderBy = `CASE WHEN m.release_date IS NULL OR m.release_date = 'N/A' THEN 1 ELSE 0 END, CAST(SUBSTR(m.release_date, -4) AS INTEGER) DESC`;
     } 
     else if (sortMode === 'duration_desc') {
-        orderBy = `CAST(REPLACE(m.Runtime, ' min', '') AS INTEGER) DESC`;
+        orderBy = `CASE WHEN m.Runtime IS NULL OR m.Runtime = 'N/A' THEN 1 ELSE 0 END, CAST(REPLACE(m.Runtime, ' min', '') AS INTEGER) DESC`;
     } 
     else if (sortMode === 'success_desc') {
-        orderBy = `((CAST(m.revenue AS FLOAT) - CAST(m.budget AS FLOAT)) / NULLIF(CAST(m.budget AS FLOAT), 0)) DESC`;
+        orderBy = `CASE WHEN m.revenue IS NULL OR m.revenue = 'N/A' THEN 1 ELSE 0 END, ((CAST(m.revenue AS FLOAT) - CAST(m.budget AS FLOAT)) / NULLIF(CAST(m.budget AS FLOAT), 0)) DESC`;
     } 
     else if (sortMode === 'success_asc') {
-        orderBy = `((CAST(m.revenue AS FLOAT) - CAST(m.budget AS FLOAT)) / NULLIF(CAST(m.budget AS FLOAT), 0)) ASC`;
+        // Sort by lowest total revenue, only include movies with valid revenue and revenue < $10M
+        orderBy = `CASE WHEN m.revenue IS NULL OR m.revenue = 'N/A' OR m.revenue = '' OR CAST(m.revenue AS FLOAT) = 0 OR CAST(m.revenue AS FLOAT) > 10000000 THEN 1 ELSE 0 END, CAST(m.revenue AS FLOAT) ASC`;
     }
+    else if (sortMode === 'rating_income_desc') {
+        orderBy = `CASE WHEN m.Rating IS NULL OR m.Rating = 'N/A' OR m.revenue IS NULL OR m.revenue = 'N/A' THEN 1 ELSE 0 END, (CAST(m.Rating AS FLOAT) / NULLIF(CAST(m.revenue AS FLOAT), 0)) DESC`;
+    }
+    else if (sortMode === 'popularity_desc') {
+        orderBy = `CASE WHEN m.Votes IS NULL OR m.Votes = 'N/A' THEN 1 ELSE 0 END, CAST(m.Votes AS INTEGER) DESC`;
+    }
+    // Removed 'Lowest Rated' sort logic
     else if (sortMode === 'clicks_desc') {
-        orderBy = `clicks DESC`;
+        orderBy = `CASE WHEN clicks IS NULL THEN 1 ELSE 0 END, clicks DESC`;
+    }
+    else {
+        // Default: push N/A ratings to bottom
+        // Show movies with most votes first, then by rating descending
+        orderBy = `CASE WHEN m.Votes IS NULL OR m.Votes = '' OR m.Votes = 'N/A' THEN 1 ELSE 0 END, CAST(m.Votes AS INTEGER) DESC, CASE WHEN m.Rating IS NULL OR m.Rating = 'N/A' THEN 1 ELSE 0 END, CAST(m.Rating AS FLOAT) DESC`;
     }
 
     // Combine everything

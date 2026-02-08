@@ -23,22 +23,22 @@
         text.textContent = 'Checking...';
         circle.style.background = '#aaa';
         try {
-            // Try a simple YouTube API call (search for 'test')
-            const key = window.YT_API_KEY || 'ggs';
-            if (!key || key.length < 10) {
-                circle.style.background = '#e74c3c';
-                text.textContent = 'Not Set';
-                return;
-            }
-            const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=test&type=video&maxResults=1&key=${key}`;
-            const res = await fetch(url);
+            const res = await fetch('/api/youtube-key-status');
             const data = await res.json();
-            if (res.ok && data.items && data.items.length > 0) {
+            if (data.valid) {
                 circle.style.background = '#3ec46d';
                 text.textContent = 'Online';
             } else {
                 circle.style.background = '#e74c3c';
-                text.textContent = 'Offline';
+                let errorMsg = 'Offline';
+                if (data.error) {
+                    if (typeof data.error === 'string') {
+                        errorMsg = 'Offline: ' + data.error;
+                    } else if (typeof data.error === 'object' && data.error.message) {
+                        errorMsg = 'Offline: ' + data.error.message;
+                    }
+                }
+                text.textContent = errorMsg;
             }
         } catch (err) {
             circle.style.background = '#e74c3c';
