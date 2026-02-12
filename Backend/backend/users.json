@@ -24,5 +24,18 @@
       2
     ],
     "userPassword": "$2b$10$oUvwnuW7CsP4PTCgh.98dO0SttgRMsuRzGch9/xyuICk7GulCe1Km"
+  },
+  {
+    "username": "Fallen",
+    "userUID": 3,
+    "userEmail": "Fallen@gmail.com",
+    "userTier": "Premium",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 1,
+    "allUIDs": [
+      3
+    ],
+    "userPassword": "$2b$10$w6YotVBwqI5ohwK39GCOFOC1Soo/VKHciAem9iMJb6Cgi2LWhjdFi"
   }
 ]

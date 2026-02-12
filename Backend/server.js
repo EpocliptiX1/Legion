@@ -748,7 +748,10 @@ app.get('/movies/library', async (req, res) => {
 
             const hydrated = await Promise.all(sliced.map(async (m) => {
                 try {
-                    const detail = await tmdbGet(`/movie/${m.id}`, { language: 'en-US' });
+                    const detail = await tmdbGet(`/movie/${m.id}`, { 
+                        language: 'en-US',
+                        append_to_response: 'credits'
+                    });
                     return detail;
                 } catch {
                     return m;
@@ -762,7 +765,12 @@ app.get('/movies/library', async (req, res) => {
                 return releaseDate && releaseDate <= today && runtime >= 60 && status === 'Released';
             });
 
-            res.json(filtered.map(mapTmdbMovie));
+            res.json(filtered.map(m => {
+                if (m.credits) {
+                    return mapTmdbMovieWithCredits(m, m.credits);
+                }
+                return mapTmdbMovie(m);
+            }));
         } catch (err) {
             const detail = err.response?.data || err.message;
             res.status(500).json({ error: 'TMDB library failed', detail });
@@ -1789,6 +1797,39 @@ app.post('/forum/threads/:id/comments/:commentId/upvote', (req, res) => {
     } catch (err) {
         console.error('Error upvoting comment:', err);
         res.status(500).json({ error: 'Could not upvote' });
+    }
+});
+
+// Delete comment (owner only)
+app.delete('/forum/threads/:id/comments/:commentId', (req, res) => {
+    try {
+        const data = fs.readFileSync(forumThreadsPath, 'utf8');
+        const threads = JSON.parse(data) || [];
+        const idx = threads.findIndex(t => String(t.id) === String(req.params.id));
+        if (idx === -1) return res.status(404).json({ error: 'Thread not found' });
+
+        const { userUID } = req.body || {};
+        const uid = parseInt(userUID, 10);
+        if (!uid || uid === 0) return res.status(403).json({ error: 'Sign in to delete comment' });
+
+        const thread = threads[idx];
+        const comments = thread.comments || [];
+        const cIdx = comments.findIndex(c => String(c.id) === String(req.params.commentId));
+        if (cIdx === -1) return res.status(404).json({ error: 'Comment not found' });
+
+        const comment = comments[cIdx];
+        if (parseInt(comment.userUID, 10) !== uid) {
+            return res.status(403).json({ error: 'You do not own this comment' });
+        }
+
+        comments.splice(cIdx, 1);
+        thread.comments = comments;
+        threads[idx] = thread;
+        fs.writeFileSync(forumThreadsPath, JSON.stringify(threads, null, 2));
+        res.json({ message: 'Comment deleted' });
+    } catch (err) {
+        console.error('Error deleting comment:', err);
+        res.status(500).json({ error: 'Could not delete comment' });
     }
 });
 

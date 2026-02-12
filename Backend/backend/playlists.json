@@ -5,8 +5,11 @@
     "desc": "Cyber",
     "owner": "admin",
     "ownerUID": 1,
-    "score": 0,
-    "voters": {},
+    "score": 2,
+    "voters": {
+      "1": "up",
+      "3": "up"
+    },
     "comments": [
       {
         "id": "1770562410490",
@@ -38,7 +41,19 @@
     "ownerUID": 2,
     "score": 0,
     "voters": {},
-    "comments": [],
+    "comments": [
+      {
+        "id": "1770827868719",
+        "userUID": 3,
+        "username": "Fallen",
+        "text": "fyrh",
+        "createdAt": "2026-02-11T16:37:48.719Z",
+        "upvotes": 1,
+        "voters": {
+          "3": true
+        }
+      }
+    ],
     "movies": [],
     "createdAt": "2026-02-03T17:40:06.540Z"
   },
@@ -80,12 +95,6 @@
         "movieTitle": "The Godfather",
         "poster": "https://image.tmdb.org/t/p/w500/3bhkrj58Vtu7enYsRolD1fZdja1.jpg",
         "genre": "Crime, Drama"
-      },
-      {
-        "movieId": "1",
-        "movieTitle": "The Shawshank Redemption",
-        "poster": "https://image.tmdb.org/t/p/w500/9cqNxx0GxF0bflZmeSMuL5tnGzr.jpg",
-        "genre": "Drama"
       }
     ],
     "createdAt": "2026-02-01T07:14:09.293Z"

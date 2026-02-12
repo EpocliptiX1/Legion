@@ -1,5 +1,23 @@
 [
   {
+    "movieId": "52",
+    "movieTitle": "Terminator 2: Judgment Day",
+    "poster": "https://image.tmdb.org/t/p/w500/jFTVD4XoWQTcg7wdyJKa8PEds5q.jpg",
+    "genre": "Action, Sci-Fi",
+    "addedBy": "admin",
+    "addedByUID": 1,
+    "createdAt": "2026-02-11T12:41:33.265Z"
+  },
+  {
+    "movieId": "35",
+    "movieTitle": "Interstellar",
+    "poster": "https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg",
+    "genre": "Adventure, Drama, Sci-Fi",
+    "addedBy": "admin",
+    "addedByUID": 1,
+    "createdAt": "2026-02-09T17:58:28.908Z"
+  },
+  {
     "movieId": "243",
     "movieTitle": "Batman Begins",
     "poster": "https://image.tmdb.org/t/p/w500/sPX89Td70IDDjVr85jdSBb4rWGr.jpg",
