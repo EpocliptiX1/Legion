@@ -950,7 +950,7 @@ function openSignupModal() {
     const modal = document.getElementById('signupModal');
     if (modal) {
         modal.classList.add('active');
-        document.body.style.overflow = 'hidden'; 
+        document.body.style.overflow = 'hidden';
     }
 }
 
@@ -958,17 +958,19 @@ function closeSignupModal() {
     const modal = document.getElementById('signupModal');
     if (modal) {
         modal.classList.remove('active');
-        document.body.style.overflow = 'auto'; 
+        document.body.style.overflow = 'auto';
     }
 }
 
 // Close if clicking outside the box
-const signupModal = document.getElementById('signupModal');
-if (signupModal) {
-    signupModal.addEventListener('click', (e) => {
-        if (e.target.id === 'signupModal') closeSignupModal();
-    });
-}
+document.addEventListener('DOMContentLoaded', function() {
+    const signupModal = document.getElementById('signupModal');
+    if (signupModal) {
+        signupModal.addEventListener('click', (e) => {
+            if (e.target.id === 'signupModal') closeSignupModal();
+        });
+    }
+});
 
 // --- SIGNUP LOGIC  ---
 function handleSignup(e) {
