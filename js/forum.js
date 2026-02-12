@@ -48,7 +48,7 @@ async function loadForumMovies() {
         renderMoviesList();
     } catch (error) {
         console.error('Error loading forum movies:', error);
-        renderMoviesList(); // Render empty state
+        renderMoviesList(); 
     }
 }
 
@@ -81,16 +81,10 @@ function renderMoviesList() {
 
 // Select a movie and load its threads
 async function selectMovie(movieId, movieTitle, evt) {
+    console.log('[Forum] selectMovie called for movieId:', movieId, 'movieTitle:', movieTitle);
+    if (typeof closeThreadDetailModal === 'function') closeThreadDetailModal();
     currentMovieId = movieId;
 
-    // Close thread detail modal if open
-    if (typeof closeThreadDetailModal === 'function') closeThreadDetailModal();
-    else {
-        const threadDetailModal = document.getElementById('threadDetailModal');
-        threadDetailModal?.classList.remove('active');
-    }
-
-    // Update UI
     const titleEl = document.getElementById('currentMovieTitle');
     if (titleEl) {
         titleEl.textContent = movieTitle;
@@ -100,13 +94,11 @@ async function selectMovie(movieId, movieTitle, evt) {
     document.getElementById('currentMovieDesc').textContent = 'Discussion threads for this movie';
     document.getElementById('createThreadBtn').style.display = 'block';
 
-    // Update active state
     document.querySelectorAll('.movie-item').forEach(item => {
         item.classList.remove('active');
     });
     evt?.target?.closest('.movie-item')?.classList.add('active');
 
-    // Load threads for this movie
     await loadThreads(movieId);
 }
 
@@ -119,7 +111,7 @@ async function loadThreads(movieId) {
         renderThreads();
     } catch (error) {
         console.error('Error loading threads:', error);
-        renderThreads(); // Render empty state
+        renderThreads(); 
     }
 }
 
@@ -218,7 +210,6 @@ async function searchMoviesForForum() {
         return;
     }
 
-    // Show loading state
     container.classList.add('active');
     container.innerHTML = `
         <div class="search-loading" style="padding: 15px; text-align: center; color: var(--text-muted);">
@@ -237,7 +228,6 @@ async function searchMoviesForForum() {
                 return;
             }
 
-            // Display results as dropdown items (similar to navbar search)
             container.innerHTML = movies.slice(0, 8).map(movie => `
                 <div class="search-item-forum" onclick="selectMovieForForum(${movie.ID}, '${escapeHtml(movie['Movie Name'])}', '${movie.poster_full_url || ''}', '${escapeHtml(movie.Genre || '')}')">
                     <img src="${movie.poster_full_url || '/img/LOGO_Short.png'}" 
@@ -261,19 +251,15 @@ async function searchMoviesForForum() {
 
 // Select movie from dropdown and add to forum
 async function selectMovieForForum(movieId, movieTitle, poster, genre) {
-    // Hide dropdown
     const container = document.getElementById('movieSearchResults');
     container.classList.remove('active');
     container.innerHTML = '';
     
-    // Clear search input
     document.getElementById('movieSearchInput').value = '';
     
-    // Add movie to forum
     await addMovieToForum(movieId, movieTitle, poster, genre);
 }
 
-// Add movie to forum
 async function addMovieToForum(movieId, movieTitle, poster, genre) {
     try {
         const userUID = localStorage.getItem('userUID');
@@ -303,7 +289,6 @@ async function addMovieToForum(movieId, movieTitle, poster, genre) {
     }
 }
 
-// Open create thread modal
 function openCreateThreadModal() {
     const userUID = localStorage.getItem('userUID');
     if (!userUID || userUID === '0') {
@@ -386,25 +371,33 @@ async function voteThreadInList(threadId, vote) {
 
 // Open thread detail modal
 async function openThreadDetail(threadId) {
+    console.log('[Forum] openThreadDetail called for threadId:', threadId);
     currentThreadId = threadId;
     const thread = forumThreads.find(t => t.id === threadId);
-    if (!thread) return;
-
-    // Update modal content
-    document.getElementById('threadDetailTitle').textContent = thread.title;
-    document.getElementById('threadDetailAuthor').textContent = `Posted by ${thread.username} • UID: ${thread.userUID}`;
-    document.getElementById('threadDetailDescription').textContent = thread.description;
-    document.getElementById('threadScore').textContent = thread.score || 0;
-    
-    const imageEl = document.getElementById('threadDetailImage');
-    if (thread.image) {
-        imageEl.src = thread.image;
-        imageEl.style.display = 'block';
-    } else {
-        imageEl.style.display = 'none';
+    if (!thread) {
+        console.warn('[Forum] openThreadDetail: thread not found for id', threadId);
+        return;
     }
 
-    // Update vote buttons
+    const titleEl = document.getElementById('threadDetailTitle');
+    if (titleEl) titleEl.textContent = thread.title;
+    const authorEl = document.getElementById('threadDetailAuthor');
+    if (authorEl) authorEl.textContent = `Posted by ${thread.username} • UID: ${thread.userUID}`;
+    const descEl = document.getElementById('threadDetailDescription');
+    if (descEl) descEl.textContent = thread.description;
+    const scoreEl = document.getElementById('threadScore');
+    if (scoreEl) scoreEl.textContent = thread.score || 0;
+
+    const imageEl = document.getElementById('threadDetailImage');
+    if (imageEl) {
+        if (thread.image) {
+            imageEl.src = thread.image;
+            imageEl.style.display = 'block';
+        } else {
+            imageEl.style.display = 'none';
+        }
+    }
+
     const userVote = getUserVote(thread);
     document.querySelectorAll('#threadDetailModal .vote-btn').forEach(btn => {
         btn.classList.remove('active');
@@ -419,7 +412,6 @@ async function openThreadDetail(threadId) {
         deleteBtn.style.display = userUID && String(thread.userUID) === String(userUID) ? 'inline-flex' : 'none';
     }
 
-    // Load comments
     await loadComments(threadId);
     await scrollToPendingComment(threadId);
 
@@ -433,11 +425,11 @@ async function openThreadDetail(threadId) {
         }
     }
 
-    // Show detail panel inline
     threadDetailModal?.classList.add('active');
 }
 
 function closeThreadDetailModal() {
+    console.log('[Forum] closeThreadDetailModal called');
     const threadDetailModal = document.getElementById('threadDetailModal');
     const threadsContainer = document.getElementById('threadsContainer');
 
@@ -524,6 +516,11 @@ function closeConfirmModal() {
 
 // Load comments for a thread
 async function loadComments(threadId) {
+    console.log('[loadComments] Triggered for ID:', threadId);
+    if (!threadId || threadId === "null") {
+        console.warn('[loadComments] Aborted: threadId is null');
+        return;
+    }
     try {
         const response = await fetch(`${API_BASE}/forum/threads/${threadId}/comments`);
         if (!response.ok) throw new Error('Failed to load comments');
@@ -550,6 +547,7 @@ function renderComments(comments) {
     const userUID = localStorage.getItem('userUID');
     container.innerHTML = comments.map(comment => {
         const hasUpvoted = comment.voters && comment.voters[userUID];
+        const isOwner = userUID && String(comment.userUID) === String(userUID);
         return `
             <div class="comment-item" id="comment-${comment.id}" data-comment-id="${comment.id}">
                 <div class="comment-header">
@@ -558,15 +556,51 @@ function renderComments(comments) {
                 </div>
                 <p class="comment-text">${escapeHtml(comment.text)}</p>
                 <div class="comment-actions">
-                        <button type="button" class="comment-upvote ${hasUpvoted ? 'active' : ''}" 
-                            onclick="upvoteComment('${comment.id}')">
+                    <button type="button" class="comment-upvote ${hasUpvoted ? 'active' : ''}" 
+                        onclick="upvoteComment('${comment.id}')">
                         <span>▲</span>
                         <span>${comment.upvotes || 0}</span>
                     </button>
+                    ${isOwner ? `<button type="button" class="comment-delete-btn" title="Delete comment" onclick="deleteComment('${comment.id}')">🗑</button>` : ''}
                 </div>
             </div>
         `;
     }).join('');
+}
+
+// Delete comment (only for owner)
+window.deleteComment = async function deleteComment(commentId) {
+    const userUID = localStorage.getItem('userUID');
+    if (!userUID || userUID === '0') {
+        showLimitToast('⚠️ Sign in to delete!');
+        return;
+    }
+    // Find the comment to check ownership
+    const comment = currentComments.find(c => String(c.id) === String(commentId));
+    if (!comment || String(comment.userUID) !== String(userUID)) {
+        showLimitToast('❌ You can only delete your own comment!');
+        return;
+    }
+    // Show custom confirmation modal
+    const modal = document.getElementById('confirmModal');
+    document.getElementById('confirmTitle').textContent = 'Delete Comment?';
+    document.getElementById('confirmMessage').textContent = 'This will permanently remove your comment.';
+    pendingConfirmAction = async function() {
+        try {
+            const response = await fetch(`${API_BASE}/forum/threads/${currentThreadId}/comments/${commentId}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userUID: parseInt(userUID) })
+            });
+            if (!response.ok) throw new Error('Failed to delete comment');
+            showLimitToast('✅ Comment deleted!');
+            await loadComments(currentThreadId);
+        } catch (error) {
+            console.error('Error deleting comment:', error);
+            showLimitToast('❌ Failed to delete comment');
+        }
+    };
+    modal.classList.add('active');
 }
 
 // Vote on thread
@@ -620,17 +654,22 @@ async function voteOnThread(threadId, vote) {
 
 // Submit comment
 async function submitComment(event) {
+    console.log('--- SUBMIT COMMENT START ---');
     if (event) event.preventDefault();
-    
     const commentInput = document.getElementById('commentInput');
-    if (!commentInput) {
-        console.warn('[Forum] commentInput not found in DOM when submitting comment.');
-        showLimitToast('❌ Comment box missing! Please reload.');
-        return;
-    }
-    const text = commentInput.value.trim();
+    const text = commentInput?.value.trim();
     const userUID = localStorage.getItem('userUID');
     const username = localStorage.getItem('username');
+
+    console.log('[Debug] currentThreadId:', currentThreadId);
+    console.log('[Debug] text:', text);
+    console.log('[Debug] userUID:', userUID);
+
+    if (!currentThreadId || currentThreadId === "null") {
+        console.error('❌ ERROR: currentThreadId is missing!');
+        showLimitToast('❌ Error: Thread context lost. Please reopen the thread.');
+        return;
+    }
 
     if (!userUID || userUID === '0') {
         showLimitToast('⚠️ Sign in to comment!');
@@ -638,6 +677,7 @@ async function submitComment(event) {
     }
 
     try {
+        console.log(`[Network] Posting to: ${API_BASE}/forum/threads/${currentThreadId}/comments`);
         const response = await fetch(`${API_BASE}/forum/threads/${currentThreadId}/comments`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -650,36 +690,18 @@ async function submitComment(event) {
 
         if (!response.ok) throw new Error('Failed to post comment');
 
-        const newComment = await response.json();
-        // Reload the page and scroll to the new comment after posting
-        if (newComment && newComment.id) {
-            // Store pending navigation info in localStorage
-            localStorage.setItem('pendingForumNav', JSON.stringify({
-                movieId: currentMovieId,
-                threadId: currentThreadId,
-                commentId: newComment.id,
-                openThreadDetail: true
-            }));
-        }
-        location.reload();
+        if (typeof closeThreadDetailModal === 'function') closeThreadDetailModal();
 
-        const thread = forumThreads.find(t => t.id === currentThreadId);
-        if (thread) {
-            thread.commentCount = (thread.commentCount || 0) + 1;
-            renderThreads();
-        }
-
-        if (commentInput) commentInput.value = '';
-        showLimitToast('✅ Comment posted!');
-
-        setPendingForumNav({
+        localStorage.setItem('pendingForumNav', JSON.stringify({
             movieId: currentMovieId,
             threadId: currentThreadId,
-            commentId: newComment.id,
             openThreadDetail: true
-        });
+        }));
+        console.log('[Forum] submitComment: set pendingForumNav, closed modal, and reloading');
+        window.location.reload();
     } catch (error) {
-        console.error('Error posting comment:', error);
+        console.error('--- SUBMIT COMMENT ERROR ---');
+        console.error(error);
         showLimitToast('❌ Failed to post comment');
     }
 }
@@ -768,7 +790,7 @@ async function translateDynamicText(element) {
         console.error('Dynamic translation failed:', err);
     }
 }
-
+// i feel nothing but pain when i see this code but it works so who am i to judge
 async function handlePendingForumNav() {
     const stored = localStorage.getItem('pendingForumNav');
     if (!stored) return;
@@ -781,21 +803,22 @@ async function handlePendingForumNav() {
         return;
     }
 
+    console.log('[Forum] handlePendingForumNav: loaded pendingForumNav:', pendingForumNav);
     const movie = forumMovies.find(m => String(m.movieId) === String(pendingForumNav.movieId));
     const movieTitle = movie?.movieTitle || 'Discussion threads';
 
     await selectMovie(pendingForumNav.movieId, movieTitle);
 
-    if (pendingForumNav.threadId && pendingForumNav.openThreadDetail) {
+    if (pendingForumNav && pendingForumNav.threadId && pendingForumNav.openThreadDetail) {
+        console.log('[Forum] handlePendingForumNav: auto-opening thread', pendingForumNav.threadId);
         await openThreadDetail(pendingForumNav.threadId);
-        if (!pendingForumNav.commentId) {
-            localStorage.removeItem('pendingForumNav');
-            pendingForumNav = null;
-        }
+        localStorage.removeItem('pendingForumNav');
+        pendingForumNav = null;
         return;
     }
 
-    if (pendingForumNav.threadId) {
+    if (pendingForumNav && pendingForumNav.threadId) {
+        console.log('[Forum] handlePendingForumNav: scrolling to thread', pendingForumNav.threadId);
         scrollToThreadCard(pendingForumNav.threadId);
         localStorage.removeItem('pendingForumNav');
         pendingForumNav = null;
@@ -826,7 +849,7 @@ function setPendingForumNav(payload) {
     try {
         localStorage.setItem('pendingForumNav', JSON.stringify(payload));
     } catch (err) {
-        // ignore
+        // ignoreee
     }
 }
 

@@ -527,9 +527,6 @@ function changeLanguage(lang) {
     currentLanguage = lang;
     localStorage.setItem('userLanguage', lang);
     
-    // Static i18n disabled (live translation handles content)
-    
-    // Emit event for components to react
     window.dispatchEvent(new CustomEvent('languageChanged', { detail: { language: lang } }));
 }
 

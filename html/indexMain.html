@@ -7,7 +7,6 @@
 
     <link rel="stylesheet" href="/css/style.css">
     <link rel="stylesheet" href="/css/theme-enhancements.css">
-    <script src="/js/encryption.js"></script>
     <script src="/js/theme.js"></script>
     <script src="/js/i18n.js"></script>
     <script src="/js/translator.js"></script>
@@ -50,6 +49,23 @@
                 <div class="search-wrapper">
                     <div class="search-box">
                         <input type="text" id="mainSearch" placeholder="Titles..." data-i18n-placeholder="nav_search_placeholder" autocomplete="off">
+                        <button id="voiceSearchBtn" title="Voice Search" style="background: none; border: none; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); cursor: pointer; padding: 0;">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M12 15c1.66 0 3-1.34 3-3V6c0-1.66-1.34-3-3-3s-3 1.34-3 3v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-2.08c3.39-.49 6-3.39 6-6.92h-2z" fill="#888"/>
+                            </svg>
+                        </button>
+                    <script>
+                    // Voice search button event
+                    document.addEventListener('DOMContentLoaded', function() {
+                        var micBtn = document.getElementById('voiceSearchBtn');
+                        if (micBtn && window.VoiceSearch) {
+                            micBtn.addEventListener('click', function(e) {
+                                e.preventDefault();
+                                window.VoiceSearch.start();
+                            });
+                        }
+                    });
+                    </script>
                     </div>
                     <div class="search-results-menu" id="searchResults"></div>
         </div>
@@ -64,10 +80,6 @@
                     <p id="dropTier" class="tier-badge" data-i18n="nav_free_tier">Free Tier</p>
                 </div>
                 <div class="dropdown-stats">
-                    <div class="stat-line">
-                        <span data-i18n="nav_searches">Searches:</span>
-                        <span id="statSearch">0/5</span>
-                    </div>
                     <div class="stat-line">
                         <span data-i18n="nav_views">Views:</span>
                         <span id="statView">0/3</span>
@@ -220,18 +232,19 @@
                 <div class="roadmap-card">
                     <h4>TMDB Global Database</h4>
                     <p>Expanded metadata and deeper catalog coverage.</p>
-                    <span class="roadmap-tag">Polishing Up</span>
+                    <span class="roadmap-tag reached">Recently Implemented</span>
+                </div>
+                <div class="roadmap-card">
+                    <h4>Cloud Sync</h4>
+                    <p>Cross‑device watch history and playlists.</p>
+                    <span class="roadmap-tag">Beta V.2</span>
                 </div>
                 <div class="roadmap-card">
                     <h4>Movie Transcripts</h4>
                     <p>Accessible transcripts and searchable dialogue.</p>
                     <span class="roadmap-tag">In Progress</span>
                 </div>
-                <div class="roadmap-card">
-                    <h4>Cloud Sync</h4>
-                    <p>Cross‑device watch history and playlists.</p>
-                    <span class="roadmap-tag">Planned</span>
-                </div>
+
             </div>
         </section>
 
@@ -429,8 +442,8 @@
                 </div>
                 <div class="input-group">
                     <select id="signupTier" class="styled-select" style="width: 100%; margin-top: 10px;">
-                        <option value="Free">Free (5 Searches / 3 Views)</option>
-                        <option value="Premium">Premium (50 Searches / 20 Views)</option>
+                        <option value="Free">Free (3 Views)</option>
+                        <option value="Premium">Premium (20 Views)</option>
                         <option value="Gold">Gold (Unlimited)</option>
                     </select>
                 </div>

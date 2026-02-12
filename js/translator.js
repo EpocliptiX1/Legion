@@ -40,7 +40,6 @@ class LiveTranslator {
             }
             localStorage.setItem(this.persistedCacheKey, JSON.stringify(this.persistedCache || {}));
         } catch (err) {
-            // ignore quota errors
         }
         this.scheduleRemoteSave();
     }
@@ -55,7 +54,7 @@ class LiveTranslator {
         try {
             localStorage.removeItem(this.persistedCacheKey);
         } catch (err) {
-            // ignore
+            // ignore pls
         }
         this.saveRemoteCache({});
     }

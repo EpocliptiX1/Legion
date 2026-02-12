@@ -1,11 +1,8 @@
 /* =========================================
    ENHANCED SEARCH WITH AUTOCOMPLETE
-   Better search experience with debouncing,
-   suggestions, and smart filtering
    ========================================= */
 
 const EnhancedSearch = {
-    // Search state
     searchTimeout: null,
     currentQuery: '',
     searchHistory: [],
@@ -28,7 +25,6 @@ const EnhancedSearch = {
         resultsMenu.classList.add('search-results-modal');
     },
     
-    // Setup search input with debouncing
     setupSearchInput() {
         const searchInput = document.getElementById('mainSearch');
         if (!searchInput) return;
@@ -45,7 +41,6 @@ const EnhancedSearch = {
             }
         });
         
-        // Handle Enter key
         searchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -57,7 +52,6 @@ const EnhancedSearch = {
         });
     },
     
-    // Handle search with debouncing
     handleSearch(query) {
         clearTimeout(this.searchTimeout);
         this.currentQuery = query;
@@ -79,7 +73,6 @@ const EnhancedSearch = {
             searchBox.classList.add('expanded');
         }
         
-        // Show loading state
         if (resultsMenu) {
             resultsMenu.classList.add('active');
             resultsMenu.innerHTML = `
@@ -91,13 +84,11 @@ const EnhancedSearch = {
             `;
         }
         
-        // Debounce search
         this.searchTimeout = setTimeout(() => {
             this.performSearch(query);
         }, 300);
     },
     
-    // Perform search request
     async performSearch(query) {
         try {
             const baseUrl = `http://localhost:3000/search?q=${encodeURIComponent(query)}`;
@@ -123,7 +114,6 @@ const EnhancedSearch = {
         }
     },
     
-    // Display search results
     displayResults(movies, query) {
         const resultsMenu = document.getElementById('searchResults');
         if (!resultsMenu) return;
@@ -142,12 +132,32 @@ const EnhancedSearch = {
         
         resultsMenu.innerHTML = movies.map(movie => `
             <div class="search-item" onclick="EnhancedSearch.selectMovie('${movie.ID}')">
-                    <img src="${movie.Poster || '/img/LOGO_Short.png'}" 
-                     alt="${movie['Movie Name']}"
-                        onerror="this.src='/img/LOGO_Short.png'">
+                ${(() => {
+                    // For local DB, use poster_full_url and fallback to hiding image if missing
+                    if (window.getMovieSource && window.getMovieSource() === 'local') {
+                        if (movie.poster_full_url) {
+                            return `<img src=\"${movie.poster_full_url}\" alt=\"${movie['Movie Name']}\" onerror=\\"this.style.display='none'\\">`;
+                        } else {
+                            return '';
+                        }
+                    } else {
+                        // For API/external, fallback to LOGO_Short
+                        let poster = movie.Poster || '/img/LOGO_Short.png';
+                        return `<img src=\"${poster}\" alt=\"${movie['Movie Name']}\" onerror=\\"this.src='/img/LOGO_Short.png'\\">`;
+                    }
+                })()}
                 <div class="search-info">
                     <h5>${this.highlightQuery(movie['Movie Name'], query)}</h5>
-                    <p>${movie.Year || 'N/A'} • ${movie.Genre || 'Unknown'} • ⭐ ${movie.Rating || 'N/A'}</p>
+                    ${(() => {
+                        if (window.getMovieSource && window.getMovieSource() === 'local') {
+                            // Hide year and N/A for local DB
+                            let genre = movie.Genre || '';
+                            let rating = movie.Rating ? `• ⭐ ${movie.Rating}` : '';
+                            return `<p>${genre} ${rating}</p>`;
+                        } else {
+                            return `<p>${movie.Year || 'N/A'} • ${movie.Genre || 'Unknown'} • ⭐ ${movie.Rating || 'N/A'}</p>`;
+                        }
+                    })()}
                 </div>
             </div>
         `).join('');
@@ -181,20 +191,17 @@ const EnhancedSearch = {
     
     // Select movie from search results
     selectMovie(movieId) {
-        // Close search results
         const resultsMenu = document.getElementById('searchResults');
         if (resultsMenu) {
             resultsMenu.classList.remove('active');
         }
         
-        // Clear search input
         const searchInput = document.getElementById('mainSearch');
         if (searchInput) {
             searchInput.value = '';
             searchInput.blur();
         }
         
-        // Open movie (use existing function or create new one)
         if (window.openMovieById) {
             window.openMovieById(movieId);
         } else {
@@ -208,7 +215,6 @@ const EnhancedSearch = {
         window.location.href = `/html/searchQueryResult.html?q=${encodeURIComponent(query)}`;
     },
     
-    // Search history management
     loadSearchHistory() {
         try {
             const history = localStorage.getItem('searchHistory');
@@ -225,13 +231,10 @@ const EnhancedSearch = {
     addToHistory(query) {
         if (!query || query.length < 2) return;
         
-        // Remove duplicates
         this.searchHistory = this.searchHistory.filter(item => item !== query);
         
-        // Add to beginning
         this.searchHistory.unshift(query);
         
-        // Keep only max items
         if (this.searchHistory.length > this.maxHistoryItems) {
             this.searchHistory = this.searchHistory.slice(0, this.maxHistoryItems);
         }
@@ -268,7 +271,6 @@ const EnhancedSearch = {
             </div>
         `;
         
-        // Add hover effect
         const historyItems = resultsMenu.querySelectorAll('.search-history-item');
         historyItems.forEach(item => {
             item.addEventListener('mouseenter', function() {
@@ -283,15 +285,12 @@ const EnhancedSearch = {
 
 // Advanced search filters
 const SearchFilters = {
-    // Available filters
     filters: {
         year: null,
         genre: null,
         rating: null,
         duration: null
     },
-    
-    // Apply filters to search
     applyFilters(movies) {
         let filtered = [...movies];
         
@@ -324,12 +323,10 @@ const SearchFilters = {
         return filtered;
     },
     
-    // Set filter
     setFilter(type, value) {
         this.filters[type] = value;
     },
     
-    // Clear filter
     clearFilter(type) {
         this.filters[type] = null;
     },
@@ -351,36 +348,133 @@ const VoiceSearch = {
     
     // Initialize voice search
     init() {
-        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            this.recognition = new SpeechRecognition();
-            this.recognition.continuous = false;
-            this.recognition.interimResults = false;
-            this.recognition.lang = 'en-US';
-            
-            this.recognition.onresult = (event) => {
-                const transcript = event.results[0][0].transcript;
-                const searchInput = document.getElementById('mainSearch');
-                if (searchInput) {
-                    searchInput.value = transcript;
-                    EnhancedSearch.handleSearch(transcript);
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            console.warn("Speech recognition not supported in this browser.");
+            return;
+        }
+
+        this.recognition = new SpeechRecognition();
+        this.recognition.continuous = false;
+        this.recognition.interimResults = false;
+        this.recognition.lang = 'en-US';
+
+        let timeoutId = null;
+        let isActive = false;
+
+        this.recognition.onresult = (event) => {
+            let transcript = event.results[0][0].transcript;
+            // Remove trailing period if present
+            transcript = transcript.replace(/[.。]+$/, '');
+            console.log('Recognized speech:', transcript);
+            const searchInput = document.getElementById('mainSearch');
+            if (searchInput) {
+                searchInput.value = transcript;
+                EnhancedSearch.handleSearch(transcript);
+            }
+            this.stop();
+        };
+
+        this.recognition.onerror = (event) => {
+            console.error("Voice error:", event.error);
+            this.stop();
+        };
+
+        this.recognition.onend = () => {
+            isActive = false;
+            this.updateButtonColor(false);
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+            console.log('🎤 Recognition ended');
+        };
+
+        // Connect the microphone button
+        const voiceBtn = document.getElementById('voiceSearchBtn');
+        if (voiceBtn) {
+            voiceBtn.addEventListener('click', () => {
+                if (isActive) {
+                    this.stop();
+                } else {
+                    this.start();
                 }
-            };
-            
-            console.log('🎤 Voice search available');
+            });
+            console.log('🎤 Voice search connected to button');
+        } else {
+            console.warn('❌ Could not find #voiceSearchBtn in the HTML');
+        }
+        this.voiceBtn = voiceBtn;
+    },
+
+    // Start voice search
+    start() {
+        if (this.recognition && !this.recognition._isStarted) {
+            try {
+                this.recognition.start();
+                this.recognition._isStarted = true;
+                this.updateButtonColor(true);
+                // Timeout after 3 seconds of no speech
+                this.timeoutId = setTimeout(() => {
+                    if (this.recognition && this.recognition._isStarted) {
+                        this.stop();
+                        console.log('⏰ Voice search timed out (no speech)');
+                    }
+                }, 3000);
+                console.log('🎤 Listening...');
+            } catch (e) {
+                console.error("Could not start voice recognition:", e);
+            }
         }
     },
-    
+
+    // Stop voice search
+    stop() {
+        if (this.recognition && this.recognition._isStarted) {
+            this.recognition.stop();
+            this.recognition._isStarted = false;
+            this.updateButtonColor(false);
+            if (this.timeoutId) {
+                clearTimeout(this.timeoutId);
+                this.timeoutId = null;
+            }
+        }
+    },
+
+    // Update mic button color
+    updateButtonColor(active) {
+        if (this.voiceBtn) {
+            const svg = this.voiceBtn.querySelector('svg path');
+            if (svg) {
+                svg.setAttribute('fill', active ? '#ff9800' : '#888');
+            }
+        }
+    },
+
     // Start voice search
     start() {
         if (this.recognition) {
-            this.recognition.start();
-            console.log('🎤 Listening...');
+            // Prevent calling start if already running
+            if (this.recognition._isStarted) {
+                console.warn('Recognition already started.');
+                return;
+            }
+            try {
+                this.recognition.start();
+                this.recognition._isStarted = true;
+                console.log('🎤 Listening...');
+            } catch (e) {
+                console.error("Could not start voice recognition:", e);
+            }
+            // Reset _isStarted when recognition ends
+            this.recognition.onend = () => {
+                this.recognition._isStarted = false;
+                console.log('🎤 Recognition ended');
+            };
         }
     }
 };
 
-// Initialize on page load
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         EnhancedSearch.init();
@@ -396,4 +490,4 @@ window.EnhancedSearch = EnhancedSearch;
 window.SearchFilters = SearchFilters;
 window.VoiceSearch = VoiceSearch;
 
-console.log('✅ Enhanced search module loaded');
+console.log('Enhanced search module nicely loaded');

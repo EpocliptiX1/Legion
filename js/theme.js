@@ -101,20 +101,16 @@ function applyTheme(themeName) {
     
     const root = document.documentElement;
     
-    // Apply CSS variables
     Object.entries(themes[themeName]).forEach(([property, value]) => {
         root.style.setProperty(property, value);
     });
     
-    // Update body class for theme-specific styles
     document.body.classList.remove('theme-dark', 'theme-light');
     document.body.classList.add(`theme-${themeName}`);
     
-    // Update current theme
     currentTheme = themeName;
     localStorage.setItem('userTheme', themeName);
     
-    // Emit event for components to react
     window.dispatchEvent(new CustomEvent('themeChanged', { detail: { theme: themeName } }));
 }
 

@@ -3,9 +3,7 @@
    ========================================= */
 
 const KeyboardShortcuts = {
-    // Shortcut mappings
     shortcuts: {
-        // Navigation
         'h': () => window.location.href = '/html/indexMain.html',
         'Home': () => window.location.href = '/html/indexMain.html',
         'm': () => window.location.href = '/html/allMovies.html',

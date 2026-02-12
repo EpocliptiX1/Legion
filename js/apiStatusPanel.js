@@ -1,4 +1,4 @@
-// Enhanced API Status Panel for Settings
+// API Status Panel for Settings
 (function() {
     async function checkTmdbApiStatus(circle, text) {
         text.textContent = 'Checking...';
@@ -95,7 +95,6 @@
     }
 
     function injectApiStatusPanel() {
-        // 1. If a .api-status-panel exists (admin.html), inject rows there
         const adminPanel = document.querySelector('.api-status-panel');
         if (adminPanel && adminPanel.children.length === 0) {
             adminPanel.innerHTML =
@@ -127,18 +126,15 @@
                 );
             }, 200);
         }
-        // 2. Otherwise, fallback to settings-item label search (all settings pages, not just indexBrowse)
         const allSettings = document.querySelectorAll('.setting-item');
         allSettings.forEach(item => {
             const label = item.querySelector('label');
             if (label && label.textContent.trim().toLowerCase().includes('tmdb global database') && !item.querySelector('.api-status-panel')) {
-                // Change label text to 'Service Availability Checker'
                 label.textContent = 'Service Availability Checker';
                 // Remove all children except the label
                 Array.from(item.children).forEach(child => {
                     if (child !== label) item.removeChild(child);
                 });
-                // Insert new status panel
                 const panel = document.createElement('div');
                 panel.className = 'api-status-panel';
                 panel.innerHTML =
@@ -148,10 +144,8 @@
                     createStatusRow('Local Database', 'localDbStatusCircle', 'localDbStatusText') +
                     createStatusRow('Cloud Sync', 'cloudSyncStatusCircle', 'cloudSyncStatusText');
                 item.appendChild(panel);
-                // Style
                 item.style.display = 'block';
                 item.style.padding = '32px 0 24px 0';
-                // Run checks
                 setTimeout(() => {
                     checkTmdbApiStatus(
                         document.getElementById('tmdbApiStatusCircle'),
@@ -165,7 +159,6 @@
                         document.getElementById('ltApiStatusCircle'),
                         document.getElementById('ltApiStatusText')
                     );
-                    // Local DB and Cloud Sync
                     checkLocalDatabaseStatus(
                         document.getElementById('localDbStatusCircle'),
                         document.getElementById('localDbStatusText')

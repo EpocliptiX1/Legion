@@ -321,8 +321,8 @@ async function openPlaylistModal(id) {
                     body: JSON.stringify({ userUID })
                 });
                 showToast('Removed from playlist');
-                openPlaylistModal(activePlaylistId); // refresh
-                renderPlaylistsGrid(); // update main grid
+                openPlaylistModal(activePlaylistId); 
+                renderPlaylistsGrid(); 
             } catch (err) {
                 console.error('Remove error:', err);
                 showToast('Failed to remove');

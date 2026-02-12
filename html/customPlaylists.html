@@ -1,12 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+        <script src="/js/enhancedSearch.js"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Custom Playlists - Legion Space</title>
     <link rel="stylesheet" href="/css/style.css">
     <link rel="stylesheet" href="/css/theme-enhancements.css">
-    <script src="/js/encryption.js"></script>
     <script src="/js/theme.js"></script>
     <script src="/js/i18n.js"></script>
     <script src="/js/translator.js"></script>
@@ -43,6 +43,11 @@
             <div class="search-wrapper">
                 <div class="search-box">
                     <input type="text" id="mainSearch" placeholder="Titles..." data-i18n-placeholder="nav_search_placeholder" autocomplete="off">
+                    <button id="voiceSearchBtn" title="Voice Search" style="background: none; border: none; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); cursor: pointer; padding: 0;">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 15c1.66 0 3-1.34 3-3V6c0-1.66-1.34-3-3-3s-3 1.34-3 3v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-2.08c3.39-.49 6-3.39 6-6.92h-2z" fill="#888"/>
+                        </svg>
+                    </button>
                 </div>
                 <div class="search-results-menu" id="searchResults"></div>
             </div>
@@ -87,13 +92,10 @@
             </div>
         </div>
 
-        <!-- Enhanced Playlists Grid -->
         <div id="playlistsGrid" class="netflix-grid" style="grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 24px; padding: 10px 0;">
-            <!-- Playlists will be injected here -->
         </div>
     </div>
 
-    <!-- Create Playlist Modal -->
     <div id="createPlaylistModal" class="settings-modal-overlay create-playlist-modal">
         <div class="settings-content" style=" width: 50%;">
             <div class="modal-header">
@@ -114,7 +116,6 @@
         </div>
     </div>
 
-    <!-- Playlist Detail Modal -->
     <div id="playlistModal" class="settings-modal-overlay">
         <div class="settings-content" style="width: 50%;">
             <div class="modal-header">
@@ -141,7 +142,6 @@
         </div>
     </div>
 
-    <!-- Add Movies Modal -->
     <div id="addMoviesModal" class="settings-modal-overlay">
         <div class="settings-content" style="width: 50%;">
             <div class="modal-header">

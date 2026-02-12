@@ -26,9 +26,7 @@
         const labels = Array.from(document.querySelectorAll('label'));
         labels.forEach(label => {
             if (label.textContent.trim() === 'TMDB Global Database' && !label.dataset.tmdbStatusInjected) {
-                // Only inject if not already injected
                 label.dataset.tmdbStatusInjected = '1';
-                // Create status elements
                 const circle = document.createElement('span');
                 circle.style.cssText = 'width:14px;height:14px;border-radius:50%;display:inline-block;background:#aaa;border:1px solid #333;margin-left:10px;vertical-align:middle;';
                 circle.className = 'tmdb-api-status-circle';

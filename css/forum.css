@@ -519,7 +519,6 @@
 /* Forum Modal Adjustments */
 .forum-modal {
     width: min(680px, 90vw);
-    /* height: min(640px, 80vh); */
     max-width: 700px;
     max-height: 85vh;
     overflow: hidden;

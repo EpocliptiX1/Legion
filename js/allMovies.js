@@ -13,7 +13,7 @@ let activeFilters = {
 };
 
 document.addEventListener('DOMContentLoaded', function() {
-    // --- Dynamic Sort Dropdown ---
+    // ---  Sort Dropdown ---
     function setSortOptions(source) {
         const sortBy = document.getElementById('sortBy');
         if (!sortBy) return;
@@ -32,7 +32,6 @@ document.addEventListener('DOMContentLoaded', function() {
         sortBy.innerHTML = options;
     }
 
-    // Set on load and whenever source changes
     const source = window.getMovieSource ? window.getMovieSource() : 'local';
     setSortOptions(source);
     if (window.onMovieSourceChange) {
@@ -49,9 +48,8 @@ document.addEventListener('DOMContentLoaded', function() {
         };
     }
 
-    // 2. Year Slider Logic (Removed as per previous request)
 
-    // 3. Apply Button Logic
+    //  Apply Button 
     const applyBtn = document.getElementById('applyFilters');
     const minSel = document.getElementById('yearPickerMin');
     const maxSel = document.getElementById('yearPickerMax');
@@ -76,17 +74,14 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
 
-        // Ensure Min is less than Max
         if (minYearVal > maxYearVal) {
             [minYearVal, maxYearVal] = [maxYearVal, minYearVal];
-            // Visual update to dropdowns
             minSel.value = minYearVal;
             maxSel.value = maxYearVal;
         }
 
         console.log(`Applying filters: Years ${minYearVal}-${maxYearVal}`);
             
-        // Update filter values
         activeFilters.sort = document.getElementById('sortBy').value;
         activeFilters.minYear = minYearVal;
         activeFilters.maxYear = maxYearVal;
@@ -94,7 +89,7 @@ document.addEventListener('DOMContentLoaded', function() {
         activeFilters.actor = document.getElementById('actorInput').value.trim();
         activeFilters.director = document.getElementById('directorInput').value.trim();
 
-        // Clear current list and Reset Page
+        // reset
         const grid = document.getElementById('libraryGrid');
         if(grid) grid.innerHTML = '';
         currentPage = 0;
@@ -102,15 +97,13 @@ document.addEventListener('DOMContentLoaded', function() {
         loadMovies();
     }
 
-    // 4. Initial Load
-    // We grab the initial values from the dropdowns if they exist to keep state synced
     if (minSel && maxSel) {
         activeFilters.minYear = parseInt(minSel.value) || 1930;
         activeFilters.maxYear = parseInt(maxSel.value) || 2026;
     }
     loadMovies();
 
-    // 5. Infinite Scroll
+    // inf Scroll
     window.onscroll = function() {
         if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 500) {
             if (!isLoading) loadMovies();
@@ -148,20 +141,14 @@ async function loadMovies() {
         if (!response.ok) throw new Error("Server Error"); 
         let movies = await response.json();
 
-        // --- CLIENT SIDE FILTER FIX ---
-        // Only apply this for local source, leave API logic unchanged
         if (source === 'local' && activeFilters.minYear && activeFilters.maxYear) {
             movies = movies.filter(movie => {
-                // Extract year for MM/DD/YYYY format
                 let y = movie.Year || movie.year || (movie.release_date ? movie.release_date.split('/').pop() : null);
                 y = parseInt(y);
                 if (isNaN(y)) return true; // If no year found, keep it to be safe
                 return y >= activeFilters.minYear && y <= activeFilters.maxYear;
             });
         }
-        // -----------------------------
-
-        // Handle empty results
         if (movies.length === 0) {
             if (currentPage === 0) {
                 grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No movies match these filters.</p>';
@@ -173,7 +160,7 @@ async function loadMovies() {
         movies.forEach(movie => {
             const card = document.createElement('div');
             card.className = 'grid-card';
-            
+
             const plusIconSVG = `
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="currentColor"/> 
@@ -181,11 +168,23 @@ async function loadMovies() {
 
             // Safely escape quotes in movie name
             const safeName = movie['Movie Name'] ? movie['Movie Name'].replace(/'/g, "\\'") : "Unknown Title";
-            const posterUrl = movie.poster_full_url || '/img/default_poster.png'; // Fallback image
+
+            // Fix: For local DB, ensure poster and year are not overwritten after render
+            let posterUrl = movie.poster_full_url || '/img/default_poster.png';
+            let year = movie.Year || movie.year || (movie.release_date ? movie.release_date.split('/').pop() : '');
+            if (window.getMovieSource && window.getMovieSource() === 'local') {
+                // If poster is missing or looks like a logo, use fallback
+                if (!movie.poster_full_url || /logo/i.test(movie.poster_full_url)) {
+                    posterUrl = '/img/default_poster.png';
+                }
+                // If year is missing or invalid, show blank instead of N/A
+                if (!year || isNaN(parseInt(year))) {
+                    year = '';
+                }
+            }
 
             card.innerHTML = `
                 <img src="${posterUrl}" onclick="window.location.href='movieInfo.html?id=${movie.ID}'" alt="${safeName}">
-                
                 <div class="card-hover-info">
                     <div class="hover-btns">
                         <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${movie.ID}'">▶</button>
@@ -193,10 +192,9 @@ async function loadMovies() {
                             ${plusIconSVG}
                         </button>
                     </div>
-
                     <div class="info-text">
                         <h4>${movie['Movie Name']}</h4>
-                        <span class="match-score">IMDb ${movie.Rating || 'N/A'}</span>
+                        <span class="match-score">${year ? year : ''} IMDb ${movie.Rating || 'N/A'}</span>
                     </div>
                 </div>
             `;
@@ -238,6 +236,5 @@ window.toggleMyList = function(id, name) {
         console.log(message);
     }
     
-    // Update the button UI if we are on the info page
     if (typeof updateInfoButtonUI === "function") updateInfoButtonUI(id);
 }

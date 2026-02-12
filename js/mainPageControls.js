@@ -1,41 +1,35 @@
+// this has been unspeakable torture
 // --- SETTINGS/ACCOUNT/API STATUS INIT FOR MOVIEINFO ---
 document.addEventListener('DOMContentLoaded', () => {
     if (document.getElementById('settingsModal')) {
-        // Set username in settings
         const nameInput = document.getElementById('settingsUsername');
         const navName = document.getElementById('navUsername');
         const username = localStorage.getItem('username') || 'Guest';
         if (nameInput) nameInput.value = username;
         if (navName) navName.innerText = username;
 
-        // Set language
         const langInput = document.getElementById('settingsLanguage');
         if (langInput && localStorage.getItem('userLanguage')) {
             langInput.value = localStorage.getItem('userLanguage');
         }
 
-        // Set movie source
         const sourceInput = document.getElementById('settingsMovieSource');
         if (sourceInput && localStorage.getItem('movieSource')) {
             sourceInput.value = localStorage.getItem('movieSource');
         }
 
-        // Set stats (remove search limit, keep only view limit)
         const statView = document.getElementById('statView');
         if (statView) statView.innerText = localStorage.getItem('views') || '0/3';
 
-        // Hide ad section for Gold/Premium users
         const userTier = localStorage.getItem('userTier');
         if (userTier === 'Gold' || userTier === 'Premium') {
             const adSection = document.getElementById('adSection');
             if (adSection) adSection.style.display = 'none';
         }
 
-        // Set API status (standardize to apiStatusText)
         const apiStatusText = document.getElementById('apiStatusText');
         if (apiStatusText) {
             apiStatusText.innerText = 'Checking API...';
-            // Simulate API check (replace with real check if needed)
             setTimeout(() => {
                 apiStatusText.innerText = 'Online';
                 apiStatusText.style.color = '#46d369';
@@ -66,17 +60,23 @@ async function initHero() {
             movies = await response.json();
         }
 
-        heroMovies = movies.map(movie => ({
-            id: movie.ID,
-            title: movie['Movie Name'],
-            imdbId: movie.imdb_id || "", 
-            rating: movie.Rating,
-            year: movie.Year || movie.release_date?.split('-')[0] || "N/A",
-            runtime: movie.Runtime || "-- min",
-            plot: movie.Plot || "No plot summary available for this title.",
-            stars: movie.Stars || "",
-            searchName: movie['Movie Name']
-        }));
+        heroMovies = movies.map(movie => {
+            let stars = movie.Stars || "";
+            if (!stars && movie.credits && Array.isArray(movie.credits.cast)) {
+                stars = movie.credits.cast.map(actor => actor.name).join(', ');
+            }
+            return {
+                id: movie.ID,
+                title: movie['Movie Name'],
+                imdbId: movie.imdb_id || "", 
+                rating: movie.Rating,
+                year: movie.Year || movie.release_date?.split('-')[0] || "N/A",
+                runtime: movie.Runtime || "-- min",
+                plot: movie.Plot || "No plot summary available for this title.",
+                stars,
+                searchName: movie['Movie Name']
+            };
+        });
 
         const heroTag = document.getElementById('heroTag');
         if (heroTag && isBrowsePage) {
@@ -100,22 +100,18 @@ async function updateHero() {
     const content = document.querySelector('.hero-content');
     if (content) content.style.opacity = '0'; 
 
-    // 1. Fetch the trailer first
     if (window.fetchYTId) {
         const tId = await window.fetchYTId(movie.title);
         movie.currentTrailerId = tId;
 
         const iframe = document.getElementById('heroTrailerFrame');
         if (iframe && tId) {
-            // Check Low Data Mode setting
             const lowDataMode = localStorage.getItem('lowDataMode') === 'true';
             
             if (lowDataMode) {
-                // Show poster instead of autoplay
                 iframe.src = '';
                 console.log('[Low Data Mode] Skipping trailer autoplay');
             } else {
-                // Set background trailer with autoplay
                 iframe.src = `https://www.youtube.com/embed/${tId}?autoplay=1&mute=1&controls=0&loop=1&playlist=${tId}`;
             }
         }
@@ -134,7 +130,6 @@ async function updateHero() {
         if (runtimeEl) runtimeEl.innerText = movie.runtime || "-- min";
         if (descEl) descEl.innerText = movie.plot;
         
-        // IMPORTANT: Reveal the content
         if (content) content.style.opacity = '1';
         updateDots();
     }, 300);
@@ -146,7 +141,6 @@ window.nextSlide = function() {
 };
 
 window.prevSlide = function() {
-                // Default: use API for movies unless manually changed or API fails
                 localStorage.setItem('movieSource', 'api');
     currentSlide = (currentSlide - 1 + heroMovies.length) % heroMovies.length;
     updateHero();
@@ -209,31 +203,43 @@ window.openMovie = async function() {
     const movie = heroMovies[currentSlide];
     const overlay = document.getElementById('movieOverlay');
     if(!overlay || !movie) return;
-    // text setter
-    document.getElementById('statTitle').innerText = movie.title;
-    document.getElementById('statRatingOverlay').innerText = movie.rating || "--";
-    document.getElementById('statDateOverlay').innerText = movie.year || "----";
-    document.getElementById('statRuntimeOverlay').innerText = movie.runtime || "-- min";
-    document.getElementById('statPlot').innerText = movie.plot;
+    console.log('[Overlay] Loading movie:', movie);
+    const title = movie.title;
+    const rating = movie.rating || "--";
+    const year = movie.year || "----";
+    const runtime = movie.runtime || "-- min";
+    const plot = movie.plot;
+    const stars = movie.stars;
+    console.log('[Overlay] Title:', title);
+    console.log('[Overlay] Rating:', rating);
+    console.log('[Overlay] Year:', year);
+    console.log('[Overlay] Runtime:', runtime);
+    console.log('[Overlay] Plot:', plot);
+    console.log('[Overlay] Stars:', stars);
+    document.getElementById('statTitle').innerText = title;
+    document.getElementById('statRatingOverlay').innerText = rating;
+    document.getElementById('statDateOverlay').innerText = year;
+    document.getElementById('statRuntimeOverlay').innerText = runtime;
+    document.getElementById('statPlot').innerText = plot;
 
     const castList = document.getElementById('castListOverlay');
-    if (castList && movie.stars) {
-        const cleanedStars = String(movie.stars).replace(/[\[\]']/g, ""); 
+    if (castList && stars) {
+        const cleanedStars = String(stars).replace(/[\[\]']/g, ""); 
         const actors = cleanedStars.split(',').slice(0, 4); 
+        console.log('[Overlay] Actors parsed:', actors);
         castList.innerHTML = actors.map(name => `
             <li> <p>${name.trim()}</p></li>
         `).join('');
+    } else {
+        console.log('[Overlay] No cast found or castList element missing.');
     }
 
     const maxTrailer = document.getElementById('maxTrailer');
     if (maxTrailer) {
         maxTrailer.src = ""; // Clear old video 
-        
-        // If the ID isn't saved yet, fetch it live
         if (!movie.currentTrailerId && window.fetchYTId) {
-            movie.currentTrailerId = await window.fetchYTId(movie.title);
+            movie.currentTrailerId = await window.fetchYTId(title);
         }
-
         if (movie.currentTrailerId) {
             maxTrailer.src = `https://www.youtube.com/embed/${movie.currentTrailerId}?autoplay=1&rel=0&enablejsapi=1`;
         }
@@ -245,7 +251,6 @@ window.openMovie = async function() {
 
 window.triggerPlay = function() {
     openMovie();
-    // Teleport to Plot
     setTimeout(() => {
         const plot = document.getElementById('statPlot');
         if(plot) plot.scrollIntoView({ behavior: 'auto', block: 'center' });
@@ -271,7 +276,6 @@ window.closeRedirectModal = function() {
 
 window.proceedToIMDb = function() {
     const movie = heroMovies[currentSlide];
-    // If no imdbId, search IMDb for the title
     const url = movie.imdbId 
         ? `https://www.imdb.com/title/${movie.imdbId}/` 
         : `https://www.imdb.com/find?q=${encodeURIComponent(movie.title)}`;
@@ -279,8 +283,6 @@ window.proceedToIMDb = function() {
     closeRedirectModal();
 };
  
-
-// Ensure initHero runs when the page loads
 
 // TMDB API Key Checker
 async function checkTmdbApiKey() {
@@ -290,7 +292,6 @@ async function checkTmdbApiKey() {
     statusCircle.style.background = '#aaa';
     statusText.textContent = 'Checking API...';
     try {
-        // Try a simple TMDB endpoint with the API key
         const url = window.tmdbBuildUrl ? window.tmdbBuildUrl('/movie/550') : null;
         if (!url) throw new Error('No TMDB URL');
         const res = await fetch(url);
@@ -373,32 +374,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (e.key === 'Enter') {
                 const query = e.target.value.trim();
                 if (query.length > 0) {
-                    // --- SEARCH COUNTER LOGIC ---
-                    let searches = parseInt(localStorage.getItem('searchCount')) || 0;
-                    let tier = localStorage.getItem('userTier') || "Free";
-                    
-                    // 1. Determine limit based on tier
-                    let limit = (tier === 'Gold') ? Infinity : (tier === 'Premium' ? 50 : 5);
-
-                    // 2. Check if the user is blocked
-                    if (searches >= limit) {
-                        showLimitToast("🚀 Limit reached! Upgrade to Gold for more searches.");
-                        e.preventDefault();
-                        return;
-                    }
-
-                    // 3. Increment and Save
-                    searches++;
-                    localStorage.setItem('searchCount', searches);
-                    if (window.persistUserStats) window.persistUserStats();
-                    console.log(`Search registered! Total: ${searches}/${limit === Infinity ? '∞' : limit}`);
-
-                    // 4. Update the UI ID 'statSearch' if it's currently visible
-                    const statElem = document.getElementById('statSearch');
-                    if (statElem) {
-                        statElem.innerText = `${searches} / ${limit === Infinity ? '∞' : limit}`;
-                    }
-                    // Proceed to results page
                     window.location.href = `searchQueryResult.html?q=${encodeURIComponent(query)}`;
                 }
             }
@@ -592,7 +567,6 @@ function proceedToIMDb() {
     const currentMovie = heroMovies[currentSlide];
     
     if (currentMovie && currentMovie.imdbId) {
-        // Open the dynamic link
         window.open(`https://www.imdb.com/title/${currentMovie.imdbId}/`, "_blank");
         closeRedirectModal();
     } else {
@@ -935,14 +909,12 @@ async function setupMarquee() {
     const marquee = document.getElementById('promoMarquee');
     if (!marquee) return;
 
-    // Fetch random assortment for the background
     const baseUrl = `http://localhost:3000/movies/library?limit=20`;
     const source = window.getMovieSource ? window.getMovieSource() : 'local';
     const hydratedUrl = source === 'api' ? `${baseUrl}&hydrate=1` : baseUrl;
     const res = await fetch(window.withMovieSource ? window.withMovieSource(hydratedUrl) : hydratedUrl);
     const movies = await res.json();
 
-    // Duplicate list for inf to ensure smooth inf loop
     const combined = [...movies, ...movies]; 
 
     marquee.innerHTML = combined.map(m => `
@@ -954,7 +926,6 @@ async function setupMarquee() {
 // --- SIGNUP MODAL LOGIC ---
 // --- ON PAGE LOAD: CHECK FOR USER ---
 document.addEventListener('DOMContentLoaded', () => {
-    // 1. Check if pro0mpt should be hidden
     if (localStorage.getItem('username')) {
         const promo = document.querySelector('.promo-section');
         if (promo) promo.style.display = 'none';
@@ -979,7 +950,7 @@ function openSignupModal() {
     const modal = document.getElementById('signupModal');
     if (modal) {
         modal.classList.add('active');
-        document.body.style.overflow = 'hidden'; // Stop bg scrolling
+        document.body.style.overflow = 'hidden'; 
     }
 }
 
@@ -987,7 +958,7 @@ function closeSignupModal() {
     const modal = document.getElementById('signupModal');
     if (modal) {
         modal.classList.remove('active');
-        document.body.style.overflow = 'auto'; // Re-enable scrolol
+        document.body.style.overflow = 'auto'; 
     }
 }
 
@@ -1003,13 +974,11 @@ if (signupModal) {
 function handleSignup(e) {
     e.preventDefault(); 
     
-    // 1. GET VALUES FROM INPUTS
     const usernameInput = document.getElementById('signupUser');
     const emailInput = document.getElementById('signupEmail');
     const tierInput = document.getElementById('signupTier'); 
     const passInput = document.getElementById('signupPassword');
     
-    // Fallback values if inputs are missing
     const username = usernameInput ? usernameInput.value : "Guest";
     const email = emailInput ? emailInput.value : "email@example.com";
     const tier = tierInput ? tierInput.value : "Free"; 
@@ -1019,7 +988,6 @@ function handleSignup(e) {
     const userLanguage = localStorage.getItem('userLanguage') || (window.i18n ? window.i18n.getCurrentLanguage() : 'en');
     const originalText = btn ? btn.innerText : "Create Account";
     
-    // UI Loading State
     if (btn) {
         btn.innerText = "Creating Account...";
         btn.style.opacity = "0.7";
@@ -1057,7 +1025,6 @@ function handleSignup(e) {
                 localStorage.setItem('authToken', result.token);
             }
 
-            // SAVE DATA TO LOCAL  
             localStorage.setItem('username', user.username);
             localStorage.setItem('userUID', String(user.userUID));
             localStorage.setItem('userEmail', user.userEmail);
@@ -1066,7 +1033,6 @@ function handleSignup(e) {
             localStorage.setItem('userLanguage', user.userLanguage || userLanguage);
             localStorage.setItem('isAdmin', user.isAdmin ? 'true' : 'false');
             
-            // Initialize usage counters as strings for subscription logic
             localStorage.setItem('searchCount', '0');
             localStorage.setItem('viewCount', '0');
         } catch (err) {
@@ -1082,7 +1048,6 @@ function handleSignup(e) {
 
         closeSignupModal();
         
-        // 3. SHOW SUCCESS MESSAGE
         const toast = document.getElementById('notification-toast');
         if(toast) {
             toast.innerText = `Welcome ${username}! You are now a ${tier} member.`;
@@ -1126,7 +1091,7 @@ function checkUsageLimit(type) {
     const searches = parseInt(localStorage.getItem('searchCount') || '0');
     const views = parseInt(localStorage.getItem('viewCount') || '0');
 
-    if (tier === 'Gold') return true; // Unlimited for Gold members
+    if (tier === 'Gold') return true; 
 
     if (type === 'search') {
         const limit = tier === 'Premium' ? 50 : 5;
@@ -1147,25 +1112,6 @@ function checkUsageLimit(type) {
     }
     return true;
 }
-
-//  document.addEventListener('DOMContentLoaded', () => {
-//     // Use a small break to ensure the movie data and button have loaded from the DB
-//     setTimeout(() => {
-//         const watchBtn = document.querySelector('.btn-watch');
-//         if (watchBtn) {
-//             watchBtn.onclick = async () => {
-//                 // THE ONLY PLACE views are counted
-//                 if (typeof window.checkAndIncrement === "function") {
-//                     const canWatch = window.checkAndIncrement('view');
-//                     if (!canWatch) return; // Stop if limit reached
-//                 }
-
-//                 const modal = document.getElementById('trailerModal');
-//                 if (modal) modal.classList.add('show');
-//             };
-//         }
-//     }, 500); 
-// });
 // This function handles opening AND closing the sidebar
 console.log("✅ MAIN PAGE CONTROLS LOADED");
 
@@ -1291,7 +1237,6 @@ window.handleSignIn = async function(e) {
 window.toggleAccountMenu = function() {
     console.log("🎯 CLICK DETECTED: Running toggleAccountMenu...");
 
-    // MATCH YOUR SNIPPET ID: accountDropdown
     const dropdown = document.getElementById('accountDropdown');
     
     if (!dropdown) {
@@ -1378,7 +1323,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 function showLimitToast(message) {
-    // Prevent multiple toasts from stacking and looking weird
     const existing = document.querySelector('.limit-toast');
     if (existing) existing.remove();
 
@@ -1391,11 +1335,9 @@ function showLimitToast(message) {
 
     document.body.appendChild(toast);
 
-    // Animate the progress bar  
     const progressBar = toast.querySelector('.toast-progress');
     progressBar.style.animation = 'progressShrink 3s linear forwards';
 
-    // Remove the toast after 3 seconds
     setTimeout(() => {
         toast.style.opacity = '0';
         toast.style.transition = '0.5s';
@@ -1412,7 +1354,6 @@ window.handlePFPUpload = function(event) {
     reader.onload = function(e) {
         const img = new Image();
         img.onload = function() {
-            // Create a canvas to resize the image
             const canvas = document.createElement('canvas');
             const MAX_WIDTH = 150; 
             const scaleSize = MAX_WIDTH / img.width;
@@ -1423,12 +1364,10 @@ window.handlePFPUpload = function(event) {
             const ctx = canvas.getContext('2d');
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
             
-            // Convert to a compressed Base64 string (JPEG quality 0.7)
             const smallBase64 = canvas.toDataURL('image/jpeg', 0.7);
             
             localStorage.setItem('userPFP', smallBase64);
             
-            // Update UI
             applyPFPToUI(smallBase64);
             
             console.log("Image resized and saved!");
@@ -1443,7 +1382,6 @@ window.handlePFPUpload = function(event) {
 function applyPFPToUI(imagePath) {
     if (!imagePath) return;
 
-    // Target the navbar icon and the sidebar icon
     const navPFP = document.querySelector('.grey-profile-pic');
     const sidebarPFP = document.getElementById('sidebarPFP');
 
@@ -1453,10 +1391,8 @@ function applyPFPToUI(imagePath) {
 
 // Initialize PFP on page load
 document.addEventListener('DOMContentLoaded', () => {
-    // 1. Grab data from storage
     const savedName = localStorage.getItem('username');
 
-    // 2. If a name exists, apply it to the Navbar and Sidebar immediately
     if (savedName) {
         if (document.getElementById('navUsername')) {
             document.getElementById('navUsername').innerText = savedName;
@@ -1478,7 +1414,6 @@ window.openSettings = function() {
     const modal = document.getElementById('settingsModal');
     if (modal) {
         modal.classList.add('active');
-        // Load current settings
         loadCurrentSettings();
     }
 };
@@ -1495,7 +1430,6 @@ window.withMovieSource = function(url) {
 
 // Load current settings into the modal
 function loadCurrentSettings() {
-    // Set theme selection
     const currentTheme = localStorage.getItem('userTheme') || 'dark';
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.classList.remove('active');
@@ -1504,12 +1438,10 @@ function loadCurrentSettings() {
         }
     });
     
-    // Set low data mode
     const lowDataMode = localStorage.getItem('lowDataMode') === 'true';
     const lowDataCheckbox = document.getElementById('lowDataMode');
     if (lowDataCheckbox) lowDataCheckbox.checked = lowDataMode;
 
-    // Set language selection
     const settingsLang = document.getElementById('settingsLanguage');
     if (settingsLang) {
         const currentLang = localStorage.getItem('userLanguage') || (window.i18n ? window.i18n.getCurrentLanguage() : 'en');
@@ -1524,7 +1456,6 @@ function loadCurrentSettings() {
 }
 
 window.selectThemeInSettings = function(themeName) {
-    // Update UI
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.classList.remove('active');
         if (btn.dataset.theme === themeName) {
@@ -1532,7 +1463,6 @@ window.selectThemeInSettings = function(themeName) {
         }
     });
     
-    // Apply theme immediately
     if (window.themeManager) {
         window.themeManager.applyTheme(themeName);
     }
@@ -1544,8 +1474,6 @@ window.toggleLowDataMode = function() {
     const checkbox = document.getElementById('lowDataMode');
     const enabled = checkbox.checked;
     localStorage.setItem('lowDataMode', enabled);
-    
-    // Dispatch custom event for other components to listen to
     window.dispatchEvent(new CustomEvent('lowDataModeChanged', { detail: { enabled } }));
     
     showLimitToast(enabled ? "📶 Low Data Mode enabled" : "📶 Low Data Mode disabled");
@@ -1572,7 +1500,6 @@ window.saveSettings = function() {
     if (newName.trim() !== "") {
         localStorage.setItem('username', newName);
         
-        // Force update 
         const navName = document.getElementById('navUsername');
         const sideName = document.getElementById('sideUsername');
         
@@ -1590,54 +1517,6 @@ window.saveSettings = function() {
     if (window.persistUserStats) window.persistUserStats();
     showLimitToast("✅ Settings Saved!");
 };
-// --- REVIEWS LOGIC ---
-
-// async function loadReviews() {
-//     const container = document.getElementById('reviewsGrid');
-//     if (!container) return;
-
-//     try {
-//         const res = await fetch('http://localhost:3000/reviews');
-//         const reviews = await res.json();
-
-//         // 1. Create the "Add Review" Card 
-//         const addCardHTML = `
-//             <div class="review-card add-card" onclick="openReviewModal()">
-//                 <div class="plus-icon">+</div>
-//                 <h3>Write a Review</h3>
-//             </div>
-//         `;
-
-//         // 2. Generate the actual Reviews HTML
-//         const reviewsHTML = reviews.map(r => `
-//             <div class="review-card">
-//                 <div class="review-header">
-//                     <div class="review-pfp" 
-//                          style="width:40px; height:40px; border-radius:50%; background-color:#444; background-size:cover; background-position:center; ${r.pfp ? `background-image: url('${r.pfp}')` : ''}">
-//                     </div>
-//                     <div class="review-info">
-//                         <h4>${r.user}</h4>
-//                         <span class="stars">${"⭐".repeat(r.stars)}</span>
-//                     </div>
-//                 </div>
-//                 <div class="review-body">
-//                     <p>"${r.text}"</p>
-//                     <small>Watching: ${r.movie}</small>
-//                 </div>
-//             </div>
-//         `).join('');
-
-//         //Combine 
-//         container.innerHTML = addCardHTML + reviewsHTML;
-        
-//     } catch (err) {
-//         console.error("Failed to load reviews:", err);
-//     }
-// }
-
-// document.addEventListener('DOMContentLoaded', loadReviews);
-// window.openReviewModal = () => document.getElementById('reviewModal').classList.add('active');
-// window.closeReviewModal = () => document.getElementById('reviewModal').classList.remove('active');
 
 // --- PFP LOGIC: Targeting Classes properly ---
  
@@ -1650,10 +1529,8 @@ window.saveSettings = function() {
     reader.onloadend = function() {
         const base64Image = reader.result;
         
-        // Save to localStorage 
         localStorage.setItem('userPFP', base64Image);
         
-        // Update the display asap
         applyPFPToUI(base64Image);
         
         if (typeof showLimitToast === "function") {
@@ -1668,7 +1545,6 @@ window.saveSettings = function() {
    ========================================= */
 
 
-// Define the helper function so it's always available
 function applyPFPToUI(imagePath) {
     if (!imagePath) return;
 
@@ -1686,7 +1562,6 @@ function applyPFPToUI(imagePath) {
 document.addEventListener('DOMContentLoaded', () => {
     console.log("🔄 App Initializing..."); 
 
-    // 1. Restore Profile Picture
     const savedPFP = localStorage.getItem('userPFP');
     if (savedPFP) {
         console.log("✅ Restoring PFP from storage");
@@ -1752,7 +1627,6 @@ window.saveSettings = function() {
         if (newName.trim() !== "") {
             localStorage.setItem('username', newName);
             
-            // Update Navbar Text asap
             const navName = document.getElementById('navUsername');
             if (navName) navName.innerText = newName;
         }
@@ -1764,15 +1638,12 @@ window.saveSettings = function() {
         localStorage.setItem('userLanguage', settingsLang.value);
     }
 
-    // --- Save Movie Source ---
     const prevSource = localStorage.getItem('movieSource') || 'local';
     const settingsSource = document.getElementById('settingsMovieSource');
     if (settingsSource && settingsSource.value) {
         localStorage.setItem('movieSource', settingsSource.value);
     }
 
-    // --- 2. Save Password (if have) ---
-    // --- 3. CLOSE THE SETTINGS MODAL ---
     const settingsModal = document.getElementById('settingsModal') 
                        || document.querySelector('.settings-modal-overlay.active');
     
@@ -1794,16 +1665,13 @@ function syncProfilePic() {
     // 1. Get the raw text data from storage
     const savedPFP = localStorage.getItem('userPFP');
     
-    // 2. If nothing is saved, dont proceed
     if (!savedPFP) {
         console.log("No PFP found in storage.");
         return; 
     }
 
-    // 3. Find empty  pfps
     const allProfileIcons = document.querySelectorAll('.grey-profile-pic, .large-profile-icon');
 
-    // 4. push the background image onto them
     allProfileIcons.forEach(icon => {
         icon.style.backgroundImage = `url('${savedPFP}')`;
         icon.style.backgroundSize = 'cover';       
@@ -1814,7 +1682,7 @@ function syncProfilePic() {
     console.log("✅ PFP Force Synced!");
 }
 
-// CALL IT: Run immediately  
+// CALL IT: Run ASAPPP  
 syncProfilePic();
 
 document.addEventListener('DOMContentLoaded', syncProfilePic);
@@ -1861,15 +1729,12 @@ document.addEventListener('DOMContentLoaded', syncProfilePic);
 
 // 2. The Toast Function
 window.showToast = function(message, isError = false) {
-    // 1. Remove any existing toast so they don't stack and look messy
     const existing = document.querySelector('.custom-toast-popup');
     if (existing) existing.remove();
 
-    // 2. Create the element
     const toast = document.createElement('div');
     toast.className = 'custom-toast-popup';
     
-    // 3. Logic for Icons and Colors
     const icon = isError ? '❌' : '✅';
     toast.innerHTML = `<span>${icon}</span> <span>${message}</span>`;
     
@@ -1882,18 +1747,15 @@ window.showToast = function(message, isError = false) {
 
     document.body.appendChild(toast);
 
-    // 4. Animation: Slide In
     setTimeout(() => {
         toast.classList.add('active');
     }, 10);
 
-    // 5. Animation: Slide Out after 3.5 seconds
     setTimeout(() => {
         toast.classList.remove('active');
-        setTimeout(() => toast.remove(), 500); // Wait for transition to finish
+        setTimeout(() => toast.remove(), 500); 
     }, 3500);
 };
-// review submission logic
 
 // MOBILE MENU TOGGLE(hbamburger)
  window.toggleMobileMenu = function() {
@@ -1923,9 +1785,9 @@ window.moveSlide = function(direction) {
     currentSlide += direction;
 
     if (currentSlide >= heroMovies.length) {
-        currentSlide = 0; // Go back to the first movie
+        currentSlide = 0; 
     } else if (currentSlide < 0) {
-        currentSlide = heroMovies.length - 1; // Go to the last movie
+        currentSlide = heroMovies.length - 1;
     }
 
     updateHero(); 
@@ -1962,13 +1824,11 @@ document.addEventListener('DOMContentLoaded', () => {
    THEME AND LANGUAGE CONTROLS
    ========================================= */
 
-// Toggle theme between dark and light
 function toggleSiteTheme() {
     const newTheme = window.themeManager.toggleTheme();
     updateThemeButton(newTheme);
 }
 
-// Update theme button UI
 function updateThemeButton(theme) {
     const icon = document.getElementById('themeIcon');
     const label = document.getElementById('themeLabel');
@@ -2038,7 +1898,6 @@ function updateLanguageButton(lang) {
         currentLangCode.textContent = flags[lang].code;
     }
     
-    // Update selected state in dropdown
     document.querySelectorAll('.language-option').forEach(opt => {
         opt.classList.remove('selected');
     });
@@ -2091,7 +1950,6 @@ function initContinueWatching() {
 
 // Add to page initialization
 window.addEventListener('DOMContentLoaded', () => {
-    // Initialize continue watching after a short delay
     setTimeout(initContinueWatching, 500);
 });
 

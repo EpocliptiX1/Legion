@@ -1,9 +1,6 @@
 /* 
    Handles Movie Details Page population, Recommendations, and Global Trailer Fetching
 */
-//     AIzaSyCGg0QqAURfPOs5OoCemTRBMrOxqtbw0tg
-// 1. GLOBAL CONFIGURATION
-// (YouTube API key is now only in backend)
 let currentPlaylist = []; 
 let activeTrailerIdx = -1; 
  
@@ -11,7 +8,6 @@ let activeTrailerIdx = -1;
 window.fetchYTId = async function(name) {
     try {
         const query = encodeURIComponent(name + " official trailer");
-        // Use backend proxy endpoint to keep API key secret
         const res = await fetch(`/youtube/search?name=${query}`);
         if (!res.ok) {
             console.error('[YouTube API] Backend error. Status:', res.status);
@@ -69,11 +65,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const movie = await response.json();
         console.log('[MovieInfo] Movie loaded', movie);
 
-        // HELPERS
         const cleanList = (str) => str ? String(str).replace(/[\[\]']/g, '').split(',').map(s => s.trim()) : [];
         const formatMoney = (v) => v > 0 ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v) : "N/A";
 
-        // FILL UI ELEMENTS
         if(document.getElementById('posterImg')) document.getElementById('posterImg').src = movie.poster_full_url || '/img/LOGO_Short.png';
         if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${movie.poster_full_url}')`;
         
@@ -87,7 +81,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         const movieYear = parseInt(String(movie.release_date || movie.Released_Year || "").match(/\d{4}/)?.[0]) || null;
         document.getElementById('year').innerText = movieYear || "----";
 
-        // Track click history locally for recommendations/history rows
         const prefsKey = 'userPreferences';
         const prefs = JSON.parse(localStorage.getItem(prefsKey) || '{}');
         const genreClicks = prefs.genreClicks || {};
@@ -125,7 +118,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             const year = parseInt(movieYear);
             const rating = parseFloat(movie.Rating);
             
-            //definition of Era
             const isModern = year > 2015;
             const is90sOr2000s = year >= 1990 && year <= 2015;
             const isGoldenAge = year < 1990;
@@ -181,10 +173,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const revMovieIdEl = document.getElementById('revMovieId');
         if (revMovieIdEl) revMovieIdEl.value = movieId;
 
-        // TRIGGER TRAILER FINDER
         setupTrailerButton(movie['Movie Name'] || movie.title, movieYear);
 
-        // START RECOMMENDATIONS
         const source = window.getMovieSource ? window.getMovieSource() : 'local';
         console.log('[MovieInfo] source', source);
         if (source === 'local') {
@@ -193,7 +183,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             initRecommendations(movie, movieYear, directors[0], stars);
         }
 
-        // Forum CTA visibility (only if forum data exists for this movie)
+        // Forum CTA visibility (only if forum data ewxists for this movie)
         try {
             const forumCta = document.getElementById('forumCtaBar');
             if (forumCta) {
@@ -297,12 +287,10 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
             renderRow(recs, 'genreRow', 'Recommended');
         }
     } else {
-        // Genre Row
         fetch(`http://localhost:3000/recommend/genre?genre=${encodeURIComponent(movie.Genre)}&exclude=${movie.ID}`)
             .then(r => r.json()).then(d => renderRow(d, 'genreRow', 'Similar Genre'));
     }
 
-    // Director Row
     if (firstDirector) {
         const dirTitle = document.getElementById('directorTitle');
         if (dirTitle) dirTitle.innerText = `More from ${firstDirector}`;
@@ -325,7 +313,6 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
         }
     }
 
-    // Actor Row
     const actorSelect = document.getElementById('actorSelect');
     if (actorSelect && starsList.length > 0) {
         console.log('[Reco] actorSelect found, starsList length', starsList.length);
@@ -357,7 +344,6 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
         fetchActorRow(starsList[0]);
     }
 
-    // Era Row
     if (movieYear) {
         if (isApi) {
             const data = await tmdbFetch('/discover/movie', {
@@ -389,7 +375,6 @@ async function setupTrailerButton(movieName, movieYear) {
     
     if (!watchBtn || !modal || !player) return;
 
-    // --- PRIORITY 1: CHECK ACCOUNT LIMITS ---
     const views = parseInt(localStorage.getItem('viewCount')) || 0;
     const tier = localStorage.getItem('userTier') || "Free";
     const limit = (tier === 'Gold') ? Infinity : (tier === 'Premium' ? 20 : 3);
@@ -401,7 +386,6 @@ async function setupTrailerButton(movieName, movieYear) {
         return; 
     }
 
-    // --- PRIORITY 2: CHECK YOUTUBE API ---
     watchBtn.innerText = "Searching...";
     watchBtn.classList.remove('btn-unavailable'); 
 
@@ -413,23 +397,20 @@ async function setupTrailerButton(movieName, movieYear) {
         if (!vId || (typeof vId === 'string' && vId.trim().length === 0)) {
             console.warn("⚠️ TRAILER NOT FOUND - Triggering Fallback");
 
-            // 1. FORCE UNLOCK THE BUTTON (The Fix)
-            watchBtn.disabled = false;              // Remove HTML disabled attribute
-            watchBtn.style.pointerEvents = "auto";  // Override any CSS blocking clicks
-            watchBtn.style.cursor = "pointer";      // Show hand cursor
+            watchBtn.disabled = false;              
+            watchBtn.style.pointerEvents = "auto";  
+            watchBtn.style.cursor = "pointer";     
             watchBtn.classList.remove('btn-unavailable');
             
-            // 2. VISUAL FEEDBACK (Optional: Red Border to confirm it worked)
+            // 2. red=goood)
             watchBtn.innerText = "Search on YouTube ↗";
             watchBtn.style.backgroundColor = "#c4302b"; 
 
-            // 3. NUCLEAR EVENT LISTENER (Clone the button to strip old listeners)
-            // This prevents any other code from stopping the click
             const newBtn = watchBtn.cloneNode(true);
             watchBtn.parentNode.replaceChild(newBtn, watchBtn);
 
             newBtn.addEventListener('click', (e) => {
-                e.preventDefault(); // Stop page jumps
+                e.preventDefault();
                 console.log("🔥 CLICK DETECTED - Opening YouTube...");
                 
                 const query = encodeURIComponent(`${movieName} ${movieYear} trailer`);
@@ -442,7 +423,7 @@ async function setupTrailerButton(movieName, movieYear) {
         // --- PRIORITY 3: ALL CLEAR (SUCCESS) ---
         watchBtn.innerText = "▶ Watch Trailer";
         watchBtn.classList.remove('btn-unavailable');
-        watchBtn.style.backgroundColor = ""; // Reset color
+        watchBtn.style.backgroundColor = ""; 
         watchBtn.onclick = () => {
             const currentViews = parseInt(localStorage.getItem('viewCount')) || 0;
             if (currentViews >= limit) {
@@ -461,7 +442,6 @@ async function setupTrailerButton(movieName, movieYear) {
         };
 
     } catch (err) {
-        // === SCENARIO B: API CRASHED / NETWORK ERROR ===
         console.error("Trailer Logic Error:", err);
         
         watchBtn.innerText = "Search on YouTube ↗";
@@ -469,10 +449,8 @@ async function setupTrailerButton(movieName, movieYear) {
         watchBtn.style.backgroundColor = "#c4302b";
 
         watchBtn.onclick = () => {
-            // FIXED: Added log here too
             console.log("Manual Fallback Triggered (Reason: API Error)");
 
-            // FIXED: Changed 'movieTitle' to 'movieName'
             const query = encodeURIComponent(`${movieName} trailer`);
             window.open(`https://www.youtube.com/results?search_query=${query}`, '_blank');
         };
@@ -530,7 +508,7 @@ document.addEventListener('click', (e) => {
     if (e.target.classList.contains('close-modal') || e.target === modal) {
         modal.classList.remove('show');
         document.body.classList.remove('blur-active');
-        player.src = ""; // Stop video on close
+        player.src = ""; 
     }
 });
 
@@ -551,7 +529,6 @@ async function loadReviews() {
             reviews = reviews.filter(r => r.movieId && String(r.movieId) === String(pageMovieId));
         }
 
-        // 1. Create the "Add Review" Card 
         const addCardHTML = `
             <div class="review-card add-card" onclick="openReviewModal()">
                 <div class="plus-icon">+</div>
@@ -559,7 +536,6 @@ async function loadReviews() {
             </div>
         `;
 
-        // 2. Generate the actual Reviews HTML
         const reviewsHTML = reviews.map(r => {
             const movieLabel = r.movieTitle || r.movie || 'Unknown';
             const movieHTML = r.movieId ? `<a href="movieInfo.html?id=${r.movieId}">${movieLabel}</a>` : movieLabel;
@@ -581,7 +557,6 @@ async function loadReviews() {
             </div>
         `}).join('');
 
-        //Combine 
         container.innerHTML = addCardHTML + reviewsHTML;
         
     } catch (err) {
@@ -623,17 +598,13 @@ window.submitReview = async function() {
         });
 
         if (res.ok) {
-            // Close modal first
             if (typeof closeReviewModal === 'function') closeReviewModal();
             else {
-                 // back if function missing
                  document.getElementById('reviewModal').classList.remove('active');
             }
 
-            // Show success message
             showToast("Review Posted Successfully!");
             
-            // Refresh reviews
             if(window.loadReviews) window.loadReviews(); 
         } else {
             showToast("Error posting review.", true);
@@ -643,5 +614,4 @@ window.submitReview = async function() {
         showToast("Server connection failed.", true);
     }
 };
-// Run on load
- 
+// runnn

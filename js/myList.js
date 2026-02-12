@@ -35,7 +35,7 @@
 
         setInterval(keepLocked, 1000);
         
-        // Stop any further execution of this script
+        // STOPPPPPPPPP PLS
         throw new Error("Access Denied: Redirecting to Login UI");
     }
 })();
@@ -91,7 +91,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             </div>
         `).join('');
         
-        // Insert movies BEFORE the add card not after
         grid.insertAdjacentHTML('afterbegin', movieHtml);
         
     } catch (err) { console.error(err); }
@@ -129,7 +128,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         playlistsGrid.innerHTML = '<p style="color: var(--text-muted); padding: 20px; text-align: center;">Could not load playlists.</p>';
     }
 
-    // --- Load Recent Forum Posts ---
     await loadRecentPosts(userUID);
 });
 
@@ -143,17 +141,14 @@ async function loadRecentPosts(userUID) {
         : window.location.origin;
 
     try {
-        // Fetch all forum threads and filter by user
         const response = await fetch(`${API_BASE}/forum/movies`);
         const forumMovies = await response.json();
         
-        // Collect all threads from all movies using Promise.all for better performance
         const threadPromises = forumMovies.map(async (movie) => {
             try {
                 const threadsRes = await fetch(`${API_BASE}/forum/threads?movieId=${movie.movieId}`);
                 const threads = await threadsRes.json();
                 
-                // Filter threads by userUID and add movie info
                 return threads
                     .filter(t => parseInt(t.userUID) === userUID)
                     .map(t => ({ ...t, movieTitle: movie.movieTitle, movieId: movie.movieId }));
@@ -166,7 +161,6 @@ async function loadRecentPosts(userUID) {
         const threadArrays = await Promise.all(threadPromises);
         const userThreads = threadArrays.flat();
 
-        // Sort by creation date (newest first) and take top 5
         userThreads.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         const recentThreads = userThreads.slice(0, 5);
 
@@ -232,11 +226,9 @@ function escapeHtml(text) {
 window.removeFromList = function(id) {
     let list = JSON.parse(localStorage.getItem('myList')) || [];
     
-    //   Convert both to String
     list = list.filter(item => String(item) !== String(id));
     
     localStorage.setItem('myList', JSON.stringify(list));
     
-    // Refresh page 
     location.reload(); 
 };

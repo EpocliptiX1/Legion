@@ -8,7 +8,6 @@
 
 // Watch history manager
 const WatchHistory = {
-    // Get all watch history
     getHistory() {
         try {
             const history = localStorage.getItem('watchHistory');
@@ -19,13 +18,11 @@ const WatchHistory = {
         }
     },
     
-    // Add or update watch history entry
     addEntry(movieId, movieTitle, poster, watchedPercentage = 0, genre = '') {
         try {
             const history = this.getHistory();
             const timestamp = new Date().toISOString();
             
-            // Check if movie already in history
             const existingIndex = history.findIndex(entry => entry.movieId === movieId);
             
             const entry = {
@@ -39,14 +36,11 @@ const WatchHistory = {
             };
             
             if (existingIndex >= 0) {
-                // Update existing entry
                 history[existingIndex] = entry;
             } else {
-                // Add new entry to the beginning
                 history.unshift(entry);
             }
             
-            // Keep only last 50 entries
             const trimmedHistory = history.slice(0, 50);
             localStorage.setItem('watchHistory', JSON.stringify(trimmedHistory));
             
@@ -115,7 +109,6 @@ const WatchHistory = {
 
 // Recently added/trending manager
 const TrendingManager = {
-    // Track movie views
     trackView(movieId) {
         try {
             const views = this.getViews();
@@ -135,7 +128,6 @@ const TrendingManager = {
         }
     },
     
-    // Get all views
     getViews() {
         try {
             const views = localStorage.getItem('movieViews');
@@ -170,7 +162,6 @@ const TrendingManager = {
 
 // Smart recommendations based on watch history
 const SmartRecommendations = {
-    // Analyze user preferences from watch history
     analyzePreferences() {
         const history = WatchHistory.getHistory();
         const preferences = {
@@ -182,13 +173,11 @@ const SmartRecommendations = {
         let totalPercentage = 0;
         
         history.forEach((entry, index) => {
-            // Count all genres
             if (entry.genre) {
                 const genres = entry.genre.split(',').map(g => g.trim());
                 genres.forEach(genre => {
                     preferences.genres[genre] = (preferences.genres[genre] || 0) + 1;
                     
-                    // Weight recent watches more heavily
                     if (index < 10) {
                         preferences.recentGenres[genre] = (preferences.recentGenres[genre] || 0) + 1;
                     }
@@ -202,7 +191,6 @@ const SmartRecommendations = {
             ? totalPercentage / history.length 
             : 0;
         
-        // Sort genres by count
         preferences.topGenres = Object.entries(preferences.genres)
             .sort((a, b) => b[1] - a[1])
             .slice(0, 5)
@@ -211,17 +199,13 @@ const SmartRecommendations = {
         return preferences;
     },
     
-    // Get personalized recommendations
     async getRecommendations(limit = 20) {
         const preferences = this.analyzePreferences();
         
         if (preferences.topGenres.length === 0) {
-            // No history, return popular movies
             return this.getPopularMovies(limit);
         }
         
-        // Fetch movies from top genres
-        // Use relative URL to work in all environments
         const apiBase = window.location.hostname === 'localhost' 
             ? 'http://localhost:3000' 
             : '';
@@ -240,7 +224,6 @@ const SmartRecommendations = {
             const results = await Promise.all(promises);
             const movies = results.flat();
             
-            // Remove duplicates and movies already watched
             const watchedIds = new Set(WatchHistory.getHistory().map(e => e.movieId));
             const unique = [];
             const seen = new Set();
@@ -259,9 +242,7 @@ const SmartRecommendations = {
         }
     },
     
-    // Get popular movies as fallback
     async getPopularMovies(limit = 20) {
-        // Use relative URL to work in all environments
         const apiBase = window.location.hostname === 'localhost' 
             ? 'http://localhost:3000' 
             : '';
@@ -281,7 +262,6 @@ const SmartRecommendations = {
 
 // UI rendering functions
 const WatchHistoryUI = {
-    // Render continue watching row
     renderContinueWatching(containerId) {
         const container = document.getElementById(containerId);
         if (!container) return;
@@ -305,7 +285,6 @@ const WatchHistoryUI = {
         `).join('');
     },
     
-    // Render recently watched row
     renderRecentlyWatched(containerId, limit = 10) {
         const container = document.getElementById(containerId);
         if (!container) return;
@@ -332,7 +311,6 @@ const WatchHistoryUI = {
         const container = document.getElementById(containerId);
         if (!container) return;
         
-        // Show loading skeleton
         container.innerHTML = Array(6).fill(0).map(() => `
             <div class="skeleton skeleton-card"></div>
         `).join('');
@@ -362,10 +340,7 @@ window.openMovieById = async function(movieId) {
         const movie = await response.json();
         
         if (movie) {
-            // Track view
             TrendingManager.trackView(movieId);
-            
-            // Add to watch history
             WatchHistory.addEntry(
                 movieId,
                 movie['Movie Name'],
@@ -374,7 +349,6 @@ window.openMovieById = async function(movieId) {
                 movie.Genre
             );
             
-            // Open movie detail (reuse existing function if available)
             if (window.openMovie) {
                 window.openMovie(movie);
             }
@@ -384,7 +358,6 @@ window.openMovieById = async function(movieId) {
     }
 };
 
-// Export for use in other scripts
 window.WatchHistory = WatchHistory;
 window.TrendingManager = TrendingManager;
 window.SmartRecommendations = SmartRecommendations;
