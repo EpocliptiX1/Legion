@@ -1,23 +1,17 @@
-// ...existing code...
-
-
 function loadLocalMoviesCsv() {
     console.log("\n------------------------------------------------");
     console.log("📂 DEBUG: SEARCHING FOR DATABASE...");
     console.log("   Server is running in:", __dirname);
 
-    // We define 3 likely spots. The first one is the one you described.
     const candidates = [
-        path.join(__dirname, '..', 'datasets', 'AITUCAP_Final_Database.csv'),       // 1. Up one level (Your setup)
-        path.join(__dirname, '..', '..', 'datasets', 'AITUCAP_Final_Database.csv'), // 2. Up two levels (Just in case)
+        path.join(__dirname, '..', 'datasets', 'AITUCAP_Final_Database.csv'),       // 1. Up one level (usuall setup)
+        path.join(__dirname, '..', '..', 'datasets', 'AITUCAP_Final_Database.csv'), // 2. Up two levels (Justttt in case)
         path.join(__dirname, 'datasets', 'AITUCAP_Final_Database.csv')              // 3. Inside a 'datasets' folder in the CURRENT directory
     ];
 
     let foundPath = null;
 
-    // Check each candidate
     for (const p of candidates) {
-        // console.log(`   Checking: ${p}`); // Uncomment to see every attempt
         if (fs.existsSync(p)) {
             foundPath = p;
             break;
@@ -36,7 +30,6 @@ function loadLocalMoviesCsv() {
 
     try {
         const csvData = fs.readFileSync(foundPath, 'utf8');
-        // Check if file is empty
         if (csvData.length === 0) {
             console.error("❌ ERROR: File exists but is EMPTY (0 bytes).");
             return [];
@@ -234,18 +227,17 @@ function mapTmdbMovieWithCredits(item, credits) {
 
 // --- 1. MIDDLEWARE ---
 app.use(cors());
-app.use(express.json()); // Essential for POST requests (Reviews & My List)
+app.use(express.json()); 
 
-// Rate limiting configurations
 const generalLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 1000, // Limit each IP to 1000 requests per windowMs
+    windowMs: 15 * 60 * 1000, 
+    max: 1000,  //funny story, ratemlimited myself a  few times lol
     message: { error: 'Too many requests from this IP, please try again later.' }
 });
 
 const strictLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 20, // Limit each IP to 20 requests per windowMs for sensitive operations
+    windowMs: 15 * 60 * 1000, 
+    max: 20, 
     message: { error: 'Too many requests from this IP, please try again later.' }
 });
 
@@ -304,8 +296,6 @@ function requireAdmin(req, res, next) {
 
 
 // --- TMDB API KEY CHECK ENDPOINT ---
-// Improved TMDB API key status check: mimic movie loading logic
-// Improved TMDB API key status check: use /authentication endpoint for direct key validation
 app.get('/api/tmdb-key-status', async (req, res) => {
     try {
         if (!isTmdbConfigured()) {
@@ -329,7 +319,6 @@ app.get('/api/youtube-key-status', async (req, res) => {
         if (!YT_API_KEY || YT_API_KEY.length < 10) {
             return res.json({ valid: false, error: 'No API key set' });
         }
-        // Make a simple API call to YouTube Data API
         const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=test&type=video&maxResults=1&key=${YT_API_KEY}`;
         const response = await fetch(url);
         const data = await response.json();
@@ -446,7 +435,6 @@ app.post('/translation-cache', (req, res) => {
 
 
 // --- 2. DATABASE SETUP ---
-// Connect to the SQLite databases
 const dbPath = path.join(__dirname, '..', 'datasets', 'movies.db');
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) console.error("Database error:", err.message);
@@ -457,7 +445,6 @@ const usersDbPath = path.join(__dirname, 'users.db');
 const usersDb = new sqlite3.Database(usersDbPath, (err) => {
     if (err) console.error("Users DB error:", err.message);
     else console.log("✅ Connected to users database");
-    // Ensure users table exists
     usersDb.run(`CREATE TABLE IF NOT EXISTS users (
         userUID INTEGER PRIMARY KEY,
         username TEXT,
@@ -472,7 +459,6 @@ const usersDb = new sqlite3.Database(usersDbPath, (err) => {
 });
 
 // --- 3. REVIEWS FILE SETUP ---
-// This ensures the /backend/ folder and reviews.json exist before we try to use them
 const reviewsDir = path.join(__dirname, 'backend');
 const reviewsPath = path.join(reviewsDir, 'reviews.json');
 const usersPath = path.join(reviewsDir, 'users.json');
@@ -539,7 +525,6 @@ ensureAdminUser();
 //  4. MOVIE READ ROUTES
 // =========================================
 
-// A. Search by Name (with click count sorting)
 app.get('/search', (req, res) => {
     const query = req.query.q;
     const source = String(req.query.source || 'local').toLowerCase();
@@ -576,7 +561,6 @@ app.get('/search', (req, res) => {
     });
 });
 
-// B. Get Single Movie by ID (with click tracking)
 app.get('/movie/:id', (req, res) => {
     const id = req.params.id;
     const source = String(req.query.source || 'local').toLowerCase();
@@ -605,7 +589,6 @@ app.get('/movie/:id', (req, res) => {
     });
 });
 
-// C. Track Movie Click
 app.post('/movie/:id/click', (req, res) => {
     const id = parseInt(req.params.id);
     if (!id) return res.status(400).json({ error: "Invalid movie ID" });
@@ -623,13 +606,11 @@ app.post('/movie/:id/click', (req, res) => {
     );
 });
 
-// D. The "Super" Library Filter (Kept the complex version)
 app.get('/movies/library', async (req, res) => {
     const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
     
-    // Extract Filters from URL
-    const sortMode = req.query.sort || 'rating_desc';
+    const sortMode = req.query.sort || 'popularity_desc';
     const minYear = parseInt(req.query.year) || 1900;
     const genre = req.query.genre || '';
     const actor = req.query.actor || '';
@@ -638,9 +619,7 @@ app.get('/movies/library', async (req, res) => {
     const hydrate = String(req.query.hydrate || '') === '1';
 
     if (source === 'local') {
-        // Serve from CSV, not movies.db
         let movies = loadLocalMoviesCsv();
-        // Filter
         const minYear = parseInt(req.query.minYear || req.query.year) || 1900;
         const maxYear = parseInt(req.query.maxYear) || new Date().getFullYear();
         const genre = req.query.genre || '';
@@ -657,7 +636,6 @@ app.get('/movies/library', async (req, res) => {
             if (director && (!m.Directors || !m.Directors.toLowerCase().includes(director.toLowerCase()))) return false;
             return true;
         });
-        // Sort
         if (sortMode === 'rating_desc') {
             movies.sort((a, b) => parseFloat(b.Rating || 0) - parseFloat(a.Rating || 0));
         } else if (sortMode === 'date_desc') {
@@ -666,8 +644,7 @@ app.get('/movies/library', async (req, res) => {
                 const by = parseInt(b.release_date ? b.release_date.split('/').pop() : b.Year || b.year || 0);
                 return by - ay;
             });
-        } // Add more sort modes as needed
-        // Paginate
+        } 
         movies = movies.slice(offset, offset + limit);
         res.json(movies);
         return;
@@ -678,8 +655,8 @@ app.get('/movies/library', async (req, res) => {
             // 'rating_desc' (Top Rated) uses vote_average.desc, but we enforce a vote_count.gte floor to avoid obscure movies
             // 'popularity_desc' and 'clicks_desc' use popularity.desc, which is heavily influenced by vote count and recent activity
             const sortMap = {
-                rating_desc: 'vote_average.desc', // Top Rated (with vote_count.gte floor)
-                popularity_desc: 'popularity.desc', // Most Popular (Most Votes/Activity)
+                rating_desc: 'vote_average.desc', 
+                popularity_desc: 'popularity.desc', 
                 clicks_desc: 'popularity.desc',
                 date_desc: 'primary_release_date.desc',
                 date_new: 'primary_release_date.desc',
@@ -704,11 +681,10 @@ app.get('/movies/library', async (req, res) => {
             const startPage = Math.floor(start / pageSize) + 1;
             const endPage = Math.floor((end - 1) / pageSize) + 1;
 
-            // Set minimum vote count for sorts to avoid obscure movies
-            let voteCountFloor = 100;
-            if (sortMode === 'rating_desc') voteCountFloor = 500; // Top Rated: only show movies with at least 500 votes
-            if (sortMode === 'rating_asc') voteCountFloor = 2000;
-            if (sortMode === 'success_asc') voteCountFloor = 2000; // Least Successful: only show movies with at least 2000 votes
+            let voteCountFloor = 20;
+            if (sortMode === 'rating_desc') voteCountFloor = 200; 
+            if (sortMode === 'rating_asc') voteCountFloor = 5;
+            if (sortMode === 'success_asc') voteCountFloor = 100; 
             const params = {
                 sort_by: sortMap[sortMode] || 'vote_average.desc',
                 include_adult: false,
@@ -717,7 +693,6 @@ app.get('/movies/library', async (req, res) => {
                 'with_runtime.gte': 60,
                 'vote_count.gte': voteCountFloor
             };
-            // Only apply rating filter if not lowest rated
             if (sortMode !== 'rating_asc') {
                 params['vote_average.gte'] = 4.5;
             }
@@ -779,7 +754,6 @@ app.get('/movies/library', async (req, res) => {
     }
 
 
-    // Start building the query - join with click tracking
     let sql = `SELECT m.*, COALESCE(c.click_count, 0) as clicks FROM movies m LEFT JOIN movie_clicks c ON m.ID = c.movie_id WHERE 1=1`;
     let params = [];
 
@@ -810,7 +784,6 @@ app.get('/movies/library', async (req, res) => {
     // 5. Filter out movies with missing or zero revenue/rating/votes/status for relevant sorts
     if (["success_desc","success_asc"].includes(sortMode)) {
         sql += ` AND m.revenue IS NOT NULL AND m.revenue != '' AND m.revenue != 'N/A' AND CAST(m.revenue AS FLOAT) > 0`;
-        // Sort by box office return (revenue)
     }
     if (["rating_desc","rating_income_desc","rating_asc"].includes(sortMode)) {
         sql += ` AND m.Rating IS NOT NULL AND m.Rating != '' AND m.Rating != 'N/A' AND CAST(m.Rating AS FLOAT) > 0`;
@@ -827,10 +800,10 @@ app.get('/movies/library', async (req, res) => {
                 sql += ` AND m.Status IS NOT NULL AND m.Status != '' AND m.Status != 'N/A' AND m.Status = 'Released'`;
             }
         });
-    } catch (e) { /* ignore if column missing */ }
+    } catch (e) { /* just ignoree */ }
 
     // 5. Apply Sorting
-    let orderBy = `CAST(m.Rating AS FLOAT) DESC`; // Default weighted by votes
+    let orderBy = `CAST(m.Rating AS FLOAT) DESC`; 
 
     if (sortMode === 'date_desc') {
         orderBy = `CASE WHEN m.release_date IS NULL OR m.release_date = 'N/A' THEN 1 ELSE 0 END, CAST(SUBSTR(m.release_date, -4) AS INTEGER) DESC`;
@@ -842,7 +815,7 @@ app.get('/movies/library', async (req, res) => {
         orderBy = `CASE WHEN m.revenue IS NULL OR m.revenue = 'N/A' THEN 1 ELSE 0 END, ((CAST(m.revenue AS FLOAT) - CAST(m.budget AS FLOAT)) / NULLIF(CAST(m.budget AS FLOAT), 0)) DESC`;
     } 
     else if (sortMode === 'success_asc') {
-        // Sort by lowest total revenue, only include movies with valid revenue and revenue < $10M
+        
         orderBy = `CASE WHEN m.revenue IS NULL OR m.revenue = 'N/A' OR m.revenue = '' OR CAST(m.revenue AS FLOAT) = 0 OR CAST(m.revenue AS FLOAT) > 10000000 THEN 1 ELSE 0 END, CAST(m.revenue AS FLOAT) ASC`;
     }
     else if (sortMode === 'rating_income_desc') {
@@ -851,17 +824,14 @@ app.get('/movies/library', async (req, res) => {
     else if (sortMode === 'popularity_desc') {
         orderBy = `CASE WHEN m.Votes IS NULL OR m.Votes = 'N/A' THEN 1 ELSE 0 END, CAST(m.Votes AS INTEGER) DESC`;
     }
-    // Removed 'Lowest Rated' sort logic
+
     else if (sortMode === 'clicks_desc') {
         orderBy = `CASE WHEN clicks IS NULL THEN 1 ELSE 0 END, clicks DESC`;
     }
     else {
-        // Default: push N/A ratings to bottom
-        // Show movies with most votes first, then by rating descending
         orderBy = `CASE WHEN m.Votes IS NULL OR m.Votes = '' OR m.Votes = 'N/A' THEN 1 ELSE 0 END, CAST(m.Votes AS INTEGER) DESC, CASE WHEN m.Rating IS NULL OR m.Rating = 'N/A' THEN 1 ELSE 0 END, CAST(m.Rating AS FLOAT) DESC`;
     }
 
-    // Combine everything
     sql += ` ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
     params.push(limit, offset);
 
@@ -879,7 +849,6 @@ app.get('/recommend/genre', (req, res) => {
     const { genre, exclude } = req.query;
     if (!genre) return res.json([]);
     const firstGenre = genre.split(',')[0].trim(); 
-    // Smart Score Calculation
     const sql = `
         SELECT *, 
         ((CAST(revenue AS FLOAT)/CASE WHEN CAST(budget AS FLOAT)=0 THEN 1 ELSE CAST(budget AS FLOAT) END)*0.4 + (CAST(Votes AS FLOAT)/100000)*0.6)*Rating as smart_score
@@ -1014,7 +983,6 @@ app.get('/youtube/search', async (req, res) => {
 //  8. REVIEW ROUTES (JSON File)
 // =========================================
 
-// Get all reviews (optionally filter by movieId via ?movieId=123)
 app.get('/reviews', (req, res) => {
     try {
         console.log('GET /reviews query:', req.query);
@@ -1033,11 +1001,8 @@ app.get('/reviews', (req, res) => {
 });
 
 // Post a new review
-
-// Post a new review
 app.post('/reviews', (req, res) => {
     try {
-        // 1. Read existing
         const data = fs.readFileSync(reviewsPath, 'utf8');
         const reviews = JSON.parse(data);
 
@@ -1052,10 +1017,8 @@ app.post('/reviews', (req, res) => {
             createdAt: new Date().toISOString()
         };
         
-        // 2. Add new review to the top
         reviews.unshift(newReview); 
         
-        // 3. Write back
         fs.writeFileSync(reviewsPath, JSON.stringify(reviews, null, 2));
         res.status(200).json({ message: "Review saved!" });
     } catch (err) {
@@ -1077,7 +1040,6 @@ if (!fs.existsSync(playlistsPath)) {
 //  8.5 USERS FILE SETUP & ROUTES
 // =========================================
 
-// Save or update user record
 app.post('/users', requireAuth, async (req, res) => {
     try {
         const data = fs.readFileSync(usersPath, 'utf8');
@@ -1147,12 +1109,11 @@ app.post('/users/register', strictLimiter, async (req, res) => {
                     allUIDs: [newUID],
                     userPassword: hashedPassword
                 };
-                // Save to SQLite
                 usersDb.run(`INSERT INTO users (userUID, username, userEmail, userTier, userLanguage, searchCount, viewCount, allUIDs, userPassword) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                     [userRecord.userUID, userRecord.username, userRecord.userEmail, userRecord.userTier, userRecord.userLanguage, userRecord.searchCount, userRecord.viewCount, JSON.stringify(userRecord.allUIDs), userRecord.userPassword],
                     function (err3) {
                         if (err3) return res.status(500).json({ error: 'Could not register user' });
-                        // Save to users.json as well
+                        // Save to users.json as well, might have removed this in favor of SQLite but keeping for compatibility with existing data structure
                         let users = [];
                         try {
                             if (fs.existsSync(usersPath)) {
@@ -1219,13 +1180,11 @@ app.post('/users/change-password', requireAuth, async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
         const user = users[idx];
-        // Verify current password
         const passwordMatch = await bcrypt.compare(currentPassword, user.userPassword);
         if (!passwordMatch) {
             console.log('Current password is incorrect');
             return res.status(401).json({ error: 'Current password is incorrect' });
         }
-        // Hash and update new password
         const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
         users[idx].userPassword = hashedPassword;
         console.log('Writing new password hash to file:', usersPath);
@@ -1324,7 +1283,6 @@ app.delete('/playlists/:id', (req, res) => {
         const idx = playlists.findIndex(p => String(p.id) === String(req.params.id));
         if (idx === -1) return res.status(404).json({ error: 'Playlist not found' });
         
-        // Check ownership via ownerUID
         const playlist = playlists[idx];
         const userUID = (req.body.userUID !== undefined) ? req.body.userUID : 0;
         if (parseInt(userUID) !== parseInt(playlist.ownerUID)) {
@@ -1366,7 +1324,6 @@ app.post('/playlists/:id/vote', (req, res) => {
             return res.status(409).json({ error: 'Already voted' });
         }
 
-        // If switching vote, adjust counts
         if (prevVote === 'up') playlist.score -= 1;
         if (prevVote === 'down') playlist.score += 1;
 
@@ -1501,7 +1458,6 @@ app.post('/playlists/:id/movies', (req, res) => {
             return res.status(403).json({ error: 'You do not own this playlist' });
         }
         if (!movieId) return res.status(400).json({ error: 'movieId required' });
-        // Prevent duplicates
         if (!playlists[idx].movies) playlists[idx].movies = [];
         const exists = playlists[idx].movies.find(m => String(m.movieId) === String(movieId));
         if (exists) return res.status(200).json({ message: 'Already in playlist' });
@@ -1549,8 +1505,6 @@ app.get('/forum/movies', (req, res) => {
     try {
         const data = fs.readFileSync(forumMoviesPath, 'utf8');
         const movies = JSON.parse(data) || [];
-        
-        // Count threads for each movie
         const threadsData = fs.readFileSync(forumThreadsPath, 'utf8');
         const threads = JSON.parse(threadsData) || [];
         
@@ -1577,7 +1531,6 @@ app.post('/forum/movies', (req, res) => {
             return res.status(400).json({ error: 'movieId and movieTitle required' });
         }
         
-        // Check if movie already exists
         const exists = movies.find(m => String(m.movieId) === String(movieId));
         if (exists) {
             return res.status(200).json({ message: 'Movie already in forum', movie: exists });
@@ -1613,13 +1566,11 @@ app.get('/forum/threads', (req, res) => {
             threads = threads.filter(t => String(t.movieId) === String(movieId));
         }
         
-        // Count comments for each thread
         threads = threads.map(thread => ({
             ...thread,
             commentCount: (thread.comments || []).length
         }));
         
-        // Sort by score (descending)
         threads.sort((a, b) => (b.score || 0) - (a.score || 0));
         
         res.json(threads);
@@ -1694,7 +1645,6 @@ app.post('/forum/threads/:id/vote', (req, res) => {
             return res.status(409).json({ error: 'Already voted' });
         }
         
-        // Adjust score based on vote change
         if (prevVote === 'up') thread.score -= 1;
         if (prevVote === 'down') thread.score += 1;
         

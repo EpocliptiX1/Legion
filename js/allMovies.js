@@ -4,7 +4,7 @@ let isLoading = false;
 
 // Store current filters
 let activeFilters = {
-    sort: 'rating_desc',
+    sort: 'popularity_desc',
     minYear: 1930,
     maxYear: 2026,
     genre: '',
@@ -30,6 +30,12 @@ document.addEventListener('DOMContentLoaded', function() {
             options += '<option value="success_desc">💰 Most Successful</option>';
         }
         sortBy.innerHTML = options;
+        // Set default selected to Most Popular if present
+        if (source === 'api') {
+            sortBy.value = 'popularity_desc';
+        } else {
+            // For local, you can set another default if needed
+        }
     }
 
     const source = window.getMovieSource ? window.getMovieSource() : 'local';
@@ -146,6 +152,15 @@ async function loadMovies() {
                 let y = movie.Year || movie.year || (movie.release_date ? movie.release_date.split('/').pop() : null);
                 y = parseInt(y);
                 if (isNaN(y)) return true; // If no year found, keep it to be safe
+                return y >= activeFilters.minYear && y <= activeFilters.maxYear;
+            });
+        }
+        // Add API (TMDB) year filter
+        if (source === 'api' && activeFilters.minYear && activeFilters.maxYear) {
+            movies = movies.filter(movie => {
+                // TMDB release_date is usually 'YYYY-MM-DD'
+                let y = movie.release_date ? parseInt(movie.release_date.substring(0, 4)) : null;
+                if (isNaN(y)) return true;
                 return y >= activeFilters.minYear && y <= activeFilters.maxYear;
             });
         }

@@ -53,7 +53,7 @@ async function initHero() {
         }
 
         if (!movies || movies.length === 0) {
-            const baseUrl = 'http://localhost:3000/movies/library?limit=5&sort=date_desc';
+            const baseUrl = 'http://localhost:3000/movies/library?limit=5&sort=popularity_desc';
             const source = window.getMovieSource ? window.getMovieSource() : 'local';
             const hydratedUrl = source === 'api' ? `${baseUrl}&hydrate=1` : baseUrl;
             const response = await fetch(window.withMovieSource ? window.withMovieSource(hydratedUrl) : hydratedUrl);
