@@ -207,7 +207,7 @@ const SmartRecommendations = {
         }
         
         const apiBase = window.location.hostname === 'localhost' 
-            ? 'http://localhost:3000' 
+            ? 'https://localhost:3000' 
             : '';
         
         try {
@@ -244,7 +244,7 @@ const SmartRecommendations = {
     
     async getPopularMovies(limit = 20) {
         const apiBase = window.location.hostname === 'localhost' 
-            ? 'http://localhost:3000' 
+            ? 'https://localhost:3000' 
             : '';
             
         try {
@@ -335,7 +335,7 @@ const WatchHistoryUI = {
 // Helper function to open movie by ID
 window.openMovieById = async function(movieId) {
     try {
-        const baseUrl = `http://localhost:3000/movie/${movieId}`;
+        const baseUrl = `https://localhost:3000/movie/${movieId}`;
         const response = await fetch(window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl);
         const movie = await response.json();
         

@@ -125,102 +125,63 @@ async function loadMovies() {
         return;
     }
 
-    // Build URL Params
-    const params = new URLSearchParams({
-        offset: currentPage * limit,
-        limit: limit,
-        sort: activeFilters.sort,
-        minYear: activeFilters.minYear,
-        maxYear: activeFilters.maxYear,
-        genre: activeFilters.genre,
-        actor: activeFilters.actor,
-        director: activeFilters.director
-    });
-
+    // Use TMDB multi-search for both movies and series
     try {
-        const source = window.getMovieSource ? window.getMovieSource() : 'local';
-        const baseUrl = `http://localhost:3000/movies/library?${params}`;
-        const hydratedUrl = source === 'api' ? `${baseUrl}&hydrate=1` : baseUrl;
-        const requestUrl = window.withMovieSource ? window.withMovieSource(hydratedUrl) : hydratedUrl;
-        console.log("Fetching:", requestUrl);
-        const response = await fetch(requestUrl);
-        if (!response.ok) throw new Error("Server Error"); 
-        let movies = await response.json();
-
-        if (source === 'local' && activeFilters.minYear && activeFilters.maxYear) {
-            movies = movies.filter(movie => {
-                let y = movie.Year || movie.year || (movie.release_date ? movie.release_date.split('/').pop() : null);
-                y = parseInt(y);
-                if (isNaN(y)) return true; // If no year found, keep it to be safe
-                return y >= activeFilters.minYear && y <= activeFilters.maxYear;
-            });
-        }
-        // Add API (TMDB) year filter
-        if (source === 'api' && activeFilters.minYear && activeFilters.maxYear) {
-            movies = movies.filter(movie => {
-                // TMDB release_date is usually 'YYYY-MM-DD'
-                let y = movie.release_date ? parseInt(movie.release_date.substring(0, 4)) : null;
-                if (isNaN(y)) return true;
-                return y >= activeFilters.minYear && y <= activeFilters.maxYear;
-            });
-        }
-        if (movies.length === 0) {
-            if (currentPage === 0) {
-                grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No movies match these filters.</p>';
-            }
+        const searchInput = document.getElementById('searchInput');
+        const query = searchInput && searchInput.value ? searchInput.value : '';
+        if (!query) {
+            grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Enter a search term to find movies or series.</p>';
             isLoading = false;
             return;
         }
-
-        movies.forEach(movie => {
+        const response = await fetch(`/api/tmdb/search?q=${encodeURIComponent(query)}`);
+        if (!response.ok) throw new Error("Server Error");
+        let items = await response.json();
+        // Filter by year if needed
+        items = items.filter(item => {
+            const y = parseInt(item.year);
+            if (isNaN(y)) return true;
+            return y >= activeFilters.minYear && y <= activeFilters.maxYear;
+        });
+        if (items.length === 0) {
+            grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No movies or series match these filters.</p>';
+            isLoading = false;
+            return;
+        }
+        items.forEach(item => {
             const card = document.createElement('div');
             card.className = 'grid-card';
-
+            card.setAttribute('data-type', item.type);
             const plusIconSVG = `
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="currentColor"/> 
                 </svg>`;
-
-            // Safely escape quotes in movie name
-            const safeName = movie['Movie Name'] ? movie['Movie Name'].replace(/'/g, "\\'") : "Unknown Title";
-
-            // Fix: For local DB, ensure poster and year are not overwritten after render
-            let posterUrl = movie.poster_full_url || '/img/default_poster.png';
-            let year = movie.Year || movie.year || (movie.release_date ? movie.release_date.split('/').pop() : '');
-            if (window.getMovieSource && window.getMovieSource() === 'local') {
-                // If poster is missing or looks like a logo, use fallback
-                if (!movie.poster_full_url || /logo/i.test(movie.poster_full_url)) {
-                    posterUrl = '/img/default_poster.png';
-                }
-                // If year is missing or invalid, show blank instead of N/A
-                if (!year || isNaN(parseInt(year))) {
-                    year = '';
-                }
-            }
-
+            const safeName = item.title ? item.title.replace(/'/g, "\\'") : "Unknown Title";
+            let posterUrl = item.poster || '/img/default_poster.png';
+            let year = item.year || '';
+            let typeLabel = item.type === 'tv' ? 'TV Series' : 'Movie';
             card.innerHTML = `
-                <img src="${posterUrl}" onclick="window.location.href='movieInfo.html?id=${movie.ID}'" alt="${safeName}">
+                <img src="${posterUrl}" onclick="window.location.href='movieInfo.html?id=${item.id}&type=${item.type}'" alt="${safeName}">
                 <div class="card-hover-info">
                     <div class="hover-btns">
-                        <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${movie.ID}'">▶</button>
-                        <button class="hover-add" onclick="toggleMyList('${movie.ID}', '${safeName}')">
+                        <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${item.id}&type=${item.type}'">▶</button>
+                        <button class="hover-add" onclick="toggleMyList('${item.id}', '${safeName}')">
                             ${plusIconSVG}
                         </button>
                     </div>
                     <div class="info-text">
-                        <h4>${movie['Movie Name']}</h4>
-                        <span class="match-score">${year ? year : ''} IMDb ${movie.Rating || 'N/A'}</span>
+                        <h4>${safeName}</h4>
+                        <span class="match-score">${year ? year : ''} ${typeLabel}</span>
                     </div>
                 </div>
             `;
             grid.appendChild(card);
         });
-
         currentPage++;
         isLoading = false;
-    } catch (err) { 
-        console.error("Library failed to load:", err); 
-        isLoading = false; 
+    } catch (err) {
+        console.error("Library failed to load:", err);
+        isLoading = false;
     }
 }
 

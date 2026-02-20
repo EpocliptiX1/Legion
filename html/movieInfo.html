@@ -15,6 +15,7 @@
     <script src="/js/keyboardShortcuts.js"></script>
     <script src="/js/tmdbStatus.js"></script>
     <script src="/js/allMovies.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 <body>
 
@@ -73,6 +74,30 @@
         </div>
     </nav>
 
+    <style>
+    .server-badge {
+        display: inline-block;
+        background: #222;
+        color: #fff;
+        border-radius: 16px;
+        padding: 6px 18px;
+        margin: 0 6px 8px 0;
+        font-size: 15px;
+        font-weight: 500;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+        transition: background 0.2s;
+    }
+    .server-badge:hover {
+        background: #444;
+    }
+    .anime-server-empty {
+        display: block;
+        text-align: center;
+        color: #888;
+        font-size: 16px;
+        margin: 12px 0;
+    }
+    </style>
     <header class="movie-header">
         <div class="backdrop-bg" id="bgBackdrop"></div>
         <div class="movie-content">
@@ -88,7 +113,22 @@
                     <span id="runtime">-- min</span> </div>
 
                 <div class="action-buttons">
-                    <button class="btn-watch">▶ Watch Now</button>
+
+                    <button id="watchVidsrcBtn" class="btn-watch" style="margin-right:8px; background:#222; border:1px solid #f96d00;">▶ Watch on VidSrc</button>
+                    <button id="watchNowBtn" class="btn-watch" data-type="movie" onclick="handleWatchNowClick(event)">▶ Watch Now</button>
+                    <script>
+                    function handleWatchNowClick(e) {
+                        const urlParams = new URLSearchParams(window.location.search);
+                        const type = (urlParams.get('type') || '').toLowerCase();
+                        const id = urlParams.get('id');
+                        let newUrl = window.location.pathname + '?id=' + id;
+                        if (type === 'tv' || type === 'series') {
+                            newUrl += '&type=' + type;
+                        }
+                        window.history.replaceState({}, '', window.location.search);
+                        // Let the player script pick up the correct type
+                    }
+                    </script>
 
                     <button id="infoListBtn" class="btn-watch btn-list" onclick="handleInfoAdd()">
                         + Add to List
@@ -124,11 +164,20 @@
 
                         <span class="detail-label">Success:</span>
                         <span class="detail-value" id="financialStatus">...</span>
+                        <span class="detail-label">IMDB ID:</span>
+                        <span class="detail-value" id="imdbId">...</span>
                     </div>
                 </div>
             </div>
         </div>
     </header>
+     <section class="container reviews-section">
+        <div class="row-header">
+            <h2 class="row-title">Community Reviews</h2>
+        </div>
+        <div id="reviewsGrid" class="reviews-grid">
+            </div>
+    </section>
     <div class="recommend-section">
         <h2 class="row-title">Movies Like This <span>Based on Genre</span></h2>
         <div class="movie-row" id="genreRow"></div>
@@ -150,13 +199,7 @@
         <h2 class="row-title" id="eraTitle">From the Same Era</h2>
         <div class="movie-row" id="timelineRow"></div>
     </div>
-        <section class="container reviews-section">
-        <div class="row-header">
-            <h2 class="row-title">Community Reviews</h2>
-        </div>
-        <div id="reviewsGrid" class="reviews-grid">
-            </div>
-    </section>
+       
 
     <div id="reviewModal" class="settings-modal-overlay">
         <div class="settings-content">
@@ -445,6 +488,7 @@
             </div>
         </div>
     <script src="/js/movieLoading.js"></script>
+    <script src="/js/moviePlayer.js"></script>
     <script src="/js/customPlaylist.js"></script>
         <script src="/js/apiStatusPanel.js"></script>
     

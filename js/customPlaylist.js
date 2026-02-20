@@ -1,5 +1,5 @@
 // Custom Playlists UI & API client
-const API_BASE = 'http://localhost:3000';
+const API_BASE = 'https://localhost:3000';
 
 let activePlaylistId = null;
 let activePlaylistOwnerUID = null;

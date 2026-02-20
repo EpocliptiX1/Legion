@@ -3,10 +3,10 @@
     "username": "admin",
     "userUID": 1,
     "userEmail": "LegionCinemaAdmin@gmail.com",
-    "userTier": "Free",
+    "userTier": "Gold",
     "userLanguage": "en",
-    "searchCount": 5,
-    "viewCount": 0,
+    "searchCount": 0,
+    "viewCount": 3,
     "allUIDs": [
       1
     ],

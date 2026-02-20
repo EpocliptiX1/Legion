@@ -6,7 +6,7 @@
 const PREFS_KEY = 'userPreferences';
 const isLocalApi = ['localhost', '127.0.0.1'].includes(window.location.hostname);
 const API_BASE_URL = isLocalApi
-    ? 'http://localhost:3000'
+    ? 'https://localhost:3000'
     : window.location.origin;
 const MOVIE_DATA_LOAD_DELAY = 1000; 
 

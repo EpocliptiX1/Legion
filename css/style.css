@@ -1,3 +1,50 @@
+/* --- VidSrc Modal --- */
+#vidsrcModal.modal {
+    display: none;
+    position: fixed;
+    z-index: 10000;
+    left: 0;
+    top: 0;
+    width: 100vw;
+    height: 100vh;
+    overflow: auto;
+    background: rgba(0,0,0,0.85);
+}
+#vidsrcModal.modal.show {
+    display: block;
+}
+#vidsrcModal .modal-content {
+    background: #181818;
+    margin: 5vh auto;
+    padding: 0;
+    border-radius: 10px;
+    width: 90vw;
+    max-width: 900px;
+    box-shadow: 0 0 30px #000a;
+    position: relative;
+}
+#vidsrcModal .close-modal {
+    position: absolute;
+    top: 10px;
+    right: 20px;
+    font-size: 2rem;
+    color: #f96d00;
+    cursor: pointer;
+    z-index: 2;
+}
+#vidsrcModal .video-container {
+    width: 100%;
+    height: 60vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+#vidsrcModal iframe {
+    width: 100%;
+    height: 60vh;
+    border: none;
+    border-radius: 0 0 10px 10px;
+}
 /* API Status Indicator */
 .api-status-circle {
     width: 14px;
@@ -2716,6 +2763,7 @@ body {
     position: relative;
     width: 100%;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     overflow: hidden;

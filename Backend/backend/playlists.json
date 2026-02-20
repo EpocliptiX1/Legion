@@ -69,13 +69,24 @@
     },
     "comments": [
       {
+        "id": "1770903987863",
+        "userUID": 1,
+        "username": "admin",
+        "text": "kk",
+        "createdAt": "2026-02-12T13:46:27.863Z",
+        "upvotes": 0,
+        "voters": {}
+      },
+      {
         "id": "1770140398547",
         "userUID": 2,
         "username": "gbhaBanb",
         "text": "er",
         "createdAt": "2026-02-03T17:39:58.547Z",
-        "upvotes": 0,
-        "voters": {}
+        "upvotes": 1,
+        "voters": {
+          "1": true
+        }
       },
       {
         "id": "1769930076197",

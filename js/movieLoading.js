@@ -43,155 +43,350 @@ window.proceedToForum = function() {
 // 3. PAGE INITIALIZATION
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('[MovieInfo] DOMContentLoaded');
-    const urlParams = new URLSearchParams(window.location.search);
-    const movieId = urlParams.get('id');
-    console.log('[MovieInfo] movieId', movieId);
-    if (!movieId) return;
-
-    const forumModal = document.getElementById('forumRedirectModal');
-    if (forumModal) {
-        forumModal.addEventListener('click', (event) => {
-            if (event.target === forumModal) {
-                window.closeForumRedirectModal();
+    // --- VidSrc Button Logic ---
+    const vidSrcBtn = document.getElementById('watchVidsrcBtn');
+    if (vidSrcBtn) {
+        vidSrcBtn.addEventListener('click', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const tmdbId = urlParams.get('id');
+            if (!tmdbId) return alert('No TMDB id found!');
+            let modal = document.getElementById('vidsrcModal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'vidsrcModal';
+                modal.className = 'modal';
+                modal.innerHTML = `
+                    <div class="modal-content">
+                        <span class="close-modal" id="closeVidsrcModal">&times;</span>
+                        <div class="video-container">
+                            <iframe id="vidsrcPlayer" src="" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen style="width:100%;height:60vh;"></iframe>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
             }
+            // Set iframe src
+            const iframe = document.getElementById('vidsrcPlayer');
+            iframe.src = `https://vidsrc.me/embed/${tmdbId}`;
+            modal.classList.add('show');
+            document.body.classList.add('blur-active');
+            // Close logic
+            document.getElementById('closeVidsrcModal').onclick = function() {
+                modal.classList.remove('show');
+                document.body.classList.remove('blur-active');
+                iframe.src = '';
+            };
         });
     }
+    const urlParams = new URLSearchParams(window.location.search);
+    const movieId = urlParams.get('id');
+    const typeParam = (urlParams.get('type') || '').toLowerCase();
+    const isTV = typeParam === 'tv' || typeParam === 'series' || typeParam === 'anime';
+    if (!movieId) return;
+
+    // Helper functions
+    const setText = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val; };
+    const cleanList = (str) => str ? String(str).replace(/[\[\]']/g, '').split(',').map(s => s.trim()) : [];
+    const formatMoney = (v) => v > 0 ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v) : "N/A";
 
     try {
-        const baseUrl = `http://localhost:3000/movie/${movieId}`;
-        const requestUrl = window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl;
-        console.log('[MovieInfo] Fetch movie', requestUrl);
-        const response = await fetch(requestUrl);
-        const movie = await response.json();
-        console.log('[MovieInfo] Movie loaded', movie);
+        let movie = null;
+        let movieYear = null;
+        let directors = [];
+        let stars = [];
+        if (isTV) {
+            // --- Streaming server display logic ---
+            const serverRow = document.getElementById('serverRow');
+            if (serverRow) {
+                let serverHtml = '';
+                if (typeParam === 'anime') {
+                    serverHtml = '<span style="color:#888;">No anime servers yet</span>';
+                } else {
+                    serverHtml = '<span class="server-badge">2embed</span> <span class="server-badge">superembed</span> <span class="server-badge">vidlink</span>';
+                }
+                serverHtml += ' <span class="server-badge">megacloud</span>';
+                serverRow.innerHTML = serverHtml;
+            }
+            const tmdbApiKey = 'f4705f0e34fafba5ccef5cc38a703fc5';
+            // Get IMDB ID in one fetch
+            const tmdbRes = await fetch(`https://api.themoviedb.org/3/tv/${movieId}?api_key=${tmdbApiKey}&append_to_response=external_ids,credits`);
+            movie = await tmdbRes.json();
+            if (!movie.name && !movie.title) throw new Error("Item not found");
+            const posterUrl = movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : '/img/LOGO_Short.png';
+            movieYear = movie.first_air_date ? parseInt(movie.first_air_date.split('-')[0]) : null;
+            if(document.getElementById('posterImg')) document.getElementById('posterImg').src = posterUrl;
+            if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${posterUrl}')`;
+            setText('title', movie.name || movie.original_name || 'Unknown');
+            setText('rating', movie.vote_average ? movie.vote_average.toFixed(1) : '--');
+            setText('runtime', movie.episode_run_time?.[0] ? `${movie.episode_run_time[0]} min` : 'N/A');
+            setText('plot', movie.overview || 'No description available.');
+            setText('genre', movie.genres?.map(g => g.name).join(', ') || 'N/A');
+            setText('votes', movie.vote_count || '0');
+            setText('year', movieYear || '----');
+            setText('imdbId', movie.external_ids?.imdb_id || 'N/A');
+            directors = [movie.created_by?.[0]?.name || 'N/A'];
+            // Show main cast (up to 5 names) for actors
+            stars = movie.credits?.cast?.slice(0, 5)?.map(c => c.name) || [];
+            setText('directors', directors[0]);
+            setText('actors', stars.length ? stars.join(', ') : 'N/A');
+            // Set hidden fields for reviews
+            const revMovie = document.getElementById('revMovie');
+            if (revMovie) { revMovie.value = movie.name; revMovie.readOnly = true; }
+            const revMovieId = document.getElementById('revMovieId');
+            if (revMovieId) revMovieId.value = movieId;
+            setupTrailerButton(movie.name, movieYear);
 
-        const cleanList = (str) => str ? String(str).replace(/[\[\]']/g, '').split(',').map(s => s.trim()) : [];
-        const formatMoney = (v) => v > 0 ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v) : "N/A";
+            // --- TV Carousels ---
+            // 1. GenreRow (Similar Genre)
+            const genreRow = document.getElementById('genreRow');
+            if (genreRow && movie.genres?.length) {
+                genreRow.innerHTML = '<p style="color:#888;">Loading...</p>';
+                const genreNames = movie.genres.map(g => g.name).join('|');
+                const discoverUrl = `https://api.themoviedb.org/3/discover/tv?api_key=${tmdbApiKey}&with_genres=${movie.genres.map(g=>g.id).join(',')}&page=1`;
+                fetch(discoverUrl)
+                    .then(r => r.json())
+                    .then(d => {
+                        genreRow.innerHTML = '';
+                        (d.results || []).forEach(item => {
+                            if (item.id === movie.id) return;
+                            const displayName = item.name || item.title || 'Unknown';
+                            const year = (item.first_air_date || '').split('-')[0] || 'N/A';
+                            const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                            const card = document.createElement('div');
+                            card.className = 'mini-card';
+                            card.innerHTML = `
+                                <img src="${poster}" alt="${displayName}">
+                                <div class="mini-info">
+                                    <h4>${displayName}</h4>
+                                    <p>⭐ ${item.vote_average || '--'} (${item.vote_count || 0}) <span style='font-size:11px;color:#aaa;'>${year}</span></p>
+                                    <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">Similar Genre</p>
+                                </div>
+                            `;
+                            card.onclick = () => {
+                                window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
+                            };
+                            genreRow.appendChild(card);
+                        });
+                        buildPlaylist(movie.name);
+                    });
+            }
 
-        if(document.getElementById('posterImg')) document.getElementById('posterImg').src = movie.poster_full_url || '/img/LOGO_Short.png';
-        if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${movie.poster_full_url}')`;
-        
-        document.getElementById('title').innerText = movie['Movie Name'] || movie.title || "Unknown";
-        document.getElementById('rating').innerText = movie.Rating || movie.imdb_rating || "--";
-        document.getElementById('runtime').innerText = movie.Runtime || "N/A";
-        document.getElementById('plot').innerText = movie.Plot || movie.Overview || "No description available.";
-        document.getElementById('genre').innerText = movie.Genre || "N/A";
-        document.getElementById('votes').innerText = movie.Votes || "0";
+            // 2. DirectorRow (More from Director)
+            const directorRow = document.getElementById('directorRow');
+            const directorTitle = document.getElementById('directorTitle');
+            if (directorRow && directors[0] && movie.credits?.crew?.length) {
+                directorRow.innerHTML = '<p style="color:#888;">Loading...</p>';
+                if (directorTitle) directorTitle.innerText = `More from ${directors[0]}`;
+                const directorObj = movie.credits.crew.find(c => c.job === 'Director' || c.job === 'Series Director');
+                if (directorObj) {
+                    const discoverUrl = `https://api.themoviedb.org/3/discover/tv?api_key=${tmdbApiKey}&with_crew=${directorObj.id}&sort_by=vote_average.desc&vote_count.gte=100&page=1`;
+                    fetch(discoverUrl)
+                        .then(r => r.json())
+                        .then(d => {
+                            directorRow.innerHTML = '';
+                            (d.results || []).forEach(item => {
+                                if (item.id === movie.id) return;
+                                const displayName = item.name || item.title || 'Unknown';
+                                const year = (item.first_air_date || '').split('-')[0] || 'N/A';
+                                const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                                const card = document.createElement('div');
+                                card.className = 'mini-card';
+                                card.innerHTML = `
+                                    <img src="${poster}" alt="${displayName}">
+                                    <div class="mini-info">
+                                        <h4>${displayName}</h4>
+                                        <p>⭐ ${item.vote_average || '--'} (${item.vote_count || 0}) <span style='font-size:11px;color:#aaa;'>${year}</span></p>
+                                        <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">Director: ${directors[0]}</p>
+                                    </div>
+                                `;
+                                card.onclick = () => {
+                                    window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
+                                };
+                                directorRow.appendChild(card);
+                            });
+                        });
+                } else {
+                    directorRow.innerHTML = '<p class="no-data">No director found.</p>';
+                }
+            }
 
-        const movieYear = parseInt(String(movie.release_date || movie.Released_Year || "").match(/\d{4}/)?.[0]) || null;
-        document.getElementById('year').innerText = movieYear || "----";
+            // 3. ActorRow (More from Cast)
+            const actorRow = document.getElementById('actorRow');
+            const actorSelect = document.getElementById('actorSelect');
+            const actorTitle = document.getElementById('actorTitle');
+            if (actorRow && movie.credits?.cast?.length) {
+                actorRow.innerHTML = '<p style="color:#888;">Loading...</p>';
+                const mainCast = movie.credits.cast.slice(0, 5);
+                if (actorSelect) {
+                    actorSelect.innerHTML = mainCast.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+                    actorSelect.onchange = (e) => {
+                        const actorId = e.target.value;
+                        if (actorTitle) actorTitle.innerText = `More from ${mainCast.find(c => c.id == actorId)?.name || 'Actor'}`;
+                        const discoverUrl = `https://api.themoviedb.org/3/discover/tv?api_key=${tmdbApiKey}&with_cast=${actorId}&sort_by=vote_average.desc&vote_count.gte=100&page=1`;
+                        fetch(discoverUrl)
+                            .then(r => r.json())
+                            .then(d => {
+                                actorRow.innerHTML = '';
+                                (d.results || []).forEach(item => {
+                                    if (item.id === movie.id) return;
+                                    const displayName = item.name || item.title || 'Unknown';
+                                    const year = (item.first_air_date || '').split('-')[0] || 'N/A';
+                                    const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                                    const card = document.createElement('div');
+                                    card.className = 'mini-card';
+                                    card.innerHTML = `
+                                        <img src="${poster}" alt="${displayName}">
+                                        <div class="mini-info">
+                                            <h4>${displayName}</h4>
+                                            <p>⭐ ${item.vote_average || '--'} (${item.vote_count || 0}) <span style='font-size:11px;color:#aaa;'>${year}</span></p>
+                                            <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">Starring ${mainCast.find(c => c.id == actorId)?.name || 'Actor'}</p>
+                                        </div>
+                                    `;
+                                    card.onclick = () => {
+                                        window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
+                                    };
+                                    actorRow.appendChild(card);
+                                });
+                            });
+                    };
+                    // Initial load
+                    actorSelect.dispatchEvent(new Event('change'));
+                }
+            }
 
-        const prefsKey = 'userPreferences';
-        const prefs = JSON.parse(localStorage.getItem(prefsKey) || '{}');
-        const genreClicks = prefs.genreClicks || {};
-        const clickedMovies = Array.isArray(prefs.clickedMovies) ? prefs.clickedMovies : [];
+            // 4. TimelineRow (Same Era)
+            const timelineRow = document.getElementById('timelineRow');
+            const eraTitle = document.getElementById('eraTitle');
+            if (timelineRow && movieYear) {
+                timelineRow.innerHTML = '<p style="color:#888;">Loading...</p>';
+                if (eraTitle) eraTitle.innerHTML = `Series from ${movieYear - 5} - ${movieYear + 5}`;
+                const discoverUrl = `https://api.themoviedb.org/3/discover/tv?api_key=${tmdbApiKey}&first_air_date.gte=${movieYear - 5}-01-01&first_air_date.lte=${movieYear + 5}-12-31&sort_by=vote_average.desc&vote_count.gte=100&page=1`;
+                fetch(discoverUrl)
+                    .then(r => r.json())
+                    .then(d => {
+                        timelineRow.innerHTML = '';
+                        (d.results || []).forEach(item => {
+                            if (item.id === movie.id) return;
+                            const displayName = item.name || item.title || 'Unknown';
+                            const year = (item.first_air_date || '').split('-')[0] || 'N/A';
+                            const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                            const card = document.createElement('div');
+                            card.className = 'mini-card';
+                            card.innerHTML = `
+                                <img src="${poster}" alt="${displayName}">
+                                <div class="mini-info">
+                                    <h4>${displayName}</h4>
+                                    <p>⭐ ${item.vote_average || '--'} (${item.vote_count || 0}) <span style='font-size:11px;color:#aaa;'>${year}</span></p>
+                                    <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">Same Era</p>
+                                </div>
+                            `;
+                            card.onclick = () => {
+                                window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
+                            };
+                            timelineRow.appendChild(card);
+                        });
+                    });
+            }
 
-        if (movie.Genre) {
-            movie.Genre.split(',').map(g => g.trim()).forEach(g => {
-                if (!g) return;
-                genreClicks[g] = (genreClicks[g] || 0) + 1;
-            });
-        }
-
-        if (movieId && !clickedMovies.includes(String(movieId))) {
-            clickedMovies.unshift(String(movieId));
-            if (clickedMovies.length > 20) clickedMovies.length = 20;
-        }
-
-        prefs.genreClicks = genreClicks;
-        prefs.clickedMovies = clickedMovies;
-        localStorage.setItem(prefsKey, JSON.stringify(prefs));
-
-        const recentKey = 'recentMovieClicks';
-        const recent = JSON.parse(localStorage.getItem(recentKey) || '[]');
-        if (movieId && !recent.includes(String(movieId))) {
-            recent.unshift(String(movieId));
-            if (recent.length > 20) recent.length = 20;
-            localStorage.setItem(recentKey, JSON.stringify(recent));
-        }
-
-        // DIRECTORS & STARS
-        const directors = cleanList(movie.Directors);
-        const stars = cleanList(movie.Stars);
-        const techContainer = document.getElementById('techSpecs');
-        if (techContainer) {
-            const year = parseInt(movieYear);
-            const rating = parseFloat(movie.Rating);
-            
-            const isModern = year > 2015;
-            const is90sOr2000s = year >= 1990 && year <= 2015;
-            const isGoldenAge = year < 1990;
-
-            // 1. Resolution Tag
-            let resTag = isModern ? '4K ULTRA HD' : (is90sOr2000s ? 'FULL HD 1080P' : 'RESTORED HD');
-            
-            // 2. Audio Tag (IMAX didnt rlly exist in the 90s/2000s, Dolby Digital was more common)
-            let audioTag = isModern ? 'DOLBY ATMOS' : (is90sOr2000s ? 'DTS-HD MASTER' : 'MONO / STEREO');
-
-            // 3. Aspect Ratio (Animation vs Live Action)
-            let aspectRatio = "2.39:1"; // Standard Widescreen
-            if (movie.Genre && movie.Genre.includes("Animation") && year < 2000) aspectRatio = "1.66:1";
-            if (isGoldenAge) aspectRatio = "1.37:1"; // Academy Ratio
-
-            // 4. Special "Cinematography" Tags
-            let specialTag = "";
-            if (rating > 8.5 && isModern) specialTag = '<span class="tech-badge gold">IMAX ENHANCED</span>';
-            else if (rating > 8.5 && !isModern) specialTag = '<span class="tech-badge gold">CRITERION COLLECTION</span>'; // Film nerd favorite!
-
-            techContainer.innerHTML = `
-                <span class="tech-badge">${resTag}</span>
-                <span class="tech-badge">${audioTag}</span>
-                <span class="tech-badge">ASPECT ${aspectRatio}</span>
-                ${specialTag}
-            `;
-        }
-        document.getElementById('directors').innerText = directors[0] || "N/A";
-        document.getElementById('actors').innerText = stars.join(', ');
-
-        // FINANCIALS
-        const b = parseFloat(movie.budget) || 0;
-        const r = parseFloat(movie.revenue) || 0;
-        document.getElementById('budget').innerText = formatMoney(b);
-        document.getElementById('revenue').innerText = formatMoney(r);
-
-        const statusEl = document.getElementById('financialStatus');
-        if (statusEl) {
-            if (b > 0 && r > 0) {
-                const perc = (((r - b) / b) * 100).toFixed(0);
-                statusEl.innerHTML = r > b ? `<span style="color:#46d369;">+${perc}% (Hit)</span>` : `<span style="color:#ff4444;">${perc}% (Flop)</span>`;
+            // TV Recommendations (main carousel)
+            initTVRecommendations(movieId);
+        } else {
+            // MOVIE LOGIC (do not change anything for movies)
+            // ...existing code...
+            const baseUrl = `https://localhost:3000/movie/${movieId}`;
+            const requestUrl = window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl;
+            const response = await fetch(requestUrl);
+            movie = await response.json();
+            // ...existing code for movies untouched...
+            if(document.getElementById('posterImg')) document.getElementById('posterImg').src = movie.poster_full_url || '/img/LOGO_Short.png';
+            if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${movie.poster_full_url}')`;
+            document.getElementById('title').innerText = movie['Movie Name'] || movie.title || "Unknown";
+            document.getElementById('rating').innerText = movie.Rating || movie.imdb_rating || "--";
+            document.getElementById('runtime').innerText = movie.Runtime || "N/A";
+            document.getElementById('plot').innerText = movie.Plot || movie.Overview || "No description available.";
+            document.getElementById('genre').innerText = movie.Genre || "N/A";
+            document.getElementById('votes').innerText = movie.Votes || "0";
+            const movieYear = parseInt(String(movie.release_date || movie.Released_Year || "").match(/\d{4}/)?.[0]) || null;
+            document.getElementById('year').innerText = movieYear || "----";
+            const directors = cleanList(movie.Directors);
+            const stars = cleanList(movie.Stars);
+            document.getElementById('directors').innerText = directors[0] || "N/A";
+            document.getElementById('actors').innerText = stars.join(', ');
+            // IMDB ID display
+            var imdbIdEl_movie = document.getElementById('imdbId');
+            if (imdbIdEl_movie) imdbIdEl_movie.textContent = movie.imdb_id || 'N/A';
+            const budget = parseFloat(movie.budget) || 0;
+            const revenue = parseFloat(movie.revenue) || 0;
+            document.getElementById('budget').innerText = formatMoney(budget);
+            document.getElementById('revenue').innerText = formatMoney(revenue);
+            var statusEl_movie = document.getElementById('financialStatus');
+            if (statusEl_movie) {
+                if (budget > 0 && revenue > 0) {
+                    const perc = (((revenue - budget) / budget) * 100).toFixed(0);
+                    statusEl_movie.innerHTML = revenue > budget ? `<span style=\"color:#46d369;\">+${perc}% (Hit)</span>` : `<span style=\"color:#ff4444;\">${perc}% (Flop)</span>`;
+                } else {
+                    statusEl_movie.innerText = 'Insufficient Data';
+                }
+            }
+            // PREFILL REVIEW FIELDS (link reviews to this movie)
+            var revMovieEl_movie = document.getElementById('revMovie');
+            if (revMovieEl_movie) {
+                revMovieEl_movie.value = movie['Movie Name'] || movie.title || '';
+                revMovieEl_movie.readOnly = true;
+            }
+            var revMovieIdEl_movie = document.getElementById('revMovieId');
+            if (revMovieIdEl_movie) revMovieIdEl_movie.value = movieId;
+            setupTrailerButton(movie['Movie Name'] || movie.title, movieYear);
+            // Recommendations, etc.
+            const source = window.getMovieSource ? window.getMovieSource() : 'local';
+            if (source === 'local') {
+                initRecommendations(movie, movieYear, directors[0], stars);
             } else {
-                statusEl.innerText = "Insufficient Data";
+                initRecommendations(movie, movieYear, directors[0], stars);
+            }
+
+            // Only run the following for movies, not for series
+            // ...existing code for prefs, genreClicks, etc...
+            const prefsKey = 'userPreferences';
+            const prefs = JSON.parse(localStorage.getItem(prefsKey) || '{}');
+            const genreClicks = prefs.genreClicks || {};
+            const clickedMovies = Array.isArray(prefs.clickedMovies) ? prefs.clickedMovies : [];
+
+            if (movie.Genre) {
+                movie.Genre.split(',').map(g => g.trim()).forEach(g => {
+                    if (!g) return;
+                    genreClicks[g] = (genreClicks[g] || 0) + 1;
+                });
+            }
+
+            if (movieId && !clickedMovies.includes(String(movieId))) {
+                clickedMovies.unshift(String(movieId));
+                if (clickedMovies.length > 20) clickedMovies.length = 20;
+            }
+
+            prefs.genreClicks = genreClicks;
+            prefs.clickedMovies = clickedMovies;
+            localStorage.setItem(prefsKey, JSON.stringify(prefs));
+
+            const recentKey = 'recentMovieClicks';
+            const recent = JSON.parse(localStorage.getItem(recentKey) || '[]');
+            if (movieId && !recent.includes(String(movieId))) {
+                recent.unshift(String(movieId));
+                if (recent.length > 20) recent.length = 20;
+                localStorage.setItem(recentKey, JSON.stringify(recent));
             }
         }
 
-        // PREFILL REVIEW FIELDS (link reviews to this movie)
-        const revMovieEl = document.getElementById('revMovie');
-        if (revMovieEl) {
-            revMovieEl.value = movie['Movie Name'] || movie.title || "";
-            revMovieEl.readOnly = true;
-        }
-        const revMovieIdEl = document.getElementById('revMovieId');
-        if (revMovieIdEl) revMovieIdEl.value = movieId;
 
-        setupTrailerButton(movie['Movie Name'] || movie.title, movieYear);
-
-        const source = window.getMovieSource ? window.getMovieSource() : 'local';
-        console.log('[MovieInfo] source', source);
-        if (source === 'local') {
-            initRecommendations(movie, movieYear, directors[0], stars);
-        } else {
-            initRecommendations(movie, movieYear, directors[0], stars);
-        }
-
-        // Forum CTA visibility (only if forum data ewxists for this movie)
+        // Forum CTA visibility (only if forum data exists for this movie/series)
         try {
             const forumCta = document.getElementById('forumCtaBar');
             if (forumCta) {
                 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-                const baseUrl = isLocal ? 'http://localhost:3000' : window.location.origin;
+                const baseUrl = isLocal ? 'https://localhost:3000' : window.location.origin;
                 const response = await fetch(`${baseUrl}/forum/movies`);
                 const forumMovies = await response.json();
-                const movieTitle = (movie['Movie Name'] || movie.title || '').trim();
+                const movieTitle = (movie['Movie Name'] || movie.title || movie.name || '').trim();
                 const normalize = (value) => String(value || '')
                     .toLowerCase()
                     .replace(/[^a-z0-9\s]/g, ' ')
@@ -216,30 +411,93 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 // 4. RECOMMENDATIONS LOGIC
+// --- TV Recommendations ---
+async function initTVRecommendations(tvId) {
+    const tmdbApiKey = 'f4705f0e34fafba5ccef5cc38a703fc5';
+    const recommendationsGrid = document.getElementById('recommendationsGrid');
+    if (!recommendationsGrid) return;
+    recommendationsGrid.innerHTML = '<p style="color:#888;">Loading recommendations...</p>';
+    try {
+        const recUrl = `https://api.themoviedb.org/3/tv/${tvId}/recommendations?api_key=${tmdbApiKey}`;
+        const recRes = await fetch(recUrl);
+        const recData = await recRes.json();
+        if (recData.results && recData.results.length > 0) {
+            recommendationsGrid.innerHTML = '';
+            recData.results.forEach(item => {
+                const displayName = item.title || item.name || "Unknown";
+                const displayDate = item.release_date || item.first_air_date || "";
+                const year = displayDate ? displayDate.split('-')[0] : "N/A";
+                const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                const card = document.createElement('div');
+                card.className = 'carousel-card';
+                card.innerHTML = `
+                    <div class="card-img-container">
+                        <img src="${poster}" alt="${displayName}">
+                    </div>
+                    <div class="card-details">
+                        <h4>${displayName}</h4>
+                        <div class="card-meta">
+                            <span>${year}</span>
+                            <span class="type-badge">Series</span>
+                        </div>
+                    </div>
+                `;
+                card.onclick = () => {
+                    window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
+                };
+                recommendationsGrid.appendChild(card);
+            });
+        } else {
+            recommendationsGrid.innerHTML = '<p class="no-data">No recommendations found.</p>';
+        }
+    } catch (err) {
+        recommendationsGrid.innerHTML = '<p class="no-data">Error loading recommendations.</p>';
+        console.error("Carousel Error:", err);
+    }
+}
 async function initRecommendations(movie, movieYear, firstDirector, starsList) {
     const source = window.getMovieSource ? window.getMovieSource() : 'local';
     const isApi = source === 'api';
-
+    // Determine type (movie or tv) from URL or movie object
+    let type = (new URLSearchParams(window.location.search)).get('type') || '';
+    if (!type) {
+        // fallback: try to guess from movie object
+        if (movie && movie.first_air_date) type = 'tv';
+        else type = 'movie';
+    }
+    type = type.toLowerCase();
     console.log('[Reco] initRecommendations', {
         source,
         isApi,
         movieId: movie.ID,
         movieYear,
         firstDirector,
-        starsList
+        starsList,
+        type
     });
 
-    const mapTmdbResult = (m) => ({
-        ID: m.id,
-        poster_full_url: m.poster_path ? `${window.TMDB_IMAGE_BASE}${m.poster_path}` : '/img/LOGO_Short.png',
-        'Movie Name': m.title || m.name || 'Unknown',
-        Rating: m.vote_average || 'N/A',
-        Votes: m.vote_count || 0
-    });
+    // Map TMDB result for both movie and tv
+    const mapTmdbResult = (m) => {
+        const title = m.title || m.name || 'Unknown';
+        const dateStr = m.release_date || m.first_air_date || '';
+        const year = dateStr.split('-')[0] || '';
+        return {
+            ID: m.id,
+            poster_full_url: m.poster_path ? `${window.TMDB_IMAGE_BASE}${m.poster_path}` : '/img/LOGO_Short.png',
+            'Movie Name': title,
+            Rating: m.vote_average || 'N/A',
+            Votes: m.vote_count || 0,
+            Year: year
+        };
+    };
 
+    // Dynamic endpoint for recommendations
     const tmdbFetch = async (path, params = {}) => {
         const url = window.tmdbBuildUrl ? window.tmdbBuildUrl(path, params) : null;
-        if (!url) return null;
+        if (!url) {
+            console.warn('[TMDB] No URL for', path, params);
+            return null;
+        }
         console.log('[TMDB] Fetch', path, params);
         const res = await fetch(url);
         console.log('[TMDB] Response', path, res.status);
@@ -247,29 +505,40 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
         return res.json();
     };
 
+    // Dynamic credits endpoint
     const getCredits = async (movieId) => {
-        return await tmdbFetch(`/movie/${movieId}/credits`, { language: 'en-US' });
+        if (type === 'tv') {
+            return await tmdbFetch(`/tv/${movieId}/credits`, { language: 'en-US' });
+        } else {
+            return await tmdbFetch(`/movie/${movieId}/credits`, { language: 'en-US' });
+        }
     };
 
+    // Render row for both movie and tv
     const renderRow = (data, containerId, label) => {
         const container = document.getElementById(containerId);
-        if (!container) return;
-        if (data.length === 0) {
+        if (!container) {
+            console.warn('[Reco] No container for', containerId);
+            return;
+        }
+        // Filter out items with missing/invalid IDs
+        const safeData = data.filter(m => m && m.ID && m.ID !== 'undefined' && m.ID !== null && m.ID !== '');
+        if (safeData.length === 0) {
             container.innerHTML = `<p style="color:#666; padding:20px;">No similar titles found.</p>`;
             return;
         }
-
-        container.innerHTML = data.map(m => `
-            <div class="mini-card" onclick="window.location.href='movieInfo.html?id=${m.ID}'">
+        container.innerHTML = safeData.map(m => {
+            const safeId = m.ID || '';
+            const year = m.Year ? `<span style='font-size:11px;color:#aaa;'>${m.Year}</span>` : '';
+            return `<div class="mini-card" onclick="window.location.href='movieInfo.html?id=${encodeURIComponent(safeId)}&type=${type}'">
                 <img src="${m.poster_full_url}" onerror="this.src='/img/LOGO_Short.png'">
                 <div class="mini-info">
                     <h4>${m['Movie Name']}</h4>
-                    <p>⭐ ${m.Rating || m.imdb_rating} (${m.Votes || 0})</p>
+                    <p>⭐ ${m.Rating || m.imdb_rating} (${m.Votes || 0}) ${year}</p>
                     <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">${label}</p>
                 </div>
-            </div>
-        `).join('');
-
+            </div>`;
+        }).join('');
         if (containerId === 'genreRow') {
             buildPlaylist(document.getElementById('title').innerText);
         }
@@ -281,13 +550,15 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
         if (tmdbMovieId) {
             apiCredits = await getCredits(tmdbMovieId);
             console.log('[TMDB] Credits', apiCredits);
-            const recData = await tmdbFetch(`/movie/${tmdbMovieId}/recommendations`, { page: 1, language: 'en-US' });
+            // Use dynamic recommendations endpoint
+            const recData = await tmdbFetch(`/${type}/${tmdbMovieId}/recommendations`, { page: 1, language: 'en-US' });
+            console.log('[TMDB] Recommendations raw', recData);
             const recs = (recData?.results || []).map(mapTmdbResult);
             console.log('[TMDB] Recommendations count', recs.length);
             renderRow(recs, 'genreRow', 'Recommended');
         }
     } else {
-        fetch(`http://localhost:3000/recommend/genre?genre=${encodeURIComponent(movie.Genre)}&exclude=${movie.ID}`)
+        fetch(`https://localhost:3000/recommend/genre?genre=${encodeURIComponent(movie.Genre)}&exclude=${movie.ID}`)
             .then(r => r.json()).then(d => renderRow(d, 'genreRow', 'Similar Genre'));
     }
 
@@ -295,10 +566,17 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
         const dirTitle = document.getElementById('directorTitle');
         if (dirTitle) dirTitle.innerText = `More from ${firstDirector}`;
         if (isApi) {
-            const directorId = apiCredits?.crew?.find(c => c.job === 'Director')?.id || null;
-            console.log('[TMDB] Director ID', directorId, 'for', firstDirector);
+            let directorId = null;
+            if (type === 'tv') {
+                directorId = apiCredits?.crew?.find(c => c.job === 'Director' || c.job === 'Series Director')?.id || null;
+            } else {
+                directorId = apiCredits?.crew?.find(c => c.job === 'Director')?.id || null;
+            }
+            console.log('[TMDB] Director ID', directorId, 'for', firstDirector, 'type', type);
             if (directorId) {
-                const data = await tmdbFetch('/discover/movie', {
+                // For TV, use /discover/tv, for movie use /discover/movie
+                const discoverPath = type === 'tv' ? '/discover/tv' : '/discover/movie';
+                const data = await tmdbFetch(discoverPath, {
                     with_crew: directorId,
                     sort_by: 'vote_average.desc',
                     'vote_count.gte': 100,
@@ -308,7 +586,7 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
                 renderRow((data?.results || []).map(mapTmdbResult), 'directorRow', `Director: ${firstDirector}`);
             }
         } else {
-            fetch(`http://localhost:3000/recommend/director?val=${encodeURIComponent(firstDirector)}&exclude=${movie.ID}`)
+            fetch(`https://localhost:3000/recommend/director?val=${encodeURIComponent(firstDirector)}&exclude=${movie.ID}`)
                 .then(r => r.json()).then(d => renderRow(d, 'directorRow', `Director: ${firstDirector}`));
         }
     }
@@ -317,15 +595,20 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
     if (actorSelect && starsList.length > 0) {
         console.log('[Reco] actorSelect found, starsList length', starsList.length);
         actorSelect.innerHTML = starsList.map(name => `<option value="${name}">${name}</option>`).join('');
-        
         const fetchActorRow = async (name) => {
             const actTitle = document.getElementById('actorTitle');
             if (actTitle) actTitle.innerText = `More from ${name}`;
             if (isApi) {
-                const actorId = apiCredits?.cast?.find(c => c.name === name)?.id || null;
-                console.log('[TMDB] Actor ID', actorId, 'for', name);
+                let actorId = null;
+                if (type === 'tv') {
+                    actorId = apiCredits?.cast?.find(c => c.name === name)?.id || null;
+                } else {
+                    actorId = apiCredits?.cast?.find(c => c.name === name)?.id || null;
+                }
+                console.log('[TMDB] Actor ID', actorId, 'for', name, 'type', type);
                 if (actorId) {
-                    const data = await tmdbFetch('/discover/movie', {
+                    const discoverPath = type === 'tv' ? '/discover/tv' : '/discover/movie';
+                    const data = await tmdbFetch(discoverPath, {
                         with_cast: actorId,
                         sort_by: 'vote_average.desc',
                         'vote_count.gte': 100,
@@ -335,29 +618,32 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
                     renderRow((data?.results || []).map(mapTmdbResult), 'actorRow', `Starring ${name}`);
                 }
             } else {
-                fetch(`http://localhost:3000/recommend/actors?val=${encodeURIComponent(name)}&exclude=${movie.ID}`)
+                fetch(`https://localhost:3000/recommend/actors?val=${encodeURIComponent(name)}&exclude=${movie.ID}`)
                     .then(r => r.json()).then(d => renderRow(d, 'actorRow', `Starring ${name}`));
             }
         };
-
         actorSelect.onchange = (e) => fetchActorRow(e.target.value);
         fetchActorRow(starsList[0]);
     }
 
     if (movieYear) {
         if (isApi) {
-            const data = await tmdbFetch('/discover/movie', {
-                'primary_release_date.gte': `${movieYear - 5}-01-01`,
-                'primary_release_date.lte': `${movieYear + 5}-12-31`,
+            // For TV, use /discover/tv, for movie use /discover/movie
+            const discoverPath = type === 'tv' ? '/discover/tv' : '/discover/movie';
+            const dateFieldGte = type === 'tv' ? 'first_air_date.gte' : 'primary_release_date.gte';
+            const dateFieldLte = type === 'tv' ? 'first_air_date.lte' : 'primary_release_date.lte';
+            const data = await tmdbFetch(discoverPath, {
+                [dateFieldGte]: `${movieYear - 5}-01-01`,
+                [dateFieldLte]: `${movieYear + 5}-12-31`,
                 sort_by: 'vote_average.desc',
                 'vote_count.gte': 100,
                 page: 1
             });
             const eraTitle = document.getElementById('eraTitle');
-            if (eraTitle) eraTitle.innerHTML = `Movies from ${movieYear - 5} - ${movieYear + 5}`;
+            if (eraTitle) eraTitle.innerHTML = `${type === 'tv' ? 'Series' : 'Movies'} from ${movieYear - 5} - ${movieYear + 5}`;
             renderRow((data?.results || []).map(mapTmdbResult), 'timelineRow', 'Same Era');
         } else {
-            fetch(`http://localhost:3000/recommend/timeline?year=${movieYear}&exclude=${encodeURIComponent(movie.ID)}`)
+            fetch(`https://localhost:3000/recommend/timeline?year=${movieYear}&exclude=${encodeURIComponent(movie.ID)}`)
                 .then(r => r.json()).then(d => {
                     const eraTitle = document.getElementById('eraTitle');
                     if(eraTitle) eraTitle.innerHTML = `Movies from ${movieYear - 5} - ${movieYear + 5}`;
@@ -380,14 +666,22 @@ async function setupTrailerButton(movieName, movieYear) {
     const limit = (tier === 'Gold') ? Infinity : (tier === 'Premium' ? 20 : 3);
 
     if (views >= limit) {
-        watchBtn.innerText = "Limit Reached (Upgrade)";
-        watchBtn.classList.add('btn-unavailable');
-        watchBtn.onclick = () => alert("You've reached your daily limit! Upgrade to Gold for unlimited access.");
-        return; 
+        watchBtn.innerText = "Search on YouTube ↗";
+        watchBtn.classList.remove('btn-unavailable');
+        watchBtn.style.backgroundColor = "#c4302b";
+        const newBtn = watchBtn.cloneNode(true);
+        watchBtn.parentNode.replaceChild(newBtn, watchBtn);
+        newBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const query = encodeURIComponent(`${movieName} ${movieYear} trailer`);
+            window.open(`https://www.youtube.com/results?search_query=${query}`, '_blank');
+        });
+        return;
     }
 
     watchBtn.innerText = "Searching...";
     watchBtn.classList.remove('btn-unavailable'); 
+    watchBtn.style.color = "#fff";
 
     try {
         const vId = await window.fetchYTId(`${movieName} ${movieYear}`);
@@ -424,6 +718,7 @@ async function setupTrailerButton(movieName, movieYear) {
         watchBtn.innerText = "▶ Watch Trailer";
         watchBtn.classList.remove('btn-unavailable');
         watchBtn.style.backgroundColor = ""; 
+        watchBtn.style.color = "#fff";
         watchBtn.onclick = () => {
             const currentViews = parseInt(localStorage.getItem('viewCount')) || 0;
             if (currentViews >= limit) {
@@ -520,7 +815,7 @@ async function loadReviews() {
     try {
         const urlParams = new URLSearchParams(window.location.search);
         const pageMovieId = urlParams.get('id');
-        const fetchUrl = pageMovieId ? `http://localhost:3000/reviews?movieId=${encodeURIComponent(pageMovieId)}` : 'http://localhost:3000/reviews';
+        const fetchUrl = pageMovieId ? `https://localhost:3000/reviews?movieId=${encodeURIComponent(pageMovieId)}` : 'https://localhost:3000/reviews';
         const res = await fetch(fetchUrl);
         let reviews = await res.json();
 
@@ -591,7 +886,7 @@ window.submitReview = async function() {
     };
 
     try {
-        const res = await fetch('http://localhost:3000/reviews', {
+        const res = await fetch('https://localhost:3000/reviews', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)

@@ -2,6 +2,24 @@
   {
     "user": "admin",
     "pfp": null,
+    "movieTitle": "The Christmas Chronicles",
+    "movieId": "3969",
+    "stars": 5,
+    "text": "Fun watch with ur fam!",
+    "createdAt": "2026-02-13T19:59:18.541Z"
+  },
+  {
+    "user": "admin",
+    "pfp": null,
+    "movieTitle": "The Wrecking Crew",
+    "movieId": "1168190",
+    "stars": 2,
+    "text": "great",
+    "createdAt": "2026-02-12T17:08:06.369Z"
+  },
+  {
+    "user": "admin",
+    "pfp": null,
     "movieTitle": "The Shawshank Redemption",
     "movieId": "278",
     "stars": 5,

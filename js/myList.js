@@ -58,7 +58,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (savedIds.length === 0) return; 
 
     try {
-        const baseUrl = 'http://localhost:3000/movies/get-list';
+        const baseUrl = 'https://localhost:3000/movies/get-list';
         const requestUrl = window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl;
         const response = await fetch(requestUrl, {
             method: 'POST',
@@ -100,7 +100,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!playlistsGrid || userUID === 0) return;
 
     try {
-        const res = await fetch('http://localhost:3000/playlists');
+        const res = await fetch('https://localhost:3000/playlists');
         const playlists = await res.json();
         const owned = (playlists || []).filter(p => parseInt(p.ownerUID, 10) === userUID);
 
@@ -137,7 +137,7 @@ async function loadRecentPosts(userUID) {
     if (!container || userUID === 0) return;
 
     const API_BASE = window.location.origin.includes('localhost') 
-        ? 'http://localhost:3000' 
+        ? 'https://localhost:3000' 
         : window.location.origin;
 
     try {

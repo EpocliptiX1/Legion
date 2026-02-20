@@ -12,6 +12,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@consumet/extensions": "^1.8.8",
     "axios": "^1.13.4",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",

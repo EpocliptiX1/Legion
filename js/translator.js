@@ -7,8 +7,8 @@ class LiveTranslator {
     constructor() {
         this.useBackend = true;
         const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        this.backendEndpoint = isLocal ? 'http://localhost:3000/translate' : '/translate';
-        this.cacheEndpoint = isLocal ? 'http://localhost:3000/translation-cache' : '/translation-cache';
+        this.backendEndpoint = isLocal ? 'https://localhost:3000/translate' : '/translate';
+        this.cacheEndpoint = isLocal ? 'https://localhost:3000/translation-cache' : '/translation-cache';
         this.sourceLanguage = 'EN';
         this.targetLanguage = localStorage.getItem('targetLanguage') || 'EN';
         this.cache = {};

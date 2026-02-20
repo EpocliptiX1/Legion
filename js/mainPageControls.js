@@ -1,4 +1,3 @@
-// this has been unspeakable torture
 // --- SETTINGS/ACCOUNT/API STATUS INIT FOR MOVIEINFO ---
 document.addEventListener('DOMContentLoaded', () => {
     if (document.getElementById('settingsModal')) {
@@ -53,7 +52,7 @@ async function initHero() {
         }
 
         if (!movies || movies.length === 0) {
-            const baseUrl = 'http://localhost:3000/movies/library?limit=5&sort=popularity_desc';
+            const baseUrl = 'https://localhost:3000/movies/library?limit=5&sort=popularity_desc';
             const source = window.getMovieSource ? window.getMovieSource() : 'local';
             const hydratedUrl = source === 'api' ? `${baseUrl}&hydrate=1` : baseUrl;
             const response = await fetch(window.withMovieSource ? window.withMovieSource(hydratedUrl) : hydratedUrl);
@@ -356,7 +355,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (query.length > 0) {
                 resultsMenu.classList.add('active');
                 try {
-                    const baseUrl = `http://localhost:3000/search?q=${encodeURIComponent(query)}`;
+                    const baseUrl = `https://localhost:3000/search?q=${encodeURIComponent(query)}`;
                     const response = await fetch(window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl);
                     const movies = await response.json();
                     renderSearchResults(movies, resultsMenu);
@@ -394,7 +393,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if(display) display.innerText = query;
             
             try {
-                const baseUrl = `http://localhost:3000/search?q=${encodeURIComponent(query)}`;
+                const baseUrl = `https://localhost:3000/search?q=${encodeURIComponent(query)}`;
                 const response = await fetch(window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl);
                 const movies = await response.json();
                 
@@ -676,7 +675,7 @@ async function fetchRow(containerId, sortType, options = {}) {
         if (actor) params.set('actor', actor);
         if (director) params.set('director', director);
 
-        const baseUrl = `http://localhost:3000/movies/library?${params.toString()}`;
+        const baseUrl = `https://localhost:3000/movies/library?${params.toString()}`;
         const source = window.getMovieSource ? window.getMovieSource() : 'local';
         const hydratedUrl = source === 'api' ? `${baseUrl}&hydrate=1` : baseUrl;
         const res = await fetch(window.withMovieSource ? window.withMovieSource(hydratedUrl) : hydratedUrl);
@@ -748,7 +747,7 @@ async function fetchMoviesByIds(ids) {
     const uniqueIds = Array.from(new Set(ids.map(id => String(id))));
 
     const requests = uniqueIds.map(id => {
-        const baseUrl = `http://localhost:3000/movie/${id}`;
+        const baseUrl = `https://localhost:3000/movie/${id}`;
         const requestUrl = window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl;
         return fetch(requestUrl).then(res => res.ok ? res.json() : null);
     });
@@ -909,7 +908,7 @@ async function setupMarquee() {
     const marquee = document.getElementById('promoMarquee');
     if (!marquee) return;
 
-    const baseUrl = `http://localhost:3000/movies/library?limit=20`;
+    const baseUrl = `https://localhost:3000/movies/library?limit=20`;
     const source = window.getMovieSource ? window.getMovieSource() : 'local';
     const hydratedUrl = source === 'api' ? `${baseUrl}&hydrate=1` : baseUrl;
     const res = await fetch(window.withMovieSource ? window.withMovieSource(hydratedUrl) : hydratedUrl);
@@ -998,7 +997,7 @@ function handleSignup(e) {
     
     setTimeout(async () => {
         try {
-            const res = await fetch('http://localhost:3000/users/register', {
+            const res = await fetch('https://localhost:3000/users/register', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1137,7 +1136,7 @@ window.persistUserStats = function() {
     const token = localStorage.getItem('authToken');
     if (!token) return;
 
-    fetch('http://localhost:3000/users', {
+    fetch('https://localhost:3000/users', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -1202,7 +1201,7 @@ window.handleSignIn = async function(e) {
     }
 
     try {
-        const res = await fetch('http://localhost:3000/users/auth', {
+        const res = await fetch('https://localhost:3000/users/auth', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userEmail, userPassword })

@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
         <script src="/js/enhancedSearch.js"></script>
+        <script src="/js/searchQueryResultLoader.js"></script>
+        <script src="/js/searchQueryResult.js"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Search Results - Legion Space Cinema</title>
@@ -81,6 +83,14 @@
 
     <div class="container results-container ">
         <h1 class="results-header">Results for "<span id="queryDisplay">...</span>"</h1>
+        <div style="margin-bottom:18px;display:flex;align-items:center;gap:12px;">
+            <label for="typeFilter" style="font-size:1rem;color:#bbb;">Show:</label>
+            <select id="typeFilter" style="padding:6px 12px;border-radius:6px;background:#222;color:#fff;font-size:1rem;">
+                <option value="all" selected>All</option>
+                <option value="movie">Movies</option>
+                <option value="series">Series & Anime</option>
+            </select>
+        </div>
         <div class="movie-grid" id="fullResultsGrid">
             <div class="loading-text">Searching database...</div>
         </div>

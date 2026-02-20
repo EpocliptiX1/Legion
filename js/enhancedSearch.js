@@ -91,13 +91,12 @@ const EnhancedSearch = {
     
     async performSearch(query) {
         try {
-            const baseUrl = `http://localhost:3000/search?q=${encodeURIComponent(query)}`;
-            const response = await fetch(window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl);
-            const movies = await response.json();
-            
-            this.displayResults(movies, query);
-            
-            // Add to search history
+            const baseUrl = `/api/tmdb/search?q=${encodeURIComponent(query)}`;
+            console.log('[EnhancedSearch] Fetching:', baseUrl);
+            const response = await fetch(baseUrl);
+            const items = await response.json();
+            console.log('[EnhancedSearch] Results:', items);
+            this.displayResults(items, query);
             this.addToHistory(query);
         } catch (error) {
             console.error('Search error:', error);
@@ -130,34 +129,12 @@ const EnhancedSearch = {
             return;
         }
         
-        resultsMenu.innerHTML = movies.map(movie => `
-            <div class="search-item" onclick="EnhancedSearch.selectMovie('${movie.ID}')">
-                ${(() => {
-                    // For local DB, use poster_full_url and fallback to hiding image if missing
-                    if (window.getMovieSource && window.getMovieSource() === 'local') {
-                        if (movie.poster_full_url) {
-                            return `<img src=\"${movie.poster_full_url}\" alt=\"${movie['Movie Name']}\" onerror=\\"this.style.display='none'\\">`;
-                        } else {
-                            return '';
-                        }
-                    } else {
-                        // For API/external, fallback to LOGO_Short
-                        let poster = movie.Poster || '/img/LOGO_Short.png';
-                        return `<img src=\"${poster}\" alt=\"${movie['Movie Name']}\" onerror=\\"this.src='/img/LOGO_Short.png'\\">`;
-                    }
-                })()}
+        resultsMenu.innerHTML = movies.map(item => `
+            <div class="search-item" data-type="${item.type}" onclick="EnhancedSearch.selectMovie('${item.id}', '${item.type}')">
+                <img src="${item.poster || '/img/LOGO_Short.png'}" alt="${item.title}" onerror="this.src='/img/LOGO_Short.png'">
                 <div class="search-info">
-                    <h5>${this.highlightQuery(movie['Movie Name'], query)}</h5>
-                    ${(() => {
-                        if (window.getMovieSource && window.getMovieSource() === 'local') {
-                            // Hide year and N/A for local DB
-                            let genre = movie.Genre || '';
-                            let rating = movie.Rating ? `• ⭐ ${movie.Rating}` : '';
-                            return `<p>${genre} ${rating}</p>`;
-                        } else {
-                            return `<p>${movie.Year || 'N/A'} • ${movie.Genre || 'Unknown'} • ⭐ ${movie.Rating || 'N/A'}</p>`;
-                        }
-                    })()}
+                    <h5>${this.highlightQuery(item.title, query)}</h5>
+                    <p>${item.year || 'N/A'} • ${item.type === 'tv' ? 'Series' : 'Movie'}</p>
                 </div>
             </div>
         `).join('');

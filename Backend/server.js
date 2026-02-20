@@ -1,3 +1,58 @@
+// --- TMDB Multi-Search API: Movies & TV Series ---
+// (MUST be after const app = express)
+
+const express = require('express');
+const https = require('https');
+const sqlite3 = require('sqlite3').verbose();
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+const csvParse = require('csv-parse/sync');
+const localCsvPath = path.join(__dirname, '..', 'datasets', 'AITUCAP_Final_Database.csv');
+const bcrypt = require('bcrypt');
+const rateLimit = require('express-rate-limit');
+const axios = require('axios');
+const jwt = require('jsonwebtoken');
+
+const app = express();
+app.get('/api/tmdb/search', async (req, res) => {
+    try {
+        const query = req.query.q;
+        if (!query) return res.status(400).json({ error: 'Missing search query' });
+        const tmdbKey = TMDB_API_KEY;
+        // Multi-search endpoint returns both movies and TV
+        const url = `${TMDB_BASE_URL}/search/multi?api_key=${tmdbKey}&query=${encodeURIComponent(query)}`;
+        const tmdbRes = await axios.get(url);
+        // Filter to only movies and TV (ignore people, etc)
+        const results = (tmdbRes.data.results || []).filter(item => item.media_type === 'movie' || item.media_type === 'tv');
+        // Normalize results for frontend
+        const normalized = results.map(item => ({
+            id: item.id,
+            title: item.title || item.name,
+            poster: item.poster_path ? `${TMDB_IMAGE_BASE}${item.poster_path}` : '',
+            year: (item.release_date || item.first_air_date || '').slice(0, 4),
+            type: item.media_type,
+            overview: item.overview || ''
+        }));
+        res.json(normalized);
+    } catch (err) {
+        console.error('[TMDB Multi-Search] Error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch from TMDB' });
+    }
+});
+// --- MEGACLOUD STREAM API (via Consumet/FlixHQ) ---
+const { MOVIES } = require('@consumet/extensions');
+const flixhq = new MOVIES.FlixHQ();
+
+// ...existing code...
+
+// Place this AFTER 'const app = express();'
+// Example route: /api/megacloud/:title
+// (Insert after app is initialized)
+
+// --- USER VIEWCOUNT & TIER ENDPOINTS ---
+// Get current user's viewCount and userTier
+
 function loadLocalMoviesCsv() {
     console.log("\n------------------------------------------------");
     console.log("📂 DEBUG: SEARCHING FOR DATABASE...");
@@ -49,19 +104,42 @@ function loadLocalMoviesCsv() {
         return [];
     }
 }
-const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
-const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
-const csvParse = require('csv-parse/sync');
-const localCsvPath = path.join(__dirname, '..', 'datasets', 'AITUCAP_Final_Database.csv');
-const bcrypt = require('bcrypt');
-const rateLimit = require('express-rate-limit');
-const axios = require('axios');
-const jwt = require('jsonwebtoken');
+// --- Megacloud API route (must be after app is initialized) ---
+app.get('/api/megacloud/:title', async (req, res) => {
+    try {
+        console.log(`[Megacloud API] Searching for: ${req.params.title}`);
+        const searchRes = await flixhq.search(req.params.title);
 
-const app = express();
+        if (!searchRes.results || searchRes.results.length === 0) {
+            return res.status(404).json({ error: "Movie not found on FlixHQ" });
+        }
+
+        // Specifically look for a Movie type that matches the title closely
+        let movieTarget = searchRes.results.find(item => 
+            item.type === 'Movie' && item.title.toLowerCase().includes(req.params.title.toLowerCase())
+        );
+        // Fallback to the first item if exact match isn't found
+        if (!movieTarget) movieTarget = searchRes.results[0];
+
+        console.log(`[Megacloud API] Found target: ${movieTarget.title} (${movieTarget.id})`);
+
+        const mediaInfo = await flixhq.fetchMediaInfo(movieTarget.id);
+
+        // Handle FlixHQ returning the episode ID directly on the mediaInfo object sometimes
+        const episodeId = (mediaInfo.episodes && mediaInfo.episodes.length > 0) 
+            ? mediaInfo.episodes[0].id 
+            : movieTarget.id; // Fallback to media ID if episodes array is missing
+
+        console.log(`[Megacloud API] Fetching sources for Episode ID: ${episodeId}`);
+
+        const watchLinks = await flixhq.fetchEpisodeSources(episodeId, mediaInfo.id);
+
+        res.json(watchLinks);
+    } catch (error) {
+        console.error("[Megacloud API] Extraction failed:", error.message);
+        res.status(500).json({ error: "Cloudflare blocked the request or extraction failed." });
+    }
+});
 const YT_API_KEY = 'AIzaSyCGg0QqAURfPOs5OoCemTRBMrOxqtbw0tg';
 const YOUTUBE_CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 const BCRYPT_SALT_ROUNDS = 10;
@@ -101,7 +179,49 @@ function isAdminUser(user) {
     if (uid && ADMIN_UIDS.includes(uid)) return true;
     return false;
 }
+app.get('/users/me/viewdata', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+    usersDb.get('SELECT userTier, viewCount FROM users WHERE userUID = ?', [uidNum], (err, row) => {
+        if (err || !row) return res.status(404).json({ error: 'User not found' });
+        res.json({ userTier: row.userTier || 'Free', viewCount: row.viewCount || 0 });
+    });
+});
 
+// Increment viewCount for current user
+app.post('/users/me/increment-view', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+    usersDb.run('UPDATE users SET viewCount = COALESCE(viewCount,0) + 1 WHERE userUID = ?', [uidNum], function(err) {
+        if (err) return res.status(500).json({ error: 'Could not increment viewCount why wish id knew' });
+        usersDb.get('SELECT viewCount FROM users WHERE userUID = ?', [uidNum], (err2, row) => {
+            if (err2 || !row) return res.status(404).json({ error: 'User not found' });
+            res.json({ viewCount: row.viewCount });
+        });
+    });
+});
+// --- USER VIEWCOUNT & TIER ENDPOINTS ---
+app.get('/users/me/viewdata', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+    usersDb.get('SELECT userTier, viewCount FROM users WHERE userUID = ?', [uidNum], (err, row) => {
+        if (err || !row) return res.status(404).json({ error: 'User not found' });
+        res.json({ userTier: row.userTier || 'Free', viewCount: row.viewCount || 0 });
+    });
+});
+
+// Increment viewCount for current user
+app.post('/users/me/increment-view', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+    usersDb.run('UPDATE users SET viewCount = COALESCE(viewCount,0) + 1 WHERE userUID = ?', [uidNum], function(err) {
+        if (err) return res.status(500).json({ error: 'Could not increment viewCount' });
+        usersDb.get('SELECT viewCount FROM users WHERE userUID = ?', [uidNum], (err2, row) => {
+            if (err2 || !row) return res.status(404).json({ error: 'User not found' });
+            res.json({ viewCount: row.viewCount });
+        });
+    });
+});
 const TMDB_GENRES = {
     action: 28,
     adventure: 12,
@@ -210,7 +330,8 @@ function mapTmdbMovie(item) {
         Runtime: item.runtime ? `${item.runtime} min` : undefined,
         Status: item.status || '',
         budget: item.budget || 0,
-        revenue: item.revenue || 0
+        revenue: item.revenue || 0,
+        imdb_id: item.imdb_id || (item.external_ids && item.external_ids.imdb_id) || null
     };
 }
 
@@ -221,7 +342,8 @@ function mapTmdbMovieWithCredits(item, credits) {
     return {
         ...mapped,
         Directors: directors.join(', ') || 'N/A',
-        Stars: cast.join(', ') || 'N/A'
+        Stars: cast.join(', ') || 'N/A',
+        imdb_id: mapped.imdb_id // ensure imdb_id is always present
     };
 }
 
@@ -566,10 +688,16 @@ app.get('/movie/:id', (req, res) => {
     const source = String(req.query.source || 'local').toLowerCase();
     if (source === 'api') {
         Promise.all([
-            tmdbGet(`/movie/${id}`, { language: 'en-US' }),
+            tmdbGet(`/movie/${id}`, { language: 'en-US', append_to_response: 'external_ids' }),
             tmdbGet(`/movie/${id}/credits`, { language: 'en-US' })
         ])
-            .then(([data, credits]) => res.json(mapTmdbMovieWithCredits(data, credits)))
+            .then(([data, credits]) => {
+                // Attach imdb_id from external_ids if present
+                if (data.external_ids && data.external_ids.imdb_id) {
+                    data.imdb_id = data.external_ids.imdb_id;
+                }
+                res.json(mapTmdbMovieWithCredits(data, credits));
+            })
             .catch(err => {
                 const detail = err.response?.data || err.message;
                 res.status(500).json({ error: 'TMDB movie failed', detail });
@@ -582,9 +710,47 @@ app.get('/movie/:id', (req, res) => {
         LEFT JOIN movie_clicks c ON m.ID = c.movie_id 
         WHERE m.ID = ?
     `;
-    db.get(sql, [id], (err, row) => {
+    db.get(sql, [id], async (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!row) return res.status(404).json({ error: "Movie not found" });
+        // Try to extract imdb_id from any IMDB link field
+        let imdb_id = null;
+        const imdbFields = [row.imdb_id, row.imdbID, row.imdb, row.imdb_url, row["IMDB Link"]];
+        for (const field of imdbFields) {
+            if (typeof field === 'string' && field.includes('tt')) {
+                const match = field.match(/tt\d{7,}/);
+                if (match) {
+                    imdb_id = match[0];
+                    break;
+                }
+            }
+        }
+        // If not found, try to extract from any field that looks like a URL
+        if (!imdb_id) {
+            for (const key in row) {
+                if (typeof row[key] === 'string' && row[key].includes('imdb.com/title/tt')) {
+                    const match = row[key].match(/tt\d{7,}/);
+                    if (match) {
+                        imdb_id = match[0];
+                        break;
+                    }
+                }
+            }
+        }
+        // If still not found, try TMDB API using tmdb_id if available (using /external_ids endpoint)
+        if (!imdb_id && (row.tmdb_id || row.TMDB_ID || row.tmdbID)) {
+            const tmdbId = row.tmdb_id || row.TMDB_ID || row.tmdbID;
+            try {
+                const tmdbResp = await tmdbGet(`/movie/${tmdbId}/external_ids`);
+                if (tmdbResp && tmdbResp.imdb_id) {
+                    imdb_id = tmdbResp.imdb_id;
+                }
+            } catch (e) {
+                console.warn('TMDB /external_ids lookup failed for IMDB id:', e.message);
+            }
+        }
+        // Attach imdb_id to the returned object
+        row.imdb_id = imdb_id;
         res.json(row);
     });
 });
@@ -2039,10 +2205,24 @@ app.get('/admin/stats', requireAdmin, async (req, res) => {
 });
 
 // =========================================
-//  10. START SERVER
+//  10. START SERVER (HTTPS with fallback to HTTP)
 // =========================================
 const PORT = 3000;
-app.listen(PORT, () => {
-    console.log(`\n🚀 Server is running at http://localhost:${PORT}`);
-    console.log(`📂 Reviews file location: ${reviewsPath}`);
-});
+const certPath = path.join(__dirname, '..', 'cert', 'localhost.pfx');
+let server;
+if (fs.existsSync(certPath)) {
+    const options = {
+        pfx: fs.readFileSync(certPath),
+        passphrase: 'Damir_19032009' // Add passphrase if your .pfx file requires it
+    };
+    server = https.createServer(options, app).listen(PORT, () => {
+        console.log(`\n🚀 HTTPS server is running at https://localhost:${PORT}`);
+        console.log(`📂 Reviews file location: ${reviewsPath}`);
+    });
+} else {
+    server = app.listen(PORT, () => {
+        console.log(`\n🚀 Server is running at http://localhost:${PORT}`);
+        console.log(`📂 Reviews file location: ${reviewsPath}`);
+        console.warn('⚠️  HTTPS cert not found, running in HTTP mode!');
+    });
+}
