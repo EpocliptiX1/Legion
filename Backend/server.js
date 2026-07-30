@@ -6390,7 +6390,8 @@ app.get('/api/anime-neko-log', async (req, res) => {
 
                 // Search for Part 2, Part 3, Part 4, etc. until we find the right one
                 for (let partNum = 2; partNum <= 5; partNum++) {
-                    const searchQuery = `${rawTitle} Part ${partNum}`;
+                    // Anikoto stores multi-part seasons as "{title}: Final Season, Part {number}"
+                    const searchQuery = `${rawTitle} Final Season Part ${partNum}`;
                     logNekoDebug(`[Neko] Searching: "${searchQuery}"`);
 
                     const partSearchRes = await axios.get(
