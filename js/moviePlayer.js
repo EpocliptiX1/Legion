@@ -667,7 +667,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 .episode-search-input:focus { border-color:#ff8000; }
                 .episode-list { list-style:none; padding:0; margin:0; flex:1; min-height:0; overflow-y: auto; }
                 .episode-list-item { display:flex; align-items:center; gap:10px; padding:8px 12px; font-size:0.94rem; color:#fff; border-bottom:1px solid #1f1f1f; background:#080808; transition:background 0.2s; cursor:pointer; position:relative; z-index:26; pointer-events:auto; }
-                .episode-list-item.active { background:#ff8000; color:#fff; font-weight:700; }
+                .episode-list-item.active { background:#ff8000; color:#fff; font-weight:700; box-shadow:0 0 12px #ff800088; }
+                .episode-list-item.watched.active { background:#ff8000; color:#fff; font-weight:700; box-shadow:0 0 16px #ff800099, inset 0 0 8px #00000055; border-left:4px solid #00ff00; }
                 .episode-list-item:hover { background:#ff8000aa; color:#fff; }
                 .episode-num { width:22px; text-align:center; font-weight:700; color:#ff8000; font-size:0.82rem; }
                 .episode-thumb { width:74px; height:42px; border-radius:6px; object-fit:cover; background:#141414; flex:0 0 auto; border:1px solid #242424; }
@@ -676,7 +677,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 .episode-title { margin:0; font-size:0.83rem; line-height:1.2; white-space:normal; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
                 .episode-meta { color:#9a9a9a; font-size:0.74rem; }
                 .episode-play { margin-left:auto; color:#fff; font-size:1.2rem; }
-                .episode-list-item.watched { background:#2a2a2a !important; color:#ff8000 !important; font-weight:700; }
+                .episode-list-item.watched { background:#1a1a1a !important; color:#666 !important; font-weight:400; border-left:3px solid #444; }
+                .episode-list-item.watched .episode-num { color:#666 !important; }
                 .episode-list-item.hidden-by-search { display:none; }
                 /* Custom Scrollbar for Episode List */
                 .episode-list::-webkit-scrollbar { width: 8px; }
@@ -839,6 +841,11 @@ document.addEventListener('DOMContentLoaded', function() {
             seasonSelectEl.dataset.playSeason = String(epSeason);
             episodeSelectEl.value = epNum;
             item.classList.add('watched');
+
+            document.querySelectorAll('.episode-list-item.active').forEach(el => el.classList.remove('active'));
+            item.classList.add('active');
+            window.__continueFromSeason = parseInt(epSeason);
+            window.__continueFromEpisode = parseInt(epNum);
 
             const continueFromText = `S${epSeason}E${epNum}`;
             let finishedText = null;
@@ -2099,6 +2106,8 @@ document.addEventListener('DOMContentLoaded', function() {
                                             if (contMatch) {
                                                 seasonSelect.dataset.playSeason = contMatch[1];
                                                 episodeSelect.value = contMatch[2];
+                                                window.__continueFromSeason = parseInt(contMatch[1]);
+                                                window.__continueFromEpisode = parseInt(contMatch[2]);
                                             }
                                         }
                                     }
@@ -2124,9 +2133,10 @@ document.addEventListener('DOMContentLoaded', function() {
                                     const seasonNum = ep._season_number !== undefined ? ep._season_number : 1;
                                     const epIdStr = `S${seasonNum}E${ep.episode_number}`;
                                     const isWatched = watchedStates.includes(epIdStr) ? ' watched' : '';
+                                    const isContinueFrom = window.__continueFromSeason === seasonNum && window.__continueFromEpisode === ep.episode_number ? ' active' : '';
 
                                     listHTML += `
-                                        <li class="episode-list-item${isWatched}" data-season="${seasonNum}" data-ep="${ep.episode_number}" onclick="window.__handleEpisodeItemClick && window.__handleEpisodeItemClick(this)">
+                                        <li class="episode-list-item${isWatched}${isContinueFrom}" data-season="${seasonNum}" data-ep="${ep.episode_number}" onclick="window.__handleEpisodeItemClick && window.__handleEpisodeItemClick(this)">
                                             <span class="episode-num">${ep.episode_number}</span>
                                             <img class="episode-thumb" src="${thumb}" alt="Episode ${ep.episode_number}" loading="lazy" decoding="async" onerror="this.src='/img/LOGO_Short.png'">
                                             <div class="episode-text">
