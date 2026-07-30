@@ -27,6 +27,27 @@ const app = express();
 app.set('trust proxy', 1);
 const KAA_DEBUG_LOG_PATH = path.join(__dirname, 'kaa-debug-log.txt');
 function logKaaDebug(...parts) {
+    // KAA logging disabled - using kaa-debug-log.txt for NekoStream debugging instead
+    // const stamp = new Date().toISOString();
+    // const text = parts.map(part => {
+    //     if (typeof part === 'string') return part;
+    //     try {
+    //         return JSON.stringify(part, null, 2);
+    //     } catch (e) {
+    //         return String(part);
+    //     }
+    // }).join(' ');
+    // const line = `[${stamp}] ${text}`;
+    // console.log(line);
+    // try {
+    //     fs.appendFileSync(KAA_DEBUG_LOG_PATH, line + '\n');
+    // } catch (err) {
+    //     console.warn('[KAA DEBUG] failed to append log file:', err.message);
+    // }
+}
+
+// NekoStream debug logger (uses same file as KAA for now)
+function logNekoDebug(...parts) {
     const stamp = new Date().toISOString();
     const text = parts.map(part => {
         if (typeof part === 'string') return part;
@@ -36,18 +57,19 @@ function logKaaDebug(...parts) {
             return String(part);
         }
     }).join(' ');
-    const line = `[${stamp}] ${text}`;
+    const line = `[${stamp}] [NEKO] ${text}`;
     console.log(line);
     try {
         fs.appendFileSync(KAA_DEBUG_LOG_PATH, line + '\n');
     } catch (err) {
-        console.warn('[KAA DEBUG] failed to append log file:', err.message);
+        // Silent fail
     }
 }
-logKaaDebug('[KAA DEBUG] logger ready', {
-    path: KAA_DEBUG_LOG_PATH,
-    pid: process.pid
-});
+
+// logKaaDebug('[KAA DEBUG] logger ready', {
+//     path: KAA_DEBUG_LOG_PATH,
+//     pid: process.pid
+// });
 app.get('/api/tmdb/search', async (req, res) => {
     try {
         const query = req.query.q;
@@ -118,8 +140,17 @@ app.use('/api/tmdb-proxy', async (req, res) => {
 
             if (cached && cached.length > 0 && incompleteness.length === 0) {
                 logEpisodeCache(`✓ Cache HIT ${tmdbId} S${seasonNum}: all ${cached.length} episodes complete`);
+                // Transform cached episodes: rename 'title' to 'name' to match TMDB API response format
+                const normalizedEpisodes = cached.map(ep => ({
+                    episode_number: ep.episode_number,
+                    name: ep.title,  // Database stores as 'title', but TMDB API uses 'name'
+                    air_date: ep.air_date,
+                    overview: ep.overview,
+                    still_path: ep.still_path,
+                    runtime: ep.runtime
+                }));
                 return res.json({
-                    episodes: cached,
+                    episodes: normalizedEpisodes,
                     _cached: true
                 });
             } else if (cached && cached.length > 0) {
@@ -6281,9 +6312,9 @@ app.get('/api/anime-neko-log', async (req, res) => {
     const rawTitle = req.query.title || '';
     const audio = req.query.type || req.query.audio || 'sub';
     const episode = req.query.ep || req.query.episode || '1';
-    const season = req.query.season || req.query.s || '1';
+    const season = parseInt(req.query.season || req.query.s || '1', 10);
 
-    logKaaDebug('[NekoLog] Triggered server=srvNeko1', { malId, tmdbId, rawTitle, audio, episode, season });
+    logNekoDebug('[NekoLog] START', { malId, tmdbId, rawTitle, audio, episode, season });
 
     if (!rawTitle) {
         return res.status(400).json({ ok: false, error: 'Title is required' });
@@ -6291,9 +6322,9 @@ app.get('/api/anime-neko-log', async (req, res) => {
 
     try {
         // 0. Search Anikoto and resolve watch URL with Season filtering
-        logKaaDebug(`[Neko Pipeline] 0. Resolving exact URL slug for title: "${rawTitle}" (Season ${season})...`);
+        logNekoDebug(`[Neko] 0. Resolving watch URL for: "${rawTitle}" (Season ${season})`);
         const animeWatchUrl = await resolveExactWatchUrl(rawTitle, season);
-        logKaaDebug('[Neko Pipeline] Resolved watch URL', animeWatchUrl);
+        logNekoDebug('[Neko] Resolved watch URL', animeWatchUrl);
 
         const baseHeaders = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -6303,20 +6334,17 @@ app.get('/api/anime-neko-log', async (req, res) => {
 
         const pageRes = await axios.get(animeWatchUrl, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
         const $page = cheerio.load(pageRes.data);
-        
+
         const internalAnimeId = $page('#watch-main').attr('data-id');
         if (!internalAnimeId) {
             throw new Error('Could not dynamically extract internal data-id from the resolved watch page.');
         }
-        logKaaDebug('[Neko Pipeline] Watch page internal id', {
-            animeWatchUrl,
-            internalAnimeId
-        });
+        logNekoDebug('[Neko] Watch page internal id', { animeWatchUrl, internalAnimeId });
 
         // 1. Fetch episode list using resolved internal ID
-        logKaaDebug(`[Neko Pipeline] 1. Fetching episode list for ID: ${internalAnimeId}`);
+        logNekoDebug(`[Neko] 1. Fetching episode list for ID: ${internalAnimeId}`);
         const epListRes = await axios.get(`https://anikoto.cz/ajax/episode/list/${internalAnimeId}?vrf=`, { headers: baseHeaders });
-        
+
         const htmlData = epListRes.data.result || epListRes.data.html || epListRes.data;
         const $ep = cheerio.load(htmlData);
         const episodeCandidates = [];
@@ -6331,24 +6359,91 @@ app.get('/api/anime-neko-log', async (req, res) => {
                 text: $ep(el).text().trim()
             });
         });
-        logKaaDebug('[Neko Pipeline] Episode candidates', episodeCandidates);
-        
+        logNekoDebug(`[Neko] Found ${episodeCandidates.length} total episodes in current part`);
+        // Try to find the requested episode
         let epElement = $ep(`a[data-num="${episode}"]`).first();
         if (!epElement.length) epElement = $ep(`a[data-slug="${episode}"]`).first();
+
+        // If episode not found and number is higher than available, search for Part 2
+        const maxEpisodeNum = Math.max(...episodeCandidates.map(e => parseInt(e.num, 10) || 0));
+        const requestedEpNum = parseInt(episode, 10) || 0;
+
+        if (!epElement.length && requestedEpNum > maxEpisodeNum && requestedEpNum > 16) {
+            logNekoDebug(`[Neko] Episode ${episode} not in current part (max: ${maxEpisodeNum}), searching for Part 2...`);
+
+            try {
+                // Search for "Part 2" in the anime title
+                const searchQuery = `${rawTitle} Part 2`;
+                logNekoDebug(`[Neko] Searching: "${searchQuery}"`);
+
+                const part2SearchRes = await axios.get(
+                    `https://anikoto.cz/ajax/anime/search?keyword=${encodeURIComponent(searchQuery)}`,
+                    { headers: baseHeaders }
+                );
+
+                const part2HtmlData = part2SearchRes.data?.result?.html || part2SearchRes.data?.html || '';
+                const $part2Search = cheerio.load(part2HtmlData);
+                const part2Results = [];
+
+                $part2Search('a[href*="/watch/"]').each((i, el) => {
+                    const href = $part2Search(el).attr('href') || '';
+                    const text = $part2Search(el).text().trim();
+                    if (!href.includes('/ep-') && (text.includes('Part 2') || text.includes('part-2'))) {
+                        part2Results.push({ url: href.startsWith('http') ? href : `https://anikoto.cz${href}`, text });
+                    }
+                });
+
+                logNekoDebug(`[Neko] Found ${part2Results.length} Part 2 results`);
+
+                // Try each Part 2 result
+                for (const part2Result of part2Results) {
+                    try {
+                        logNekoDebug(`[Neko] Trying: ${part2Result.text}`);
+                        const page2Res = await axios.get(part2Result.url, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
+                        const $page2 = cheerio.load(page2Res.data);
+                        const id2 = $page2('#watch-main').attr('data-id');
+
+                        if (id2) {
+                            logNekoDebug(`[Neko] Part 2 found! Internal ID: ${id2}`);
+                            const ep2ListRes = await axios.get(`https://anikoto.cz/ajax/episode/list/${id2}?vrf=`, { headers: baseHeaders });
+                            const html2Data = ep2ListRes.data.result || ep2ListRes.data.html || ep2ListRes.data;
+                            const $ep2 = cheerio.load(html2Data);
+
+                            // Part 2 episodes are renumbered locally (1-12) not globally (17-28)
+                            // So episode 17 globally = episode 1 locally in Part 2
+                            const localEpisodeNum = requestedEpNum - maxEpisodeNum;
+                            logNekoDebug(`[Neko] Looking for global ep${requestedEpNum} = local ep${localEpisodeNum} in Part 2`);
+
+                            epElement = $ep2(`a[data-num="${localEpisodeNum}"]`).first();
+                            if (!epElement.length) epElement = $ep2(`a[data-slug="${localEpisodeNum}"]`).first();
+
+                            if (epElement.length) {
+                                logNekoDebug(`[Neko] ✓ Found episode ${requestedEpNum} (local ep${localEpisodeNum}) in Part 2!`);
+                                break;
+                            }
+                        }
+                    } catch (err) {
+                        logNekoDebug(`[Neko] Part 2 attempt failed: ${err.message}`);
+                    }
+                }
+            } catch (err) {
+                logNekoDebug(`[Neko] Part 2 search error: ${err.message}`);
+            }
+        }
+
+        // Last resort: use first episode
         if (!epElement.length) epElement = $ep('a[data-ids]').first();
 
         const serverToken = epElement.attr('data-ids');
         const mal = epElement.attr('data-mal');
         const epSlug = epElement.attr('data-slug');
         const timestamp = epElement.attr('data-timestamp');
-        logKaaDebug('[Neko Pipeline] Selected episode element', {
+        logNekoDebug('[Neko] Selected episode', {
             requestedEpisode: episode,
+            requestedSeason: season,
             selected: {
                 num: epElement.attr('data-num'),
                 slug: epSlug,
-                ids: serverToken,
-                mal,
-                timestamp,
                 text: epElement.text().trim()
             }
         });
@@ -6375,12 +6470,12 @@ app.get('/api/anime-neko-log', async (req, res) => {
                     if (dubDl && !dubLinks.includes(dubDl)) dubLinks.push(dubDl);
                 });
             } catch (err) {
-                logKaaDebug('[Neko Pipeline] Nekostream download fallback skipped/erred.', err?.message || '');
+                logNekoDebug('[Neko] Nekostream download fallback skipped/erred.', err?.message || '');
             }
         }
 
         // 2. Fetch server list HTML
-        logKaaDebug('[Neko Pipeline] 2. Fetching server list...');
+        logNekoDebug('[Neko] 2. Fetching server list...');
         const serverListRes = await axios.get(`https://anikoto.cz/ajax/server/list?servers=${encodeURIComponent(serverToken)}`, { headers: baseHeaders });
         const $srv = cheerio.load(serverListRes.data.result || serverListRes.data);
         const serverCandidates = [];
@@ -6393,7 +6488,7 @@ app.get('/api/anime-neko-log', async (req, res) => {
                 text: $srv(el).text().trim()
             });
         });
-        logKaaDebug('[Neko Pipeline] Server candidates', serverCandidates);
+        logNekoDebug('[Neko] Server candidates', serverCandidates);
         
         // Target VidPlay ('8e4') or fall back to the first available server for VidTube stream
         let dataLinkId = $srv(`div[data-type="${audio}"] li[data-sv-id="8e4"]`).attr('data-link-id') ||
@@ -6401,27 +6496,27 @@ app.get('/api/anime-neko-log', async (req, res) => {
                          $srv('li[data-link-id]').first().attr('data-link-id');
 
         if (!dataLinkId) throw new Error(`Could not find data-link-id for audio type: ${audio}`);
-        logKaaDebug('[Neko Pipeline] Selected server link id', { audio, dataLinkId });
+        logNekoDebug('[Neko] Selected server link id', { audio, dataLinkId });
 
         // 3. Trade slug for VidTube Embed URL
-        logKaaDebug('[Neko Pipeline] 3. Resolving VidTube Embed URL...');
+        logNekoDebug('[Neko] 3. Resolving VidTube Embed URL...');
         const serverRes = await axios.get(`https://anikoto.cz/ajax/server?get=${encodeURIComponent(dataLinkId)}`, {
             headers: { ...baseHeaders, 'X-FP': '0e5bzbvh9uqp' }
         });
 
         const embedUrl = serverRes.data?.result?.url || serverRes.data?.url;
         if (!embedUrl) throw new Error('Anikoto rejected server lookup.');
-        logKaaDebug('[Neko Pipeline] Embed URL', embedUrl);
+        logNekoDebug('[Neko] Embed URL', embedUrl);
 
         // 4. Extract VidTube media ID and fetch .m3u8 stream
-        logKaaDebug('[Neko Pipeline] 4. Extracting VidTube media ID and fetching stream...');
+        logNekoDebug('[Neko] 4. Extracting VidTube media ID and fetching stream...');
         const embedRes = await axios.get(embedUrl, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
         
         const mediaIdMatch = embedRes.data.match(/data-id=["'](\d+)["']/i) || embedRes.data.match(/caPm\s*=\s*["']?(\d+)["']/i);
         if (!mediaIdMatch) throw new Error('Could not extract media ID from VidTube HTML.');
         
         const mediaId = mediaIdMatch[1];
-        logKaaDebug('[Neko Pipeline] Extracted media id', mediaId);
+        logNekoDebug('[Neko] Extracted media id', mediaId);
         
         const sourcesRes = await axios.get(`https://vidtube.site/stream/getSourcesNew?id=${mediaId}&type=${audio}`, {
             headers: { ...baseHeaders, 'Referer': embedUrl }
@@ -6430,11 +6525,10 @@ app.get('/api/anime-neko-log', async (req, res) => {
         const streamUrl = sourcesRes.data?.sources?.file || sourcesRes.data?.file;
         if (!streamUrl) throw new Error('Could not resolve VidTube stream file.');
 
-        logKaaDebug('================ SUCCESS! ================');
-        logKaaDebug('[Neko Pipeline] Stream M3U8:', streamUrl);
-        logKaaDebug('[Neko Pipeline] Sub Mirrors:', subLinks.length);
-        logKaaDebug('[Neko Pipeline] Dub Mirrors:', dubLinks.length);
-        logKaaDebug('==========================================');
+        logNekoDebug('✓ SUCCESS! Stream resolved');
+        logNekoDebug('[Neko] Stream M3U8:', streamUrl);
+        logNekoDebug('[Neko] Sub Mirrors:', subLinks.length);
+        logNekoDebug('[Neko] Dub Mirrors:', dubLinks.length);
 
         return res.json({ 
             ok: true, 

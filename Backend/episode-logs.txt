@@ -74,3 +74,103 @@
 [2026-07-29T18:26:39.888Z] Cache WRITE DONE 64196 S2: all 13 episodes inserted ✓
 [2026-07-29T18:26:40.104Z] Cache WRITE DONE 64196 S3: all 13 episodes inserted ✓
 [2026-07-29T18:26:40.209Z] Cache WRITE DONE 64196 S4: all 13 episodes inserted ✓
+[2026-07-30T10:18:21.489Z] Cache CHECK 119495 S1: 0 rows found
+[2026-07-30T10:18:21.489Z] Cache MISS 119495 S1 (0 rows)
+[2026-07-30T10:18:21.683Z] TMDB response 119495 S1: 0/20 episodes (ep1="The Hated Classmate", air_date="2022-10-05")
+[2026-07-30T10:18:21.684Z] Cache WRITE START 119495 S1: deleting old data...
+[2026-07-30T10:18:21.686Z] Cache DELETE done for 119495 S1, inserting 20 episodes...
+[2026-07-30T10:18:21.707Z] Cache CHECK 119495 S2: 0 rows found
+[2026-07-30T10:18:21.707Z] Cache MISS 119495 S2 (0 rows)
+[2026-07-30T10:18:21.765Z] Cache WRITE DONE 119495 S1: all 20 episodes inserted ✓
+[2026-07-30T10:18:21.904Z] TMDB response 119495 S2: 0/12 episodes (ep1="The Lawless City", air_date="2023-10-04")
+[2026-07-30T10:18:21.905Z] Cache WRITE START 119495 S2: deleting old data...
+[2026-07-30T10:18:21.907Z] Cache DELETE done for 119495 S2, inserting 12 episodes...
+[2026-07-30T10:18:21.949Z] Cache WRITE DONE 119495 S2: all 12 episodes inserted ✓
+[2026-07-30T10:25:13.486Z] Cache CHECK 119495 S1: 20 rows found
+[2026-07-30T10:25:13.486Z]   └─ First ep: #1 title="The Hated Classmate" air_date="2022-10-05" still_path="/8pvDj5Z7pcZIk3KczQVhPYCsBbY.jpg"
+[2026-07-30T10:25:13.486Z]   └─ Last ep:  #20 title="Advent of the Demon" air_date="2023-02-15"
+[2026-07-30T10:25:13.487Z] ✓ Cache HIT 119495 S1: all 20 episodes complete
+[2026-07-30T10:25:13.501Z] Cache CHECK 119495 S2: 12 rows found
+[2026-07-30T10:25:13.501Z]   └─ First ep: #1 title="The Lawless City" air_date="2023-10-04" still_path="/fLDAfyZUhfa81PH1GB8Jymfu6wy.jpg"
+[2026-07-30T10:25:13.502Z]   └─ Last ep:  #12 title="HIGHEST" air_date="2023-12-20"
+[2026-07-30T10:25:13.502Z] ✓ Cache HIT 119495 S2: all 12 episodes complete
+[2026-07-30T10:31:15.271Z] Cache CHECK 1429 S1: 0 rows found
+[2026-07-30T10:31:15.271Z] Cache MISS 1429 S1 (0 rows)
+[2026-07-30T10:31:15.519Z] TMDB response 1429 S1: 0/25 episodes (ep1="To You, in 2000 Years: The Fall of Shiganshina (1)", air_date="2013-04-07")
+[2026-07-30T10:31:15.520Z] Cache WRITE START 1429 S1: deleting old data...
+[2026-07-30T10:31:15.523Z] Cache DELETE done for 1429 S1, inserting 25 episodes...
+[2026-07-30T10:31:15.556Z] Cache CHECK 1429 S2: 0 rows found
+[2026-07-30T10:31:15.556Z] Cache MISS 1429 S2 (0 rows)
+[2026-07-30T10:31:15.737Z] Cache WRITE DONE 1429 S1: all 25 episodes inserted ✓
+[2026-07-30T10:31:15.749Z] TMDB response 1429 S2: 0/12 episodes (ep1="Beast Titan", air_date="2017-04-01")
+[2026-07-30T10:31:15.749Z] Cache WRITE START 1429 S2: deleting old data...
+[2026-07-30T10:31:15.751Z] Cache DELETE done for 1429 S2, inserting 12 episodes...
+[2026-07-30T10:31:15.777Z] Cache CHECK 1429 S3: 0 rows found
+[2026-07-30T10:31:15.777Z] Cache MISS 1429 S3 (0 rows)
+[2026-07-30T10:31:15.847Z] Cache WRITE DONE 1429 S2: all 12 episodes inserted ✓
+[2026-07-30T10:31:15.982Z] TMDB response 1429 S3: 0/22 episodes (ep1="Smoke Signal", air_date="2018-07-23")
+[2026-07-30T10:31:15.982Z] Cache WRITE START 1429 S3: deleting old data...
+[2026-07-30T10:31:15.985Z] Cache DELETE done for 1429 S3, inserting 22 episodes...
+[2026-07-30T10:31:16.018Z] Cache CHECK 1429 S4: 0 rows found
+[2026-07-30T10:31:16.019Z] Cache MISS 1429 S4 (0 rows)
+[2026-07-30T10:31:16.122Z] Cache WRITE DONE 1429 S3: all 22 episodes inserted ✓
+[2026-07-30T10:31:16.393Z] TMDB response 1429 S4: 0/28 episodes (ep1="The Other Side of the Sea", air_date="2020-12-07")
+[2026-07-30T10:31:16.394Z] Cache WRITE START 1429 S4: deleting old data...
+[2026-07-30T10:31:16.398Z] Cache DELETE done for 1429 S4, inserting 28 episodes...
+[2026-07-30T10:31:16.599Z] Cache WRITE DONE 1429 S4: all 28 episodes inserted ✓
+[2026-07-30T10:37:24.974Z] Cache CHECK 1429 S1: 25 rows found
+[2026-07-30T10:37:24.974Z]   └─ First ep: #1 title="To You, in 2000 Years: The Fall of Shiganshina (1)" air_date="2013-04-07" still_path="/e363TDn4uP8jP7kHAXQfHAs6HTR.jpg"
+[2026-07-30T10:37:24.974Z]   └─ Last ep:  #25 title="Wall: Assault on Stohess (3)" air_date="2013-09-29"
+[2026-07-30T10:37:24.975Z] ✓ Cache HIT 1429 S1: all 25 episodes complete
+[2026-07-30T10:37:24.987Z] Cache CHECK 1429 S2: 12 rows found
+[2026-07-30T10:37:24.987Z]   └─ First ep: #1 title="Beast Titan" air_date="2017-04-01" still_path="/sczAgbEyvLwnMhjSRo3KhSR5FEc.jpg"
+[2026-07-30T10:37:24.988Z]   └─ Last ep:  #12 title="Scream" air_date="2017-06-17"
+[2026-07-30T10:37:24.988Z] ✓ Cache HIT 1429 S2: all 12 episodes complete
+[2026-07-30T10:37:25.002Z] Cache CHECK 1429 S3: 22 rows found
+[2026-07-30T10:37:25.002Z]   └─ First ep: #1 title="Smoke Signal" air_date="2018-07-23" still_path="/g5gdbz4MUxHYAakgFeHfAOQMIvs.jpg"
+[2026-07-30T10:37:25.003Z]   └─ Last ep:  #22 title="The Other Side of the Wall" air_date="2019-07-01"
+[2026-07-30T10:37:25.003Z] ✓ Cache HIT 1429 S3: all 22 episodes complete
+[2026-07-30T10:37:25.013Z] Cache CHECK 1429 S4: 28 rows found
+[2026-07-30T10:37:25.014Z]   └─ First ep: #1 title="The Other Side of the Sea" air_date="2020-12-07" still_path="/eqRF1ZQSzx31iLkyeJa95hMnWSr.jpg"
+[2026-07-30T10:37:25.014Z]   └─ Last ep:  #28 title="The Dawn of Humanity" air_date="2022-04-04"
+[2026-07-30T10:37:25.014Z] ✓ Cache HIT 1429 S4: all 28 episodes complete
+[2026-07-30T10:41:10.066Z] Cache CHECK 1429 S1: 0 rows found
+[2026-07-30T10:41:10.067Z] Cache MISS 1429 S1 (0 rows)
+[2026-07-30T10:41:10.159Z] TMDB response 1429 S1: 0/25 episodes (ep1="To You, in 2000 Years: The Fall of Shiganshina (1)", air_date="2013-04-07")
+[2026-07-30T10:41:10.160Z] Cache WRITE START 1429 S1: deleting old data...
+[2026-07-30T10:41:10.162Z] Cache DELETE done for 1429 S1, inserting 25 episodes...
+[2026-07-30T10:41:10.255Z] Cache CHECK 1429 S2: 0 rows found
+[2026-07-30T10:41:10.256Z] Cache MISS 1429 S2 (0 rows)
+[2026-07-30T10:41:10.335Z] TMDB response 1429 S2: 0/12 episodes (ep1="Beast Titan", air_date="2017-04-01")
+[2026-07-30T10:41:10.336Z] Cache WRITE START 1429 S2: deleting old data...
+[2026-07-30T10:41:10.339Z] Cache DELETE done for 1429 S2, inserting 12 episodes...
+[2026-07-30T10:41:10.420Z] Cache CHECK 1429 S3: 0 rows found
+[2026-07-30T10:41:10.421Z] Cache MISS 1429 S3 (0 rows)
+[2026-07-30T10:41:10.529Z] TMDB response 1429 S3: 0/22 episodes (ep1="Smoke Signal", air_date="2018-07-23")
+[2026-07-30T10:41:10.529Z] Cache WRITE START 1429 S3: deleting old data...
+[2026-07-30T10:41:10.581Z] Cache DELETE done for 1429 S3, inserting 22 episodes...
+[2026-07-30T10:41:10.636Z] Cache CHECK 1429 S4: 0 rows found
+[2026-07-30T10:41:10.636Z] Cache MISS 1429 S4 (0 rows)
+[2026-07-30T10:41:10.913Z] TMDB response 1429 S4: 0/28 episodes (ep1="The Other Side of the Sea", air_date="2020-12-07")
+[2026-07-30T10:41:10.913Z] Cache WRITE START 1429 S4: deleting old data...
+[2026-07-30T10:41:11.153Z] Cache DELETE done for 1429 S4, inserting 28 episodes...
+[2026-07-30T10:41:11.372Z] Cache WRITE DONE 1429 S2: all 12 episodes inserted ✓
+[2026-07-30T10:41:11.505Z] Cache WRITE DONE 1429 S1: all 25 episodes inserted ✓
+[2026-07-30T10:41:11.596Z] Cache WRITE DONE 1429 S3: all 22 episodes inserted ✓
+[2026-07-30T10:41:12.218Z] Cache WRITE DONE 1429 S4: all 28 episodes inserted ✓
+[2026-07-30T10:42:10.555Z] Cache CHECK 1429 S1: 25 rows found
+[2026-07-30T10:42:10.556Z]   └─ First ep: #1 title="To You, in 2000 Years: The Fall of Shiganshina (1)" air_date="2013-04-07" still_path="/e363TDn4uP8jP7kHAXQfHAs6HTR.jpg"
+[2026-07-30T10:42:10.556Z]   └─ Last ep:  #25 title="Wall: Assault on Stohess (3)" air_date="2013-09-29"
+[2026-07-30T10:42:10.556Z] ✓ Cache HIT 1429 S1: all 25 episodes complete
+[2026-07-30T10:42:10.605Z] Cache CHECK 1429 S2: 12 rows found
+[2026-07-30T10:42:10.605Z]   └─ First ep: #1 title="Beast Titan" air_date="2017-04-01" still_path="/sczAgbEyvLwnMhjSRo3KhSR5FEc.jpg"
+[2026-07-30T10:42:10.605Z]   └─ Last ep:  #12 title="Scream" air_date="2017-06-17"
+[2026-07-30T10:42:10.606Z] ✓ Cache HIT 1429 S2: all 12 episodes complete
+[2026-07-30T10:42:10.615Z] Cache CHECK 1429 S3: 22 rows found
+[2026-07-30T10:42:10.615Z]   └─ First ep: #1 title="Smoke Signal" air_date="2018-07-23" still_path="/g5gdbz4MUxHYAakgFeHfAOQMIvs.jpg"
+[2026-07-30T10:42:10.616Z]   └─ Last ep:  #22 title="The Other Side of the Wall" air_date="2019-07-01"
+[2026-07-30T10:42:10.616Z] ✓ Cache HIT 1429 S3: all 22 episodes complete
+[2026-07-30T10:42:10.627Z] Cache CHECK 1429 S4: 28 rows found
+[2026-07-30T10:42:10.627Z]   └─ First ep: #1 title="The Other Side of the Sea" air_date="2020-12-07" still_path="/eqRF1ZQSzx31iLkyeJa95hMnWSr.jpg"
+[2026-07-30T10:42:10.627Z]   └─ Last ep:  #28 title="The Dawn of Humanity" air_date="2022-04-04"
+[2026-07-30T10:42:10.628Z] ✓ Cache HIT 1429 S4: all 28 episodes complete
