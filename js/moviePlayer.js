@@ -706,8 +706,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const savedPreferredAudio = localStorage.getItem('preferredAudio');
         let currentAudioMode = savedPreferredAudio === 'dub' ? 'dub' : 'sub';
         window.currentAudioType = currentAudioMode;
-        let currentServer = requestedType === 'tv' ? 'srvMegaTV' : 'srvMega'; 
-        let imdbId = ''; 
+        let imdbId = '';
         let malId = null;
         let isSeries = false;
         let animeTitle = '';
@@ -715,6 +714,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const genreText = document.getElementById('genre')?.innerText.toLowerCase() || "";
         let isAnime = requestedType === 'anime' || genreText.includes('anime');
+
+        // Default server: anime uses KAA, TV uses MegaTV, movies use Mega
+        let currentServer = isAnime ? 'srvPahe1' : (requestedType === 'tv' ? 'srvMegaTV' : 'srvMega');
+
         const animeLeverActive = localStorage.getItem('animeMode') === 'true';
         let useAnimeSeasonUX = isAnime && animeLeverActive;
 
