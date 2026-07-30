@@ -2121,7 +2121,7 @@
                              onclick="window.location.href='/html/personalList.html'"
                              onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href='/html/personalList.html';}"
                              style="position:relative;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.15);border-radius:36px 0 0 36px;backdrop-filter:blur(2px);cursor:pointer;overflow:hidden;">
-                            <div style="transform:rotate(-90deg);color:#ffffff;font-weight:700;letter-spacing:0.18em;text-transform:uppercase;white-space:nowrap;opacity:0.95;text-align: center;">Watch more animes for<br>further recommendations!</div>
+                            <div class="watch-more-label" style="transform:rotate(-90deg);color:#ffffff;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;white-space:nowrap;opacity:0.95;text-align: center;">Watch more <br>to  explore!</div>
                             <div aria-hidden="true" style="position:absolute;right:16px;top:50%;transform:translateY(-50%);color:#ffffff;opacity:0.9;font-size:1.2rem;line-height:1;">→</div>
                         </div>`;
 

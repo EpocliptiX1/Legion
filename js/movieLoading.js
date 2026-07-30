@@ -401,8 +401,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
     const isLikelyAnime = (typeof typeParam !== 'undefined' && typeParam === 'anime') ||
-        ((tmdbItem?.genres || []).some(g => g?.id === 16 || g?.name === 'Animation' || g?.name === 'Anime') &&
-        (tmdbItem?.original_language === 'ja' || tmdbItem?.origin_country?.includes('JP')));
+        (!!(tmdbItem && (Array.isArray(tmdbItem.genres) && tmdbItem.genres.some(g => (g.name || '').toLowerCase() === 'animation')) && ((tmdbItem.original_language || '').toLowerCase() === 'ja' || (Array.isArray(tmdbItem.origin_country) && tmdbItem.origin_country.includes('JP')))));
     
     if (!isLikelyAnime) return false;
 
@@ -578,8 +577,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
 
             // Auto-detect anime and flip the nav lever if so
             const _isAnimeTitle = (typeParam === 'anime') ||
-                (movie.genres?.some(g => g.name === 'Animation' || g.name === 'Anime') &&
-                 (movie.original_language === 'ja' || movie.origin_country?.includes('JP')));
+                (!!(movie && (Array.isArray(movie.genres) && movie.genres.some(g => (g.name || '').toLowerCase() === 'animation')) && ((movie.original_language || '').toLowerCase() === 'ja' || (Array.isArray(movie.origin_country) && movie.origin_country.includes('JP')))));
             if (_isAnimeTitle && localStorage.getItem('animeMode') !== 'true') {
                 localStorage.setItem('animeMode', 'true');
                 const cb = document.getElementById('animeModeCheck');

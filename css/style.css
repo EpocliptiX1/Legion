@@ -7726,10 +7726,18 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
 }
 
 .player-block-meta{
-  justify-content: center; 
-  align-items: center; 
+  justify-content: center;
+  align-items: center;
 }
+
+.watch-more-label {
+  font-size: 20px;
+}
+
 @media (max-width: 1000px) {
+    .watch-more-label {
+        font-size: 22px;
+    }
     .downloadTextNextoBtn{
         display: none;
     }
@@ -8274,6 +8282,9 @@ body.personal-list-page .grid-card {
 }
 
 @media (max-width: 380px) {
+    .watch-more-label {
+        font-size: 18px;
+    }
     #recommendedSection .browse-grid-row {
         grid-template-columns: 1fr;
     }

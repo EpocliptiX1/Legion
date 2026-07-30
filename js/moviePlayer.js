@@ -2029,12 +2029,20 @@ document.addEventListener('DOMContentLoaded', function() {
                     const search = await fetchJsonSafe(`/api/tmdb-proxy/search/tv?query=${query}&language=en-US&page=1`);
                     const raw = Array.isArray(search?.results) ? search.results : [];
 
+                    // A sequel season is always the same Japanese production, so gate on that first.
+                    // Without it, English shows with similar-looking titles get pulled in as "Season 1"
+                    // (e.g. "Eighty-Sixed" tmdb:78803 hijacking "86 EIGHTY-SIX" tmdb:100565).
+                    const isJapanese = (r) => (r?.original_language || '').toLowerCase() === 'ja' ||
+                        (Array.isArray(r?.origin_country) && r.origin_country.includes('JP'));
+
                     const similar = raw.filter(r => {
+                        if (!isJapanese(r)) return false;
                         const n = norm(r?.name || r?.original_name || '');
                         if (!n) return false;
-                        if (n === baseNorm || n.includes(baseNorm) || baseNorm.includes(n)) return true;
-                        const overlap = baseTokens.filter(t => n.includes(t)).length;
-                        return overlap >= Math.min(2, baseTokens.length);
+                        if (n === baseNorm || n.startsWith(baseNorm) || baseNorm.startsWith(n)) return true;
+                        // Whole-token match only. Substring matching lets "six" hit "sixed".
+                        const nTokens = new Set(n.split(' '));
+                        return baseTokens.length > 0 && baseTokens.every(t => nTokens.has(t));
                     });
 
                     const ids = [Number(tmdbId), ...similar.map(r => Number(r.id))]
@@ -2085,6 +2093,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     currentServer = 'srvMegaTV'; // TV shows use MegaTV
                 }
                 // else: keep default (srvMega for movies)
+
+                // Move the highlight now. updateSource() only runs after season resolution,
+                // which can take seconds, and until then the markup still shows srvMega active.
+                document.querySelectorAll('.server-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.id === currentServer);
+                });
 
                 if (data.seasons && data.seasons.length > 0) {
                     isSeries = true;
@@ -2350,40 +2364,15 @@ document.addEventListener('DOMContentLoaded', function() {
                     syncDownloadVisibility();
                 }
             } else {
-                // For type=movie, fetch full movie data to detect anime
+                // For type=movie, never run TV season logic.
                 isSeries = false;
-                const movieRes = await fetch(`/api/tmdb-proxy/movie/${tmdbId}`);
+                currentServer = 'srvMega';
+                syncDownloadVisibility();
+                const movieRes = await fetch(`/api/tmdb-proxy/movie/${tmdbId}/external_ids`);
                 if (movieRes.ok) {
                     const movieData = await movieRes.json();
-
-                    // Check if anime: has 'Animation' genre AND is Japanese
-                    isAnime = !!(movieData &&
-                        (Array.isArray(movieData.genres) && movieData.genres.some(g => (g.name || '').toLowerCase() === 'animation'))
-                        &&
-                        ((movieData.original_language || '').toLowerCase() === 'ja' || (Array.isArray(movieData.origin_country) && movieData.origin_country.includes('JP')))
-                    );
-
-                    console.log('[Movie] Detected anime:', isAnime, { genres: movieData.genres, language: movieData.original_language, country: movieData.origin_country });
-
-                    // Update server if anime
-                    if (isAnime) {
-                        currentServer = 'srvPahe1';
-                    } else {
-                        currentServer = 'srvMega';
-                    }
-
-                    // Also fetch external_ids for IMDb
-                    try {
-                        const extRes = await fetch(`/api/tmdb-proxy/movie/${tmdbId}/external_ids`);
-                        if (extRes.ok) {
-                            const extData = await extRes.json();
-                            imdbId = extData.imdb_id;
-                        }
-                    } catch (e) {
-                        console.log('[Movie] Could not fetch external_ids:', e.message);
-                    }
+                    imdbId = movieData.imdb_id;
                 }
-                syncDownloadVisibility();
             }
 
             malId = await lookupMalId();

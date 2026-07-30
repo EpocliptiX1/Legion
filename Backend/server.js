@@ -721,6 +721,16 @@ animeCacheDb.serialize(() => {
         );
     `);
     animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS anime_season_groups_cache (
+            tmdb_id INTEGER PRIMARY KEY,
+            mal_id INTEGER,
+            groups_json TEXT NOT NULL,
+            group_count INTEGER NOT NULL,
+            cached_at INTEGER NOT NULL,
+            last_accessed INTEGER NOT NULL
+        );
+    `);
+    animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS episode_load_cache (
             cache_id INTEGER PRIMARY KEY AUTOINCREMENT,
             tmdb_id INTEGER NOT NULL,
@@ -4214,6 +4224,55 @@ function episodeLoadCacheSet(tmdbId, malId, season, episode, audioType, provider
     });
 }
 
+// Season groups come from Jikan/MAL, which is flaky (intermittent 429/504 on individual
+// entries). Persist them so a good result survives restarts and upstream outages; `stale`
+// tells the caller the TTL lapsed but we could not refresh, so it is still worth serving.
+function animeSeasonGroupsCacheGet(tmdbId, maxAge) {
+    return new Promise((resolve, reject) => {
+        const now = Date.now();
+        animeCacheDb.get(
+            `SELECT * FROM anime_season_groups_cache WHERE tmdb_id = ?`,
+            [tmdbId],
+            (err, row) => {
+                if (err) return reject(err);
+                if (!row) return resolve(null);
+                animeCacheDb.run(
+                    `UPDATE anime_season_groups_cache SET last_accessed = ? WHERE tmdb_id = ?`,
+                    [now, tmdbId]
+                );
+                let groups;
+                try {
+                    groups = JSON.parse(row.groups_json);
+                } catch {
+                    return resolve(null);
+                }
+                resolve({ groups, stale: (now - row.cached_at) > maxAge });
+            }
+        );
+    });
+}
+
+function animeSeasonGroupsCacheSet(tmdbId, malId, groups) {
+    return new Promise((resolve, reject) => {
+        const now = Date.now();
+        animeCacheDb.run(
+            `INSERT INTO anime_season_groups_cache (tmdb_id, mal_id, groups_json, group_count, cached_at, last_accessed)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(tmdb_id) DO UPDATE SET
+                 mal_id = excluded.mal_id,
+                 groups_json = excluded.groups_json,
+                 group_count = excluded.group_count,
+                 cached_at = excluded.cached_at,
+                 last_accessed = excluded.last_accessed`,
+            [tmdbId, malId, JSON.stringify(groups), groups.length, now, now],
+            function (err) {
+                if (err) return reject(err);
+                resolve(this.changes || 0);
+            }
+        );
+    });
+}
+
 function animeCacheUpsertFromAniListItem(item) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
@@ -6833,81 +6892,279 @@ app.get(['/api/stream/mal/:malId/:episode', '/api/stream/mal/:malId/:episode/:la
 // --- MEGAPLAY DOWNLOAD EXTRACTOR ---
 
 // =========================================
-//  9b2. ANIME SEASON GROUPS (MAL/Jikan-backed)
+//  9b2. ANIME SEASON GROUPS (Jikan/MAL-backed)
 // =========================================
+
+// AniList path disabled for now — still produced wrong season groupings for some titles
+// even after the TV-only format filter. Kept here commented out in case it's revisited.
+/*
+async function aniListGetMediaWithRelations(anilistId) {
+    const query = `
+        query ($id: Int) {
+            Media(id: $id, type: ANIME) {
+                id
+                idMal
+                episodes
+                title { romaji english }
+                startDate { year month day }
+                relations {
+                    edges {
+                        relationType(version: 2)
+                        node {
+                            id
+                            type
+                            format
+                            episodes
+                            title { romaji english }
+                            startDate { year month day }
+                        }
+                    }
+                }
+            }
+        }
+    `;
+
+    const maxAttempts = 3;
+    let delay = 500;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const response = await axios.post(
+                'https://graphql.anilist.co',
+                { query, variables: { id: anilistId } },
+                { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 10000 }
+            );
+            if (response.data?.errors) {
+                throw new Error(`AniList error: ${JSON.stringify(response.data.errors)}`);
+            }
+            return response.data?.data?.Media || null;
+        } catch (err) {
+            const status = err.response?.status;
+            if (status === 429 && attempt < maxAttempts) {
+                await sleep(delay);
+                delay *= 2;
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw new Error('AniList request failed');
+}
+
+function aniListDateToIso(d) {
+    if (!d || !d.year) return null;
+    return `${d.year}-${String(d.month || 1).padStart(2, '0')}-${String(d.day || 1).padStart(2, '0')}`;
+}
+
+async function buildSeasonGroupsFromAniList(anilistId) {
+    const visited = new Set();
+    const queue = [Number(anilistId)];
+    const metaList = [];
+    let failedLookups = 0;
+
+    while (queue.length && metaList.length < 8) {
+        const id = Number(queue.shift());
+        if (!id || visited.has(id)) continue;
+        visited.add(id);
+
+        let media;
+        try {
+            media = await aniListGetMediaWithRelations(id);
+        } catch (err) {
+            failedLookups++;
+            console.warn(`[anime-season-groups] anilist ${id} lookup failed (${err.message}); keeping ${metaList.length} season(s) already resolved`);
+            continue;
+        }
+        if (!media) continue;
+
+        // Only TV broadcasts are real "seasons". Sequel/prequel edges also surface recap
+        // movies and unreleased tie-in films (e.g. Solo Leveling's "-ReAwakening-" recap and
+        // the undated "Beyond the System" movie) — counting those as seasons both invents
+        // seasons that don't exist and, since undated entries sort first, shifts the real
+        // seasons to the wrong number. Still traverse through them below in case a real
+        // season is only reachable via a movie's relations, just don't list them.
+        const isTvFormat = ['TV', 'TV_SHORT'].includes(String(media.format || '').toUpperCase());
+        if (isTvFormat) {
+            metaList.push({
+                title: media.title?.english || media.title?.romaji || `Season ${metaList.length + 1}`,
+                episodesCount: Number(media.episodes || 0),
+                airDate: aniListDateToIso(media.startDate)
+            });
+        }
+
+        const edges = Array.isArray(media.relations?.edges) ? media.relations.edges : [];
+        edges.forEach(edge => {
+            const rType = String(edge?.relationType || '').toUpperCase();
+            if (rType !== 'SEQUEL' && rType !== 'PREQUEL') return;
+            const node = edge?.node;
+            if (!node || String(node.type || '').toUpperCase() !== 'ANIME') return;
+            const relId = Number(node.id || 0);
+            if (relId > 0 && !visited.has(relId)) queue.push(relId);
+        });
+    }
+
+    return { metaList, failedLookups };
+}
+*/
+
+async function buildSeasonGroupsFromJikan(malId) {
+    const visited = new Set();
+    const queue = [Number(malId)];
+    const metaList = [];
+    let failedLookups = 0;
+
+    while (queue.length && metaList.length < 8) {
+        const id = Number(queue.shift());
+        if (!id || visited.has(id)) continue;
+        visited.add(id);
+
+        // One unreachable entry must not discard the seasons already collected.
+        // Jikan returns a hard 504/429 for individual anime fairly often (e.g. mal 48569,
+        // "86 Part 2"), and letting that throw used to fail the whole request.
+        let full;
+        try {
+            full = await jikanGet(`/anime/${id}/full`);
+        } catch (err) {
+            failedLookups++;
+            console.warn(`[anime-season-groups] mal ${id} lookup failed (${err.message}); keeping ${metaList.length} season(s) already resolved`);
+            continue;
+        }
+        const info = full?.data;
+        if (!info) continue;
+
+        // Same reasoning as the AniList walker: only TV entries are real seasons. Jikan's
+        // sequel/prequel relations also include recap movies and OVAs.
+        if (String(info.type || '').toUpperCase() === 'TV') {
+            metaList.push({
+                title: info.title || info.title_english || `Season ${metaList.length + 1}`,
+                episodesCount: Number(info.episodes || 0),
+                airDate: info?.aired?.from ? String(info.aired.from).slice(0, 10) : null
+            });
+        }
+
+        const rels = Array.isArray(info.relations) ? info.relations : [];
+        rels.forEach(rel => {
+            const rType = String(rel?.relation || '').toLowerCase();
+            if (rType !== 'sequel' && rType !== 'prequel') return;
+            (rel.entry || []).forEach(ent => {
+                if (String(ent?.type || '').toLowerCase() !== 'anime') return;
+                const relId = Number(ent?.mal_id || 0);
+                if (relId > 0 && !visited.has(relId)) queue.push(relId);
+            });
+        });
+    }
+
+    return { metaList, failedLookups };
+}
+
+function metaListToGroups(metaList) {
+    // Missing/unparseable dates sort last, not to epoch-0 first — an unannounced season
+    // has no date yet, but it still airs after everything that already has one.
+    const sortKey = (d) => { const t = Date.parse(d || ''); return Number.isNaN(t) ? Infinity : t; };
+    const sorted = [...metaList].sort((a, b) => sortKey(a.airDate) - sortKey(b.airDate));
+    return sorted.map((m, idx) => {
+        const total = Math.max(1, Number(m.episodesCount || 0));
+        const episodes = Array.from({ length: total }, (_, i) => ({
+            episode_number: i + 1,
+            name: `Episode ${i + 1}`,
+            air_date: null,
+            still_path: null
+        }));
+        return {
+            seasonNumber: idx + 1,
+            label: m.title || `Season ${idx + 1}`,
+            episodes
+        };
+    });
+}
+
 app.get('/api/anime-season-groups', async (req, res) => {
     const tmdbId = parseInt(req.query.tmdbId, 10);
     if (!tmdbId) return res.status(400).json({ error: 'Missing tmdbId' });
 
+    let diskCache = null;
     try {
-        await ensureAnimeMalListLoaded();
+        diskCache = await animeSeasonGroupsCacheGet(tmdbId, ANIME_SEASON_GROUPS_TTL);
+        if (diskCache && !diskCache.stale) {
+            return res.json({ groups: diskCache.groups, cached: true });
+        }
+    } catch (err) {
+        console.error('[anime-season-groups] disk cache read failed:', err.message);
+    }
 
+    try {
         const cacheHit = _animeSeasonGroupsCache.get(String(tmdbId));
         if (cacheHit && (Date.now() - cacheHit.cachedAt <= ANIME_SEASON_GROUPS_TTL)) {
             return res.json({ groups: cacheHit.groups, cached: true });
         }
 
-        const baseEntry = _animeMalList.find(item => {
-            const mappedTmdbId = getMappedTmdbId(item.themoviedb_id);
-            return mappedTmdbId === tmdbId && item.mal_id;
-        });
-        if (!baseEntry || !baseEntry.mal_id) {
-            return res.status(404).json({ error: 'No MAL mapping for this TMDB anime' });
+        const ids = await resolveAnimeIds(tmdbId, 1);
+        if (!ids || (!ids.malId && !ids.anilistId)) {
+            if (diskCache) return res.json({ groups: diskCache.groups, cached: true, stale: true });
+            return res.status(404).json({ error: 'No MAL/AniList mapping for this TMDB anime' });
         }
 
-        const visited = new Set();
-        const queue = [Number(baseEntry.mal_id)];
-        const metaList = [];
+        let metaList = [];
+        let failedLookups = 0;
+        let source = null;
 
-        while (queue.length && metaList.length < 8) {
-            const id = Number(queue.shift());
-            if (!id || visited.has(id)) continue;
-            visited.add(id);
-
-            const full = await jikanGet(`/anime/${id}/full`);
-            const info = full?.data;
-            if (!info) continue;
-
-            metaList.push({
-                mal_id: id,
-                title: info.title || info.title_english || `Season ${metaList.length + 1}`,
-                episodesCount: Number(info.episodes || 0),
-                airDate: info?.aired?.from ? String(info.aired.from).slice(0, 10) : null
-            });
-
-            const rels = Array.isArray(info.relations) ? info.relations : [];
-            rels.forEach(rel => {
-                const rType = String(rel?.relation || '').toLowerCase();
-                if (rType !== 'sequel' && rType !== 'prequel') return;
-                (rel.entry || []).forEach(ent => {
-                    if (String(ent?.type || '').toLowerCase() !== 'anime') return;
-                    const relId = Number(ent?.mal_id || 0);
-                    if (relId > 0 && !visited.has(relId)) queue.push(relId);
-                });
-            });
+        // Primary: Jikan/MAL relations graph.
+        if (ids.malId) {
+            try {
+                const r = await buildSeasonGroupsFromJikan(ids.malId);
+                metaList = r.metaList;
+                failedLookups = r.failedLookups;
+                source = 'jikan';
+            } catch (err) {
+                console.warn(`[anime-season-groups] jikan primary failed for tmdb ${tmdbId}:`, err.message);
+            }
         }
 
-        metaList.sort((a, b) => (Date.parse(a.airDate || '') || 0) - (Date.parse(b.airDate || '') || 0));
+        // AniList fallback disabled for now (produced wrong results even after the TV-only
+        // filter fix — reverting to plain Jikan -> frontend TMDB fallback until revisited).
+        // if (metaList.length <= 1 && ids.anilistId) {
+        //     try {
+        //         const r = await buildSeasonGroupsFromAniList(ids.anilistId);
+        //         if (r.metaList.length > metaList.length) {
+        //             metaList = r.metaList;
+        //             failedLookups = r.failedLookups;
+        //             source = 'anilist';
+        //         }
+        //     } catch (err) {
+        //         console.warn(`[anime-season-groups] anilist fallback failed for tmdb ${tmdbId}:`, err.message);
+        //     }
+        // }
 
-        const groups = metaList.map((m, idx) => {
-            const total = Math.max(1, Number(m.episodesCount || 0));
-            const episodes = Array.from({ length: total }, (_, i) => ({
-                episode_number: i + 1,
-                name: `Episode ${i + 1}`,
-                air_date: null,
-                still_path: null
-            }));
-            return {
-                seasonNumber: idx + 1,
-                label: m.title || `Season ${idx + 1}`,
-                episodes
-            };
-        });
+        if (metaList.length === 0) {
+            // Jikan resolved nothing; the frontend's own TMDB title-search fallback
+            // (buildTmdbRelatedSeasonGroups) is the last tier.
+            if (diskCache) return res.json({ groups: diskCache.groups, cached: true, stale: true });
+            return res.status(404).json({ error: 'Could not resolve season groups from MAL' });
+        }
+
+        const groups = metaListToGroups(metaList);
+
+        // A partial walk can hide seasons we already have on disk from a healthier run,
+        // so only overwrite the cache when this result is at least as complete.
+        if (failedLookups > 0 && diskCache && diskCache.groups.length > groups.length) {
+            console.warn(`[anime-season-groups] tmdb ${tmdbId}: partial walk (${groups.length} group(s) via ${source}, ${failedLookups} failed); serving cached ${diskCache.groups.length}`);
+            return res.json({ groups: diskCache.groups, cached: true, stale: true });
+        }
 
         _animeSeasonGroupsCache.set(String(tmdbId), { groups, cachedAt: Date.now() });
-        res.json({ groups, cached: false });
+        try {
+            await animeSeasonGroupsCacheSet(tmdbId, ids.malId || null, groups);
+        } catch (err) {
+            console.error('[anime-season-groups] disk cache write failed:', err.message);
+        }
+        res.json({ groups, cached: false, source, partial: failedLookups > 0 });
     } catch (err) {
         console.error('[anime-season-groups]', err.message);
+        // Upstream is down but we resolved this title before: stale beats nothing, since the
+        // caller's only other option is fuzzy TMDB title matching.
+        if (diskCache) {
+            console.warn(`[anime-season-groups] tmdb ${tmdbId}: serving stale cache after failure`);
+            return res.json({ groups: diskCache.groups, cached: true, stale: true });
+        }
         res.status(500).json({ error: 'Failed to build anime season groups', detail: err.message });
     }
 });
