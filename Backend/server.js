@@ -27,27 +27,6 @@ const app = express();
 app.set('trust proxy', 1);
 const KAA_DEBUG_LOG_PATH = path.join(__dirname, 'kaa-debug-log.txt');
 function logKaaDebug(...parts) {
-    // KAA logging disabled - using kaa-debug-log.txt for NekoStream debugging instead
-    // const stamp = new Date().toISOString();
-    // const text = parts.map(part => {
-    //     if (typeof part === 'string') return part;
-    //     try {
-    //         return JSON.stringify(part, null, 2);
-    //     } catch (e) {
-    //         return String(part);
-    //     }
-    // }).join(' ');
-    // const line = `[${stamp}] ${text}`;
-    // console.log(line);
-    // try {
-    //     fs.appendFileSync(KAA_DEBUG_LOG_PATH, line + '\n');
-    // } catch (err) {
-    //     console.warn('[KAA DEBUG] failed to append log file:', err.message);
-    // }
-}
-
-// NekoStream debug logger (uses same file as KAA for now)
-function logNekoDebug(...parts) {
     const stamp = new Date().toISOString();
     const text = parts.map(part => {
         if (typeof part === 'string') return part;
@@ -57,19 +36,40 @@ function logNekoDebug(...parts) {
             return String(part);
         }
     }).join(' ');
-    const line = `[${stamp}] [NEKO] ${text}`;
+    const line = `[${stamp}] ${text}`;
     console.log(line);
     try {
         fs.appendFileSync(KAA_DEBUG_LOG_PATH, line + '\n');
     } catch (err) {
-        // Silent fail
+        console.warn('[KAA DEBUG] failed to append log file:', err.message);
     }
 }
 
-// logKaaDebug('[KAA DEBUG] logger ready', {
-//     path: KAA_DEBUG_LOG_PATH,
-//     pid: process.pid
-// });
+// NekoStream debug logger (disabled - KAA debugging takes priority)
+function logNekoDebug(...parts) {
+    // NekoStream logging disabled - using kaa-debug-log.txt for KAA debugging
+    // const stamp = new Date().toISOString();
+    // const text = parts.map(part => {
+    //     if (typeof part === 'string') return part;
+    //     try {
+    //         return JSON.stringify(part, null, 2);
+    //     } catch (e) {
+    //         return String(part);
+    //     }
+    // }).join(' ');
+    // const line = `[${stamp}] [NEKO] ${text}`;
+    // console.log(line);
+    // try {
+    //     fs.appendFileSync(KAA_DEBUG_LOG_PATH, line + '\n');
+    // } catch (err) {
+    //     // Silent fail
+    // }
+}
+
+logKaaDebug('[KAA DEBUG] logger ready', {
+    path: KAA_DEBUG_LOG_PATH,
+    pid: process.pid
+});
 app.get('/api/tmdb/search', async (req, res) => {
     try {
         const query = req.query.q;
