@@ -5622,7 +5622,7 @@ function convertEpisodeNumberForCandidate({
 
     return null;
 }
-async function resolveKickAssAnimeSources({ malId, tmdbId, episodeNumber, audioType, frontendTitle, season = 1 }) {
+async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', episodeNumber, audioType, frontendTitle, season = 1 }) {
    let titles = [];
     let cacheEntry = null;
 
