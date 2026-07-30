@@ -614,9 +614,22 @@ document.addEventListener('DOMContentLoaded', function() {
 
             if (!tmdbId || !isAnime) return;
 
-            const historyCache = window.__watchHistoryCache;
             let episode = 1;
             let season = 1;
+
+            // Try to get watch history (may not be loaded yet, fetch it if needed)
+            let historyCache = window.__watchHistoryCache;
+            if (!historyCache && typeof window.getActivityUID === 'function') {
+                try {
+                    const activityUID = window.getActivityUID();
+                    const histRes = await fetch(`/activity/history?userUID=${encodeURIComponent(activityUID)}&movie_id=${encodeURIComponent(tmdbId)}`);
+                    if (histRes.ok) {
+                        historyCache = await histRes.json();
+                    }
+                } catch (e) {
+                    console.log('[Preload] Could not fetch history:', e.message);
+                }
+            }
 
             if (historyCache?.continue_from) {
                 const contMatch = String(historyCache.continue_from).match(/S(\d+)E(\d+)/);
