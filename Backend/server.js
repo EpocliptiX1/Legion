@@ -5979,19 +5979,23 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, episodeNumber, audioT
         const { entry, info: candidateInfo, episodes: candidateEpisodes } = sortedCandidates[i];
         const title = String(entry.result.title || '').toLowerCase();
         const parsed = parseAnimeTitle(title);
-        const isSpecial = title.includes('special') || title.includes('ova') || title.includes('ona') || title.includes('movie');
+        const isSpecial = title.includes('special') || title.includes('ova') || title.includes('ona');
+        const isMovie = title.includes('movie') && (parsed.isMovie || title.includes('movie'));
         const isMovieOrOVA = parsed.isMovie || parsed.isOVA || parsed.isONA || parsed.isSpecial;
 
-        // For movies (wantedSeason=1), accept the movie result
-        // For TV seasons (wantedSeason>1), skip movies and only accept TV series
-        if ((isSpecial || isMovieOrOVA) && wantedSeason !== 1) {
-            logKaaDebug('[KAA Resolve] skipping non-TV candidate', { title: entry.result.title, wantedSeason });
+        // Check if user explicitly searched for a movie (by "movie" keyword in search title)
+        const userSearchedForMovie = searchTitles.some(st => st.toLowerCase().includes('movie'));
+
+        // Skip specials/OVAs always
+        if (isSpecial || (isMovieOrOVA && !isMovie)) {
+            logKaaDebug('[KAA Resolve] skipping OVA/special candidate', { title: entry.result.title });
             continue;
         }
 
-        // For movie requests (wantedSeason=1), skip OVAs/specials but accept movies
-        if ((isSpecial || isMovieOrOVA) && wantedSeason === 1 && !(parsed.isMovie)) {
-            logKaaDebug('[KAA Resolve] skipping OVA/special for movie request', { title: entry.result.title });
+        // Only accept movies if user explicitly searched for them (contains "movie" keyword)
+        // Otherwise skip movies when looking for TV series
+        if (isMovie && !userSearchedForMovie) {
+            logKaaDebug('[KAA Resolve] skipping movie (not explicitly requested)', { title: entry.result.title });
             continue;
         }
 
