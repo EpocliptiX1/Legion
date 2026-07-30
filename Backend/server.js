@@ -5980,11 +5980,8 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, episodeNumber, audioT
         const title = String(entry.result.title || '').toLowerCase();
         const parsed = parseAnimeTitle(title);
         const isSpecial = title.includes('special') || title.includes('ova') || title.includes('ona');
-        const isMovie = title.includes('movie') && (parsed.isMovie || title.includes('movie'));
+        const isMovie = title.includes('movie');
         const isMovieOrOVA = parsed.isMovie || parsed.isOVA || parsed.isONA || parsed.isSpecial;
-
-        // Check if user explicitly searched for a movie (by "movie" keyword in search title)
-        const userSearchedForMovie = searchTitles.some(st => st.toLowerCase().includes('movie'));
 
         // Skip specials/OVAs always
         if (isSpecial || (isMovieOrOVA && !isMovie)) {
@@ -5992,10 +5989,10 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, episodeNumber, audioT
             continue;
         }
 
-        // Only accept movies if user explicitly searched for them (contains "movie" keyword)
-        // Otherwise skip movies when looking for TV series
-        if (isMovie && !userSearchedForMovie) {
-            logKaaDebug('[KAA Resolve] skipping movie (not explicitly requested)', { title: entry.result.title });
+        // For movies: only accept if wantedSeason === 1 (movie request)
+        // For TV searches (wantedSeason > 1), reject movies
+        if (isMovie && wantedSeason !== 1) {
+            logKaaDebug('[KAA Resolve] skipping movie (looking for TV series)', { title: entry.result.title, wantedSeason });
             continue;
         }
 
