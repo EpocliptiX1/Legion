@@ -2240,7 +2240,17 @@ document.addEventListener('DOMContentLoaded', function() {
                                     const seasonNum = ep._season_number !== undefined ? ep._season_number : 1;
                                     const epIdStr = `S${seasonNum}E${ep.episode_number}`;
                                     const isWatched = watchedStates.includes(epIdStr) ? ' watched' : '';
-                                    const isContinueFrom = window.__continueFromSeason === seasonNum && window.__continueFromEpisode === ep.episode_number ? ' active' : '';
+
+                                    // Check if this is the continue_from episode (safe number comparison)
+                                    const isContinueFrom = (
+                                        window.__continueFromSeason && window.__continueFromEpisode &&
+                                        parseInt(window.__continueFromSeason) === parseInt(seasonNum) &&
+                                        parseInt(window.__continueFromEpisode) === parseInt(ep.episode_number)
+                                    ) ? ' active' : '';
+
+                                    if (isContinueFrom) {
+                                        console.log('[Episode List] Marked as active:', epIdStr);
+                                    }
 
                                     listHTML += `
                                         <li class="episode-list-item${isWatched}${isContinueFrom}" data-season="${seasonNum}" data-ep="${ep.episode_number}" onclick="window.__handleEpisodeItemClick && window.__handleEpisodeItemClick(this)">
