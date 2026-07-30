@@ -2350,15 +2350,40 @@ document.addEventListener('DOMContentLoaded', function() {
                     syncDownloadVisibility();
                 }
             } else {
-                // For type=movie, never run TV season logic.
+                // For type=movie, fetch full movie data to detect anime
                 isSeries = false;
-                currentServer = 'srvMega';
-                syncDownloadVisibility();
-                const movieRes = await fetch(`/api/tmdb-proxy/movie/${tmdbId}/external_ids`);
+                const movieRes = await fetch(`/api/tmdb-proxy/movie/${tmdbId}`);
                 if (movieRes.ok) {
                     const movieData = await movieRes.json();
-                    imdbId = movieData.imdb_id;
+
+                    // Check if anime: has 'Animation' genre AND is Japanese
+                    isAnime = !!(movieData &&
+                        (Array.isArray(movieData.genres) && movieData.genres.some(g => (g.name || '').toLowerCase() === 'animation'))
+                        &&
+                        ((movieData.original_language || '').toLowerCase() === 'ja' || (Array.isArray(movieData.origin_country) && movieData.origin_country.includes('JP')))
+                    );
+
+                    console.log('[Movie] Detected anime:', isAnime, { genres: movieData.genres, language: movieData.original_language, country: movieData.origin_country });
+
+                    // Update server if anime
+                    if (isAnime) {
+                        currentServer = 'srvPahe1';
+                    } else {
+                        currentServer = 'srvMega';
+                    }
+
+                    // Also fetch external_ids for IMDb
+                    try {
+                        const extRes = await fetch(`/api/tmdb-proxy/movie/${tmdbId}/external_ids`);
+                        if (extRes.ok) {
+                            const extData = await extRes.json();
+                            imdbId = extData.imdb_id;
+                        }
+                    } catch (e) {
+                        console.log('[Movie] Could not fetch external_ids:', e.message);
+                    }
                 }
+                syncDownloadVisibility();
             }
 
             malId = await lookupMalId();
