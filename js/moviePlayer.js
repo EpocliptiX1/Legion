@@ -2078,17 +2078,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 };
 
                 setReleaseStatusLine(data);
+                // Update server: anime (TV or movie) uses KAA
+                if (isAnime) {
+                    currentServer = 'srvPahe1';
+                } else if (data.seasons && data.seasons.length > 0) {
+                    currentServer = 'srvMegaTV'; // TV shows use MegaTV
+                }
+                // else: keep default (srvMega for movies)
+
                 if (data.seasons && data.seasons.length > 0) {
                     isSeries = true;
-                    currentServer = isAnime ? 'srvPahe1' : 'srvMegaTV'; // Anime defaults to KickAssAnime, otherwise MegaCloud TV
                     syncDownloadVisibility();
-                } else {
-                    // Movie: also default to KAA for anime movies
-                    if (isAnime) {
-                        currentServer = 'srvPahe1';
-                    }
-                    syncDownloadVisibility();
-                    
+
                     const dynamicEpisodeSection = document.getElementById('dynamicEpisodeSection');
                     dynamicEpisodeSection.style.display = 'flex'; // Show the list UI
                     requestAnimationFrame(syncEpisodePanelHeight);
