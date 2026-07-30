@@ -2210,18 +2210,30 @@ document.addEventListener('DOMContentLoaded', function() {
                                     if (typeof window.getActivityUID === 'function') {
                                         const activityUID = window.getActivityUID();
                                         const historyRow = await fetchWatchHistory(activityUID, tmdbId);
+                                        console.log('[WatchHistory] Fetched:', historyRow);
                                         setWatchHistoryCache(historyRow);
                                         if (historyRow && historyRow.finished) {
-                                            try { window.__watchedStates = JSON.parse(historyRow.finished); } catch (e) {}
+                                            try {
+                                                window.__watchedStates = JSON.parse(historyRow.finished);
+                                                console.log('[WatchHistory] Parsed watched states:', window.__watchedStates);
+                                            } catch (e) {
+                                                console.error('[WatchHistory] Failed to parse finished:', e);
+                                            }
+                                        } else {
+                                            console.log('[WatchHistory] No finished field');
                                         }
                                         if (historyRow && historyRow.continue_from) {
+                                            console.log('[WatchHistory] continue_from:', historyRow.continue_from);
                                             const contMatch = String(historyRow.continue_from).match(/S(\d+)E(\d+)/);
                                             if (contMatch) {
                                                 seasonSelect.dataset.playSeason = contMatch[1];
                                                 episodeSelect.value = contMatch[2];
                                                 window.__continueFromSeason = parseInt(contMatch[1]);
                                                 window.__continueFromEpisode = parseInt(contMatch[2]);
+                                                console.log('[WatchHistory] Set continue_from:', { season: contMatch[1], episode: contMatch[2] });
                                             }
+                                        } else {
+                                            console.log('[WatchHistory] No continue_from field');
                                         }
                                     }
                                 } catch(e) { console.error('Failed restoring watched episodes:', e); }
