@@ -612,19 +612,27 @@ document.addEventListener('DOMContentLoaded', function() {
             const typeParam = (urlParams.get('type') || 'movie').toLowerCase();
             const isAnime = typeParam === 'anime' || typeParam === 'tv';
 
-            if (!tmdbId || !isAnime) return;
+            if (!tmdbId || !isAnime) {
+                console.log('[Preload] Skipping - not anime or no tmdbId');
+                return;
+            }
 
             let episode = 1;
             let season = 1;
+            let audioType = 'sub';
 
             // Try to get watch history (may not be loaded yet, fetch it if needed)
             let historyCache = window.__watchHistoryCache;
+            console.log('[Preload] Initial historyCache:', historyCache);
+
             if (!historyCache && typeof window.getActivityUID === 'function') {
                 try {
                     const activityUID = window.getActivityUID();
+                    console.log('[Preload] Fetching history for userUID:', activityUID);
                     const histRes = await fetch(`/activity/history?userUID=${encodeURIComponent(activityUID)}&movie_id=${encodeURIComponent(tmdbId)}`);
                     if (histRes.ok) {
                         historyCache = await histRes.json();
+                        console.log('[Preload] Fetched history:', historyCache);
                     }
                 } catch (e) {
                     console.log('[Preload] Could not fetch history:', e.message);
@@ -636,41 +644,48 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (contMatch) {
                     season = parseInt(contMatch[1]);
                     episode = parseInt(contMatch[2]);
+                    console.log('[Preload] Parsed continue_from:', { season, episode });
                 }
             }
 
             const malId = window.__malId || '';
             const title = document.getElementById('title')?.textContent.trim() || '';
 
-            console.log('[Preload] Starting background source preload:', { tmdbId, season, episode, malId });
+            console.log('[Preload] Starting background source preload:', { tmdbId, season, episode, audioType, malId });
 
-            // Preload KAA sources (without audio type - sources work for all audio types)
-            const kaaUrl = `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}&audio=dub&itemType=tv&title=${encodeURIComponent(title)}`;
+            // Preload KAA sources
+            const kaaUrl = `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=tv&title=${encodeURIComponent(title)}`;
+            console.log('[Preload] KAA fetch URL:', kaaUrl);
             fetch(kaaUrl).then(res => res.json()).then(data => {
                 if (data?.sources?.length > 0) {
                     window.__preloadedKaaSources = data;
                     window.__preloadedKaaEpisode = { season, ep: episode };
-                    console.log('[Preload] KAA sources cached for S' + season + 'E' + episode, { sourceCount: data.sources.length });
+                    console.log('[Preload] ✓ KAA sources cached for S' + season + 'E' + episode, { sourceCount: data.sources.length });
+                } else {
+                    console.log('[Preload] ✗ KAA returned no sources:', data);
                 }
-            }).catch(err => console.log('[Preload] KAA preload failed:', err));
+            }).catch(err => console.log('[Preload] ✗ KAA preload failed:', err));
 
-            // Preload Neko sources (without audio type - sources work for all audio types)
+            // Preload Neko sources
             const nekoQuery = new URLSearchParams({
                 malId: malId || '',
                 tmdbId: tmdbId || '',
                 title,
-                type: 'dub',
+                type: audioType,
                 season: season || 1,
                 ep: episode || 1
             });
             const nekoUrl = `/api/anime-neko-log?${nekoQuery.toString()}`;
+            console.log('[Preload] Neko fetch URL:', nekoUrl);
             fetch(nekoUrl).then(res => res.json()).then(data => {
                 if (data?.stream || data?.sources?.file) {
                     window.__preloadedNekoSources = data;
                     window.__preloadedNekoEpisode = { season, ep: episode };
-                    console.log('[Preload] Neko sources cached for S' + season + 'E' + episode, { hasStream: !!data.stream });
+                    console.log('[Preload] ✓ Neko sources cached for S' + season + 'E' + episode, { hasStream: !!data.stream });
+                } else {
+                    console.log('[Preload] ✗ Neko returned no stream:', data);
                 }
-            }).catch(err => console.log('[Preload] Neko preload failed:', err));
+            }).catch(err => console.log('[Preload] ✗ Neko preload failed:', err));
 
         } catch (err) {
             console.log('[Preload] Background preload error:', err);
