@@ -6254,7 +6254,8 @@ async function resolveExactWatchUrl(title, targetSeason = '1') {
     }
 
     let targetResult = null;
-    const seasonNum = parseInt(targetSeason, 10) || 1;
+    const isSpecialSearch = targetSeason === null;
+    const seasonNum = isSpecialSearch ? null : (parseInt(targetSeason, 10) || 1);
     const wantedTitle = normalizeAnimeTitle(title);
     const scoreResult = (r) => {
       const foundTitle = normalizeAnimeTitle(r.title);
@@ -6263,8 +6264,13 @@ async function resolveExactWatchUrl(title, targetSeason = '1') {
       if (foundTitle === wantedTitle) score += 120;
       else if (foundTitle.includes(wantedTitle) || wantedTitle.includes(foundTitle)) score += 70;
 
-      if (/ple\s*ple|pleiades|special|ova|ona|movie|recap|trailer|pv/i.test(r.title)) score -= 40;
-      if (/season\s*2|season\s*3|season\s*4|2nd|3rd|4th|part\s*2/i.test(r.title) || /\/ep-/i.test(r.url)) score -= 80;
+      // For specials search: penalize sequels/parts, but DON'T penalize special/ova keywords
+      if (isSpecialSearch) {
+        if (/season\s*2|season\s*3|season\s*4|2nd|3rd|4th|part\s*2/i.test(r.title) || /\/ep-/i.test(r.url)) score -= 80;
+      } else {
+        if (/ple\s*ple|pleiades|special|ova|ona|movie|recap|trailer|pv/i.test(r.title)) score -= 40;
+        if (/season\s*2|season\s*3|season\s*4|2nd|3rd|4th|part\s*2/i.test(r.title) || /\/ep-/i.test(r.url)) score -= 80;
+      }
       if (/^overlord$/i.test(r.title.trim())) score += 40;
 
       return score;
@@ -6280,7 +6286,11 @@ async function resolveExactWatchUrl(title, targetSeason = '1') {
         score: r.__score
     })));
 
-    if (seasonNum === 1) {
+    // For specials: just pick top result (no season filtering)
+    // For regular seasons: match explicit season if it exists
+    if (isSpecialSearch) {
+      targetResult = rankedResults[0];
+    } else if (seasonNum === 1) {
       targetResult = rankedResults[0];
     } else {
       // For Season 2+: Match explicit requested season (e.g. Season 2)
@@ -6289,7 +6299,7 @@ async function resolveExactWatchUrl(title, targetSeason = '1') {
     }
 
     if (!targetResult) {
-      logKaaDebug(`[Search Resolver Warning] No exact season match for Season ${seasonNum}. Defaulting to top search result.`);
+      logKaaDebug(`[Search Resolver Warning] No exact match. Defaulting to top search result.`);
       targetResult = rankedResults[0];
     }
 
@@ -6320,19 +6330,13 @@ app.get('/api/anime-neko-log', async (req, res) => {
         return res.status(400).json({ ok: false, error: 'Title is required' });
     }
 
-    // Special episodes (Season 0) are typically not available on streaming sites
-    if (season === 0) {
-        logNekoDebug('[Neko] ⚠️  Season 0 (Specials) not available on NekoStream');
-        return res.status(400).json({
-            ok: false,
-            error: 'Special episodes are not available on NekoStream. These are typically OVAs or bonus content only on TMDB.'
-        });
-    }
-
     try {
-        // 0. Search Anikoto and resolve watch URL with Season filtering
-        logNekoDebug(`[Neko] 0. Resolving watch URL for: "${rawTitle}" (Season ${season})`);
-        const animeWatchUrl = await resolveExactWatchUrl(rawTitle, season);
+        // 0. Search Anikoto and resolve watch URL
+        // For Season 0 (Specials), ignore season filtering and search by title only
+        // Anikoto usually doesn't have separate season 0 pages; specials are on main series page
+        const searchSeason = season === 0 ? null : season;
+        logNekoDebug(`[Neko] 0. Resolving watch URL for: "${rawTitle}"${searchSeason ? ` (Season ${searchSeason})` : ' (Specials - ignoring season filter)'}`);
+        const animeWatchUrl = await resolveExactWatchUrl(rawTitle, searchSeason);
         logNekoDebug('[Neko] Resolved watch URL', animeWatchUrl);
 
         const baseHeaders = {
