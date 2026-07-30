@@ -1243,7 +1243,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     document.getElementById("title")?.textContent.trim() || "";
 
                 const res = await fetch(
-                    `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(episode)}&type=${encodeURIComponent(audioType)}&title=${encodeURIComponent(title)}`
+                    `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=${encodeURIComponent(requestedType)}&title=${encodeURIComponent(title)}`
                 );
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) {
