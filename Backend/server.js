@@ -5989,10 +5989,14 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, episodeNumber, audioT
             continue;
         }
 
-        // For movies: only accept if wantedSeason === 1 (movie request)
-        // For TV searches (wantedSeason > 1), reject movies
-        if (isMovie && wantedSeason !== 1) {
-            logKaaDebug('[KAA Resolve] skipping movie (looking for TV series)', { title: entry.result.title, wantedSeason });
+        // Movie vs TV filtering based on itemType parameter
+        const wantingMovie = itemType === 'movie';
+        if (isMovie && !wantingMovie) {
+            logKaaDebug('[KAA Resolve] skipping movie (looking for TV series)', { title: entry.result.title, itemType });
+            continue;
+        }
+        if (!isMovie && wantingMovie) {
+            logKaaDebug('[KAA Resolve] skipping TV series (looking for movie)', { title: entry.result.title, itemType });
             continue;
         }
 
@@ -6598,9 +6602,10 @@ app.get('/api/anime-kaa-servers', async (req, res) => {
     try {
         let malId = req.query.malId;
         const tmdbId = parseInt(req.query.tmdbId, 10);
-        const season = parseInt(req.query.season, 10) || 1;
+        const itemType = req.query.itemType || 'tv'; // 'tv' or 'movie'
+        const season = parseInt(req.query.season, 10) || (itemType === 'movie' ? 1 : 1);
         const episodeNumber = req.query.ep || req.query.episode || 1;
-        const audioType = req.query.type || req.query.audio || 'sub';
+        const audioType = req.query.audio || 'sub'; // Separate from itemType
         const frontendTitle = req.query.title || "";
         if (tmdbId) {
             await ensureAnimeMalListLoaded();
@@ -6625,6 +6630,7 @@ app.get('/api/anime-kaa-servers', async (req, res) => {
         const result = await resolveKickAssAnimeSources({
             malId,
             tmdbId,
+            itemType,
             episodeNumber,
             audioType,
             frontendTitle,
