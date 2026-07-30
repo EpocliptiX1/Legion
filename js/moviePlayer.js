@@ -2079,8 +2079,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 setReleaseStatusLine(data);
                 if (data.seasons && data.seasons.length > 0) {
-                    isSeries = true; 
+                    isSeries = true;
                     currentServer = isAnime ? 'srvPahe1' : 'srvMegaTV'; // Anime defaults to KickAssAnime, otherwise MegaCloud TV
+                    syncDownloadVisibility();
+                } else {
+                    // Movie: also default to KAA for anime movies
+                    if (isAnime) {
+                        currentServer = 'srvPahe1';
+                    }
                     syncDownloadVisibility();
                     
                     const dynamicEpisodeSection = document.getElementById('dynamicEpisodeSection');
