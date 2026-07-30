@@ -2034,15 +2034,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
                     // NEW DYNAMIC POPULATOR
                     const populateEpisodes = async (sNumRaw) => {
-                        const mode = String(sNumRaw || seasonSelect.value || (useAnimeSeasonUX ? 'all' : '1'));
+                        const rawMode = sNumRaw || seasonSelect.value || (useAnimeSeasonUX ? 'all' : '1');
+                        const mode = String(rawMode).trim().toLowerCase();
+                        console.log(`[Episodes] Populating with mode: "${mode}" (raw: "${rawMode}")`);
                         // Display loading state in list
                         episodeListContainer.innerHTML = '<li style="padding: 20px; color:#fff; text-align:center;">Loading episodes...</li>';
 
                         try {
                             const bySeason = [];
                             if (mode === 'specials') {
+                                console.log('[Episodes] Fetching Season 0 (Specials)...');
                                 const seasonRes = await fetch(`/api/tmdb-proxy/tv/${tmdbId}/season/0`);
                                 const seasonData = await seasonRes.json();
+                                console.log(`[Episodes] Season 0 fetched: ${Array.isArray(seasonData?.episodes) ? seasonData.episodes.length : 0} episodes`);
                                 bySeason.push({ seasonNumber: 0, episodes: Array.isArray(seasonData?.episodes) ? seasonData.episodes : [] });
                             } else if (mode === 'all' && useAnimeSeasonUX) {
                                 if (resolvedSeasonGroups && resolvedSeasonGroups.length > 0) {
