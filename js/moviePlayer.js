@@ -755,7 +755,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 .episode-search-input:focus { border-color:#ff8000; }
                 .episode-list { list-style:none; padding:0; margin:0; flex:1; min-height:0; overflow-y: auto; }
                 .episode-list-item { display:flex; align-items:center; gap:10px; padding:8px 12px; font-size:0.94rem; color:#fff; border-bottom:1px solid #1f1f1f; background:#080808; transition:background 0.2s; cursor:pointer; position:relative; z-index:26; pointer-events:auto; }
-                .episode-list-item.active { background:#ff8000; color:#fff; font-weight:700; box-shadow:0 0 12px #ff800088; }
+                .episode-list-item.active { background:#ff8000; color:#fff; font-weight:700; box-shadow:0 0 16px #ff800099, inset 0 0 8px #00000055; border-left:4px solid #00ff00; }
                 .episode-list-item.watched.active { background:#ff8000; color:#fff; font-weight:700; box-shadow:0 0 16px #ff800099, inset 0 0 8px #00000055; border-left:4px solid #00ff00; }
                 .episode-list-item:hover { background:#ff8000aa; color:#fff; }
                 .episode-num { width:22px; text-align:center; font-weight:700; color:#ff8000; font-size:0.82rem; }
@@ -929,6 +929,12 @@ document.addEventListener('DOMContentLoaded', function() {
             seasonSelectEl.dataset.playSeason = String(epSeason);
             episodeSelectEl.value = epNum;
             item.classList.add('watched');
+
+            // Add to watchedStates if not already there
+            const epIdStr = `S${epSeason}E${epNum}`;
+            if (window.__watchedStates && !window.__watchedStates.includes(epIdStr)) {
+                window.__watchedStates.push(epIdStr);
+            }
 
             document.querySelectorAll('.episode-list-item.active').forEach(el => el.classList.remove('active'));
             item.classList.add('active');
@@ -2199,14 +2205,14 @@ document.addEventListener('DOMContentLoaded', function() {
                                 episodeSelect.value = String(first.episode_number || 1);
 
                                 // LOAD USER WATCH HISTORY FOR WATCHED STATES
-                                let watchedStates = [];
+                                window.__watchedStates = [];
                                 try {
                                     if (typeof window.getActivityUID === 'function') {
                                         const activityUID = window.getActivityUID();
                                         const historyRow = await fetchWatchHistory(activityUID, tmdbId);
                                         setWatchHistoryCache(historyRow);
                                         if (historyRow && historyRow.finished) {
-                                            try { watchedStates = JSON.parse(historyRow.finished); } catch (e) {}
+                                            try { window.__watchedStates = JSON.parse(historyRow.finished); } catch (e) {}
                                         }
                                         if (historyRow && historyRow.continue_from) {
                                             const contMatch = String(historyRow.continue_from).match(/S(\d+)E(\d+)/);
@@ -2239,7 +2245,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     // Use nullish coalescing to preserve season 0 (specials)
                                     const seasonNum = ep._season_number !== undefined ? ep._season_number : 1;
                                     const epIdStr = `S${seasonNum}E${ep.episode_number}`;
-                                    const isWatched = watchedStates.includes(epIdStr) ? ' watched' : '';
+                                    const isWatched = window.__watchedStates && window.__watchedStates.includes(epIdStr) ? ' watched' : '';
 
                                     // Check if this is the continue_from episode (safe number comparison)
                                     const isContinueFrom = (
