@@ -604,6 +604,66 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
+    // Background preload function for anime episodes
+    window.preloadEpisodeSources = async function() {
+        try {
+            const urlParams = new URLSearchParams(window.location.search);
+            const tmdbId = urlParams.get('id');
+            const typeParam = (urlParams.get('type') || 'movie').toLowerCase();
+            const isAnime = typeParam === 'anime' || typeParam === 'tv';
+
+            if (!tmdbId || !isAnime) return;
+
+            const historyCache = window.__watchHistoryCache;
+            let episode = 1;
+            let season = 1;
+
+            if (historyCache?.continue_from) {
+                const contMatch = String(historyCache.continue_from).match(/S(\d+)E(\d+)/);
+                if (contMatch) {
+                    season = parseInt(contMatch[1]);
+                    episode = parseInt(contMatch[2]);
+                }
+            }
+
+            const malId = window.__malId || '';
+            const title = document.getElementById('title')?.textContent.trim() || '';
+
+            console.log('[Preload] Starting background source preload:', { tmdbId, season, episode, malId });
+
+            // Preload KAA sources
+            const kaaUrl = `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}&audio=sub&itemType=tv&title=${encodeURIComponent(title)}`;
+            fetch(kaaUrl).then(res => res.json()).then(data => {
+                if (data?.sources?.length > 0) {
+                    window.__preloadedKaaSources = data;
+                    window.__preloadedKaaEpisode = { season, ep: episode };
+                    console.log('[Preload] KAA sources cached for S' + season + 'E' + episode);
+                }
+            }).catch(err => console.log('[Preload] KAA preload failed:', err));
+
+            // Preload Neko sources
+            const nekoQuery = new URLSearchParams({
+                malId: malId || '',
+                tmdbId: tmdbId || '',
+                title,
+                type: 'sub',
+                season: season || 1,
+                ep: episode || 1
+            });
+            const nekoUrl = `/api/anime-neko-log?${nekoQuery.toString()}`;
+            fetch(nekoUrl).then(res => res.json()).then(data => {
+                if (data?.stream || data?.sources?.file) {
+                    window.__preloadedNekoSources = data;
+                    window.__preloadedNekoEpisode = { season, ep: episode };
+                    console.log('[Preload] Neko sources cached for S' + season + 'E' + episode);
+                }
+            }).catch(err => console.log('[Preload] Neko preload failed:', err));
+
+        } catch (err) {
+            console.log('[Preload] Background preload error:', err);
+        }
+    };
+
     // 3. Everything happens ONLY when Watch Now is clicked
     watchNowBtn.addEventListener('click', async function() {
         // Add a class to restore spacing
@@ -1249,13 +1309,20 @@ document.addEventListener('DOMContentLoaded', function() {
                 const title =
                     document.getElementById("title")?.textContent.trim() || "";
 
-                const res = await fetch(
-                    `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=${encodeURIComponent(requestedType)}&title=${encodeURIComponent(title)}`
-                );
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                    if (infoDiv) infoDiv.textContent = `KickAssAnime: ${data?.error || 'Failed to resolve stream.'}`;
-                    return false;
+                let data;
+                if (window.__preloadedKaaSources && parseInt(selectedSeason) === parseInt(window.__preloadedKaaEpisode?.season || 1) && parseInt(episode) === parseInt(window.__preloadedKaaEpisode?.ep || 1)) {
+                    console.log('[KAA] Using preloaded sources');
+                    data = window.__preloadedKaaSources;
+                    window.__preloadedKaaSources = null;
+                } else {
+                    const res = await fetch(
+                        `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=${encodeURIComponent(requestedType)}&title=${encodeURIComponent(title)}`
+                    );
+                    data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                        if (infoDiv) infoDiv.textContent = `KickAssAnime: ${data?.error || 'Failed to resolve stream.'}`;
+                        return false;
+                    }
                 }
 
                 const source = (data.sources || []).find(src => src?.proxiedUrl || src?.url || src?.file);
@@ -1429,12 +1496,20 @@ document.addEventListener('DOMContentLoaded', function() {
                 setTimeout(() => {
                     clearInterval(intervalId);
                 }, 10000);
-                const res = await fetch(`/api/anime-neko-log?${query.toString()}`);
-                const data = await res.json().catch(() => ({}));
 
-                if (!res.ok) {
-                    if (infoDiv) infoDiv.textContent = `NekoStream: ${data?.error || 'Failed to resolve stream.'}`;
-                    return false;
+                let data;
+                if (window.__preloadedNekoSources && parseInt(season) === parseInt(window.__preloadedNekoEpisode?.season || 1) && parseInt(episode) === parseInt(window.__preloadedNekoEpisode?.ep || 1)) {
+                    console.log('[Neko] Using preloaded sources');
+                    data = window.__preloadedNekoSources;
+                    window.__preloadedNekoSources = null;
+                } else {
+                    const res = await fetch(`/api/anime-neko-log?${query.toString()}`);
+                    data = await res.json().catch(() => ({}));
+
+                    if (!res.ok) {
+                        if (infoDiv) infoDiv.textContent = `NekoStream: ${data?.error || 'Failed to resolve stream.'}`;
+                        return false;
+                    }
                 }
 
                 const streamUrl = data?.stream || data?.sources?.file || data?.url;

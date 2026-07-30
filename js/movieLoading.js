@@ -351,6 +351,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // No fade-up entrance, just normal fade-out for loader
                 setTimeout(() => {
                     loadingOverlay.style.display = 'none';
+
+                    // Preload episode sources in background (500ms after loading screen disappears)
+                    setTimeout(() => {
+                        window.preloadEpisodeSources?.();
+                    }, 500);
                 }, 500);
             }, 350);
         }, 350);
