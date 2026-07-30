@@ -1,0 +1,34 @@
+{
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "database": "${workspaceFolder:CURRENT BACKUP}/Backend/users.db",
+            "name": "ex1"
+        },
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "database": "${workspaceFolder:CURRENT BACKUP}/Backend/users.db",
+            "name": "ex2"
+        },
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "database": "${workspaceFolder:CURRENT BACKUP}/Backend/users.db",
+            "name": "ex3"
+        },
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "database": "${workspaceFolder:CURRENT BACKUP}/Backend/users.db",
+            "name": "ex4"
+        }
+    ],
+    "sqltools.useNodeRuntime": true,
+    "twinny.enabled": true,
+    "twinny.enabledLanguages": {
+        "javascript": true
+    },
+    "twinny.contextLength": 100000
+}
