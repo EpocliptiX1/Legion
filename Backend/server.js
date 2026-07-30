@@ -720,6 +720,24 @@ animeCacheDb.serialize(() => {
             PRIMARY KEY(row_key, page, per_page)
         );
     `);
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS episode_load_cache (
+            cache_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tmdb_id INTEGER NOT NULL,
+            mal_id INTEGER,
+            season INTEGER NOT NULL,
+            episode INTEGER NOT NULL,
+            audio_type TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            anime_id TEXT,
+            anime_title TEXT,
+            sources TEXT,
+            subtitles TEXT,
+            cached_at INTEGER NOT NULL,
+            last_accessed INTEGER NOT NULL,
+            UNIQUE(tmdb_id, season, episode, audio_type, provider)
+        );
+    `);
 });
 
 const TMDB_SEARCH_LOG_FILE = path.join(__dirname, 'tmdb_search_log.txt');
@@ -4144,6 +4162,58 @@ function animeRowCacheUpsert(rowKey, page = 1, perPage = 18, ids = []) {
     });
 }
 
+function episodeLoadCacheGet(tmdbId, season, episode, audioType, provider) {
+    return new Promise((resolve, reject) => {
+        const now = Date.now();
+        const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+        animeCacheDb.get(
+            `SELECT * FROM episode_load_cache
+             WHERE tmdb_id = ? AND season = ? AND episode = ? AND audio_type = ? AND provider = ?
+             AND (? - cached_at) < ?`,
+            [tmdbId, season, episode, audioType, provider, now, maxAge],
+            (err, row) => {
+                if (err) return reject(err);
+                if (row) {
+                    animeCacheDb.run(
+                        `UPDATE episode_load_cache SET last_accessed = ? WHERE cache_id = ?`,
+                        [now, row.cache_id]
+                    );
+                    resolve({
+                        sources: row.sources ? JSON.parse(row.sources) : null,
+                        subtitles: row.subtitles ? JSON.parse(row.subtitles) : null,
+                        animeId: row.anime_id,
+                        animeTitle: row.anime_title
+                    });
+                } else {
+                    resolve(null);
+                }
+            }
+        );
+    });
+}
+
+function episodeLoadCacheSet(tmdbId, malId, season, episode, audioType, provider, animeId, animeTitle, sources, subtitles) {
+    return new Promise((resolve, reject) => {
+        const now = Date.now();
+        animeCacheDb.run(
+            `INSERT INTO episode_load_cache (tmdb_id, mal_id, season, episode, audio_type, provider, anime_id, anime_title, sources, subtitles, cached_at, last_accessed)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(tmdb_id, season, episode, audio_type, provider) DO UPDATE SET
+                 anime_id = excluded.anime_id,
+                 anime_title = excluded.anime_title,
+                 sources = excluded.sources,
+                 subtitles = excluded.subtitles,
+                 cached_at = excluded.cached_at,
+                 last_accessed = excluded.last_accessed`,
+            [tmdbId, malId, season, episode, audioType, provider, animeId, animeTitle, JSON.stringify(sources), JSON.stringify(subtitles), now, now],
+            function (err) {
+                if (err) return reject(err);
+                resolve(this.changes || 0);
+            }
+        );
+    });
+}
+
 function animeCacheUpsertFromAniListItem(item) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
@@ -6343,6 +6413,19 @@ app.get('/api/anime-neko-log', async (req, res) => {
     }
 
     try {
+        // Check episode load cache first
+        if (tmdbId) {
+            const cached = await episodeLoadCacheGet(parseInt(tmdbId), season, episode, audio, 'neko');
+            if (cached && cached.sources) {
+                logNekoDebug(`[Cache HIT] Neko S${season}E${episode} ${audio}`);
+                return res.json({
+                    ok: true,
+                    stream: (cached.sources && cached.sources[0]) || null,
+                    sources: cached.sources || [],
+                    downloads: cached.subtitles || {}
+                });
+            }
+        }
         // 0. Search Anikoto and resolve watch URL
         // For Season 0 (Specials), ignore season filtering and search by title only
         // Anikoto usually doesn't have separate season 0 pages; specials are on main series page
@@ -6582,8 +6665,8 @@ app.get('/api/anime-neko-log', async (req, res) => {
         logNekoDebug('[Neko] Sub Mirrors:', subLinks.length);
         logNekoDebug('[Neko] Dub Mirrors:', dubLinks.length);
 
-        return res.json({ 
-            ok: true, 
+        const responseData = {
+            ok: true,
             stream: streamUrl,
             downloads: {
                 sub: subLinks[0] || null,
@@ -6591,7 +6674,18 @@ app.get('/api/anime-neko-log', async (req, res) => {
                 dub: dubLinks[0] || null,
                 dub2: dubLinks[1] || dubLinks[0] || null
             }
-        });
+        };
+
+        // Cache the result
+        if (tmdbId && streamUrl) {
+            const sources = [streamUrl];
+            const subtitles = responseData.downloads;
+            episodeLoadCacheSet(parseInt(tmdbId), malId, season, episode, audio, 'neko',
+                null, rawTitle, sources, subtitles).catch(err =>
+                logNekoDebug('[Cache] Failed to cache Neko result:', err.message));
+        }
+
+        return res.json(responseData);
 
     } catch (err) {
         console.error('\n[Neko Pipeline] Error:', err.message);
@@ -6627,15 +6721,35 @@ app.get('/api/anime-kaa-servers', async (req, res) => {
             return res.status(400).json({ error: 'Missing malId or tmdbId mapping' });
         }
 
-        const result = await resolveKickAssAnimeSources({
-            malId,
-            tmdbId,
-            itemType,
-            episodeNumber,
-            audioType,
-            frontendTitle,
-            season
-        });
+        // Check episode load cache first
+        const cached = await episodeLoadCacheGet(tmdbId, season, episodeNumber, audioType, 'kaa');
+        let result;
+        if (cached) {
+            console.log(`[Cache HIT] KAA S${season}E${episodeNumber} ${audioType}`);
+            result = {
+                sources: cached.sources || [],
+                subtitles: cached.subtitles || [],
+                animeId: cached.animeId,
+                animeTitle: cached.animeTitle
+            };
+        } else {
+            result = await resolveKickAssAnimeSources({
+                malId,
+                tmdbId,
+                itemType,
+                episodeNumber,
+                audioType,
+                frontendTitle,
+                season
+            });
+            // Cache the result
+            if (result?.sources?.length > 0) {
+                episodeLoadCacheSet(tmdbId, malId, season, episodeNumber, audioType, 'kaa',
+                    result.animeId, result.animeTitle, result.sources, result.subtitles).catch(err =>
+                    console.log('[Cache] Failed to cache KAA result:', err.message));
+            }
+        }
+
         let skipSegments = [];
         try {
             skipSegments = await getAnimeSkipTimestamps({ title: frontendTitle, season, episode: episodeNumber });
