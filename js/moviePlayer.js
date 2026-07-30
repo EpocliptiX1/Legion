@@ -1048,21 +1048,36 @@ document.addEventListener('DOMContentLoaded', function() {
                 const track = document.createElement('track');
                 track.kind = 'subtitles';
                 track.label = subtitle.lang || `Subtitle ${index + 1}`;
+
+                // Map language names to ISO 639-1 codes - covers common anime subtitle languages
                 const langMap = {
-                    English: 'en',
-                    Arabic: 'ar',
-                    French: 'fr',
-                    German: 'de',
-                    Italian: 'it',
-                    Portuguese: 'pt',
-                    Russian: 'ru',
-                    Spanish: 'es'
+                    'English': 'en', 'eng': 'en',
+                    'Arabic': 'ar', 'ara': 'ar',
+                    'French': 'fr', 'fra': 'fr',
+                    'German': 'de', 'deu': 'de',
+                    'Italian': 'it', 'ita': 'it',
+                    'Portuguese': 'pt', 'por': 'pt',
+                    'Russian': 'ru', 'rus': 'ru',
+                    'Spanish': 'es', 'spa': 'es',
+                    'Thai': 'th', 'tha': 'th',
+                    'Vietnamese': 'vi', 'vie': 'vi',
+                    'Indonesian': 'id', 'ind': 'id',
+                    'Chinese': 'zh', 'chi': 'zh', 'zho': 'zh',
+                    '中文（简体）': 'zh', 'Simplified Chinese': 'zh',
+                    '中文（繁體）': 'zh-TW', 'Traditional Chinese': 'zh-TW',
+                    'Tiếng Việt': 'vi',
+                    'ภาษาไทย': 'th',
+                    'Bahasa Indonesia': 'id'
                 };
 
-                track.srclang = langMap[subtitle.lang] || 'en';
+                // Generate unique srclang code for each subtitle to ensure Plyr treats them as different tracks
+                let srclang = langMap[subtitle.lang] || langMap[subtitle.language] || `xx-${index}`;
+
+                track.srclang = srclang;
                 track.src = subtitleUrl;
                 if (index === 0) track.default = true;
                 video.appendChild(track);
+                console.log(`[Subtitles] Added ${track.label} (${srclang})`);
             });
 
             video.style.display = 'block';
@@ -2003,22 +2018,33 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                     }
 
+                    const hasSpecials = data.seasons && data.seasons.some(s => s.season_number === 0);
+
+                    let specialsOption = '';
+                    if (hasSpecials && useAnimeSeasonUX) {
+                        specialsOption = '<option value="specials">Specials</option>';
+                    }
+
                     seasonSelect.innerHTML = useAnimeSeasonUX
-                        ? `<option value="all">All eps</option>${seasonEntries.map(s => `<option value="${s.season_number}">Season ${s.season_number}</option>`).join('')}`
+                        ? `<option value="all">All eps</option>${seasonEntries.map(s => `<option value="${s.season_number}">Season ${s.season_number}</option>`).join('')}${specialsOption}`
                         : seasonEntries.map(s => `<option value="${s.season_number}">Season ${s.season_number}</option>`).join('');
                     if (seasonPickerWrap) {
                         seasonPickerWrap.style.display = useAnimeSeasonUX ? 'flex' : 'none';
                     }
-                    
+
                     // NEW DYNAMIC POPULATOR
                     const populateEpisodes = async (sNumRaw) => {
                         const mode = String(sNumRaw || seasonSelect.value || (useAnimeSeasonUX ? 'all' : '1'));
                         // Display loading state in list
                         episodeListContainer.innerHTML = '<li style="padding: 20px; color:#fff; text-align:center;">Loading episodes...</li>';
-                        
+
                         try {
                             const bySeason = [];
-                            if (mode === 'all' && useAnimeSeasonUX) {
+                            if (mode === 'specials') {
+                                const seasonRes = await fetch(`/api/tmdb-proxy/tv/${tmdbId}/season/0`);
+                                const seasonData = await seasonRes.json();
+                                bySeason.push({ seasonNumber: 0, episodes: Array.isArray(seasonData?.episodes) ? seasonData.episodes : [] });
+                            } else if (mode === 'all' && useAnimeSeasonUX) {
                                 if (resolvedSeasonGroups && resolvedSeasonGroups.length > 0) {
                                     bySeason.push(...resolvedSeasonGroups.map(g => ({ seasonNumber: g.seasonNumber, episodes: g.episodes })));
                                 } else {
