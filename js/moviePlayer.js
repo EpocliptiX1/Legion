@@ -2240,6 +2240,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
                                 let firstThumb = null;
                                 let listHTML = '';
+                                console.log('[Episode List] Starting render with continue_from:', {
+                                    season: window.__continueFromSeason,
+                                    episode: window.__continueFromEpisode
+                                });
                                 flatEpisodes.forEach((ep, idx) => {
                                     const epName = ep.name || `Episode ${ep.episode_number}`;
                                     const epIsUnreleased = !ep.air_date || new Date(ep.air_date) > new Date();
@@ -2266,8 +2270,11 @@ document.addEventListener('DOMContentLoaded', function() {
                                         parseInt(window.__continueFromEpisode) === parseInt(ep.episode_number)
                                     ) ? ' active' : '';
 
+                                    if (idx < 5 || isContinueFrom) {
+                                        console.log(`[Episode List] EP${idx}: ${epIdStr} - isWatched="${isWatched}" isContinueFrom="${isContinueFrom}" (season: ${seasonNum} vs ${window.__continueFromSeason}, ep: ${ep.episode_number} vs ${window.__continueFromEpisode})`);
+                                    }
                                     if (isContinueFrom) {
-                                        console.log('[Episode List] Marked as active:', epIdStr);
+                                        console.log('[Episode List] ✓ Marked as active:', epIdStr);
                                     }
 
                                     listHTML += `
