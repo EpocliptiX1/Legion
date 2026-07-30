@@ -1,52 +1,283 @@
-let currentPage = 0;
+let currentPage = 1; 
 const limit = 50;
 let isLoading = false;
 
-// Store current filters
+function isAnimeLibraryMode() {
+    return localStorage.getItem('animeMode') === 'true';
+}
+
+const jikanGenreMap = {
+    "Action": 1,
+    "Adventure": 2,
+    "Comedy": 4,
+    "Drama": 8,
+    "Fantasy": 10,
+    "Horror": 14,
+    "Mystery": 7,
+    "Romance": 22,
+    "Science Fiction": 24,
+    "Sports": 30,
+    "Music": 19
+};
+
+function getLibrarySearchQuery() {
+    const mainSearch = document.getElementById('mainSearch');
+    const searchInput = document.getElementById('searchInput');
+    const raw = (mainSearch && mainSearch.value) || (searchInput && searchInput.value) || '';
+    return raw.trim();
+}
+
+function getAnimeTitle(item) {
+    return item.title_english || item.title || item.title_japanese || 'Unknown Title';
+}
+
+function getAnimeYear(item) {
+    if (item.year) return String(item.year);
+    const from = item.aired && item.aired.from ? String(item.aired.from) : '';
+    return from ? from.slice(0, 4) : '';
+}
+
+function getAnimePoster(item) {
+    return (item.images && item.images.jpg && (item.images.jpg.large_image_url || item.images.jpg.image_url))
+        ? (item.images.jpg.large_image_url || item.images.jpg.image_url)
+        : '/img/default_poster.png';
+}
+
+function getAnimeAliases(item) {
+    const aliases = [];
+    if (item.title_english) aliases.push(item.title_english);
+    if (item.title) aliases.push(item.title);
+    if (item.title_japanese) aliases.push(item.title_japanese);
+    if (Array.isArray(item.title_synonyms)) aliases.push(...item.title_synonyms);
+
+    const unique = [];
+    const seen = new Set();
+    for (const raw of aliases) {
+        const t = String(raw || '').trim();
+        if (!t) continue;
+        const key = t.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(t);
+        if (unique.length >= 4) break;
+    }
+    return unique;
+}
+
+const animeResolveCache = new Map();
+const tmdbToMalCache = new Map();
+
+async function getMalIdForTmdb(tmdbId) {
+    const key = String(tmdbId);
+    if (tmdbToMalCache.has(key)) return tmdbToMalCache.get(key);
+    try {
+        const r = await fetch(`/api/anime-mal-id?tmdbId=${encodeURIComponent(tmdbId)}&season=1`);
+        if (!r.ok) {
+            tmdbToMalCache.set(key, null);
+            return null;
+        }
+        const d = await r.json();
+        const mal = d && d.mal_id ? String(d.mal_id) : null;
+        tmdbToMalCache.set(key, mal);
+        return mal;
+    } catch (_) {
+        tmdbToMalCache.set(key, null);
+        return null;
+    }
+}
+
+async function resolveTmdbAnimeForJikanEntry(anime) {
+    const malId = anime && anime.mal_id ? String(anime.mal_id) : '';
+    if (!malId) return null;
+    if (animeResolveCache.has(malId)) return animeResolveCache.get(malId);
+
+    const preferredType = anime.type === 'Movie' ? 'movie' : 'tv';
+    const typeOrder = preferredType === 'movie' ? ['movie', 'tv'] : ['tv', 'movie'];
+    const aliases = getAnimeAliases(anime);
+    if (!aliases.length) {
+        animeResolveCache.set(malId, null);
+        return null;
+    }
+
+    for (const alias of aliases) {
+        for (const mediaType of typeOrder) {
+            try {
+                const r = await fetch(`/api/tmdb-proxy/search/${mediaType}?query=${encodeURIComponent(alias)}&language=en-US&page=1`);
+                if (!r.ok) continue;
+                const d = await r.json();
+                const results = (d && d.results ? d.results : []).slice(0, 5);
+
+                for (const hit of results) {
+                    if (!hit || !hit.id) continue;
+                    const mappedMal = await getMalIdForTmdb(hit.id);
+                    if (mappedMal && mappedMal === malId) {
+                        const resolved = {
+                            id: hit.id,
+                            type: mediaType,
+                            poster: hit.poster_path ? `https://image.tmdb.org/t/p/w500${hit.poster_path}` : null
+                        };
+                        animeResolveCache.set(malId, resolved);
+                        return resolved;
+                    }
+                }
+            } catch (_) {}
+        }
+    }
+
+    animeResolveCache.set(malId, null);
+    return null;
+}
+
+async function fetchJikanAnimeCandidates() {
+    const query = getLibrarySearchQuery();
+    const page = String(currentPage);
+
+    if (query) {
+        const params = new URLSearchParams();
+        params.set('q', query);
+        params.set('page', page);
+        params.set('limit', '40');
+        params.set('sfw', 'true');
+        params.set('order_by', 'score');
+        params.set('sort', 'desc');
+        params.set('min_score', '6');
+
+        const r = await fetch(`https://api.jikan.moe/v4/anime?${params.toString()}`);
+        if (!r.ok) throw new Error('Jikan search failed');
+        const d = await r.json();
+        return d && d.data ? d.data : [];
+    }
+
+    if (activeFilters.sort === 'popularity.desc') {
+        const topParams = new URLSearchParams();
+        topParams.set('filter', 'bypopularity');
+        topParams.set('page', page);
+        topParams.set('limit', '25');
+        const r = await fetch(`https://api.jikan.moe/v4/top/anime?${topParams.toString()}`);
+        if (!r.ok) throw new Error('Jikan top popularity failed');
+        const d = await r.json();
+        return d && d.data ? d.data : [];
+    }
+
+    if (activeFilters.sort === 'vote_average.desc') {
+        const topParams = new URLSearchParams();
+        topParams.set('page', page);
+        topParams.set('limit', '25');
+        const r = await fetch(`https://api.jikan.moe/v4/top/anime?${topParams.toString()}`);
+        if (!r.ok) throw new Error('Jikan top rated failed');
+        const d = await r.json();
+        return d && d.data ? d.data : [];
+    }
+
+    const params = new URLSearchParams();
+    params.set('page', page);
+    params.set('limit', '40');
+    params.set('sfw', 'true');
+    params.set('order_by', activeFilters.sort === 'primary_release_date.desc' ? 'start_date' : 'popularity');
+    params.set('sort', 'desc');
+    params.set('start_date', `${activeFilters.minYear}-01-01`);
+    params.set('end_date', `${activeFilters.maxYear}-12-31`);
+    params.set('min_score', '6');
+
+    if (activeFilters.genre && activeFilters.genre !== 'Anime' && jikanGenreMap[activeFilters.genre]) {
+        params.set('genres', String(jikanGenreMap[activeFilters.genre]));
+    }
+
+    const r = await fetch(`https://api.jikan.moe/v4/anime?${params.toString()}`);
+    if (!r.ok) throw new Error('Jikan filtered anime failed');
+    const d = await r.json();
+    return d && d.data ? d.data : [];
+}
+
+async function resolveTmdbAnimeByTitle(title, preferredType) {
+    const tryTypes = preferredType === 'movie' ? ['movie', 'tv'] : ['tv', 'movie'];
+    for (const t of tryTypes) {
+        try {
+            const r = await fetch(`/api/tmdb-proxy/search/${t}?query=${encodeURIComponent(title)}&language=en-US&page=1`);
+            if (!r.ok) continue;
+            const d = await r.json();
+            const match = d && d.results && d.results[0];
+            if (match && match.id) return { id: match.id, type: t };
+        } catch (_) {}
+    }
+    return null;
+}
+
+window.openAnimeFromLibrary = async function(title, preferredType) {
+    const found = await resolveTmdbAnimeByTitle(title, preferredType || 'tv');
+    if (!found) {
+        if (typeof showLimitToast === 'function') showLimitToast('Could not open this anime right now.');
+        return;
+    }
+    window.location.href = `movieInfo.html?id=${found.id}&type=${found.type}`;
+};
+
+window.toggleMyListAnimeByTitle = async function(title, name, preferredType) {
+    const found = await resolveTmdbAnimeByTitle(title, preferredType || 'tv');
+    if (!found) {
+        if (typeof showLimitToast === 'function') showLimitToast('Could not add this anime to My List.');
+        return;
+    }
+    window.toggleMyList(String(found.id), name || title, found.type);
+};
+
+const tmdbGenreMap = {
+    "Action": 28, "Adventure": 12, "Animation": 16, "Anime": 16, 
+    "Comedy": 35, "Crime": 80, "Documentary": 99, "Drama": 18,
+    "Family": 10751, "Fantasy": 14, "History": 36, "Horror": 27,
+    "Music": 10402, "Mystery": 9648, "Romance": 10749, 
+    "Science Fiction": 878, "TV Movie": 10770, "Thriller": 53,
+    "War": 10752, "Western": 37
+};
+
+// Store current filters, added ID slots for Actor/Director
 let activeFilters = {
-    sort: 'popularity_desc',
+    sort: 'popularity.desc', 
     minYear: 1930,
     maxYear: 2026,
     genre: '',
-    actor: '',
-    director: ''
+    actorId: null,
+    directorId: null
 };
 
 document.addEventListener('DOMContentLoaded', function() {
-    // ---  Sort Dropdown ---
     function setSortOptions(source) {
         const sortBy = document.getElementById('sortBy');
         if (!sortBy) return;
         let options = '';
+        if (isAnimeLibraryMode()) {
+            options += '<option value="popularity.desc">🔥 Most Popular</option>';
+            options += '<option value="vote_average.desc">⭐ Top Rated</option>';
+            options += '<option value="primary_release_date.desc">📅 Newest First</option>';
+            sortBy.innerHTML = options;
+            sortBy.value = 'popularity.desc';
+            return;
+        }
         if (source === 'api') {
-            options += '<option value="rating_desc">⭐ Top Rated</option>';
-            options += '<option value="success_desc">💰 Most Successful (Revenue)</option>';
-            options += '<option value="popularity_desc">🔥 Most Popular</option>';
+            options += '<option value="vote_average.desc">⭐ Top Rated</option>'; 
+            options += '<option value="revenue.desc">💰 Most Successful (Revenue)</option>';
+            options += '<option value="popularity.desc">🔥 Most Popular</option>';
         } else {
-            options += '<option value="rating_desc">⭐ Highest Rated</option>';
-            options += '<option value="rating_income_desc">📊 Best Rated / Gross Income</option>';
-            options += '<option value="date_desc">📅 Newest First</option>';
-            options += '<option value="duration_desc">⏳ Longest Duration</option>';
-            options += '<option value="success_desc">💰 Most Successful</option>';
+            options += '<option value="vote_average.desc">⭐ Highest Rated</option>';
+            options += '<option value="revenue.desc">💰 Most Successful</option>';
+            options += '<option value="primary_release_date.desc">📅 Newest First</option>';
         }
         sortBy.innerHTML = options;
-        // Set default selected to Most Popular if present
         if (source === 'api') {
-            sortBy.value = 'popularity_desc';
-        } else {
-            // For local, you can set another default if needed
+            sortBy.value = 'popularity.desc';
         }
     }
 
-    const source = window.getMovieSource ? window.getMovieSource() : 'local';
+    const source = window.getMovieSource ? window.getMovieSource() : 'api'; 
     setSortOptions(source);
+    
     if (window.onMovieSourceChange) {
         window.onMovieSourceChange(setSortOptions);
     }
+    
     const grid = document.getElementById('libraryGrid');
     if (!grid) return;
 
-    // 1. Toggle Panel
     const toggleBtn = document.getElementById('filterToggle');
     if (toggleBtn) {
         toggleBtn.onclick = () => {
@@ -54,62 +285,107 @@ document.addEventListener('DOMContentLoaded', function() {
         };
     }
 
-
-    //  Apply Button 
     const applyBtn = document.getElementById('applyFilters');
     const minSel = document.getElementById('yearPickerMin');
     const maxSel = document.getElementById('yearPickerMax');
 
-    if (!applyBtn) {
-        console.error('Missing apply button');
-        return;
+    if (isAnimeLibraryMode()) {
+        const titleEl = document.querySelector('.list-title');
+        if (titleEl) titleEl.textContent = 'Anime Library';
+
+        const actorInput = document.getElementById('actorInput');
+        const directorInput = document.getElementById('directorInput');
+        if (actorInput) {
+            actorInput.value = '';
+            actorInput.placeholder = 'Disabled in Anime mode';
+            actorInput.disabled = true;
+        }
+        if (directorInput) {
+            directorInput.value = '';
+            directorInput.placeholder = 'Disabled in Anime mode';
+            directorInput.disabled = true;
+        }
     }
 
-    applyBtn.onclick = function() {
-        // Defensive check inside the click handler
-        if (!minSel || !maxSel) {
-            console.error('Year pickers not found in DOM');
-            return;
-        }
+    if (applyBtn) {
+        // 🔥 MAKE THIS ASYNC TO FETCH ACTOR/DIRECTOR IDs 🔥
+        applyBtn.onclick = async function() {
+            // 1. Handle Years
+            if (minSel && maxSel) {
+                let minYearVal = parseInt(minSel.value, 10);
+                let maxYearVal = parseInt(maxSel.value, 10);
+                if (!isNaN(minYearVal) && !isNaN(maxYearVal)) {
+                    if (minYearVal > maxYearVal) {
+                        [minYearVal, maxYearVal] = [maxYearVal, minYearVal];
+                        minSel.value = minYearVal;
+                        maxSel.value = maxYearVal;
+                    }
+                    activeFilters.minYear = minYearVal;
+                    activeFilters.maxYear = maxYearVal;
+                }
+            }
 
-        let minYearVal = parseInt(minSel.value, 10);
-        let maxYearVal = parseInt(maxSel.value, 10);
+            // 2. Handle Sort & Genre
+            activeFilters.sort = document.getElementById('sortBy') ? document.getElementById('sortBy').value : 'popularity.desc';
+            const genreInput = document.getElementById('genreInput');
+            if(genreInput) activeFilters.genre = genreInput.value;
 
-        if (isNaN(minYearVal) || isNaN(maxYearVal)) {
-            alert("Please select both years.");
-            return;
-        }
-
-        if (minYearVal > maxYearVal) {
-            [minYearVal, maxYearVal] = [maxYearVal, minYearVal];
-            minSel.value = minYearVal;
-            maxSel.value = maxYearVal;
-        }
-
-        console.log(`Applying filters: Years ${minYearVal}-${maxYearVal}`);
+            // 3. Handle Actor & Director ID Translation
+            activeFilters.actorId = null;
+            activeFilters.directorId = null;
+            if (isAnimeLibraryMode()) {
+                const grid = document.getElementById('libraryGrid');
+                if (grid) grid.innerHTML = '';
+                currentPage = 1;
+                loadMovies();
+                return;
+            }
             
-        activeFilters.sort = document.getElementById('sortBy').value;
-        activeFilters.minYear = minYearVal;
-        activeFilters.maxYear = maxYearVal;
-        activeFilters.genre = document.getElementById('genreInput').value;
-        activeFilters.actor = document.getElementById('actorInput').value.trim();
-        activeFilters.director = document.getElementById('directorInput').value.trim();
+            const actorName = document.getElementById('actorInput') ? document.getElementById('actorInput').value.trim() : '';
+            const directorName = document.getElementById('directorInput') ? document.getElementById('directorInput').value.trim() : '';
 
-        // reset
-        const grid = document.getElementById('libraryGrid');
-        if(grid) grid.innerHTML = '';
-        currentPage = 0;
+            // Ask TMDB for the Actor's ID
+            if (actorName) {
+                try {
+                    const res = await fetch(`/api/tmdb-proxy/search/person?query=${encodeURIComponent(actorName)}`);
+                    const data = await res.json();
+                    if (data.results && data.results.length > 0) {
+                        activeFilters.actorId = data.results[0].id; // Grab the first person match
+                    } else {
+                        alert(`Actor "${actorName}" not found!`);
+                    }
+                } catch(e) { console.error('Actor search failed', e); }
+            }
 
-        loadMovies();
+            // Ask TMDB for the Director's ID
+            if (directorName) {
+                try {
+                    const res = await fetch(`/api/tmdb-proxy/search/person?query=${encodeURIComponent(directorName)}`);
+                    const data = await res.json();
+                    if (data.results && data.results.length > 0) {
+                        activeFilters.directorId = data.results[0].id; 
+                    } else {
+                        alert(`Director "${directorName}" not found!`);
+                    }
+                } catch(e) { console.error('Director search failed', e); }
+            }
+
+            // reset grid & go back to page 1
+            const grid = document.getElementById('libraryGrid');
+            if(grid) grid.innerHTML = '';
+            currentPage = 1;
+
+            loadMovies();
+        }
     }
 
     if (minSel && maxSel) {
         activeFilters.minYear = parseInt(minSel.value) || 1930;
         activeFilters.maxYear = parseInt(maxSel.value) || 2026;
     }
+    
     loadMovies();
 
-    // inf Scroll
     window.onscroll = function() {
         if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 500) {
             if (!isLoading) loadMovies();
@@ -125,47 +401,90 @@ async function loadMovies() {
         return;
     }
 
-    // Use TMDB multi-search for both movies and series
+    if (isAnimeLibraryMode()) {
+        await loadAnimeLibraryFromJikan(grid);
+        return;
+    }
+
     try {
-        const searchInput = document.getElementById('searchInput');
-        const query = searchInput && searchInput.value ? searchInput.value : '';
-        if (!query) {
-            grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Enter a search term to find movies or series.</p>';
+        const query = getLibrarySearchQuery();
+        
+        let fetchUrl = '';
+        let isDirectTMDB = false;
+
+        if (query) {
+            fetchUrl = `/api/tmdb/search?q=${encodeURIComponent(query)}&page=${currentPage}`;
+        } else {
+            isDirectTMDB = true;
+            
+            let endpoint = 'movie'; 
+            let dateParam = 'primary_release_date';
+            let extraFilters = '';
+
+            // 🔥 INJECT ACTOR / DIRECTOR IDs 🔥
+            if (activeFilters.actorId) extraFilters += `&with_cast=${activeFilters.actorId}`;
+            if (activeFilters.directorId) extraFilters += `&with_crew=${activeFilters.directorId}`;
+
+            if (activeFilters.genre === 'Anime') {
+                endpoint = 'tv';
+                dateParam = 'first_air_date'; 
+                extraFilters += '&with_original_language=ja&without_genres=10762,10751';                
+                if (activeFilters.sort === 'revenue.desc') activeFilters.sort = 'popularity.desc';
+            }
+
+            fetchUrl = `/api/tmdb-proxy/discover/${endpoint}?language=en-US&sort_by=${activeFilters.sort}&${dateParam}.gte=${activeFilters.minYear}-01-01&${dateParam}.lte=${activeFilters.maxYear}-12-31&page=${currentPage}${extraFilters}`;
+            
+            if (activeFilters.genre && tmdbGenreMap[activeFilters.genre]) {
+                const genreId = tmdbGenreMap[activeFilters.genre];
+                fetchUrl += `&with_genres=${genreId}`;
+            }
+        }
+
+        const response = await fetch(fetchUrl);
+        if (!response.ok) throw new Error("Network response was not ok");
+        
+        let data = await response.json();
+        let items = isDirectTMDB ? data.results : data; 
+
+        if (!items || items.length === 0) {
+            if (currentPage === 1) {
+                grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No movies/shows match these filters.</p>';
+            }
             isLoading = false;
             return;
         }
-        const response = await fetch(`/api/tmdb/search?q=${encodeURIComponent(query)}`);
-        if (!response.ok) throw new Error("Server Error");
-        let items = await response.json();
-        // Filter by year if needed
-        items = items.filter(item => {
-            const y = parseInt(item.year);
-            if (isNaN(y)) return true;
-            return y >= activeFilters.minYear && y <= activeFilters.maxYear;
-        });
-        if (items.length === 0) {
-            grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No movies or series match these filters.</p>';
-            isLoading = false;
-            return;
-        }
+
         items.forEach(item => {
+            const id = item.id;
+            const title = item.title || item.name || "Unknown Title";
+            const safeName = title.replace(/'/g, "\\'");
+            const posterPath = item.poster_path || item.poster;
+            const posterUrl = posterPath ? (posterPath.startsWith('http') ? posterPath : `https://image.tmdb.org/t/p/w500${posterPath}`) : '/img/default_poster.png';
+            
+            let year = item.year;
+            if(!year) {
+               const rawDate = item.release_date || item.first_air_date;
+               year = rawDate ? rawDate.split('-')[0] : '';
+            }
+            
+            const type = item.type || (item.first_air_date ? 'tv' : 'movie');
+            const typeLabel = type === 'tv' ? 'TV Series' : 'Movie';
+
             const card = document.createElement('div');
             card.className = 'grid-card';
-            card.setAttribute('data-type', item.type);
+            card.setAttribute('data-type', type);
+            
             const plusIconSVG = `
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="currentColor"/> 
                 </svg>`;
-            const safeName = item.title ? item.title.replace(/'/g, "\\'") : "Unknown Title";
-            let posterUrl = item.poster || '/img/default_poster.png';
-            let year = item.year || '';
-            let typeLabel = item.type === 'tv' ? 'TV Series' : 'Movie';
+            
             card.innerHTML = `
-                <img src="${posterUrl}" onclick="window.location.href='movieInfo.html?id=${item.id}&type=${item.type}'" alt="${safeName}">
+                <img src="${posterUrl}" loading="lazy" decoding="async" onclick="window.location.href='movieInfo.html?id=${id}&type=${type}'" alt="${safeName}">
                 <div class="card-hover-info">
                     <div class="hover-btns">
-                        <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${item.id}&type=${item.type}'">▶</button>
-                        <button class="hover-add" onclick="toggleMyList('${item.id}', '${safeName}')">
+                        <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${id}&type=${type}'">▶</button>
+                        <button class="hover-add" onclick="toggleMyList('${id}', '${safeName}')">
                             ${plusIconSVG}
                         </button>
                     </div>
@@ -177,33 +496,52 @@ async function loadMovies() {
             `;
             grid.appendChild(card);
         });
+        
         currentPage++;
         isLoading = false;
     } catch (err) {
         console.error("Library failed to load:", err);
+        if(currentPage === 1) {
+             grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Error loading data. Check console.</p>';
+        }
         isLoading = false;
     }
 }
 
 // --- MY LIST LOGIC ---
-window.toggleMyList = function(id, name) {
-    let list = JSON.parse(localStorage.getItem('myList')) || [];
-    let message = "";
+// Normalizes any entry (old bare string or new {id,type} object) to {id, type}
+function _normalizeListEntry(item) {
+    if (typeof item === 'object' && item !== null) return item;
+    return { id: String(item), type: 'movie' };
+}
 
-    // Convert id to string to ensure matching works
+window.toggleMyList = function(id, name, type) {
     id = String(id);
+    type = type || 'movie';
+    let raw = JSON.parse(localStorage.getItem('myList')) || [];
+    // Normalize legacy bare-string entries
+    let list = raw.map(_normalizeListEntry);
+    let message = '';
 
-    if (list.includes(id)) {
-        list = list.filter(item => item !== id);
+    const idx = list.findIndex(item => item.id === id);
+    if (idx !== -1) {
+        list.splice(idx, 1);
         message = `Removed ${name}`;
+        // Persist removal to DB
+        if (window.recommendationsSystem?.persistMyListChange) {
+            window.recommendationsSystem.persistMyListChange(id, type, 'remove');
+        }
     } else {
-        list.push(id);
+        list.push({ id, type });
         message = `Added ${name} to My List`;
+        // Persist addition to DB
+        if (window.recommendationsSystem?.persistMyListChange) {
+            window.recommendationsSystem.persistMyListChange(id, type, 'add');
+        }
     }
-    
+
     localStorage.setItem('myList', JSON.stringify(list));
-    
-    // Notification logic
+
     if (typeof showToast === 'function') {
         showToast(message);
     } else if (typeof showLimitToast === 'function') {
@@ -211,6 +549,90 @@ window.toggleMyList = function(id, name) {
     } else {
         console.log(message);
     }
-    
-    if (typeof updateInfoButtonUI === "function") updateInfoButtonUI(id);
+
+    if (typeof updateInfoButtonUI === 'function') updateInfoButtonUI(id);
+}
+
+async function loadAnimeLibraryFromJikan(grid) {
+    try {
+        const candidates = await fetchJikanAnimeCandidates();
+        if (!candidates.length) {
+            if (currentPage === 1) {
+                grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No anime match these filters.</p>';
+            }
+            isLoading = false;
+            return;
+        }
+
+        const verified = [];
+        const batchSize = 6;
+        for (let i = 0; i < candidates.length && verified.length < 24; i += batchSize) {
+            const chunk = candidates.slice(i, i + batchSize);
+            const resolvedChunk = await Promise.all(
+                chunk.map(async (anime) => {
+                    const resolved = await resolveTmdbAnimeForJikanEntry(anime);
+                    return resolved ? { anime, resolved } : null;
+                })
+            );
+
+            for (const hit of resolvedChunk) {
+                if (!hit) continue;
+                verified.push(hit);
+                if (verified.length >= 24) break;
+            }
+        }
+
+        if (!verified.length) {
+            if (currentPage === 1) {
+                grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No MAL anime could be matched to TMDB for this page.</p>';
+            }
+            isLoading = false;
+            return;
+        }
+
+        const plusIconSVG = `
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="currentColor"/>
+            </svg>`;
+
+        verified.forEach(({ anime, resolved }) => {
+            const title = getAnimeTitle(anime);
+            const safeName = title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const posterUrl = resolved.poster || getAnimePoster(anime);
+            const year = getAnimeYear(anime);
+            const inferredType = resolved.type;
+            const typeLabel = anime.type || 'Anime';
+            const tmdbId = resolved.id;
+
+            const card = document.createElement('div');
+            card.className = 'grid-card';
+            card.setAttribute('data-type', inferredType);
+
+            card.innerHTML = `
+                <img src="${posterUrl}" loading="lazy" decoding="async" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'" alt="${safeName}">
+                <div class="card-hover-info">
+                    <div class="hover-btns">
+                        <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'">▶</button>
+                        <button class="hover-add" onclick="toggleMyList('${tmdbId}', '${safeName}', '${inferredType}')">
+                            ${plusIconSVG}
+                        </button>
+                    </div>
+                    <div class="info-text">
+                        <h4>${safeName}</h4>
+                        <span class="match-score">${year ? year : ''} ${typeLabel}</span>
+                    </div>
+                </div>
+            `;
+            grid.appendChild(card);
+        });
+
+        currentPage++;
+        isLoading = false;
+    } catch (err) {
+        console.error('Anime library failed to load:', err);
+        if (currentPage === 1) {
+            grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Error loading anime data. Check console.</p>';
+        }
+        isLoading = false;
+    }
 }

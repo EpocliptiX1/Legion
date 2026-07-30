@@ -1,0 +1,14 @@
+{
+  "mode": "dry-run",
+  "includeAll": false,
+  "limit": null,
+  "sourceFile": "C:\\Users\\Damir\\Desktop\\myhflixer\\CURRENT BACKUP\\Backend\\backend\\forum_movies.json",
+  "checked": 0,
+  "updatedCount": 0,
+  "unchangedCount": 0,
+  "ambiguousCount": 0,
+  "unmatchedCount": 0,
+  "updated": [],
+  "ambiguous": [],
+  "unmatched": []
+}

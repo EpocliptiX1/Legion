@@ -54,6 +54,7 @@ const EnhancedSearch = {
     
     handleSearch(query) {
         clearTimeout(this.searchTimeout);
+        console.log('[EnhancedSearch] User searched for:', query);
         this.currentQuery = query;
         
         const resultsMenu = document.getElementById('searchResults');
@@ -95,7 +96,20 @@ const EnhancedSearch = {
             console.log('[EnhancedSearch] Fetching:', baseUrl);
             const response = await fetch(baseUrl);
             const items = await response.json();
-            console.log('[EnhancedSearch] Results:', items);
+            // Log all types in the results for debugging
+            if (Array.isArray(items)) {
+                const typeCounts = items.reduce((acc, item) => {
+                    acc[item.type] = (acc[item.type] || 0) + 1;
+                    return acc;
+                }, {});
+                console.log('[EnhancedSearch] Results:', items);
+                console.log('[EnhancedSearch] Type counts:', typeCounts);
+                if (items.length > 0) {
+                    console.log('[EnhancedSearch] Example types:', items.map(i => i.type));
+                }
+            } else {
+                console.log('[EnhancedSearch] Results (not array):', items);
+            }
             this.displayResults(items, query);
             this.addToHistory(query);
         } catch (error) {
@@ -168,22 +182,41 @@ const EnhancedSearch = {
     
     // Select movie from search results
     selectMovie(movieId) {
+        console.log('[EnhancedSearch] selectMovie called with:', arguments);
         const resultsMenu = document.getElementById('searchResults');
         if (resultsMenu) {
             resultsMenu.classList.remove('active');
         }
-        
         const searchInput = document.getElementById('mainSearch');
         if (searchInput) {
             searchInput.value = '';
             searchInput.blur();
         }
-        
-        if (window.openMovieById) {
-            window.openMovieById(movieId);
+        // Accepts both id and type (for correct navigation)
+        if (arguments.length > 1) {
+            console.log('[EnhancedSearch] Navigating to movieInfo.html with:', arguments[0], arguments[1]);
+            EnhancedSearch.openMovie(arguments[0], arguments[1]);
         } else {
-            window.location.href = `/html/movieInfo.html?id=${movieId}`;
+            if (window.openMovieById) {
+                console.log('[EnhancedSearch] Calling window.openMovieById with:', movieId);
+                window.openMovieById(movieId);
+            } else {
+                console.log('[EnhancedSearch] Fallback: navigating to', `/html/movieInfo.html?id=${movieId}&type=movie`);
+                window.location.href = `/html/movieInfo.html?id=${movieId}&type=movie`;
+            }
         }
+    },
+
+    // Static navigation method for opening a movie by id and type
+    openMovie: function(id, type) {
+        if (!id) {
+            alert('Could not open movie: missing ID');
+            return;
+        }
+        var t = type || 'movie';
+        var url = `/html/movieInfo.html?id=${id}&type=${t}`;
+        console.log('[EnhancedSearch] openMovie navigating to:', url);
+        window.location.href = url;
     },
     
     // Perform full search (navigate to search results page)

@@ -1,0 +1,458 @@
+{
+  "mode": "confirm",
+  "includeAll": true,
+  "limit": null,
+  "sourceFile": "C:\\Users\\Damir\\Desktop\\myhflixer\\CURRENT BACKUP\\Backend\\backend\\forum_movies.json",
+  "checked": 52,
+  "updatedCount": 41,
+  "unchangedCount": 0,
+  "ambiguousCount": 3,
+  "unmatchedCount": 8,
+  "updated": [
+    {
+      "movieId": "250003",
+      "movieTitle": "Witch Hat Atelier",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W1D8P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/78m1Tv3suHmUryTI9VNPwKLKjHZ.jpg",
+      "score": 1,
+      "tmdbId": 196950,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "250004",
+      "movieTitle": "Chiikawa",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F1W1D5P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/cXm3mxmlOWJZAyn5fqFI9JpARa3.jpg",
+      "score": 1,
+      "tmdbId": 194916,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "250014",
+      "movieTitle": "MILGRAM",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W1D1P1N1M1L1V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/gTmJgdyRYN2b69atr1kexjGaaCX.jpg",
+      "score": 1,
+      "tmdbId": 1530905,
+      "mediaType": "movie"
+    },
+    {
+      "movieId": "13916",
+      "movieTitle": "Death Note",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1A9X1Z5E8F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/tCZFfYTIwrR7n94J6G14Y4hAFU6.jpg",
+      "score": 1,
+      "tmdbId": 13916,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "250005",
+      "movieTitle": "Renegade Immortal",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W1D1P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/2jEJSCLFjniFT7z4YvyY9Ywo1lc.jpg",
+      "score": 1,
+      "tmdbId": 223911,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "84042",
+      "movieTitle": "Vinland Saga",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1A5Z8X9E2F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/vUHlpA5c1NXkds59reY3HMb4Abs.jpg",
+      "score": 1,
+      "tmdbId": 88803,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "120089",
+      "movieTitle": "Spy x Family",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/9A1X8Z5E2F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/7NAvPYPAu7MeHwP8E9sn81PqsRh.jpg",
+      "score": 1,
+      "tmdbId": 120089,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "84773",
+      "movieTitle": "That Time I Got Reincarnated as a Slime",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/2W5E8Z9P3D7A4F1N6X8M7L9A2V4.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/pzujcdPAoH361NObVrtbA7zACE7.jpg",
+      "score": 1,
+      "tmdbId": 82684,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "66995",
+      "movieTitle": "Mob Psycho 100",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1A9X5Z8E2F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/vR7hwaGQ0ySRoq1WobiNRaPs4WO.jpg",
+      "score": 1,
+      "tmdbId": 67075,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "209867",
+      "movieTitle": "Frieren: Beyond Journey's End",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/x12u9EaPj5b7s9sYEq2tA7mHh2y.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/dqZENchTd7lp5zht7BdlqM7RBhD.jpg",
+      "score": 1,
+      "tmdbId": 209867,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "65930",
+      "movieTitle": "My Hero Academia",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/5A9X1Z8E2F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/phuYuzqWW9ru8EA3HVjE9W2Rr3M.jpg",
+      "score": 1,
+      "tmdbId": 65930,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "61374",
+      "movieTitle": "Tokyo Ghoul",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F8W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/1m4RlC9BTCbyY549TOdVQ5NRPcR.jpg",
+      "score": 1,
+      "tmdbId": 61374,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "250007",
+      "movieTitle": "Nippon Sangoku: The Three Nations of the Crimson Sun",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F1W1D1P5N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/sM7zYE6xOmaNwC28LR7cEneAtuN.jpg",
+      "score": 1,
+      "tmdbId": 312474,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "37455",
+      "movieTitle": "Steins;Gate",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/8A9X1Z5E2F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/96R4bV7dB8ramaWceNKsxvJgCUd.jpg",
+      "score": 1,
+      "tmdbId": 42509,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "250018",
+      "movieTitle": "Classroom of the Elite 4th Season: Second Year, First Semester",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W1D1P1N1M1L1V1Q5.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/yuHanbUUIv2UWRxxQFt9n8jtmOJ.jpg",
+      "score": 0.9,
+      "tmdbId": 72517,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "209728",
+      "movieTitle": "Mashle: Magic and Muscles",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/3Q8X5W1F9D7Z2A4N8E6P5M7A2L9.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/yORTvQOQTZzZ9JRIpRH4QaIaQBm.jpg",
+      "score": 1,
+      "tmdbId": 204832,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "31133",
+      "movieTitle": "Berserk (1997)",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E5F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/xctRBSZzvoHDHz38ZZUGxRYetvG.jpg",
+      "score": 1,
+      "tmdbId": 35935,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "1429",
+      "movieTitle": "Attack on Titan",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/8D1A3Z9E5F7W2X6P8N4M7L9A2Q5.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/hTP1DtLGFamjfu8WqjnuQdP1n4i.jpg",
+      "score": 1,
+      "tmdbId": 1429,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "61459",
+      "movieTitle": "Parasyte: The Maxim",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/cXBfjZSdJelu2r0wKD7qCxS71kb.jpg",
+      "score": 1,
+      "tmdbId": 61459,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "72636",
+      "movieTitle": "Made in Abyss",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F5W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/f6U3odfIb3pCXMGKRTQGGF9o1Qg.jpg",
+      "score": 1,
+      "tmdbId": 72636,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "105248",
+      "movieTitle": "Cyberpunk: Edgerunners",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/lqcDVZ8pyk08AVftMBildDR3QUK.jpg",
+      "score": 1,
+      "tmdbId": 105248,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "213008",
+      "movieTitle": "Kaiju No. 8",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/3oK2sN19T8K7fWqQ6W9PqM3Vp2l.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/bJxGs0w5RAhaX4fIUQu511rvm0S.jpg",
+      "score": 1,
+      "tmdbId": 207468,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "250017",
+      "movieTitle": "That Time I Got Reincarnated as a Slime Season 4",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W1D1P1N1M1L1V1Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/pzujcdPAoH361NObVrtbA7zACE7.jpg",
+      "score": 1,
+      "tmdbId": 82684,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "115456",
+      "movieTitle": "Mushoku Tensei",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/z9X5A2E8V3F7W4P6N1M8L9D2Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/gLKOYIMyKlUHW0SVdskhgf9C0yy.jpg",
+      "score": 0.9,
+      "tmdbId": 94664,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "111110",
+      "movieTitle": "Solo Leveling",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/geRUzxNDjSCARuvXzQtzG1GvUra.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/geCRueV3ElhRTr0xtJuEWJt6dJ1.jpg",
+      "score": 1,
+      "tmdbId": 127532,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "890",
+      "movieTitle": "Neon Genesis Evangelion",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W8D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/y2ah9t0navXyIvoHg1uIbIHO3tt.jpg",
+      "score": 1,
+      "tmdbId": 890,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "250011",
+      "movieTitle": "Tales of Herding Gods",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W1D1P1N1M5L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/k6q3k6lUvjbYdgQyqIGVaY9VlAm.jpg",
+      "score": 1,
+      "tmdbId": 236534,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "118471",
+      "movieTitle": "Hell's Paradise",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1A9X8Z5E2F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/1V9I7SvZbYoMbSvdtnlkkq9SB1k.jpg",
+      "score": 1,
+      "tmdbId": 117465,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "132122",
+      "movieTitle": "Blue Lock",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/5F9A6L2x5D8Z7s3P1W8A2E7X4P3.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/sTDTy73OYmKY51EK94Mc6AxogzR.jpg",
+      "score": 1,
+      "tmdbId": 131041,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "250001",
+      "movieTitle": "Steel Ball Run: JoJo's Bizarre Adventure",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F1W5D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/ogAWwbh3frWtiTyyXrZaVFtqCgp.jpg",
+      "score": 0.9,
+      "tmdbId": 45790,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "31086",
+      "movieTitle": "Hellsing Ultimate",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E8F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/fum0tvBuVVeofFoHI0IXHgrzKEa.jpg",
+      "score": 1,
+      "tmdbId": 61752,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "95479",
+      "movieTitle": "Jujutsu Kaisen",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1Z3N8Qz6z8B6x3X5a9h7P2g1d3f.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/fHpKWq9ayzSk8nSwqRuaAUemRKh.jpg",
+      "score": 1,
+      "tmdbId": 95479,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "196839",
+      "movieTitle": "The Eminence in Shadow",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/5A1X8Z9E2F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/7JKYmtLydAwo9ZsEmAknZiO4U8g.jpg",
+      "score": 1,
+      "tmdbId": 119495,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "85937",
+      "movieTitle": "Demon Slayer",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/q3m6C7L6wZ7aX3W1V8P5F7D3A2C.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/wFeHHxnTrSb4NaFRqFDYcqtqbQ1.jpg",
+      "score": 1,
+      "tmdbId": 95993,
+      "mediaType": "movie"
+    },
+    {
+      "movieId": "195669",
+      "movieTitle": "Oshi no Ko",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/aZ9Q8P1A3F5L7X4W2Z6V8D9E3N7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/rFp74PFpz14AHrtlVPrLyrSng47.jpg",
+      "score": 1,
+      "tmdbId": 203737,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "114410",
+      "movieTitle": "Chainsaw Man",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/1w2X5M9Z7E6P5w1W3N8I5F2P2a7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/yVtx7Xn9UxNJqvG2BkvhCcmed9S.jpg",
+      "score": 1,
+      "tmdbId": 114410,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "250015",
+      "movieTitle": "Case Closed",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W1D1P1N1M1L1V8Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/qCHQgFtUFWGbum6nG7Wpvu2iQAi.jpg",
+      "score": 1,
+      "tmdbId": 631004,
+      "mediaType": "movie"
+    },
+    {
+      "movieId": "250013",
+      "movieTitle": "Wistoria: Wand and Sword Season 2",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F1W1D1P1N1M1L5V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/5n0IZQA9MiXn5JBKZibtNhhFSAZ.jpg",
+      "score": 1,
+      "tmdbId": 245842,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "211089",
+      "movieTitle": "The Apothecary Diaries",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/v7W3D9A1F4P5E8Z2X6L7N9M4A5H.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/e3ojpANrFnmJCyeBNTinYwyBCIN.jpg",
+      "score": 1,
+      "tmdbId": 220542,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "210213",
+      "movieTitle": "Bocchi the Rock!",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/5A9X8Z1E2F4W7D3P6N8M2L9V4Q7.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/Af4tZ3eKjKWXG4vfiQ8R1NJomAP.jpg",
+      "score": 1,
+      "tmdbId": 119100,
+      "mediaType": "tv"
+    },
+    {
+      "movieId": "37854",
+      "movieTitle": "One Piece",
+      "oldPoster": "https://image.tmdb.org/t/p/w500/eX9A1Z8F4V2D5W7P3N6M8L9X2Q4.jpg",
+      "newPoster": "https://image.tmdb.org/t/p/w500/blWCPEqDGLBuLB9u89CxP9ORQP4.jpg",
+      "score": 1,
+      "tmdbId": 111110,
+      "mediaType": "tv"
+    }
+  ],
+  "ambiguous": [
+    {
+      "movieId": "65336",
+      "movieTitle": "Re:ZERO",
+      "topScore": 0.9,
+      "secondScore": 0.9,
+      "topTitle": "Re:ZERO -Starting Life in Another World-",
+      "secondTitle": "Re:ZERO -Starting Life in Another World- Memory Snow"
+    },
+    {
+      "movieId": "2710",
+      "movieTitle": "Bleach: Thousand-Year Blood War",
+      "topScore": 0.9,
+      "secondScore": 0.9,
+      "topTitle": "Bleach: Thousand-Year Blood War - The Calamity",
+      "secondTitle": "Bleach"
+    },
+    {
+      "movieId": "65334",
+      "movieTitle": "KonoSuba",
+      "topScore": 0.9,
+      "secondScore": 0.9,
+      "topTitle": "KONOSUBA – An Explosion on This Wonderful World!",
+      "secondTitle": "KONOSUBA - God's blessing on this wonderful world!"
+    }
+  ],
+  "unmatched": [
+    {
+      "movieId": "250012",
+      "movieTitle": "Dr. Stone: Science Future Part 3",
+      "reason": "no-confident-match",
+      "topScore": 0
+    },
+    {
+      "movieId": "236081",
+      "movieTitle": "Dandadan",
+      "reason": "no-confident-match",
+      "topScore": 0.8
+    },
+    {
+      "movieId": "250010",
+      "movieTitle": "Battle Through The Heavens Season 5",
+      "reason": "no-confident-match",
+      "topScore": 0
+    },
+    {
+      "movieId": "250009",
+      "movieTitle": "Swallowed Star 4th Season",
+      "reason": "no-confident-match",
+      "topScore": 0
+    },
+    {
+      "movieId": "250006",
+      "movieTitle": "Heaven Official's Blessing Short Films",
+      "reason": "no-confident-match",
+      "topScore": 0
+    },
+    {
+      "movieId": "250016",
+      "movieTitle": "Holo Graffiti",
+      "reason": "no-confident-match",
+      "topScore": 0.813
+    },
+    {
+      "movieId": "250008",
+      "movieTitle": "Dorohedoro Season 2",
+      "reason": "no-confident-match",
+      "topScore": 0
+    },
+    {
+      "movieId": "250002",
+      "movieTitle": "Re:ZERO -Starting Life in Another World- Season 4",
+      "reason": "no-confident-match",
+      "topScore": 0
+    }
+  ]
+}

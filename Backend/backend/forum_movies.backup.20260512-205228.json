@@ -1,0 +1,470 @@
+[
+  {
+    "movieId": "250003",
+    "movieTitle": "Witch Hat Atelier",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W1D8P6N8M2L9V4Q7.jpg",
+    "genre": "Fantasy, Adventure",
+    "addedBy": "neon_rival",
+    "addedByUID": 14,
+    "createdAt": "2026-01-27T20:48:39.908Z"
+  },
+  {
+    "movieId": "250004",
+    "movieTitle": "Chiikawa",
+    "poster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F1W1D5P6N8M2L9V4Q7.jpg",
+    "genre": "Comedy, Slice of Life",
+    "addedBy": "Zephyr",
+    "addedByUID": 81,
+    "createdAt": "2026-01-20T04:17:27.516Z"
+  },
+  {
+    "movieId": "250014",
+    "movieTitle": "MILGRAM",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W1D1P1N1M1L1V4Q7.jpg",
+    "genre": "Mystery, Psychological",
+    "addedBy": "digital_tomb",
+    "addedByUID": 57,
+    "createdAt": "2025-12-24T22:02:48.810Z"
+  },
+  {
+    "movieId": "13916",
+    "movieTitle": "Death Note",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X1Z5E8F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Psychological, Thriller",
+    "addedBy": "v_o_i_d98",
+    "addedByUID": 59,
+    "createdAt": "2025-11-25T09:20:03.535Z"
+  },
+  {
+    "movieId": "250005",
+    "movieTitle": "Renegade Immortal",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W1D1P6N8M2L9V4Q7.jpg",
+    "genre": "Action, Fantasy",
+    "addedBy": "root_access14",
+    "addedByUID": 66,
+    "createdAt": "2025-11-19T08:56:07.468Z"
+  },
+  {
+    "movieId": "84042",
+    "movieTitle": "Vinland Saga",
+    "poster": "https://image.tmdb.org/t/p/w500/1A5Z8X9E2F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Historical, Drama",
+    "addedBy": "ZeroChill",
+    "addedByUID": 38,
+    "createdAt": "2025-11-17T15:30:01.852Z"
+  },
+  {
+    "movieId": "120089",
+    "movieTitle": "Spy x Family",
+    "poster": "https://image.tmdb.org/t/p/w500/9A1X8Z5E2F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Comedy, Action",
+    "addedBy": "sub_zero",
+    "addedByUID": 90,
+    "createdAt": "2025-10-26T20:57:37.205Z"
+  },
+  {
+    "movieId": "65336",
+    "movieTitle": "Re:ZERO",
+    "poster": "https://image.tmdb.org/t/p/w500/q9X5D8A1E7V2W3F4Z6L8M7P9N2X.jpg",
+    "genre": "Drama, Fantasy",
+    "addedBy": "Cold_Frames",
+    "addedByUID": 10,
+    "createdAt": "2025-10-25T13:54:39.566Z"
+  },
+  {
+    "movieId": "2710",
+    "movieTitle": "Bleach: Thousand-Year Blood War",
+    "poster": "https://image.tmdb.org/t/p/w500/2X9A5F8Z1E3W7D4P6N8M2L9V3Q7.jpg",
+    "genre": "Action, Supernatural",
+    "addedBy": "Cold_Frames",
+    "addedByUID": 91,
+    "createdAt": "2025-10-20T13:10:21.242Z"
+  },
+  {
+    "movieId": "250012",
+    "movieTitle": "Dr. Stone: Science Future Part 3",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W1D1P1N1M1L9V4Q7.jpg",
+    "genre": "Sci-Fi, Adventure",
+    "addedBy": "chroma_drift43",
+    "addedByUID": 95,
+    "createdAt": "2025-10-13T19:30:21.750Z"
+  },
+  {
+    "movieId": "65334",
+    "movieTitle": "KonoSuba",
+    "poster": "https://image.tmdb.org/t/p/w500/8A9X5Z1E2F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Comedy, Fantasy",
+    "addedBy": "echo_zone95",
+    "addedByUID": 74,
+    "createdAt": "2025-09-27T13:22:56.763Z"
+  },
+  {
+    "movieId": "84773",
+    "movieTitle": "That Time I Got Reincarnated as a Slime",
+    "poster": "https://image.tmdb.org/t/p/w500/2W5E8Z9P3D7A4F1N6X8M7L9A2V4.jpg",
+    "genre": "Isekai, Fantasy",
+    "addedBy": "Sable",
+    "addedByUID": 49,
+    "createdAt": "2025-09-26T05:28:09.613Z"
+  },
+  {
+    "movieId": "66995",
+    "movieTitle": "Mob Psycho 100",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X5Z8E2F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Action, Comedy",
+    "addedBy": "compile_error33",
+    "addedByUID": 92,
+    "createdAt": "2025-07-12T09:26:50.444Z"
+  },
+  {
+    "movieId": "209867",
+    "movieTitle": "Frieren: Beyond Journey's End",
+    "poster": "https://image.tmdb.org/t/p/w500/x12u9EaPj5b7s9sYEq2tA7mHh2y.jpg",
+    "genre": "Fantasy, Slice of Life",
+    "addedBy": "Sable62",
+    "addedByUID": 46,
+    "createdAt": "2025-07-11T20:45:55.492Z"
+  },
+  {
+    "movieId": "236081",
+    "movieTitle": "Dandadan",
+    "poster": "https://image.tmdb.org/t/p/w500/4A8N0L3VbNfM8D9v1T9L3I1G3c7.jpg",
+    "genre": "Action, Supernatural",
+    "addedBy": "Rogue",
+    "addedByUID": 68,
+    "createdAt": "2025-07-11T16:24:50.131Z"
+  },
+  {
+    "movieId": "65930",
+    "movieTitle": "My Hero Academia",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X1Z8E2F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Action, Superhero",
+    "addedBy": "Vortex",
+    "addedByUID": 8,
+    "createdAt": "2025-07-07T17:37:26.810Z"
+  },
+  {
+    "movieId": "61374",
+    "movieTitle": "Tokyo Ghoul",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F8W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Dark Fantasy, Horror",
+    "addedBy": "Sable39",
+    "addedByUID": 4,
+    "createdAt": "2025-06-27T15:55:27.119Z"
+  },
+  {
+    "movieId": "250007",
+    "movieTitle": "Nippon Sangoku: The Three Nations of the Crimson Sun",
+    "poster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F1W1D1P5N8M2L9V4Q7.jpg",
+    "genre": "Action, Drama",
+    "addedBy": "digital_tomb",
+    "addedByUID": 9,
+    "createdAt": "2025-06-21T20:15:13.534Z"
+  },
+  {
+    "movieId": "250010",
+    "movieTitle": "Battle Through The Heavens Season 5",
+    "poster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F1W1D1P1N1M2L9V4Q7.jpg",
+    "genre": "Action, Fantasy",
+    "addedBy": "v_o_i_d41",
+    "addedByUID": 16,
+    "createdAt": "2025-06-16T06:24:41.896Z"
+  },
+  {
+    "movieId": "37455",
+    "movieTitle": "Steins;Gate",
+    "poster": "https://image.tmdb.org/t/p/w500/8A9X1Z5E2F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Sci-Fi, Thriller",
+    "addedBy": "digital_tomb",
+    "addedByUID": 67,
+    "createdAt": "2025-06-01T16:05:05.353Z"
+  },
+  {
+    "movieId": "250018",
+    "movieTitle": "Classroom of the Elite 4th Season: Second Year, First Semester",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W1D1P1N1M1L1V1Q5.jpg",
+    "genre": "Psychological, Drama",
+    "addedBy": "digital_tomb",
+    "addedByUID": 67,
+    "createdAt": "2025-05-31T08:40:37.157Z"
+  },
+  {
+    "movieId": "209728",
+    "movieTitle": "Mashle: Magic and Muscles",
+    "poster": "https://image.tmdb.org/t/p/w500/3Q8X5W1F9D7Z2A4N8E6P5M7A2L9.jpg",
+    "genre": "Comedy, Action",
+    "addedBy": "cyber.specter84",
+    "addedByUID": 45,
+    "createdAt": "2025-05-23T21:53:20.499Z"
+  },
+  {
+    "movieId": "31133",
+    "movieTitle": "Berserk (1997)",
+    "poster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E5F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Dark Fantasy, Action",
+    "addedBy": "neural_fade",
+    "addedByUID": 41,
+    "createdAt": "2025-05-01T04:29:55.267Z"
+  },
+  {
+    "movieId": "1429",
+    "movieTitle": "Attack on Titan",
+    "poster": "https://image.tmdb.org/t/p/w500/8D1A3Z9E5F7W2X6P8N4M7L9A2Q5.jpg",
+    "genre": "Action, Dark Fantasy",
+    "addedBy": "echo_zone36",
+    "addedByUID": 84,
+    "createdAt": "2025-04-03T11:32:14.828Z"
+  },
+  {
+    "movieId": "61459",
+    "movieTitle": "Parasyte: The Maxim",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Sci-Fi, Horror",
+    "addedBy": "gloom_weaver90",
+    "addedByUID": 99,
+    "createdAt": "2025-02-14T07:18:56.629Z"
+  },
+  {
+    "movieId": "72636",
+    "movieTitle": "Made in Abyss",
+    "poster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F5W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Adventure, Dark Fantasy",
+    "addedBy": "Zephyr",
+    "addedByUID": 81,
+    "createdAt": "2025-02-03T21:01:26.787Z"
+  },
+  {
+    "movieId": "105248",
+    "movieTitle": "Cyberpunk: Edgerunners",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Sci-Fi, Action",
+    "addedBy": "compile_error33",
+    "addedByUID": 92,
+    "createdAt": "2025-02-03T14:47:01.786Z"
+  },
+  {
+    "movieId": "213008",
+    "movieTitle": "Kaiju No. 8",
+    "poster": "https://image.tmdb.org/t/p/w500/3oK2sN19T8K7fWqQ6W9PqM3Vp2l.jpg",
+    "genre": "Action, Sci-Fi",
+    "addedBy": "gloom_weaver",
+    "addedByUID": 22,
+    "createdAt": "2025-01-07T06:48:33.784Z"
+  },
+  {
+    "movieId": "250017",
+    "movieTitle": "That Time I Got Reincarnated as a Slime Season 4",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W1D1P1N1M1L1V1Q7.jpg",
+    "genre": "Isekai, Fantasy",
+    "addedBy": "v_o_i_d59",
+    "addedByUID": 54,
+    "createdAt": "2024-12-16T13:11:00.114Z"
+  },
+  {
+    "movieId": "115456",
+    "movieTitle": "Mushoku Tensei",
+    "poster": "https://image.tmdb.org/t/p/w500/z9X5A2E8V3F7W4P6N1M8L9D2Q7.jpg",
+    "genre": "Isekai, Drama",
+    "addedBy": "gloom_weaver90",
+    "addedByUID": 99,
+    "createdAt": "2024-11-24T14:42:04.602Z"
+  },
+  {
+    "movieId": "111110",
+    "movieTitle": "Solo Leveling",
+    "poster": "https://image.tmdb.org/t/p/w500/geRUzxNDjSCARuvXzQtzG1GvUra.jpg",
+    "genre": "Action, Fantasy",
+    "addedBy": "Apex28",
+    "addedByUID": 20,
+    "createdAt": "2024-11-10T21:00:23.147Z"
+  },
+  {
+    "movieId": "890",
+    "movieTitle": "Neon Genesis Evangelion",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W8D3P6N8M2L9V4Q7.jpg",
+    "genre": "Mecha, Psychological",
+    "addedBy": "Cold_Frames76",
+    "addedByUID": 73,
+    "createdAt": "2024-10-29T10:56:41.347Z"
+  },
+  {
+    "movieId": "250011",
+    "movieTitle": "Tales of Herding Gods",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W1D1P1N1M5L9V4Q7.jpg",
+    "genre": "Action, Fantasy",
+    "addedBy": "Zephyr91",
+    "addedByUID": 44,
+    "createdAt": "2024-10-07T01:07:45.430Z"
+  },
+  {
+    "movieId": "118471",
+    "movieTitle": "Hell's Paradise",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X8Z5E2F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Action, Dark Fantasy",
+    "addedBy": "root_access95",
+    "addedByUID": 97,
+    "createdAt": "2024-08-19T21:25:55.658Z"
+  },
+  {
+    "movieId": "132122",
+    "movieTitle": "Blue Lock",
+    "poster": "https://image.tmdb.org/t/p/w500/5F9A6L2x5D8Z7s3P1W8A2E7X4P3.jpg",
+    "genre": "Sports, Thriller",
+    "addedBy": "local_host99",
+    "addedByUID": 25,
+    "createdAt": "2024-08-09T08:14:03.742Z"
+  },
+  {
+    "movieId": "250001",
+    "movieTitle": "Steel Ball Run: JoJo's Bizarre Adventure",
+    "poster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F1W5D3P6N8M2L9V4Q7.jpg",
+    "genre": "Action, Adventure",
+    "addedBy": "digital_tomb",
+    "addedByUID": 67,
+    "createdAt": "2024-07-10T17:43:01.558Z"
+  },
+  {
+    "movieId": "31086",
+    "movieTitle": "Hellsing Ultimate",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E8F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Action, Horror",
+    "addedBy": "echo_zone62",
+    "addedByUID": 17,
+    "createdAt": "2024-07-06T15:50:49.485Z"
+  },
+  {
+    "movieId": "95479",
+    "movieTitle": "Jujutsu Kaisen",
+    "poster": "https://image.tmdb.org/t/p/w500/1Z3N8Qz6z8B6x3X5a9h7P2g1d3f.jpg",
+    "genre": "Action, Supernatural",
+    "addedBy": "void.syntax",
+    "addedByUID": 77,
+    "createdAt": "2024-06-26T17:49:18.898Z"
+  },
+  {
+    "movieId": "196839",
+    "movieTitle": "The Eminence in Shadow",
+    "poster": "https://image.tmdb.org/t/p/w500/5A1X8Z9E2F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Action, Comedy",
+    "addedBy": "Rogue29",
+    "addedByUID": 76,
+    "createdAt": "2024-06-12T03:14:59.537Z"
+  },
+  {
+    "movieId": "85937",
+    "movieTitle": "Demon Slayer",
+    "poster": "https://image.tmdb.org/t/p/w500/q3m6C7L6wZ7aX3W1V8P5F7D3A2C.jpg",
+    "genre": "Action, Historical",
+    "addedBy": "v_o_i_d",
+    "addedByUID": 33,
+    "createdAt": "2024-05-24T01:38:05.600Z"
+  },
+  {
+    "movieId": "195669",
+    "movieTitle": "Oshi no Ko",
+    "poster": "https://image.tmdb.org/t/p/w500/aZ9Q8P1A3F5L7X4W2Z6V8D9E3N7.jpg",
+    "genre": "Drama, Mystery",
+    "addedBy": "meowski",
+    "addedByUID": 1,
+    "createdAt": "2024-04-21T09:38:35.241Z"
+  },
+  {
+    "movieId": "250009",
+    "movieTitle": "Swallowed Star 4th Season",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W1D1P1N5M2L9V4Q7.jpg",
+    "genre": "Action, Sci-Fi",
+    "addedBy": "Fallen_Immortal3D",
+    "addedByUID": 3,
+    "createdAt": "2024-04-19T09:47:49.653Z"
+  },
+  {
+    "movieId": "114410",
+    "movieTitle": "Chainsaw Man",
+    "poster": "https://image.tmdb.org/t/p/w500/1w2X5M9Z7E6P5w1W3N8I5F2P2a7.jpg",
+    "genre": "Action, Dark Fantasy",
+    "addedBy": "git_commit",
+    "addedByUID": 39,
+    "createdAt": "2024-04-15T15:22:55.969Z"
+  },
+  {
+    "movieId": "250006",
+    "movieTitle": "Heaven Official's Blessing Short Films",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W1D1P8N8M2L9V4Q7.jpg",
+    "genre": "Romance, Fantasy",
+    "addedBy": "cyber.specter99",
+    "addedByUID": 29,
+    "createdAt": "2024-04-07T06:27:50.962Z"
+  },
+  {
+    "movieId": "250015",
+    "movieTitle": "Case Closed",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X1Z1E1F1W1D1P1N1M1L1V8Q7.jpg",
+    "genre": "Mystery, Detective",
+    "addedBy": "Sable62",
+    "addedByUID": 46,
+    "createdAt": "2024-03-24T06:42:19.342Z"
+  },
+  {
+    "movieId": "250013",
+    "movieTitle": "Wistoria: Wand and Sword Season 2",
+    "poster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F1W1D1P1N1M1L5V4Q7.jpg",
+    "genre": "Action, Fantasy",
+    "addedBy": "git_commit",
+    "addedByUID": 39,
+    "createdAt": "2024-03-20T06:47:55.406Z"
+  },
+  {
+    "movieId": "211089",
+    "movieTitle": "The Apothecary Diaries",
+    "poster": "https://image.tmdb.org/t/p/w500/v7W3D9A1F4P5E8Z2X6L7N9M4A5H.jpg",
+    "genre": "Drama, Mystery",
+    "addedBy": "compile_error11",
+    "addedByUID": 50,
+    "createdAt": "2024-03-14T23:24:08.238Z"
+  },
+  {
+    "movieId": "210213",
+    "movieTitle": "Bocchi the Rock!",
+    "poster": "https://image.tmdb.org/t/p/w500/5A9X8Z1E2F4W7D3P6N8M2L9V4Q7.jpg",
+    "genre": "Comedy, Music",
+    "addedBy": "git_commit93",
+    "addedByUID": 18,
+    "createdAt": "2024-03-11T03:14:30.611Z"
+  },
+  {
+    "movieId": "250016",
+    "movieTitle": "Holo Graffiti",
+    "poster": "https://image.tmdb.org/t/p/w500/8A9X1Z1E1F1W1D1P1N1M1L1V5Q7.jpg",
+    "genre": "Comedy",
+    "addedBy": "digital_tomb",
+    "addedByUID": 23,
+    "createdAt": "2024-03-01T00:24:10.839Z"
+  },
+  {
+    "movieId": "37854",
+    "movieTitle": "One Piece",
+    "poster": "https://image.tmdb.org/t/p/w500/eX9A1Z8F4V2D5W7P3N6M8L9X2Q4.jpg",
+    "genre": "Adventure, Action",
+    "addedBy": "echo_zone",
+    "addedByUID": 82,
+    "createdAt": "2024-02-24T19:00:56.760Z"
+  },
+  {
+    "movieId": "250008",
+    "movieTitle": "Dorohedoro Season 2",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W1D1P1N8M2L9V4Q7.jpg",
+    "genre": "Action, Dark Fantasy",
+    "addedBy": "Cold_Frames",
+    "addedByUID": 91,
+    "createdAt": "2024-01-18T04:35:48.877Z"
+  },
+  {
+    "movieId": "250002",
+    "movieTitle": "Re:ZERO -Starting Life in Another World- Season 4",
+    "poster": "https://image.tmdb.org/t/p/w500/1A9X1Z1E1F1W1D3P6N8M2L9V4Q7.jpg",
+    "genre": "Drama, Fantasy",
+    "addedBy": "neon_rival",
+    "addedByUID": 14,
+    "createdAt": "2024-01-14T17:01:21.958Z"
+  }
+]

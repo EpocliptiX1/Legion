@@ -4,7 +4,7 @@
    ========================================= */
 
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-    ? 'https://localhost:3000'
+    ? ''
     : window.location.origin;
 let currentMovieId = null;
 let currentThreadId = null;
@@ -14,6 +14,23 @@ let currentComments = [];
 let pendingForumNav = null;
 let threadDetailHome = null;
 let pendingConfirmAction = null;
+
+function updateForumStats() {
+    const movieCountEl = document.getElementById('forumMovieCount');
+    const threadCountEl = document.getElementById('forumThreadCount');
+    const selectedCountEl = document.getElementById('forumSelectedCount');
+
+    if (movieCountEl) movieCountEl.textContent = String(forumMovies.length || 0);
+
+    const totalThreads = (forumMovies || []).reduce((acc, movie) => {
+        const count = Number(movie?.threadCount || 0);
+        return acc + (Number.isFinite(count) ? count : 0);
+    }, 0);
+    const visibleThreads = currentMovieId ? (forumThreads?.length || 0) : totalThreads;
+
+    if (threadCountEl) threadCountEl.textContent = String(visibleThreads);
+    if (selectedCountEl) selectedCountEl.textContent = currentMovieId ? '1' : '0';
+}
 
 // Initialize forum on page load
 document.addEventListener('DOMContentLoaded', async function() {
@@ -64,6 +81,7 @@ function renderMoviesList() {
                 <p>No movies yet. Add one to start a discussion!</p>
             </div>
         `;
+        updateForumStats();
         return;
     }
 
@@ -77,6 +95,8 @@ function renderMoviesList() {
             </div>
         </div>
     `).join('');
+
+    updateForumStats();
 }
 
 // Select a movie and load its threads
@@ -93,6 +113,8 @@ async function selectMovie(movieId, movieTitle, evt) {
     }
     document.getElementById('currentMovieDesc').textContent = 'Discussion threads for this movie';
     document.getElementById('createThreadBtn').style.display = 'block';
+    const heroCreateBtn = document.getElementById('heroCreateThreadBtn');
+    if (heroCreateBtn) heroCreateBtn.style.display = 'inline-flex';
 
     document.querySelectorAll('.movie-item').forEach(item => {
         item.classList.remove('active');
@@ -128,6 +150,7 @@ function renderThreads() {
                 <p>Be the first to start a discussion about this movie!</p>
             </div>
         `;
+        updateForumStats();
         return;
     }
 
@@ -172,6 +195,8 @@ function renderThreads() {
             </div>
         `;
     }).join('');
+
+    updateForumStats();
 }
 
 // Get user's vote for a thread
@@ -890,3 +915,4 @@ function showLimitToast(message) {
         alert(message);
     }
 }
+

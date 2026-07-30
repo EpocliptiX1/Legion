@@ -19,33 +19,6 @@
         }
     }
 
-    async function checkYoutubeApiStatus(circle, text) {
-        text.textContent = 'Checking...';
-        circle.style.background = '#aaa';
-        try {
-            const res = await fetch('/api/youtube-key-status');
-            const data = await res.json();
-            if (data.valid) {
-                circle.style.background = '#3ec46d';
-                text.textContent = 'Online';
-            } else {
-                circle.style.background = '#e74c3c';
-                let errorMsg = 'Offline';
-                if (data.error) {
-                    if (typeof data.error === 'string') {
-                        errorMsg = 'Offline: ' + data.error;
-                    } else if (typeof data.error === 'object' && data.error.message) {
-                        errorMsg = 'Offline: ' + data.error.message;
-                    }
-                }
-                text.textContent = errorMsg;
-            }
-        } catch (err) {
-            circle.style.background = '#e74c3c';
-            text.textContent = 'Error';
-        }
-    }
-
     async function checkLibreTranslateStatus(circle, text) {
         text.textContent = 'Checking...';
         circle.style.background = '#aaa';
@@ -99,7 +72,6 @@
         if (adminPanel && adminPanel.children.length === 0) {
             adminPanel.innerHTML =
                 createStatusRow('TMDB API', 'tmdbApiStatusCircle', 'tmdbApiStatusText') +
-                createStatusRow('YouTube API', 'ytApiStatusCircle', 'ytApiStatusText') +
                 createStatusRow('LibreTranslate', 'ltApiStatusCircle', 'ltApiStatusText') +
                 createStatusRow('Local Database', 'localDbStatusCircle', 'localDbStatusText') +
                 createStatusRow('Cloud Sync', 'cloudSyncStatusCircle', 'cloudSyncStatusText');
@@ -107,10 +79,6 @@
                 checkTmdbApiStatus(
                     document.getElementById('tmdbApiStatusCircle'),
                     document.getElementById('tmdbApiStatusText')
-                );
-                checkYoutubeApiStatus(
-                    document.getElementById('ytApiStatusCircle'),
-                    document.getElementById('ytApiStatusText')
                 );
                 checkLibreTranslateStatus(
                     document.getElementById('ltApiStatusCircle'),
@@ -139,7 +107,6 @@
                 panel.className = 'api-status-panel';
                 panel.innerHTML =
                     createStatusRow('TMDB API', 'tmdbApiStatusCircle', 'tmdbApiStatusText') +
-                    createStatusRow('YouTube API', 'ytApiStatusCircle', 'ytApiStatusText') +
                     createStatusRow('LibreTranslate', 'ltApiStatusCircle', 'ltApiStatusText') +
                     createStatusRow('Local Database', 'localDbStatusCircle', 'localDbStatusText') +
                     createStatusRow('Cloud Sync', 'cloudSyncStatusCircle', 'cloudSyncStatusText');
@@ -150,10 +117,6 @@
                     checkTmdbApiStatus(
                         document.getElementById('tmdbApiStatusCircle'),
                         document.getElementById('tmdbApiStatusText')
-                    );
-                    checkYoutubeApiStatus(
-                        document.getElementById('ytApiStatusCircle'),
-                        document.getElementById('ytApiStatusText')
                     );
                     checkLibreTranslateStatus(
                         document.getElementById('ltApiStatusCircle'),

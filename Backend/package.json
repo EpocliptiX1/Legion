@@ -5,7 +5,10 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "start:backend": "node server.js",
+    "start:middleware": "node middleware.js",
+    "start:all": "start node server.js && node middleware.js"
   },
   "keywords": [],
   "author": "",
@@ -13,14 +16,20 @@
   "type": "commonjs",
   "dependencies": {
     "@consumet/extensions": "^1.8.8",
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "axios": "^1.13.4",
     "bcrypt": "^6.0.0",
+    "cheerio": "^1.2.0",
     "cors": "^2.8.5",
     "csv-parse": "^6.1.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
     "jsonwebtoken": "^9.0.2",
     "node-fetch": "^3.3.2",
-    "sqlite3": "^5.1.7"
+    "puppeteer": "^25.1.0",
+    "sqlite3": "^5.1.7",
+    "string-similarity": "^4.0.4"
   }
 }

@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-        <script src="/js/enhancedSearch.js"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My List | Legion Space</title>
@@ -13,37 +12,68 @@
     <script src="/js/tmdb.js"></script>
     <script src="/js/netflixFeatures.js"></script>
     <script src="/js/keyboardShortcuts.js"></script>
-    <script src="/js/recommendations.js"></script>
+    <script src="/js/enhancedSearch.js"></script>
     <script src="/js/tmdbStatus.js"></script>
+    <script src="/js/DESPOSABLE.js"></script>
   
     
 </head>
-<body>
+<body class="personal-list-page">
 
-    <nav class="navbar">
-        <div class="hamburger" onclick="toggleMobileMenu()">
-            <span></span>
-            <span></span>
-            <span></span>
-        </div>
 
-        <div class="logo-container">
+    <!-- ── LEFT SIDEBAR NAVIGATION ─────────────────────────── -->
+    <div class="left-sidebar bottom-sidebar" id="leftSidebar">
+        <div class="sidebar-logo-wrap">
             <a href="/html/indexMain.html" class="logo-link">
-                <img src="/img/LOGO.png" alt="Logo" class="logo-img">
-                <img src="/img/LOGO_Short.png" alt="Logo" class="logo-img logo-imgS">
+                <img src="/img/LOGO_Short.png" alt="Logo" class="logo-img sidebar-logo-img">
             </a>
         </div>
+        <ul class="sidebar-nav-list">
+            <li><a href="/html/indexMain.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+                <span>Home</span>
+            </a></li>
+            <li><a href="/html/indexBrowse.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
+                <span>Browse</span>
+            </a></li>
+            <li><a href="/html/allMovies.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+                <span>Movies</span>
+            </a></li>
+            <li><a href="/html/personalList.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+                <span>My List</span>
+            </a></li>
+            <li><a href="/html/customPlaylists.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+                <span>Playlists</span>
+            </a></li>
+            <li><a href="/html/forum.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+                <span>Forum</span>
+            </a></li>
+        </ul>
+        <div class="sidebar-mode-wrap" id="modeToggleWrap" title="Switch between Movies and Anime">
+            <label class="mode-toggle-switch">
+                <input type="checkbox" id="animeModeCheck" onchange="window.__toggleAnimeMode && window.__toggleAnimeMode()">
+                <span class="mode-toggle-slider"></span>
+            </label>
+            <span class="mode-toggle-label sidebar-mode-label">⛩ Anime</span>
+        </div>
+    </div>
 
-        <ul class="nav-links" id="navLinks">
-            <li><a href="/html/indexMain.html" class="myNavLink" data-i18n="nav_home">Home</a></li>
-            <li><a href="/html/indexBrowse.html" class="myNavLink">Browse</a></li>
-            <li><a href="/html/allMovies.html" class="myNavLink" data-i18n="nav_movies">Movies</a></li>
-            <li><a href="personalList.html" class="myNavLink" data-i18n="nav_mylist">My List</a></li>
-            <li><a href="/html/customPlaylists.html" class="myNavLink">Playlists</a></li>
-            <li><a href="/html/forum.html" class="myNavLink noborder">Forum</a></li>
-        </ul>       
-
-        <div class="nav-tools">
+    <!-- ── TOP NAVBAR ─────────────────────────────────────── -->
+    <nav class="navbar">
+        <div class="nav-tools" style="width:100%">
+            <ul class="navbar-page-links">
+                <li><a href="/html/indexMain.html">Home</a></li>
+                <li><a href="/html/indexBrowse.html">Browse</a></li>
+                <li><a href="/html/allMovies.html" >Movies</a></li>
+                <li><a href="/html/personalList.html">My List</a></li>
+                <li><a href="/html/customPlaylists.html">Playlists</a></li>
+                <li><a href="/html/forum.html">Forum</a></li>
+            </ul>
             <div class="search-wrapper">
                 <div class="search-box">
                     <input type="text" id="mainSearch" placeholder="Titles..." data-i18n-placeholder="nav_search_placeholder" autocomplete="off">
@@ -59,7 +89,6 @@
             <div class="account-trigger" onclick="toggleAccountMenu()">
                 <div class="grey-profile-pic"></div>
                 <span id="navUsername" data-i18n="nav_guest">Guest</span>
-
                 <div class="account-dropdown" id="accountDropdown">
                     <div class="dropdown-header">
                         <p id="dropTier" class="tier-badge" data-i18n="nav_free_tier">Free Tier</p>
@@ -67,9 +96,19 @@
                     <div class="dropdown-stats">
                         <div class="stat-line">
                             <span data-i18n="nav_views">Views:</span>
-                            <span id="statView">0/3</span>
+                            <span id="statView">0</span>
+                        </div>
+                        <div class="stat-line login-code-row hidden" id="loginCodeRow">
+                            <span>Login Code:</span>
+                            <span id="loginCodeValue">XXXXXXXXXX</span>
+                            <button type="button" class="code-visibility-toggle" data-visible="false" aria-pressed="false" onclick="toggleLoginCodeVisibility(event)" aria-label="Toggle login code visibility">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
+                    <a href="#" id="convertGuestLink" class="drop-link hidden" onclick="openConvertGuestModal()">⭐ Convert to Full Account</a>
                     <hr>
                     <a href="#" id="signInLink" class="drop-link" onclick="openSignInModal()" data-i18n="nav_signin">Sign In</a>
                     <a href="#" id="signUpLink" class="drop-link" onclick="openSignupModal()" data-i18n="nav_signup">Create Account</a>
@@ -79,38 +118,138 @@
             </div>
         </div>
     </nav>
+<script id="navActiveScriptInserted">
+(function() {
+    const currentPath = window.location.pathname.split('/').pop().toLowerCase();
+    const pageMap = {
+        'movieinfo.html': '/html/allMovies.html',
+        'searchqueryresult.html': '/html/indexBrowse.html',
+        'indexbrowse.html': '/html/indexBrowse.html',
+        'indexmain.html': '/html/indexMain.html',
+        'allmovies.html': '/html/allMovies.html',
+        'personallist.html': '/html/personalList.html',
+        'customplaylists.html': '/html/customPlaylists.html',
+        'forum.html': '/html/forum.html'
+    };
+    const activeHref = pageMap[currentPath] || '/html/' + currentPath;
 
-    <div class="container list-wrapper" style="padding: 100px 4% 50px;">
+    document.querySelectorAll('.sidebar-nav-link, .navbar-page-links a').forEach(link => {
+        const href = link.getAttribute('href');
+        if (!href) return;
+        const normalizedHref = href.split('#')[0].split('?')[0];
+        if (normalizedHref === activeHref) {
+            if (link.classList.contains('sidebar-nav-link')) {
+                link.classList.add('sidebar-active');
+            }
+            if (link.closest('.navbar-page-links')) {
+                link.classList.add('navbar-link-active');
+            }
+        } else {
+            link.classList.remove('sidebar-active');
+            link.classList.remove('navbar-link-active');
+        }
+    });
+})();
+</script>
+
+
+    <div class="container list-wrapper" style="padding: 50px 4% 50px;">
         <div class="mylist-section" style="margin-bottom: 50px;">
+                        <!-- MAL Import Button -->
+                        <button class="mal-import-btn" id="malImportBtn" type="button" title="Import your completed anime list from MyAnimeList">
+                            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h2v-2h-2v2zm1-13C7.03 4 4 7.03 4 12c0 4.97 3.03 8 8 8s8-3.03 8-8c0-4.97-3.03-8-8-8zm1 7h-2V7h2v2z"/></svg>
+                            Import from MyAnimeList
+                        </button>
+                        <div class="mal-import-toast" id="malImportToast"></div>
+
+            <script>
+            // MAL Import Button Logic
+            document.addEventListener('DOMContentLoaded', function() {
+                const btn = document.getElementById('malImportBtn');
+                const toast = document.getElementById('malImportToast');
+                if (btn) {
+                    btn.addEventListener('click', function() {
+                        const token = localStorage.getItem('authToken');
+                        if (!token || token === 'null' || token === 'undefined') {
+                            alert("You need to be logged in to link your MyAnimeList account!");
+                            return;
+                        }
+                        window.open('/api/auth/mal?token=' + encodeURIComponent(token), '_blank', 'width=600,height=700');
+                    });
+                }
+                // Show toast if redirected with ?mal_sync
+                const params = new URLSearchParams(window.location.search);
+                if (params.has('mal_sync')) {
+                    let msg = '';
+                    if (params.get('mal_sync') === 'success') {
+                        const added = params.get('added') || 'some';
+                        msg = `✅ MAL import complete! ${added} new title(s) added.`;
+                    } else if (params.get('mal_sync') === 'nonew') {
+                        msg = 'No new titles found to import from MAL.';
+                    } else {
+                        msg = '❌ MAL import failed. Please try again.';
+                    }
+                    if (toast) {
+                        toast.textContent = msg;
+                        toast.classList.add('show');
+                        setTimeout(() => toast.classList.remove('show'), 5000);
+                    }
+                    // Remove query param from URL (optional, for cleanliness)
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                }
+            });
+            </script>
             <h2 class="list-title" style="margin-bottom: 30px; font-size: 2.2rem; color: var(--accent-primary);">
                 📼 My List
             </h2>
-            
-            <div class="netflix-grid" id="myListGrid" style="grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px;">
-                <div class="grid-card add-card" onclick="window.location.href='allMovies.html'" style="background: linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-card) 100%); border: 2px dashed var(--border-color); display: flex; align-items: center; justify-content: center; min-height: 300px; cursor: pointer; transition: all 0.3s ease;">
-                    <div class="add-content" style="text-align: center;">
-                        <div class="plus-btn">
-                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width: 60px; height: 60px;">
-                                <path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="#f96d00"/> 
-                            </svg>
+            <div class="discovery-two-col personal-discovery-two-col" style="margin-top: 4px;">
+                <div class="discovery-panel">
+                    <div class="discovery-panel-bg" id="myListPanelBg"></div>
+                    <div class="discovery-panel-content">
+                        <div class="discovery-panel-header">
+                            <div class="discovery-panel-title">
+                                <span class="discovery-accent">📼</span> My List
+                                <span class="personal-mode-pill" id="myListModePill">MOVIES</span>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <div class="row-arrows">
+                                    <button class="row-arrow-btn" onclick="scrollRow('myListDiscRow',-1)">&#8249;</button>
+                                    <button class="row-arrow-btn" onclick="scrollRow('myListDiscRow',1)">&#8250;</button>
+                                </div>
+                                <a href="/html/allMovies.html" class="view-all-link">Browse →</a>
+                            </div>
                         </div>
-                        <p style="color: #888; margin-top: 15px; font-weight: bold;">Browse More</p>
+                        <div class="trending-cards-row" id="myListDiscRow">
+                            <p style="color:#444;font-size:.8rem;padding:8px">Loading your list...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="discovery-panel">
+                    <div class="discovery-panel-bg" id="myHistoryPanelBg"></div>
+                    <div class="discovery-panel-content">
+                        <div class="discovery-panel-header">
+                            <div class="discovery-panel-title">
+                                <span class="discovery-accent">🕘</span> My History
+                                <span class="personal-mode-pill" id="myHistoryModePill">MOVIES</span>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <div class="row-arrows">
+                                    <button class="row-arrow-btn" onclick="scrollRow('myHistoryDiscRow',-1)">&#8249;</button>
+                                    <button class="row-arrow-btn" onclick="scrollRow('myHistoryDiscRow',1)">&#8250;</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="schedule-cards-row" id="myHistoryDiscRow">
+                            <p style="color:#444;font-size:.8rem;padding:8px">Loading your history...</p>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
         <!-- Recommendations Section - Full Width -->
-        <div class="recommendations-section" style="margin-bottom: 50px;">
-            <h2 class="list-title" style="margin-bottom: 20px; font-size: 1.8rem;">
-                <span style="color: var(--accent-primary);">✨</span> Recommended for You
-            </h2>
-            <p style="color: var(--text-muted); margin-bottom: 20px;">Based on your viewing preferences and ratings</p>
-            <div class="netflix-grid" id="recommendationsGrid" style="grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px;">
-                <!-- Recommendations will be loaded here -->
-            </div>
-        </div>
-
+    
         <!-- Two Column Layout: Playlists (50%) + Recent Posts (50%) -->
         <div class="two-column-layout" style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 40px;">
             <!-- Left Column: My Playlists -->
@@ -134,7 +273,7 @@
             </div>
         </div>
     </div>
-    <div id="signupModal" class="signup-overlay">
+    <div id="signupModal" class="signup-overlay" style="display:none;">
         <div class="signup-box">
             <div class="signup-close" onclick="closeSignupModal()">✕</div>
             
@@ -186,7 +325,7 @@
         </div>
     </div>
     <div id="notification-toast" class="toast-hidden"></div>
-    <section class="container ad-section" id="adSection">
+    <!-- <section class="container ad-section" id="adSection">
         <div class="ad-card">
             <div class="ad-badge">ADVERTISEMENT</div>
             <div class="ad-content">
@@ -197,7 +336,7 @@
                 <button class="ad-cta">Advertise with us</button>
             </div>
         </div>
-    </section>
+    </section> -->
 
     <footer class="container site-footer">
         <div class="footer-content">
@@ -206,9 +345,8 @@
                 <div class="footer-brand">
                     <h3>LEGION SPACE</h3>
                     <p class="footer-desc">
-                        The premium destination for cinema lovers in Astana. 
-                        From Kazakh masterpieces to global blockbusters, 
-                        we stream it all.
+                        A platform for all media lovers, contains all main stream content and more!
+
                     </p>
                     <div class="social-links">
                         <a href="https://instagram.com" class="social-btn" title="Instagram">
@@ -282,27 +420,11 @@
                         <button class="btn-small" onclick="document.getElementById('pfpInput').click()">Upload New Image (1MB)</button>
                         <input type="file" id="pfpInput" accept="image/*" style="display: none;" onchange="handlePFPUpload(event)">
                     </div>
-                    <div class="beta-notice-box">
-                        <div class="beta-badge">ALPHA v1.0</div>
-                        <p>You are currently using the <strong>Localized/TMDB API</strong> build of Legion Space.</p>
-                        <ul>
-                            <li>Dynamic API source: Local DB or TMDB.</li>
-                            <li>Region: Astana/Kazakhstan or Global (TMDB).</li>
-                        </ul>
-                        <p class="beta-small">Some settings are read-only during the current phase.</p>
-                    </div>
                     <div class="setting-item">
                         <label>Language</label>
                         <select id="settingsLanguage" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;" onchange="selectLanguage(this.value)">
                             <option value="en">🇬🇧 English</option>
                             <option value="ru">🇷🇺 Русский</option>
-                        </select>
-                    </div>                    
-                    <div class="setting-item">
-                        <label>Movie Data Source</label>
-                        <select id="settingsMovieSource" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;">
-                            <option value="local">Local Database</option>
-                            <option value="api">External API (TMDB)</option>
                         </select>
                     </div>
                 </div>
@@ -315,20 +437,16 @@
                             <div class="blur-overlay"><span>COMING SOON</span></div>
                         </div>
                     </div>
-                    <div class="setting-item coming-soon" style="margin-top: 15px;">
-                        <label>Cloud Sync (Multi-Device)</label>
-                        <div class="blurred-preview" style="height: 60px; background: #1a1a1a; display: flex; align-items: center; justify-content: center;">
-                            <span style="font-size: 24px;">☁️</span>
-                            <div class="blur-overlay"><span>PLANNED v2.0</span></div>
+
+                    <div class="setting-item hero-audio-setting">
+                        <div class="hero-audio-copy">
+                            <label for="muteAudio">Mute Hero Trailer</label>
+                            <p>Silence autoplay trailers on the home screen</p>
                         </div>
-                    </div>
-                    <div class="setting-item" style="margin-bottom: 0;">
-                        <label>TMDB Global Database</label>
-                        <div style="display: flex; align-items: center; gap: 12px; margin: 30px 0 30px 0; justify-content: center;">
-                            <span id="tmdbApiStatusCircle" style="width: 22px; height: 22px; border-radius: 50%; display: inline-block; background: #aaa; border: 2px solid #333;"></span>
-                            <span id="tmdbApiStatusText" style="font-size: 1.1em; color: #888;">Checking API...</span>
-                        </div>
-                        <div style="text-align: center; color: #aaa; font-size: 0.95em;">Checks if TMDB API key is valid and online.</div>
+                        <label class="hero-audio-switch" aria-label="Mute Hero Trailer Audio">
+                            <input type="checkbox" id="muteAudio" onchange="toggleMuteAudio()">
+                            <span class="hero-audio-slider"></span>
+                        </label>
                     </div>
                 </div>
             </div>
@@ -350,7 +468,9 @@
  
 <script src="/js/myList.js"></script>
 <script src="/js/apiStatusPanel.js"></script>
+<script src="/js/animePage.js"></script>
 
 <script src="/js/mainPageControls.js"></script>
+<script src="/js/recommendations.js"></script>
 </body>
 </html>

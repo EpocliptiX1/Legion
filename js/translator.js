@@ -7,8 +7,10 @@ class LiveTranslator {
     constructor() {
         this.useBackend = true;
         const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        this.backendEndpoint = isLocal ? 'https://localhost:3000/translate' : '/translate';
-        this.cacheEndpoint = isLocal ? 'https://localhost:3000/translation-cache' : '/translation-cache';
+        this.backendEndpoint = isLocal ? '/translate' : '/translate';
+        this.cacheEndpoint = isLocal ? '/translation-cache' : '/translation-cache';
+        this.translationProviderUnavailable = false;
+        this.translationProviderWarned = false;
         this.sourceLanguage = 'EN';
         this.targetLanguage = localStorage.getItem('targetLanguage') || 'EN';
         this.cache = {};
@@ -102,7 +104,20 @@ class LiveTranslator {
     }
 
     isConfigured() {
-        return this.useBackend && !!this.backendEndpoint;
+        return this.useBackend && !!this.backendEndpoint && !this.translationProviderUnavailable;
+    }
+
+    handleProviderUnavailable(status, errorBody) {
+        const body = String(errorBody || '').toLowerCase();
+        const noProvider = status === 400 && body.includes('no translation provider configured');
+        if (!noProvider) return false;
+
+        this.translationProviderUnavailable = true;
+        if (!this.translationProviderWarned) {
+            console.warn('Translation disabled: no backend translation provider configured.');
+            this.translationProviderWarned = true;
+        }
+        return true;
     }
 
     setTargetLanguage(lang) {
@@ -142,6 +157,9 @@ class LiveTranslator {
 
             if (!response.ok) {
                 const errorBody = await response.text();
+                if (this.handleProviderUnavailable(response.status, errorBody)) {
+                    return text;
+                }
                 console.error('Translation proxy error body:', errorBody);
                 throw new Error(`Translation proxy error: ${response.status}`);
             }
@@ -198,6 +216,9 @@ class LiveTranslator {
 
             if (!response.ok) {
                 const errorBody = await response.text();
+                if (this.handleProviderUnavailable(response.status, errorBody)) {
+                    return texts;
+                }
                 console.error('Translation proxy error body:', errorBody);
                 throw new Error(`Translation proxy error: ${response.status}`);
             }
@@ -448,3 +469,4 @@ window.toggleTranslation = function(enabled) {
 
 console.log('✅ Live Translation Framework loaded');
 console.log('💡 Uses backend /translate proxy');
+

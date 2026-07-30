@@ -1,3 +1,15 @@
+console.log("mainPageControls LOADED");
+console.log("before assignment:", window.showLongToast);
+// Scroll a horizontal row left (-1) or right (1) by one viewport of cards
+function scrollRow(id, dir) {
+    if (id === 'rowRecommended' && typeof window.__browseRecommendedPage === 'function') {
+        const handled = window.__browseRecommendedPage(dir);
+        if (handled) return;
+    }
+    const el = document.getElementById(id);
+    if (el) el.scrollBy({ left: dir * 900, behavior: 'smooth' });
+}
+
 // --- SETTINGS/ACCOUNT/API STATUS INIT FOR MOVIEINFO ---
 document.addEventListener('DOMContentLoaded', () => {
     if (document.getElementById('settingsModal')) {
@@ -20,11 +32,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const statView = document.getElementById('statView');
         if (statView) statView.innerText = localStorage.getItem('views') || '0/3';
 
-        const userTier = localStorage.getItem('userTier');
-        if (userTier === 'Gold' || userTier === 'Premium') {
-            const adSection = document.getElementById('adSection');
-            if (adSection) adSection.style.display = 'none';
-        }
+
 
         const apiStatusText = document.getElementById('apiStatusText');
         if (apiStatusText) {
@@ -41,18 +49,694 @@ document.addEventListener('DOMContentLoaded', () => {
    ========================================= */
 let heroMovies = []; 
 let currentSlide = 0;
+let _heroInitStarted = false;
+
+const HERO_TRAILER_CUTOFF_RATIO = 0.8;
+const HERO_AUDIO_FADE_MS = 3000;
+const HERO_AUDIO_TARGET_VOLUME = 100;
+let heroYouTubeApiPromise = null;
+let heroTrailerPlayer = null;
+const heroAudioState = {
+    fadeTimer: null,
+    isHeroInView: true,
+    observerBound: false,
+    hintShown: false
+};
+const heroTrailerMonitor = {
+    iframe: null,
+    frameWindow: null,
+    pollTimer: null,
+    readyTimer: null,
+    errorTimer: null,
+    cutoffTimer: null,
+    initAttempts: 0,
+    currentTime: 0,
+    duration: 0,
+    trailerKey: '',
+    timerStarted: false,
+    reached90Logged: false,
+    reached100Logged: false,
+    cutoffReached: false,
+    onCutoff: null,
+    onUnavailable: null
+};
+
+const hoverTrailerMonitor = {
+    iframe: null,
+    player: null,
+    keys: [],
+    currentIndex: 0,
+    currentKey: '',
+    ready: false,
+    active: false,
+    pendingTimeout: null,
+    onUnavailable: null
+};
+
+function clearHoverTrailerMonitor() {
+    if (hoverTrailerMonitor.pendingTimeout) {
+        clearTimeout(hoverTrailerMonitor.pendingTimeout);
+        hoverTrailerMonitor.pendingTimeout = null;
+    }
+    hoverTrailerMonitor.keys = [];
+    hoverTrailerMonitor.currentIndex = 0;
+    hoverTrailerMonitor.currentKey = '';
+    hoverTrailerMonitor.ready = false;
+    hoverTrailerMonitor.active = false;
+    hoverTrailerMonitor.onUnavailable = null;
+    if (hoverTrailerMonitor.player) {
+        try {
+            hoverTrailerMonitor.player.destroy();
+        } catch (_) {
+        }
+        hoverTrailerMonitor.player = null;
+    }
+    hoverTrailerMonitor.iframe = null;
+}
+
+function advanceHoverTrailerCandidate() {
+    if (!hoverTrailerMonitor.active) return;
+    hoverTrailerMonitor.currentIndex += 1;
+    if (hoverTrailerMonitor.currentIndex >= hoverTrailerMonitor.keys.length) {
+        hoverTrailerMonitor.active = false;
+        if (typeof hoverTrailerMonitor.onUnavailable === 'function') {
+            hoverTrailerMonitor.onUnavailable();
+        }
+        return;
+    }
+    if (hoverTrailerMonitor.player) {
+        try {
+            hoverTrailerMonitor.player.stopVideo();
+        } catch (_) {
+        }
+    }
+    hoverTrailerMonitor.ready = false;
+    loadHoverTrailerCandidate();
+}
+
+function loadHoverTrailerCandidate() {
+    const iframe = hoverTrailerMonitor.iframe;
+    const keys = hoverTrailerMonitor.keys;
+    const idx = hoverTrailerMonitor.currentIndex;
+    if (!iframe || !Array.isArray(keys) || idx >= keys.length) {
+        if (iframe) iframe.src = '';
+        return;
+    }
+
+    const candidate = keys[idx];
+    if (!candidate) {
+        if (typeof hoverTrailerMonitor.onUnavailable === 'function') {
+            hoverTrailerMonitor.onUnavailable();
+        }
+        return;
+    }
+
+    hoverTrailerMonitor.currentKey = candidate;
+    hoverTrailerMonitor.ready = false;
+    hoverTrailerMonitor.active = true;
+
+    const origin = encodeURIComponent(window.location.origin);
+    const embedUrl = `https://www.youtube.com/embed/${candidate}?autoplay=1&mute=1&controls=0&loop=1&playlist=${candidate}&rel=0&enablejsapi=1&playsinline=1&modestbranding=1&origin=${origin}`;
+    iframe.src = embedUrl;
+
+    if (hoverTrailerMonitor.pendingTimeout) {
+        clearTimeout(hoverTrailerMonitor.pendingTimeout);
+        hoverTrailerMonitor.pendingTimeout = null;
+    }
+    hoverTrailerMonitor.pendingTimeout = setTimeout(() => {
+        if (!hoverTrailerMonitor.ready && hoverTrailerMonitor.currentKey === candidate) {
+            advanceHoverTrailerCandidate();
+        }
+    }, 12000);
+
+    const initPlayer = () => {
+        if (!hoverTrailerMonitor.active || hoverTrailerMonitor.currentKey !== candidate) return;
+        try {
+            if (!hoverTrailerMonitor.player) {
+                hoverTrailerMonitor.player = new window.YT.Player(iframe, {
+                    videoId: candidate,
+                    playerVars: {
+                        autoplay: 1,
+                        mute: 1,
+                        controls: 0,
+                        rel: 0,
+                        loop: 1,
+                        playlist: candidate,
+                        modestbranding: 1,
+                        iv_load_policy: 3,
+                        disablekb: 1,
+                        fs: 0,
+                        playsinline: 1,
+                        origin: window.location.origin
+                    },
+                    events: {
+                        onReady: (event) => {
+                            hoverTrailerMonitor.ready = true;
+                            if (hoverTrailerMonitor.pendingTimeout) {
+                                clearTimeout(hoverTrailerMonitor.pendingTimeout);
+                                hoverTrailerMonitor.pendingTimeout = null;
+                            }
+                            try {
+                                event.target.mute();
+                                event.target.setVolume(0);
+                                event.target.playVideo();
+                            } catch (_) {
+                            }
+                        },
+                        onStateChange: (event) => {
+                            if (event?.data === 1) {
+                                hoverTrailerMonitor.ready = true;
+                                if (hoverTrailerMonitor.pendingTimeout) {
+                                    clearTimeout(hoverTrailerMonitor.pendingTimeout);
+                                    hoverTrailerMonitor.pendingTimeout = null;
+                                }
+                            }
+                        },
+                        onError: () => {
+                            advanceHoverTrailerCandidate();
+                        }
+                    }
+                });
+            } else {
+                try {
+                    hoverTrailerMonitor.player.loadVideoById({ videoId: candidate, startSeconds: 0 });
+                } catch (_) {
+                }
+            }
+        } catch (_) {
+        }
+    };
+
+    if (window.YT && typeof window.YT.Player === 'function') {
+        initPlayer();
+    } else {
+        ensureHeroYouTubeApi().then(initPlayer).catch(() => {
+            // No further action, use iframe timeout fallback.
+        });
+    }
+}
+
+function setHoverTrailerSource(iframe, keys = [], onUnavailable = null) {
+    clearHoverTrailerMonitor();
+    if (!iframe || !Array.isArray(keys) || keys.length === 0) {
+        if (iframe) iframe.src = '';
+        return;
+    }
+    hoverTrailerMonitor.iframe = iframe;
+    hoverTrailerMonitor.keys = [...keys];
+    hoverTrailerMonitor.currentIndex = 0;
+    hoverTrailerMonitor.onUnavailable = typeof onUnavailable === 'function' ? onUnavailable : null;
+    loadHoverTrailerCandidate();
+}
+
+function ensureHeroYouTubeApi() {
+    if (window.YT && typeof window.YT.Player === 'function') {
+        return Promise.resolve();
+    }
+    if (heroYouTubeApiPromise) return heroYouTubeApiPromise;
+
+    heroYouTubeApiPromise = new Promise((resolve) => {
+        const prevReady = window.onYouTubeIframeAPIReady;
+        window.onYouTubeIframeAPIReady = () => {
+            if (typeof prevReady === 'function') {
+                try { prevReady(); } catch (_) { }
+            }
+            console.log('[HeroTrailer] YouTube IFrame API ready');
+            resolve();
+        };
+
+        const existing = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+        if (!existing) {
+            const tag = document.createElement('script');
+            tag.src = 'https://www.youtube.com/iframe_api';
+            tag.async = true;
+            document.head.appendChild(tag);
+        }
+
+        // Safety fallback if callback does not fire but API is present.
+        const watch = setInterval(() => {
+            if (window.YT && typeof window.YT.Player === 'function') {
+                clearInterval(watch);
+                resolve();
+            }
+        }, 250);
+        setTimeout(() => clearInterval(watch), 12000);
+    });
+
+    return heroYouTubeApiPromise;
+}
+
+function clearHeroTrailerMonitor() {
+    if (heroTrailerMonitor.pollTimer) {
+        clearInterval(heroTrailerMonitor.pollTimer);
+        heroTrailerMonitor.pollTimer = null;
+    }
+    if (heroTrailerMonitor.readyTimer) {
+        clearTimeout(heroTrailerMonitor.readyTimer);
+        heroTrailerMonitor.readyTimer = null;
+    }
+    if (heroTrailerMonitor.cutoffTimer) {
+        clearTimeout(heroTrailerMonitor.cutoffTimer);
+        heroTrailerMonitor.cutoffTimer = null;
+    }
+    heroTrailerMonitor.currentTime = 0;
+    heroTrailerMonitor.duration = 0;
+    heroTrailerMonitor.trailerKey = '';
+    heroTrailerMonitor.timerStarted = false;
+    heroTrailerMonitor.reached90Logged = false;
+    heroTrailerMonitor.reached100Logged = false;
+    heroTrailerMonitor.initAttempts = 0;
+    heroTrailerMonitor.cutoffReached = false;
+    heroTrailerMonitor.onCutoff = null;
+    heroTrailerMonitor.onUnavailable = null;
+    heroTrailerMonitor.frameWindow = null;
+    heroTrailerMonitor.iframe = null;
+    if (heroTrailerMonitor.errorTimer) {
+        clearTimeout(heroTrailerMonitor.errorTimer);
+        heroTrailerMonitor.errorTimer = null;
+    }
+}
+
+function stopHeroAudioFade() {
+    if (heroAudioState.fadeTimer) {
+        clearInterval(heroAudioState.fadeTimer);
+        heroAudioState.fadeTimer = null;
+    }
+}
+
+function isHeroAudioMutedByPreference() {
+    return localStorage.getItem('muteHeroAudio') === 'true';
+}
+
+function muteHeroTrailerImmediate() {
+    stopHeroAudioFade();
+    if (!heroTrailerPlayer) return;
+    try { heroTrailerPlayer.setVolume(0); } catch (_) { }
+    try { heroTrailerPlayer.mute(); } catch (_) { }
+}
+
+function fadeInHeroTrailerAudio(durationMs = HERO_AUDIO_FADE_MS) {
+    stopHeroAudioFade();
+    if (!heroTrailerPlayer || !heroAudioState.isHeroInView || isHeroAudioMutedByPreference()) return;
+
+    let playerState = -1;
+    try { playerState = heroTrailerPlayer.getPlayerState(); } catch (_) { }
+    if (playerState !== 1) return; // Only fade while actively playing
+
+    const steps = 15;
+    const stepDelay = Math.max(60, Math.floor(durationMs / steps));
+    let step = 0;
+
+    try { heroTrailerPlayer.setVolume(0); } catch (_) { }
+    try { heroTrailerPlayer.unMute(); } catch (_) { }
+
+    heroAudioState.fadeTimer = setInterval(() => {
+        if (!heroTrailerPlayer || !heroAudioState.isHeroInView) {
+            muteHeroTrailerImmediate();
+            return;
+        }
+
+        step += 1;
+        const ratio = Math.min(1, step / steps);
+        const nextVolume = Math.round(HERO_AUDIO_TARGET_VOLUME * ratio);
+
+        try {
+            heroTrailerPlayer.unMute();
+            heroTrailerPlayer.setVolume(nextVolume);
+        } catch (_) { }
+
+        if (ratio >= 1) {
+            stopHeroAudioFade();
+        }
+    }, stepDelay);
+}
+
+function handleHeroVisibilityChange(isInView) {
+    heroAudioState.isHeroInView = !!isInView;
+    if (!heroAudioState.isHeroInView || isHeroAudioMutedByPreference()) {
+        muteHeroTrailerImmediate();
+        return;
+    }
+    fadeInHeroTrailerAudio();
+}
+
+function bindHeroVisibilityAudioControl() {
+    if (heroAudioState.observerBound) return;
+    const heroSection = document.getElementById('heroSection');
+    if (!heroSection) return;
+    heroAudioState.observerBound = true;
+
+    const showHeroAudioHint = () => {
+        if (heroAudioState.hintShown) return;
+        heroAudioState.hintShown = true;
+        if (document.querySelector('.hero-audio-hint')) return;
+
+        const hint = document.createElement('div');
+        hint.className = 'limit-toast hero-audio-hint';
+        hint.textContent = 'U can mute the volume in personal settings';
+
+        const progress = document.createElement('div');
+        progress.className = 'toast-progress';
+        hint.appendChild(progress);
+
+        document.body.appendChild(hint);
+        setTimeout(() => {
+            hint.style.opacity = '0';
+            hint.style.transform = 'translate(-50%, -8px)';
+            setTimeout(() => {
+                if (hint.parentNode) hint.parentNode.removeChild(hint);
+            }, 320);
+        }, 4200);
+    };
+
+    const evaluateVisibility = () => {
+        const rect = heroSection.getBoundingClientRect();
+        const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+        const visiblePx = Math.min(rect.bottom, vh) - Math.max(rect.top, 0);
+        const ratio = rect.height > 0 ? visiblePx / rect.height : 0;
+        const isVisible = ratio >= 0.55 && rect.bottom > 120 && rect.top < (vh * 0.7);
+        handleHeroVisibilityChange(isVisible);
+    };
+
+    if ('IntersectionObserver' in window) {
+        const observer = new IntersectionObserver((entries) => {
+            const entry = entries[0];
+            if (!entry || !entry.isIntersecting) {
+                handleHeroVisibilityChange(false);
+                return;
+            }
+            evaluateVisibility();
+        }, { threshold: [0, 0.2, 0.35, 0.6, 1] });
+        observer.observe(heroSection);
+    }
+
+    window.addEventListener('scroll', evaluateVisibility, { passive: true });
+    window.addEventListener('resize', evaluateVisibility);
+    evaluateVisibility();
+
+    // On indexBrowse the page-loading overlay covers the screen for ~2 s,
+    // so delay the hint until the overlay has had time to fade out.
+    const isBrowse = window.location.pathname.includes('indexBrowse.html');
+    if (isBrowse) {
+        setTimeout(showHeroAudioHint, 2800);
+    } else {
+        showHeroAudioHint();
+    }
+}
+
+function postHeroTrailerCommand(func, args = []) {
+    const target = heroTrailerMonitor.frameWindow;
+    if (!target) return;
+    try {
+        target.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
+    } catch (_) { }
+}
+
+function normalizeDurationToSeconds(rawDuration) {
+    if (typeof rawDuration === 'number' && Number.isFinite(rawDuration)) return rawDuration;
+    if (typeof rawDuration === 'string') {
+        const trimmed = rawDuration.trim();
+        if (/^\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+
+        // Accept ISO-8601 durations such as PT1M30S
+        const m = trimmed.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i);
+        if (m) {
+            const h = Number(m[1] || 0);
+            const min = Number(m[2] || 0);
+            const s = Number(m[3] || 0);
+            return h * 3600 + min * 60 + s;
+        }
+    }
+    return 0;
+}
+
+function maybeStartHeroCutoffTimer() {
+    if (heroTrailerMonitor.timerStarted || heroTrailerMonitor.cutoffReached) return;
+    const totalSeconds = normalizeDurationToSeconds(heroTrailerMonitor.duration);
+    if (!(totalSeconds > 0)) return;
+
+    const cutoffSeconds = totalSeconds * HERO_TRAILER_CUTOFF_RATIO;
+    const nowSeconds = Math.max(0, normalizeDurationToSeconds(heroTrailerMonitor.currentTime));
+    const delayMs = Math.max(0, (cutoffSeconds - nowSeconds) * 1000);
+
+    heroTrailerMonitor.timerStarted = true;
+    console.log(`[HeroTrailer] duration raw=${heroTrailerMonitor.duration} normalized=${totalSeconds.toFixed(2)}s for ${heroTrailerMonitor.trailerKey || 'unknown'}`);
+    console.log(`[HeroTrailer] starting 90% timer at ${cutoffSeconds.toFixed(2)}s (remaining ${(delayMs / 1000).toFixed(2)}s)`);
+
+    heroTrailerMonitor.cutoffTimer = setTimeout(() => {
+        const at = Math.round((heroTrailerMonitor.currentTime || cutoffSeconds) * 10) / 10;
+        const total = Math.round(totalSeconds * 10) / 10;
+        console.log(`[HeroTrailer] timer fired at ${at}s / ${total}s -> nextSlide()`);
+        triggerHeroTrailerCutoff();
+    }, delayMs);
+}
+
+function triggerHeroTrailerCutoff() {
+    if (heroTrailerMonitor.cutoffReached) return;
+    heroTrailerMonitor.cutoffReached = true;
+    if (!heroTrailerMonitor.reached90Logged) {
+        heroTrailerMonitor.reached90Logged = true;
+        const p = Math.round((heroTrailerMonitor.currentTime || 0) * 10) / 10;
+        const d = Math.round((heroTrailerMonitor.duration || 0) * 10) / 10;
+        console.log(`[HeroTrailer] 90% reached (${p}s / ${d}s) for ${heroTrailerMonitor.trailerKey || 'unknown'}`);
+    }
+    const callback = heroTrailerMonitor.onCutoff;
+    clearHeroTrailerMonitor();
+    if (typeof callback === 'function') callback();
+}
+
+function setHeroTrailerSource(iframe, trailerKey, onCutoff, onUnavailable = null) {
+    clearHeroTrailerMonitor();
+    if (!iframe || !trailerKey) {
+        console.log('[HeroTrailer] cleared source');
+        if (heroTrailerPlayer && typeof heroTrailerPlayer.stopVideo === 'function') {
+            try { heroTrailerPlayer.stopVideo(); } catch (_) { }
+        }
+        if (iframe) iframe.src = '';
+        return;
+    }
+
+    console.log(`[HeroTrailer] loading trailer ${trailerKey}`);
+
+    iframe.classList.remove('trailer-ready');
+
+    const origin = encodeURIComponent(window.location.origin);
+    iframe.src = `https://www.youtube.com/embed/${trailerKey}?autoplay=1&mute=1&controls=0&loop=1&playlist=${trailerKey}&rel=0&enablejsapi=1&playsinline=1&modestbranding=1&iv_load_policy=3&disablekb=1&fs=0&origin=${origin}`;
+
+    heroTrailerMonitor.iframe = iframe;
+    heroTrailerMonitor.onCutoff = onCutoff;
+    heroTrailerMonitor.onUnavailable = typeof onUnavailable === 'function' ? onUnavailable : null;
+    heroTrailerMonitor.trailerKey = trailerKey;
+
+    ensureHeroYouTubeApi().then(() => {
+        if (heroTrailerMonitor.trailerKey !== trailerKey || heroTrailerMonitor.cutoffReached) return;
+
+        const onPlayerStateChange = (e) => {
+            if (e?.data === 1) {
+                if (isHeroAudioMutedByPreference() || !heroAudioState.isHeroInView) {
+                    muteHeroTrailerImmediate();
+                } else {
+                    fadeInHeroTrailerAudio();
+                }
+            }
+            if (e?.data === 0 && !heroTrailerMonitor.reached100Logged) {
+                heroTrailerMonitor.reached100Logged = true;
+                const p = Math.round((heroTrailerMonitor.currentTime || 0) * 10) / 10;
+                const d = Math.round((heroTrailerMonitor.duration || 0) * 10) / 10;
+                console.log(`[HeroTrailer] 100% reached (${p}s / ${d}s) for ${heroTrailerMonitor.trailerKey || 'unknown'} [YT API]`);
+                if (!heroTrailerMonitor.cutoffReached) triggerHeroTrailerCutoff();
+            }
+        };
+
+        const onHeroPlayerError = (event) => {
+            console.warn('[HeroTrailer] YT player error', event?.data, heroTrailerMonitor.trailerKey);
+            if (heroTrailerMonitor.errorTimer) {
+                clearTimeout(heroTrailerMonitor.errorTimer);
+                heroTrailerMonitor.errorTimer = null;
+            }
+            if (typeof heroTrailerMonitor.onUnavailable === 'function') {
+                heroTrailerMonitor.onUnavailable(event?.data);
+            }
+        };
+
+        if (!heroTrailerPlayer) {
+            heroTrailerPlayer = new window.YT.Player('heroTrailerFrame', {
+                videoId: trailerKey,
+                playerVars: {
+                    autoplay: 1,
+                    mute: 1,
+                    controls: 0,
+                    rel: 0,
+                    playsinline: 1,
+                    loop: 1,
+                    playlist: trailerKey,
+                    modestbranding: 1,
+                    iv_load_policy: 3,
+                    disablekb: 1,
+                    fs: 0,
+                    origin: window.location.origin
+                },
+                events: {
+                    onReady: (ev) => {
+                        if (heroTrailerMonitor.errorTimer) {
+                            clearTimeout(heroTrailerMonitor.errorTimer);
+                            heroTrailerMonitor.errorTimer = null;
+                        }
+                        try { ev.target.mute(); } catch (_) { }
+                        try { ev.target.setVolume(0); } catch (_) { }
+                        try { ev.target.playVideo(); } catch (_) { }
+                        console.log(`[HeroTrailer] YT player ready for ${trailerKey}`);
+                        const fr = document.getElementById('heroTrailerFrame');
+                        if (fr) fr.classList.add('trailer-ready');
+                    },
+                    onStateChange: onPlayerStateChange,
+                    onError: onHeroPlayerError
+                }
+            });
+        } else {
+            try {
+                if (heroTrailerMonitor.errorTimer) {
+                    clearTimeout(heroTrailerMonitor.errorTimer);
+                    heroTrailerMonitor.errorTimer = null;
+                }
+                heroTrailerPlayer.loadVideoById({ videoId: trailerKey, startSeconds: 0 });
+                heroTrailerPlayer.setVolume(0);
+                heroTrailerPlayer.mute();
+                heroTrailerPlayer.playVideo();
+                console.log(`[HeroTrailer] YT player loadVideoById ${trailerKey}`);
+            } catch (_) { }
+        }
+    }).catch(() => {
+        console.log('[HeroTrailer] YT API fallback failed; using postMessage path');
+    });
+
+    const initHeroTrailerApi = () => {
+        if (!heroTrailerMonitor.iframe || heroTrailerMonitor.cutoffReached) return;
+        heroTrailerMonitor.frameWindow = iframe.contentWindow;
+        heroTrailerMonitor.initAttempts += 1;
+        console.log(`[HeroTrailer] init attempt ${heroTrailerMonitor.initAttempts} for ${trailerKey}`);
+        postHeroTrailerCommand('addEventListener', ['onStateChange']);
+        postHeroTrailerCommand('getDuration');
+        postHeroTrailerCommand('getCurrentTime');
+
+        if (heroTrailerMonitor.initAttempts < 8 && heroTrailerMonitor.duration <= 0) {
+            heroTrailerMonitor.readyTimer = setTimeout(initHeroTrailerApi, 400);
+        }
+    };
+
+    iframe.onload = () => {
+        console.log(`[HeroTrailer] iframe loaded for ${trailerKey}`);
+        initHeroTrailerApi();
+
+        if (heroTrailerMonitor.errorTimer) {
+            clearTimeout(heroTrailerMonitor.errorTimer);
+            heroTrailerMonitor.errorTimer = null;
+        }
+
+        heroTrailerMonitor.errorTimer = setTimeout(() => {
+            if (heroTrailerMonitor.trailerKey === trailerKey && !iframe.classList.contains('trailer-ready')) {
+                console.warn('[HeroTrailer] trailer still not ready after timeout', trailerKey);
+                if (typeof heroTrailerMonitor.onUnavailable === 'function') {
+                    heroTrailerMonitor.onUnavailable('timeout');
+                }
+            }
+        }, 9000);
+
+        heroTrailerMonitor.pollTimer = setInterval(() => {
+            if (heroTrailerPlayer && typeof heroTrailerPlayer.getDuration === 'function') {
+                try {
+                    const d = Number(heroTrailerPlayer.getDuration()) || 0;
+                    const t = Number(heroTrailerPlayer.getCurrentTime()) || 0;
+                    if (d > 0) heroTrailerMonitor.duration = d;
+                    if (t >= 0) heroTrailerMonitor.currentTime = t;
+                } catch (_) { }
+            }
+
+            postHeroTrailerCommand('getCurrentTime');
+            postHeroTrailerCommand('getDuration');
+            maybeStartHeroCutoffTimer();
+
+            const { currentTime, duration } = heroTrailerMonitor;
+            if (duration > 0 && currentTime / duration >= HERO_TRAILER_CUTOFF_RATIO) {
+                triggerHeroTrailerCutoff();
+            }
+        }, 1000);
+    };
+}
+
+if (!window.__heroTrailerMessageBound) {
+    window.addEventListener('message', (event) => {
+        const src = String(event.origin || '');
+        if (!src.includes('youtube.com') && !src.includes('youtube-nocookie.com')) return;
+        if (heroTrailerMonitor.frameWindow && event.source !== heroTrailerMonitor.frameWindow) return;
+
+        let payload = event.data;
+        if (typeof payload === 'string') {
+            try {
+                payload = JSON.parse(payload);
+            } catch (_) {
+                return;
+            }
+        }
+
+        if (!payload) return;
+
+        if (payload.event === 'onStateChange' && payload.info === 0 && !heroTrailerMonitor.reached100Logged) {
+            heroTrailerMonitor.reached100Logged = true;
+            const p = Math.round((heroTrailerMonitor.currentTime || 0) * 10) / 10;
+            const d = Math.round((heroTrailerMonitor.duration || 0) * 10) / 10;
+            console.log(`[HeroTrailer] 100% reached (${p}s / ${d}s) for ${heroTrailerMonitor.trailerKey || 'unknown'}`);
+            if (!heroTrailerMonitor.cutoffReached) triggerHeroTrailerCutoff();
+            return;
+        }
+
+        if (payload.event !== 'infoDelivery' || !payload.info) return;
+        const info = payload.info || {};
+        if (typeof info.currentTime === 'number') {
+            heroTrailerMonitor.currentTime = info.currentTime;
+        }
+        if (typeof info.duration === 'number') {
+            const wasUnknown = heroTrailerMonitor.duration <= 0;
+            heroTrailerMonitor.duration = info.duration;
+            if (wasUnknown && info.duration > 0) {
+                console.log(`[HeroTrailer] duration detected: ${Math.round(info.duration * 10) / 10}s for ${heroTrailerMonitor.trailerKey || 'unknown'}`);
+            }
+        }
+        maybeStartHeroCutoffTimer();
+
+        const { currentTime, duration } = heroTrailerMonitor;
+        if (duration > 0 && currentTime / duration >= HERO_TRAILER_CUTOFF_RATIO) {
+            if (!heroTrailerMonitor.reached90Logged) {
+                heroTrailerMonitor.reached90Logged = true;
+                const p = Math.round(currentTime * 10) / 10;
+                const d = Math.round(duration * 10) / 10;
+                console.log(`[HeroTrailer] 90% reached (${p}s / ${d}s) for ${heroTrailerMonitor.trailerKey || 'unknown'}`);
+            }
+            triggerHeroTrailerCutoff();
+        }
+    });
+    window.__heroTrailerMessageBound = true;
+}
+
+window.setHeroTrailerSource = setHeroTrailerSource;
+window.fadeInHeroTrailerAudio = fadeInHeroTrailerAudio;
+window.muteHeroTrailerImmediate = muteHeroTrailerImmediate;
 
 async function initHero() {
+    if (_heroInitStarted) return;
+    _heroInitStarted = true;
+    bindHeroVisibilityAudioControl();
+    if (window.__animeMode) return;
     try {
         const isBrowsePage = window.location.pathname.includes('indexBrowse.html');
         let movies = [];
 
         if (isBrowsePage && window.recommendationsSystem?.generateRecommendations) {
-            movies = await window.recommendationsSystem.generateRecommendations(5);
+            movies = await window.recommendationsSystem.generateRecommendations(8);
         }
 
         if (!movies || movies.length === 0) {
-            const baseUrl = 'https://localhost:3000/movies/library?limit=5&sort=popularity_desc';
+            const baseUrl = '/movies/library?limit=8&sort=popularity_desc';
             const source = window.getMovieSource ? window.getMovieSource() : 'local';
             const hydratedUrl = source === 'api' ? `${baseUrl}&hydrate=1` : baseUrl;
             const response = await fetch(window.withMovieSource ? window.withMovieSource(hydratedUrl) : hydratedUrl);
@@ -69,11 +753,12 @@ async function initHero() {
                 title: movie['Movie Name'],
                 imdbId: movie.imdb_id || "", 
                 rating: movie.Rating,
-                year: movie.Year || movie.release_date?.split('-')[0] || "N/A",
+                year: movie.Year || (movie.release_date ? (movie.release_date.match(/\b(19|20)\d{2}\b/) || [])[0] : '') || "N/A",
                 runtime: movie.Runtime || "-- min",
                 plot: movie.Plot || "No plot summary available for this title.",
                 stars,
-                searchName: movie['Movie Name']
+                searchName: movie['Movie Name'],
+                poster: movie.Poster || (movie.poster_path ? `https://image.tmdb.org/t/p/w342${movie.poster_path}` : '')
             };
         });
 
@@ -92,47 +777,6 @@ async function initHero() {
     
 }
 
-async function updateHero() {
-    if (heroMovies.length === 0) return;
-    const movie = heroMovies[currentSlide];
-    
-    const content = document.querySelector('.hero-content');
-    if (content) content.style.opacity = '0'; 
-
-    if (window.fetchYTId) {
-        const tId = await window.fetchYTId(movie.title);
-        movie.currentTrailerId = tId;
-
-        const iframe = document.getElementById('heroTrailerFrame');
-        if (iframe && tId) {
-            const lowDataMode = localStorage.getItem('lowDataMode') === 'true';
-            
-            if (lowDataMode) {
-                iframe.src = '';
-                console.log('[Low Data Mode] Skipping trailer autoplay');
-            } else {
-                iframe.src = `https://www.youtube.com/embed/${tId}?autoplay=1&mute=1&controls=0&loop=1&playlist=${tId}`;
-            }
-        }
-    }
-
-    setTimeout(() => {
-        const titleEl = document.getElementById('heroTitle');
-        const ratingEl = document.getElementById('statRating'); 
-        const dateEl = document.getElementById('statDate');     
-        const runtimeEl = document.getElementById('statRuntime'); 
-        const descEl = document.getElementById('heroDesc');     
-
-        if (titleEl) titleEl.innerText = movie.title;
-        if (ratingEl) ratingEl.innerText = movie.rating || "--";
-        if (dateEl) dateEl.innerText = movie.year || "----";
-        if (runtimeEl) runtimeEl.innerText = movie.runtime || "-- min";
-        if (descEl) descEl.innerText = movie.plot;
-        
-        if (content) content.style.opacity = '1';
-        updateDots();
-    }, 300);
-}
 // ARROW LOGIC (Fixed global scope)
 window.nextSlide = function() {
     currentSlide = (currentSlide + 1) % heroMovies.length;
@@ -140,7 +784,6 @@ window.nextSlide = function() {
 };
 
 window.prevSlide = function() {
-                localStorage.setItem('movieSource', 'api');
     currentSlide = (currentSlide - 1 + heroMovies.length) % heroMovies.length;
     updateHero();
 };
@@ -149,6 +792,43 @@ window.goToSlide = function(index) {
     currentSlide = index;
     updateHero();
 };
+
+function bindHeroSwipe() {
+    const heroSection = document.getElementById('heroSection');
+    if (!heroSection) return;
+
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+    const threshold = 40;
+
+    heroSection.addEventListener('touchstart', (event) => {
+        if (event.touches.length !== 1) return;
+        startX = event.touches[0].clientX;
+        startY = event.touches[0].clientY;
+        tracking = true;
+    }, { passive: true });
+
+    heroSection.addEventListener('touchend', (event) => {
+        if (!tracking) return;
+        tracking = false;
+
+        const touch = event.changedTouches[0];
+        if (!touch) return;
+
+        const dx = touch.clientX - startX;
+        const dy = touch.clientY - startY;
+        if (Math.abs(dx) < threshold || Math.abs(dx) <= Math.abs(dy)) return;
+
+        if (dx < 0) {
+            if (typeof window.nextSlide === 'function') window.nextSlide();
+        } else {
+            if (typeof window.prevSlide === 'function') window.prevSlide();
+        }
+    }, { passive: true });
+}
+
+document.addEventListener('DOMContentLoaded', bindHeroSwipe);
 
 function updateDots() {
     const dotsContainer = document.getElementById('sliderDots');
@@ -162,7 +842,28 @@ function updateDots() {
 /* =========================================
    2. MOVIE OVERLAY & PLAY LOGIC
    ========================================= */
-async function updateHero() {
+function clampHeroTitleHeight() {
+    const titleEl = document.getElementById('heroTitle');
+    if (!titleEl || !titleEl.parentElement) return;
+
+    const parentHeight = titleEl.parentElement.getBoundingClientRect().height;
+    if (parentHeight <= 0) {
+        titleEl.classList.remove('hero-title-clamped');
+        titleEl.style.maxHeight = '';
+        return;
+    }
+
+    const maxAllowed = parentHeight * 0.4;
+    titleEl.classList.remove('hero-title-clamped');
+    titleEl.style.maxHeight = '';
+
+    const titleHeight = titleEl.getBoundingClientRect().height;
+    if (titleHeight > maxAllowed) {
+        titleEl.classList.add('hero-title-clamped');
+    }
+}
+
+async function updateHero(_skipCount = 0) {
     if (heroMovies.length === 0) return;
     const movie = heroMovies[currentSlide];
     
@@ -170,12 +871,28 @@ async function updateHero() {
     if (content) content.style.opacity = '0';
 
     if (window.fetchYTId) {
-        const tId = await window.fetchYTId(movie.title);
-        movie.currentTrailerId = tId; 
+        const searchQuery = movie.year ? `${movie.title} ${movie.year}` : movie.title;
+        const tId = await window.fetchYTId(searchQuery);
+        movie.currentTrailerId = tId;
+
+        // If no trailer found, silently advance to next slide (max one full cycle)
+        if (!tId && _skipCount < heroMovies.length - 1) {
+            currentSlide = (currentSlide + 1) % heroMovies.length;
+            return updateHero(_skipCount + 1);
+        }
 
         const heroFrame = document.getElementById('heroTrailerFrame');
-        if (heroFrame && tId) {
-            heroFrame.src = `https://www.youtube.com/embed/${tId}?autoplay=1&mute=1&controls=0&loop=1&playlist=${tId}&rel=0`;
+        const heroTrailerSide = document.querySelector('.hero-trailer-side');
+        if (heroFrame) {
+            if (tId) {
+                setHeroTrailerSource(heroFrame, tId, () => {
+                    if (typeof window.nextSlide === 'function') window.nextSlide();
+                });
+                if (heroTrailerSide) heroTrailerSide.style.display = '';
+            } else {
+                setHeroTrailerSource(heroFrame, '', null);
+                if (heroTrailerSide) heroTrailerSide.style.display = 'none';
+            }
         }
     }
 
@@ -186,6 +903,18 @@ async function updateHero() {
         if (document.getElementById('statDate')) document.getElementById('statDate').innerText = movie.year || "----";
         if (document.getElementById('statRuntime')) document.getElementById('statRuntime').innerText = movie.runtime || "-- min";
         if (document.getElementById('heroDesc')) document.getElementById('heroDesc').innerText = movie.plot;
+        clampHeroTitleHeight();
+
+        // Poster card (indexMain hero-main-poster)
+        const heroPosterImg = document.getElementById('heroPosterImg');
+        if (heroPosterImg) {
+            if (movie.poster) {
+                heroPosterImg.src = movie.poster;
+                heroPosterImg.style.display = 'block';
+            } else {
+                heroPosterImg.style.display = 'none';
+            }
+        }
 
         if (content) content.style.opacity = '1';
         updateDots();
@@ -355,7 +1084,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (query.length > 0) {
                 resultsMenu.classList.add('active');
                 try {
-                    const baseUrl = `https://localhost:3000/search?q=${encodeURIComponent(query)}`;
+                    const baseUrl = `/search?q=${encodeURIComponent(query)}`;
                     const response = await fetch(window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl);
                     const movies = await response.json();
                     renderSearchResults(movies, resultsMenu);
@@ -393,13 +1122,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             if(display) display.innerText = query;
             
             try {
-                const baseUrl = `https://localhost:3000/search?q=${encodeURIComponent(query)}`;
+                const baseUrl = `/search?q=${encodeURIComponent(query)}`;
                 const response = await fetch(window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl);
                 const movies = await response.json();
                 
                 // --- GENERATE HTML ---
                 fullResultsGrid.innerHTML = movies.map(movie => `
-                    <div class="movie-card" onclick="window.location.href='movieInfo.html?id=${movie.ID}'">                        
+                    <div class="movie-card" onclick="window.location.href='movieInfo.html?id=${movie.ID}&type=movie'">                        
                         <div style="position: relative; width: 100%; height: 270px;">
                             <img src="${movie.poster_full_url}" 
                                     alt="${movie['Movie Name']}" 
@@ -436,7 +1165,7 @@ function renderSearchResults(movies, container) {
     }
 
     container.innerHTML = movies.map(movie => `
-        <div class="search-item" onclick="window.location.href='movieInfo.html?id=${movie.ID}'">
+        <div class="search-item" onclick="window.location.href='movieInfo.html?id=${movie.ID}&type=movie'">
             <img src="${movie.poster_full_url}" alt="poster" onerror="this.src='/img/LOGO_Short.png'">
             <div class="search-info">
                 <h5>${movie['Movie Name']}</h5>
@@ -483,9 +1212,12 @@ function updateHeroUI() {
         document.getElementById('statDate').innerText = movie.year;
         document.getElementById('statRuntime').innerText = movie.runtime;
         document.getElementById('heroDesc').innerText = movie.plot;
+        clampHeroTitleHeight();
         const trailerFrame = document.getElementById('heroTrailerFrame');
         if (trailerFrame) {
-            trailerFrame.src = `https://www.youtube.com/embed/${movie.trailerId}?start=15&autoplay=1&mute=1&controls=0&loop=1&playlist=${movie.trailerId}`;
+            setHeroTrailerSource(trailerFrame, movie.trailerId, () => {
+                if (typeof window.nextSlide === 'function') window.nextSlide();
+            });
         }
         const dots = document.querySelectorAll('.dot');
         dots.forEach(d => d.classList.remove('active'));
@@ -573,8 +1305,95 @@ function proceedToIMDb() {
     }
 }
 
+function dismissPageLoadingOverlay(overlayId = 'pageLoadingOverlay') {
+    const overlay = document.getElementById(overlayId);
+    if (!overlay || overlay.dataset.dismissed) return;
+
+    overlay.dataset.dismissed = '1';
+
+    const spinner = overlay.querySelector('.loading-spinner');
+    const ring = overlay.querySelector('.loading-ring');
+    const shownAt = Number(overlay.dataset.shownAt || performance.now());
+    const minVisibleMs = 1100;
+    const elapsed = performance.now() - shownAt;
+    const waitForMinVisible = Math.max(0, minVisibleMs - elapsed);
+
+    const beginCollapse = () => {
+        if (spinner) spinner.classList.add('grow');
+
+        setTimeout(() => {
+            if (spinner) {
+                spinner.classList.remove('grow');
+                spinner.classList.add('collapse');
+            }
+            setTimeout(() => {
+                overlay.classList.add('fade-out');
+                setTimeout(() => {
+                    overlay.style.display = 'none';
+                }, 500);
+            }, 350);
+        }, 300);
+    };
+
+    setTimeout(() => {
+        if (!ring) {
+            beginCollapse();
+            return;
+        }
+
+        let collapseStarted = false;
+        const startOnce = () => {
+            if (collapseStarted) return;
+            collapseStarted = true;
+            beginCollapse();
+        };
+
+        const fallbackTimer = setTimeout(startOnce, 800);
+        ring.addEventListener('animationiteration', () => {
+            clearTimeout(fallbackTimer);
+            startOnce();
+        }, { once: true });
+    }, waitForMinVisible);
+}
+
+window.dismissPageLoadingOverlay = dismissPageLoadingOverlay;
+
+// Keep movie source helpers available even if other scripts load later.
+window.getMovieSource = window.getMovieSource || function() {
+    return localStorage.getItem('movieSource') || 'api';
+};
+
+window.withMovieSource = window.withMovieSource || function(url) {
+    const source = window.getMovieSource ? window.getMovieSource() : 'api';
+    if (source !== 'api') return url;
+    return `${url}${url.includes('?') ? '&' : '?'}source=api`;
+};
+
+window.__signalBrowseCriticalReady = function() {
+    dismissPageLoadingOverlay();
+};
+
+function initBrowsePageOverlay() {
+    const isBrowsePage = window.location.pathname.includes('indexBrowse.html');
+    if (!isBrowsePage) return;
+
+    const overlay = document.getElementById('pageLoadingOverlay');
+    if (!overlay || overlay.dataset.overlayBound) return;
+    overlay.dataset.overlayBound = '1';
+    overlay.dataset.shownAt = overlay.dataset.shownAt || String(performance.now());
+
+    // Fallback only: primary dismissal is now driven by critical-data-ready signals.
+    setTimeout(() => dismissPageLoadingOverlay(), 7000);
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     const isBrowsePage = window.location.pathname.includes('indexBrowse.html');
+    const pageOverlay = document.getElementById('pageLoadingOverlay');
+    if (pageOverlay && !pageOverlay.dataset.shownAt) {
+        pageOverlay.dataset.shownAt = String(performance.now());
+    }
+
+    initBrowsePageOverlay();
 
     const rowCalls = [
         { id: 'rowTrending', sort: 'rating_desc' },
@@ -588,16 +1407,41 @@ document.addEventListener('DOMContentLoaded', async () => {
         { id: 'rowAnimation', sort: 'rating_desc', opts: { genre: 'Animation' } },
         { id: 'rowAdventure', sort: 'rating_desc', opts: { genre: 'Adventure' } },
         { id: 'rowRomance', sort: 'rating_desc', opts: { genre: 'Romance' } },
+        { id: 'rowCrime', sort: 'rating_desc', opts: { genre: 'Crime' } },
+        { id: 'rowHorror', sort: 'rating_desc', opts: { genre: 'Horror' } },
+        { id: 'rowMystery', sort: 'rating_desc', opts: { genre: 'Mystery' } },
+        { id: 'rowFantasy', sort: 'rating_desc', opts: { genre: 'Fantasy' } },
+        { id: 'rowFamily', sort: 'rating_desc', opts: { genre: 'Family' } },
+        { id: 'rowRecentHits', sort: 'rating_desc', opts: { year: 2020 } },
+        { id: 'rowDocumentary', sort: 'rating_desc', opts: { genre: 'Documentary' } },
+        { id: 'rowHistoryEpic', sort: 'rating_desc', opts: { genre: 'History' } },
+        { id: 'rowMusic', sort: 'rating_desc', opts: { genre: 'Music' } },
+        { id: 'rowWar', sort: 'rating_desc', opts: { genre: 'War' } },
+        { id: 'rowWestern', sort: 'rating_desc', opts: { genre: 'Western' } },
         { id: 'rowHiddenGems', sort: 'rating_desc', opts: { offset: 80 } },
         { id: 'rowLongest', sort: 'duration_desc' },
         { id: 'rowGrossing', sort: 'success_desc' },
-        { id: 'rowBinge', sort: 'duration_desc', opts: { offset: 25 } },
-        { id: 'rowKazakh', sort: 'rating_desc' }
+        { id: 'rowBinge', sort: 'duration_desc', opts: { offset: 25 } }
     ];
 
     if (isBrowsePage) {
-        await initPersonalRows();
-        scheduleRowLoad(rowCalls);
+        try {
+            await initPersonalRows();
+        } catch (err) {
+            console.warn('[Browse] initPersonalRows failed, continuing with discovery rows:', err);
+        }
+        if (window.__animeMode) {
+            document.querySelectorAll('[data-browse-discovery="true"]').forEach(section => {
+                section.style.display = 'none';
+            });
+            console.info('[Browse] anime mode active — movie discovery rows disabled');
+        } else {
+            await scheduleRowLoad(rowCalls);
+            // In movie mode, critical rows are ready here; anime mode signals from animePage.js.
+            if (window.__signalBrowseCriticalReady) {
+                window.__signalBrowseCriticalReady();
+            }
+        }
     } else {
         rowCalls.forEach(call => fetchRow(call.id, call.sort, call.opts || {}));
     }
@@ -606,17 +1450,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 function scheduleRowLoad(calls) {
-    if (!Array.isArray(calls) || calls.length === 0) return;
+    if (!Array.isArray(calls) || calls.length === 0) return Promise.resolve();
 
     const eagerCount = 3;
-    calls.forEach((call, index) => {
-        if (index < eagerCount) {
-            fetchRow(call.id, call.sort, call.opts || {});
-        }
-    });
+    const eagerPromises = calls.slice(0, eagerCount)
+        .map(call => fetchRow(call.id, call.sort, call.opts || {}));
 
     const lazyCalls = calls.slice(eagerCount);
-    if (lazyCalls.length === 0) return;
+    if (lazyCalls.length === 0) return Promise.all(eagerPromises);
 
     if ('IntersectionObserver' in window) {
         const observer = new IntersectionObserver((entries, obs) => {
@@ -635,7 +1476,7 @@ function scheduleRowLoad(calls) {
             const el = document.getElementById(call.id);
             if (el) observer.observe(el);
         });
-        return;
+        return Promise.all(eagerPromises);
     }
 
     lazyCalls.forEach((call, index) => {
@@ -643,6 +1484,8 @@ function scheduleRowLoad(calls) {
             fetchRow(call.id, call.sort, call.opts || {});
         }, index * 120);
     });
+
+    return Promise.all(eagerPromises);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -650,7 +1493,45 @@ document.addEventListener('DOMContentLoaded', () => {
     initHoverModalInteractions();
 });
 
+const TMDB_GENRE_NAME_TO_ID = {
+    Action: 28,
+    Adventure: 12,
+    Animation: 16,
+    Comedy: 35,
+    Crime: 80,
+    Documentary: 99,
+    Drama: 18,
+    Family: 10751,
+    Fantasy: 14,
+    History: 36,
+    Horror: 27,
+    Music: 10402,
+    Mystery: 9648,
+    Romance: 10749,
+    'Sci-Fi': 878,
+    Thriller: 53,
+    War: 10752,
+    Western: 37
+};
+
+function normalizeTmdbForRow(item) {
+    const isTv = item.media_type === 'tv' || item.first_air_date !== undefined;
+    return {
+        ID: item.id,
+        'Movie Name': item.title || item.name || item.original_name || 'Unknown',
+        poster_full_url: item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : '/img/LOGO_Short.png',
+        Poster: item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : '/img/LOGO_Short.png',
+        Rating: item.vote_average ? item.vote_average.toFixed(1) : '--',
+        Genre: Array.isArray(item.genre_ids) ? item.genre_ids.map(id => TMDB_GENRE_NAME_TO_ID[id] || '').filter(Boolean).join(', ') : '',
+        Year: (item.release_date || item.first_air_date || '').slice(0, 4) || '----',
+        Runtime: '-- min',
+        Plot: item.overview || 'No plot summary available.',
+        _type: isTv ? 'tv' : 'movie'
+    };
+}
+
 async function fetchRow(containerId, sortType, options = {}) {
+    if (window.__animeMode) return;
     const container = document.getElementById(containerId);
     if (!container) return;
 
@@ -664,6 +1545,46 @@ async function fetchRow(containerId, sortType, options = {}) {
     } = options;
 
     try {
+        if (window.tmdbBuildUrl) {
+            const page = Math.max(1, Math.floor(offset / 20) + 1);
+            const params = {
+                language: 'en-US',
+                include_adult: false,
+                page,
+                with_original_language: 'en',
+                sort_by: 'popularity.desc'
+            };
+
+            switch (sortType) {
+                case 'rating_desc': params.sort_by = 'vote_average.desc'; break;
+                case 'clicks_desc': params.sort_by = 'popularity.desc'; break;
+                case 'date_desc': params.sort_by = 'release_date.desc'; break;
+                case 'duration_desc': params.sort_by = 'runtime.desc'; break;
+                case 'success_desc': params.sort_by = 'revenue.desc'; break;
+                default: params.sort_by = 'popularity.desc';
+            }
+
+            params['vote_count.gte'] = 670;
+            const tenYearsAgo = new Date();
+            tenYearsAgo.setFullYear(tenYearsAgo.getFullYear() - 10);
+            params['primary_release_date.gte'] = tenYearsAgo.toISOString().slice(0, 10);
+
+            if (genre) {
+                const genreId = TMDB_GENRE_NAME_TO_ID[genre] || genre;
+                params.with_genres = genreId;
+            }
+            if (year && Number(year) > 1900) {
+                params.primary_release_year = String(year);
+            }
+
+            const url = window.tmdbBuildUrl('/discover/movie', params);
+            const res = await fetch(url);
+            const data = await res.json();
+            const movies = Array.isArray(data.results) ? data.results : [];
+            container.innerHTML = movies.map(movie => createCard(normalizeTmdbForRow(movie))).join('');
+            return;
+        }
+
         const params = new URLSearchParams({
             sort: sortType,
             limit: String(limit),
@@ -675,7 +1596,7 @@ async function fetchRow(containerId, sortType, options = {}) {
         if (actor) params.set('actor', actor);
         if (director) params.set('director', director);
 
-        const baseUrl = `https://localhost:3000/movies/library?${params.toString()}`;
+        const baseUrl = `/movies/library?${params.toString()}`;
         const source = window.getMovieSource ? window.getMovieSource() : 'local';
         const hydratedUrl = source === 'api' ? `${baseUrl}&hydrate=1` : baseUrl;
         const res = await fetch(window.withMovieSource ? window.withMovieSource(hydratedUrl) : hydratedUrl);
@@ -683,18 +1604,8 @@ async function fetchRow(containerId, sortType, options = {}) {
 
         container.innerHTML = movies.map(movie => createCard(movie)).join('');
     } catch (err) {
-        console.error("Error fetching row:", err);
+        console.error('Error fetching row:', err);
     }
-}
-
-async function initPersonalRows() {
-    const isBrowsePage = window.location.pathname.includes('indexBrowse.html');
-    if (!isBrowsePage) return;
-
-    await Promise.all([
-        loadMyListRow(),
-        loadHistoryRow()
-    ]);
 }
 
 async function loadMyListRow() {
@@ -702,20 +1613,253 @@ async function loadMyListRow() {
     const container = document.getElementById('rowMyList');
     if (!section || !container) return;
 
-    const list = JSON.parse(localStorage.getItem('myList') || '[]');
-    if (!Array.isArray(list) || list.length === 0) {
+    let rawList = [];
+    try {
+        rawList = JSON.parse(localStorage.getItem('myList') || '[]');
+    } catch (e) {
+        rawList = [];
+    }
+
+    // Support both legacy "id" entries and modern { id, type } entries.
+    const savedItems = rawList.map(item =>
+        typeof item === 'object' && item !== null ? item : { id: String(item), type: 'movie' }
+    );
+
+    const movieIds = savedItems
+        .filter(item => (item.type || 'movie') === 'movie')
+        .map(item => item.id)
+        .slice(0, 12);
+
+    if (movieIds.length === 0) {
         section.style.display = 'none';
         return;
     }
 
-    const movies = await fetchMoviesByIds(list.slice(0, 12));
-    if (movies.length === 0) {
+    const movies = await fetchMoviesByIds(movieIds);
+    if (!movies || movies.length === 0) {
         section.style.display = 'none';
         return;
     }
 
     section.style.display = 'block';
     container.innerHTML = movies.map(movie => createCard(movie)).join('');
+    applyBrowseRowBg('myListRowSection');
+}
+
+async function loadMyPlaylistsRow() {
+    const section = document.getElementById('myPlaylistsRowSection');
+    const container = document.getElementById('rowMyPlaylists');
+    // Keep as a no-op when this row is not present in current browse layout.
+    if (!section || !container) return;
+
+    try {
+        const userUID = parseInt(localStorage.getItem('userUID'), 10) || 0;
+        if (!userUID) {
+            section.style.display = 'none';
+            return;
+        }
+
+        const res = await fetch('/playlists');
+        const playlists = await res.json();
+        const owned = (playlists || []).filter(p => parseInt(p.ownerUID, 10) === userUID);
+
+        if (!owned.length) {
+            section.style.display = 'none';
+            return;
+        }
+
+        section.style.display = 'block';
+        container.innerHTML = owned.slice(0, 10).map(pl => `
+            <a class="grid-card" href="/html/customPlaylists.html" aria-label="Open playlist ${pl.name || ''}">
+                <img src="/img/LOGO_Short.png" alt="Playlist">
+                <div class="card-meta">
+                    <div class="card-title">${pl.name || 'Untitled Playlist'}</div>
+                    <div class="card-sub">${(pl.movies || []).length} items</div>
+                </div>
+            </a>
+        `).join('');
+    } catch (err) {
+        console.error('[Browse] Failed to load playlists row:', err);
+        section.style.display = 'none';
+    }
+}
+
+function buildContinueWatchingCard(row, tmdb) {
+    const id = String(row.movie_id);
+    const type = row.type === 'tv' ? 'tv' : 'movie';
+    const title = tmdb.title || tmdb.name || 'Unknown';
+    const rating = Number.isFinite(Number(tmdb.vote_average)) ? Number(tmdb.vote_average).toFixed(1) : '--';
+    const year = (type === 'movie' ? tmdb.release_date : tmdb.first_air_date || tmdb.first_air_date) || '';
+    const yearLabel = year ? String(year).slice(0, 4) : '----';
+    const poster = tmdb.poster_path ? `https://image.tmdb.org/t/p/w500${tmdb.poster_path}` : '/img/noposter.jpg';
+    const targetUrl = `/html/movieInfo.html?id=${encodeURIComponent(id)}&type=${encodeURIComponent(type)}`;
+
+    return `
+        <article class="continue-watching-card">
+            <button class="continue-watching-card-poster" type="button" aria-label="Continue watching ${title}" onclick="window.location.href='${targetUrl}'">
+                <img src="${poster}" alt="${title} poster">
+            </button>
+            <div class="continue-watching-card-body">
+                <div class="continue-watching-card-title">${title}</div>
+                <div class="continue-watching-card-meta">
+                    <span class="continue-watching-meta-item">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M11.48 3.499a.562.562 0 0 1 1.04 0l2.125 5.111a.563.563 0 0 0 .475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 0 0-.182.557l1.285 5.385a.562.562 0 0 1-.84.61l-4.725-2.885a.562.562 0 0 0-.586 0L6.982 20.54a.562.562 0 0 1-.84-.61l1.285-5.386a.562.562 0 0 0-.182-.557l-4.204-3.602a.562.562 0 0 1 .321-.988l5.518-.442a.563.563 0 0 0 .475-.345L11.48 3.5Z" />
+                        </svg>
+                        <span>${rating}</span>
+                    </span>
+                    <span class="continue-watching-meta-item">${yearLabel}</span>
+                    <span class="continue-watching-meta-item">${type === 'tv' ? 'TV' : 'Movie'}</span>
+                </div>
+            </div>
+            <button class="continue-watching-play-btn" type="button" aria-label="Open ${title} details" onclick="window.location.href='${targetUrl}'">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
+                </svg>
+            </button>
+        </article>
+    `;
+}
+
+async function loadContinueWatching() {
+    const section = document.getElementById('continueWatchingSection');
+    const list = document.getElementById('continueWatchingList');
+    if (!section || !list) return;
+
+    section.style.display = 'none';
+    list.innerHTML = '';
+
+    const userUID = window.recommendationsSystem?.getActivityUID ? window.recommendationsSystem.getActivityUID() : localStorage.getItem('userUID');
+    if (!userUID) return;
+
+    try {
+        const res = await fetch(`/activity/continueWatching?userUID=${encodeURIComponent(userUID)}`);
+        if (!res.ok) throw new Error('Continue watching request failed');
+
+        const rows = await res.json();
+        if (!Array.isArray(rows) || rows.length === 0) return;
+
+        const fetches = rows.map(row => {
+            const id = String(row.movie_id);
+            const endpoint = row.type === 'tv'
+                ? `/api/tmdb-proxy/tv/${encodeURIComponent(id)}`
+                : `/api/tmdb-proxy/movie/${encodeURIComponent(id)}`;
+            return fetch(endpoint)
+                .then(response => {
+                    if (!response.ok) throw new Error('TMDB request failed');
+                    return response.json();
+                })
+                .then(tmdb => ({ row, tmdb }));
+        });
+
+        const settled = await Promise.allSettled(fetches);
+        const cards = settled
+            .filter(r => r.status === 'fulfilled' && r.value && r.value.tmdb)
+            .map(r => buildContinueWatchingCard(r.value.row, r.value.tmdb));
+
+        if (cards.length === 0) return;
+
+        list.innerHTML = cards.join('');
+        section.style.display = 'block';
+    } catch (err) {
+        section.style.display = 'none';
+    }
+}
+
+async function initPersonalRows() {
+    const isBrowsePage = window.location.pathname.includes('indexBrowse.html');
+    if (!isBrowsePage) return;
+
+    // My List & playlists load in all modes (filtered per mode inside each loader)
+    await Promise.allSettled([loadMyListRow(), loadMyPlaylistsRow()]);
+    await loadContinueWatching();
+
+    if (window.__animeMode) return; // animePage.js handles history + recommended rows in anime mode
+
+    // Movie mode only
+    await Promise.allSettled([
+        loadRecommendedRow(),
+        loadHistoryRow(),
+        loadBecauseYouWatchedRow(),
+        //=====BECAUSE YOU LIKED THIS GENRE DEPRECATED====
+        // loadTopGenreRow()
+    ]);
+}
+
+// Sets the blurred poster backdrop on browse personal rows
+function applyBrowseRowBg(sectionId) {
+    const section = document.getElementById(sectionId);
+    if (!section) return;
+    const bg = section.querySelector('.browse-row-bg');
+    if (!bg) return;
+    const img = section.querySelector('img');
+    if (!img) return;
+    const apply = () => {
+        if (!img.src || img.src.endsWith('/')) return;
+        bg.style.backgroundImage = `url('${img.src}')`;
+        bg.classList.add('active');
+    };
+    if (img.complete && img.naturalWidth > 0) { apply(); }
+    else { img.addEventListener('load', apply, { once: true }); }
+}
+window.applyBrowseRowBg = applyBrowseRowBg;
+
+// Always-visible recommendations row (works from first visit using localStorage)
+async function loadRecommendedRow() {
+    const section = document.getElementById('recommendedSection');
+    const container = document.getElementById('rowRecommended');
+    if (!section || !container) return;
+
+    let movies = [];
+    if (window.recommendationsSystem?.generateRecommendations) {
+        movies = await window.recommendationsSystem.generateRecommendations(6);
+    }
+    if (!movies || movies.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+    container.innerHTML = movies.slice(0, 6).map(movie => createCard(movie)).join('');
+    applyBrowseRowBg('recommendedSection');
+}
+
+// Genre rows built from localStorage click history (works from first movie click)
+function isGenericTopGenreLabel(label) {
+    const v = String(label || '').trim().toLowerCase();
+    return v === 'animation' || v === 'anime' || v === 'tv movie' || v === 'family' || v === 'kids';
+}
+
+async function loadPersonalGenreRows() {
+    let prefs = {};
+    try { prefs = JSON.parse(localStorage.getItem('userPreferences') || '{}'); } catch(e) {}
+    const genreClicks = prefs.genreClicks || {};
+    const rankedGenres = Object.entries(genreClicks)
+        .sort((a, b) => b[1] - a[1])
+        .map(e => e[0]);
+    const nonGeneric = rankedGenres.filter(g => !isGenericTopGenreLabel(g));
+    const topGenres = [...nonGeneric, ...rankedGenres.filter(g => isGenericTopGenreLabel(g))].slice(0, 2);
+    if (topGenres.length === 0) return;
+
+    const rowIds = [
+        { sId: 'topGenreRow1Section', tId: 'topGenreRow1Title', cId: 'rowForYouGenre1' },
+        { sId: 'topGenreRow2Section', tId: 'topGenreRow2Title', cId: 'rowForYouGenre2' }
+    ];
+    for (let i = 0; i < topGenres.length; i++) {
+        const genre = topGenres[i];
+        const { sId, tId, cId } = rowIds[i];
+        const section = document.getElementById(sId);
+        const titleEl = document.getElementById(tId);
+        const container = document.getElementById(cId);
+        if (!section || !container) continue;
+        if (titleEl) titleEl.textContent = `Because You Love ${genre}`;
+        try {
+            const baseUrl = `/movies/library?sort=rating_desc&limit=20&genre=${encodeURIComponent(genre)}`;
+            const res = await fetch(window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl);
+            const movies = await res.json();
+            if (!movies || movies.length === 0) continue;
+            section.style.display = 'block';
+            container.innerHTML = movies.slice(0, 15).map(movie => createCard(movie)).join('');
+        } catch(e) {}
+    }
 }
 
 async function loadHistoryRow() {
@@ -723,184 +1867,133 @@ async function loadHistoryRow() {
     const container = document.getElementById('rowHistory');
     if (!section || !container) return;
 
-    const prefs = JSON.parse(localStorage.getItem('userPreferences') || '{}');
-    const recent = JSON.parse(localStorage.getItem('recentMovieClicks') || '[]');
-    const history = Array.from(new Set([...(prefs.clickedMovies || []), ...recent]));
-
-    if (!Array.isArray(history) || history.length === 0) {
-        section.style.display = 'none';
-        return;
+    let historyRows = [];
+    if (window.recommendationsSystem?.fetchActivityHistory) {
+        historyRows = await window.recommendationsSystem.fetchActivityHistory(12) || [];
     }
+    if (historyRows.length === 0) return;
 
-    const movies = await fetchMoviesByIds(history.slice(0, 12));
-    if (movies.length === 0) {
-        section.style.display = 'none';
-        return;
+    const typeMap = Object.fromEntries(historyRows.map(h => [String(h.movie_id), h.item_type || 'movie']));
+    const movieItems = historyRows.filter(h => (h.item_type || 'movie') === 'movie');
+    const tvItems    = historyRows.filter(h => h.item_type === 'tv' || h.item_type === 'anime');
+    const allCards = [];
+
+    if (movieItems.length > 0) {
+        const localMovies = await fetchMoviesByIds(movieItems.map(h => h.movie_id));
+        localMovies.forEach(m => {
+            m._type = typeMap[String(m.ID)] || 'movie';
+            allCards.push({ sortKey: historyRows.findIndex(h => String(h.movie_id) === String(m.ID)), card: createCard(m) });
+        });
     }
-
-    section.style.display = 'block';
-    container.innerHTML = movies.map(movie => createCard(movie)).join('');
-}
-
-async function fetchMoviesByIds(ids) {
-    if (!Array.isArray(ids) || ids.length === 0) return [];
-    const uniqueIds = Array.from(new Set(ids.map(id => String(id))));
-
-    const requests = uniqueIds.map(id => {
-        const baseUrl = `https://localhost:3000/movie/${id}`;
-        const requestUrl = window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl;
-        return fetch(requestUrl).then(res => res.ok ? res.json() : null);
-    });
-
-    const results = await Promise.allSettled(requests);
-    return results
-        .filter(r => r.status === 'fulfilled' && r.value)
-        .map(r => r.value);
-}
-
-function createCard(movie) {
-    const plusIconSVG = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="currentColor"/></svg>`;
-    const year = movie.release_date ? String(movie.release_date).slice(-4) : (movie.Year || '----');
-    const runtime = movie.Runtime || '-- min';
-    const rating = movie.Rating || movie.imdb_rating || '--';
-    const plot = movie.Plot || 'No plot summary available.';
-
-    return `
-        <div class="grid-card" data-id="${movie.ID}" data-title="${movie['Movie Name']}" data-year="${year}" data-runtime="${runtime}" data-rating="${rating}" data-plot="${plot}" onmouseenter="handleCardHover(this)" onmouseleave="handleCardLeave(this)">
-            <img src="${movie.poster_full_url}" loading="lazy" onclick="window.location.href='movieInfo.html?id=${movie.ID}'" onerror="this.src='/img/LOGO_Short.png'">
-            <div class="card-hover-info">
-                <div class="hover-preview">
-                    <iframe class="card-trailer" title="Trailer" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
-                </div>
-                <div class="hover-meta">
-                    <div class="hover-meta-title">${movie['Movie Name']}</div>
-                    <div class="hover-meta-stats">
-                        <span>⭐ ${rating}</span>
-                        <span>${year}</span>
-                        <span>${runtime}</span>
-                    </div>
-                    <p class="hover-meta-desc">${plot}</p>
-                    <div class="hover-meta-actions">
-                        <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${movie.ID}'">▶</button>
-                        <a class="hover-info" href="movieInfo.html?id=${movie.ID}">More Info</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-}
-
-window.handleCardHover = async function(card) {
-    if (!card) return;
-    const modal = document.getElementById('hoverModal');
-    const modalTrailer = document.getElementById('hoverModalTrailer');
-    if (!modal || !modalTrailer) return;
-
-    if (window.__hoverModalHideTimer) {
-        clearTimeout(window.__hoverModalHideTimer);
-        window.__hoverModalHideTimer = null;
-    }
-
-    if (window.__hoverModalShowTimer) {
-        clearTimeout(window.__hoverModalShowTimer);
-        window.__hoverModalShowTimer = null;
-    }
-
-    window.__hoverCardTarget = card;
-
-    window.__hoverModalShowTimer = setTimeout(async () => {
-        if (window.__hoverCardTarget !== card) return;
-
-        const title = card.dataset.title || 'Title';
-        const year = card.dataset.year || '----';
-        const runtime = card.dataset.runtime || '-- min';
-        const rating = card.dataset.rating || '--';
-        const plot = card.dataset.plot || 'No plot summary available.';
-        const movieId = card.dataset.id || '';
-
-        const titleEl = document.getElementById('hoverModalTitle');
-        const ratingEl = document.getElementById('hoverModalRating');
-        const yearEl = document.getElementById('hoverModalYear');
-        const runtimeEl = document.getElementById('hoverModalRuntime');
-        const descEl = document.getElementById('hoverModalDesc');
-
-        if (titleEl) titleEl.textContent = title;
-        if (ratingEl) ratingEl.textContent = `⭐ ${rating}`;
-        if (yearEl) yearEl.textContent = year;
-        if (runtimeEl) runtimeEl.textContent = runtime;
-        if (descEl) descEl.textContent = plot;
-
-        const moreInfo = document.getElementById('hoverModalMoreInfo');
-        if (moreInfo) {
-            moreInfo.href = movieId ? `movieInfo.html?id=${movieId}` : 'movieInfo.html';
-        }
-
-        modal.classList.add('active');
-
-        if (card.dataset.trailerId) {
-            modalTrailer.src = `https://www.youtube.com/embed/${card.dataset.trailerId}?autoplay=1&mute=1&controls=0&loop=1&playlist=${card.dataset.trailerId}&rel=0`;
-            return;
-        }
-
-        if (!window.fetchYTId) return;
-
+    for (const h of tvItems) {
         try {
-            const tId = await window.fetchYTId(title);
-            if (tId) {
-                card.dataset.trailerId = tId;
-                modalTrailer.src = `https://www.youtube.com/embed/${tId}?autoplay=1&mute=1&controls=0&loop=1&playlist=${tId}&rel=0`;
+            const res = await fetch(`/api/tmdb-proxy/tv/${h.movie_id}`);
+            const tv = await res.json();
+            if (tv && (tv.name || tv.title)) {
+                const m = {
+                    ID: h.movie_id,
+                    'Movie Name': tv.name || tv.title,
+                    poster_full_url: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.png',
+                    Rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--',
+                    Genre: (tv.genres || []).map(g => g.name).join(', '),
+                    Year: (tv.first_air_date || '').slice(0, 4),
+                    _type: h.item_type || 'tv'
+                };
+                allCards.push({ sortKey: historyRows.findIndex(hr => String(hr.movie_id) === String(h.movie_id)), card: createCard(m) });
             }
-        } catch (err) {
-            console.warn('Trailer fetch failed:', err);
-        }
-    }, 3000);
-};
+        } catch(e) {}
+    }
+    if (allCards.length === 0) return;
+    allCards.sort((a, b) => a.sortKey - b.sortKey);
+    section.style.display = 'block';
+    container.innerHTML = allCards.map(c => c.card).join('');
+    applyBrowseRowBg('historyRowSection');
+}
 
-window.handleCardLeave = function(card) {
-    const modal = document.getElementById('hoverModal');
-    const modalTrailer = document.getElementById('hoverModalTrailer');
-    if (!modal || !modalTrailer) return;
+async function loadBecauseYouWatchedRow() {
+    const section = document.getElementById('becauseYouWatchedSection');
+    const container = document.getElementById('rowBecauseYouWatched');
+    const titleEl = document.getElementById('becauseYouWatchedTitle');
+    if (!section || !container) return;
 
-    if (window.__hoverCardTarget === card) {
-        window.__hoverCardTarget = null;
+    if (!window.recommendationsSystem?.fetchActivityHistory) {
+        section.style.display = 'none';
+        return;
     }
 
-    if (window.__hoverModalShowTimer) {
-        clearTimeout(window.__hoverModalShowTimer);
-        window.__hoverModalShowTimer = null;
+    const history = await window.recommendationsSystem.fetchActivityHistory(5);
+    if (!history || history.length === 0) {
+        section.style.display = 'none';
+        return;
     }
 
-    if (!window.__hoverModalHovered) {
-        window.__hoverModalHideTimer = setTimeout(() => {
-            modal.classList.remove('active');
-            modalTrailer.src = '';
-        }, 120);
+    const isAnimeMode = window.__animeMode === true;
+    const isAnimeEntry = (entry) => {
+        const type = String(entry?.item_type || entry?.type || '').toLowerCase();
+        const genre = String(entry?.genre || '').toLowerCase();
+        return type === 'tv' || type === 'anime' || genre.includes('anime') || genre.includes('animation');
+    };
+    const isMovieEntry = (entry) => {
+        const type = String(entry?.item_type || entry?.type || '').toLowerCase();
+        const genre = String(entry?.genre || '').toLowerCase();
+        if (type === 'movie' || type === 'film') return true;
+        if (type === 'tv' || type === 'anime') return false;
+        return !genre.includes('anime') && !genre.includes('animation');
+    };
+
+    const seed = history.find(entry => isAnimeMode ? isAnimeEntry(entry) : isMovieEntry(entry));
+    if (!seed) {
+        section.style.display = 'none';
+        return;
     }
-};
 
-function initHoverModalInteractions() {
-    const modal = document.getElementById('hoverModal');
-    const modalTrailer = document.getElementById('hoverModalTrailer');
-    if (!modal || !modalTrailer) return;
+    if (titleEl) titleEl.textContent = `Because you watched "${seed.title || 'a recent film'}"`;
 
-    modal.addEventListener('mouseenter', () => {
-        window.__hoverModalHovered = true;
-        if (window.__hoverModalHideTimer) {
-            clearTimeout(window.__hoverModalHideTimer);
-            window.__hoverModalHideTimer = null;
+    // Use ALL seed genres (up to 4) — fetch per-genre then score by overlap count
+    // so a movie must share multiple genres to rank high, avoiding unrelated hits
+    const seedGenres = (seed.genre || '').split(',').map(g => g.trim()).filter(Boolean).slice(0, 4);
+    if (seedGenres.length === 0) { section.style.display = 'none'; return; }
+
+    try {
+        const genreFetches = seedGenres.map(async g => {
+            const baseUrl = `/movies/library?sort=rating_desc&limit=40&genre=${encodeURIComponent(g)}`;
+            const url = window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl;
+            try { const r = await fetch(url); return r.ok ? await r.json() : []; }
+            catch { return []; }
+        });
+        const genreResults = await Promise.all(genreFetches);
+
+        // Score each movie by how many seed genres it appears in
+        const scoreMap = new Map();
+        for (const list of genreResults) {
+            for (const m of list) {
+                if (String(m.ID) === String(seed.movie_id)) continue;
+                const key = String(m.ID);
+                const entry = scoreMap.get(key) || { movie: m, score: 0 };
+                entry.score += 1;
+                scoreMap.set(key, entry);
+            }
         }
-    });
 
-    modal.addEventListener('mouseleave', () => {
-        window.__hoverModalHovered = false;
-        if (window.__hoverModalHideTimer) {
-            clearTimeout(window.__hoverModalHideTimer);
+        // Sort: most genre overlap first, then by rating
+        let movies = [...scoreMap.values()]
+            .sort((a, b) => b.score - a.score || parseFloat(b.movie.Rating || 0) - parseFloat(a.movie.Rating || 0))
+            .map(e => e.movie);
+
+        // If all genres returned 0 matches or seed only has 1 genre, accept any score; 
+        // otherwise require at least 2 matching genres for better relevance
+        if (seedGenres.length > 1) {
+            const multiMatch = movies.filter(m => (scoreMap.get(String(m.ID))?.score || 0) >= 2);
+            if (multiMatch.length >= 3) movies = multiMatch;
         }
-        window.__hoverModalHideTimer = setTimeout(() => {
-            modal.classList.remove('active');
-            modalTrailer.src = '';
-        }, 120);
-    });
+
+        if (movies.length === 0) { section.style.display = 'none'; return; }
+        section.style.display = 'block';
+        container.innerHTML = movies.slice(0, 15).map(movie => createCard(movie)).join('');
+        applyBrowseRowBg('becauseYouWatchedSection');
+    } catch (err) {
+        section.style.display = 'none';
+    }
 }
 
 // --- MARQUEE LOGIC ---
@@ -908,1052 +2001,19 @@ async function setupMarquee() {
     const marquee = document.getElementById('promoMarquee');
     if (!marquee) return;
 
-    const baseUrl = `https://localhost:3000/movies/library?limit=20`;
+    const baseUrl = `/movies/library?limit=20`;
     const source = window.getMovieSource ? window.getMovieSource() : 'local';
     const hydratedUrl = source === 'api' ? `${baseUrl}&hydrate=1` : baseUrl;
     const res = await fetch(window.withMovieSource ? window.withMovieSource(hydratedUrl) : hydratedUrl);
     const movies = await res.json();
 
-    const combined = [...movies, ...movies]; 
-
+    const combined = [...movies, ...movies];
     marquee.innerHTML = combined.map(m => `
         <div class="marquee-card">
             <img src="${m.poster_full_url}" alt="Poster">
         </div>
     `).join('');
 }
-// --- SIGNUP MODAL LOGIC ---
-// --- ON PAGE LOAD: CHECK FOR USER ---
-document.addEventListener('DOMContentLoaded', () => {
-    if (localStorage.getItem('username')) {
-        const promo = document.querySelector('.promo-section');
-        if (promo) promo.style.display = 'none';
-    }
-
-    const user = localStorage.getItem('username');
-    if (user && !sessionStorage.getItem('greeted')) {
-        setTimeout(() => {
-            const toast = document.getElementById('notification-toast');
-            if (toast) {
-                toast.innerText = `Hello again, ${user}!`;
-                toast.classList.remove('toast-hidden');
-                setTimeout(() => toast.classList.add('toast-hidden'), 3000);
-            }
-        }, 1000);
-        sessionStorage.setItem('greeted', 'true');
-    }
-});
-
-// --- MODAL CONTROLS ---
-function openSignupModal() {
-    const modal = document.getElementById('signupModal');
-    if (modal) {
-        modal.classList.add('active');
-        document.body.style.overflow = 'hidden';
-    }
-}
-
-function closeSignupModal() {
-    const modal = document.getElementById('signupModal');
-    if (modal) {
-        modal.classList.remove('active');
-        document.body.style.overflow = 'auto';
-    }
-}
-
-// Close if clicking outside the box
-document.addEventListener('DOMContentLoaded', function() {
-    const signupModal = document.getElementById('signupModal');
-    if (signupModal) {
-        signupModal.addEventListener('click', (e) => {
-            if (e.target.id === 'signupModal') closeSignupModal();
-        });
-    }
-});
-
-// --- SIGNUP LOGIC  ---
-function handleSignup(e) {
-    e.preventDefault(); 
-    
-    const usernameInput = document.getElementById('signupUser');
-    const emailInput = document.getElementById('signupEmail');
-    const tierInput = document.getElementById('signupTier'); 
-    const passInput = document.getElementById('signupPassword');
-    
-    const username = usernameInput ? usernameInput.value : "Guest";
-    const email = emailInput ? emailInput.value : "email@example.com";
-    const tier = tierInput ? tierInput.value : "Free"; 
-    const password = passInput ? passInput.value : "";
-    
-    const btn = document.querySelector('.btn-signup');
-    const userLanguage = localStorage.getItem('userLanguage') || (window.i18n ? window.i18n.getCurrentLanguage() : 'en');
-    const originalText = btn ? btn.innerText : "Create Account";
-    
-    if (btn) {
-        btn.innerText = "Creating Account...";
-        btn.style.opacity = "0.7";
-        btn.disabled = true;
-    }
-    
-    setTimeout(async () => {
-        try {
-            const res = await fetch('https://localhost:3000/users/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    username,
-                    userEmail: email,
-                    userTier: tier,
-                    userPassword: password,
-                    userLanguage
-                })
-            });
-
-            if (!res.ok) {
-                const msg = await res.json().catch(() => ({}));
-                showLimitToast(msg.error || 'Registration failed');
-                if (btn) {
-                    btn.innerText = originalText;
-                    btn.style.opacity = "1";
-                    btn.disabled = false;
-                }
-                return;
-            }
-
-            const result = await res.json();
-            const user = result.user || result;
-            if (result.token) {
-                localStorage.setItem('authToken', result.token);
-            }
-
-            localStorage.setItem('username', user.username);
-            localStorage.setItem('userUID', String(user.userUID));
-            localStorage.setItem('userEmail', user.userEmail);
-            localStorage.setItem('userTier', user.userTier || tier);
-            localStorage.setItem('allUIDs', JSON.stringify(user.allUIDs || []));
-            localStorage.setItem('userLanguage', user.userLanguage || userLanguage);
-            localStorage.setItem('isAdmin', user.isAdmin ? 'true' : 'false');
-            
-            localStorage.setItem('searchCount', '0');
-            localStorage.setItem('viewCount', '0');
-        } catch (err) {
-            console.error('Registration error:', err);
-            showLimitToast('Registration failed');
-            if (btn) {
-                btn.innerText = originalText;
-                btn.style.opacity = "1";
-                btn.disabled = false;
-            }
-            return;
-        }
-
-        closeSignupModal();
-        
-        const toast = document.getElementById('notification-toast');
-        if(toast) {
-            toast.innerText = `Welcome ${username}! You are now a ${tier} member.`;
-            toast.classList.remove('toast-hidden');
-            setTimeout(() => toast.classList.add('toast-hidden'), 4000);
-        } else {
-            alert(`Welcome ${username}! Your ${tier} account is ready.`);
-        }
-        
-        // CLEANUP UI
-        if (btn) {
-            btn.innerText = originalText;
-            btn.style.opacity = "1";
-            btn.disabled = false;
-        }
-        
-        const promo = document.querySelector('.promo-section');
-        if(promo) {
-            promo.style.display = 'none';
-        }
-        
-        sessionStorage.setItem('greeted', 'true');
-
-        safeReload();
-        
-    }, 1500);
-}
-window.navigateToMovie = function(movieId) {
-    window.location.href = `movieInfo.html?id=${movieId}`;
-};
-
-// Helper to get movie source, fallback to local only if manually picked or API fails
-function getMovieSource() {
-    const src = localStorage.getItem('movieSource');
-    return src === 'local' ? 'local' : 'api';
-}
-
- 
-function checkUsageLimit(type) {
-    const tier = localStorage.getItem('userTier') || 'Free';
-    const searches = parseInt(localStorage.getItem('searchCount') || '0');
-    const views = parseInt(localStorage.getItem('viewCount') || '0');
-
-    if (tier === 'Gold') return true; 
-
-    if (type === 'search') {
-        const limit = tier === 'Premium' ? 50 : 5;
-        if (searches >= limit) {
-            alert("Search limit reached! Upgrade to Premium or Gold for more.");
-            return false;
-        }
-        localStorage.setItem('searchCount', (searches + 1).toString());
-    }
-
-    if (type === 'view') {
-        const limit = tier === 'Premium' ? 20 : 3;
-        if (views >= limit) {
-            alert("Movie view limit reached!");
-            return false;
-        }
-        localStorage.setItem('viewCount', (views + 1).toString());
-    }
-    return true;
-}
-// This function handles opening AND closing the sidebar
-console.log("✅ MAIN PAGE CONTROLS LOADED");
-
-// Persist current user stats to backend
-window.persistUserStats = function() {
-    const username = localStorage.getItem('username');
-    const userUID = localStorage.getItem('userUID');
-    if (!username || !userUID) return;
-
-    const payload = {
-        username,
-        userUID: parseInt(userUID, 10),
-        userEmail: localStorage.getItem('userEmail') || '',
-        userTier: localStorage.getItem('userTier') || 'Free',
-        userLanguage: localStorage.getItem('userLanguage') || 'en',
-        searchCount: parseInt(localStorage.getItem('searchCount') || '0', 10),
-        viewCount: parseInt(localStorage.getItem('viewCount') || '0', 10),
-        allUIDs: JSON.parse(localStorage.getItem('allUIDs') || '[]')
-    };
-
-    const token = localStorage.getItem('authToken');
-    if (!token) return;
-
-    fetch('https://localhost:3000/users', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(payload)
-    }).catch(err => console.error('User stats save error:', err));
-};
-
-function safeReload() {
-    location.reload();
-}
-
-function ensureSignInModal() {
-    if (document.getElementById('signInModal')) return;
-
-    const modal = document.createElement('div');
-    modal.id = 'signInModal';
-    modal.className = 'signup-overlay';
-    modal.innerHTML = `
-        <div class="signup-box">
-            <div class="signup-close" onclick="closeSignInModal()">✕</div>
-            <h2>Welcome Back</h2>
-            <p class="signup-subtitle">Sign in to continue your stats.</p>
-            <form onsubmit="handleSignIn(event)">
-                <div class="input-group">
-                    <input type="email" id="signInEmail" required placeholder=" ">
-                    <label>Email Address</label>
-                </div>
-                <div class="input-group">
-                    <input type="password" id="signInPassword" required placeholder=" ">
-                    <label>Password</label>
-                </div>
-                <button type="submit" class="btn-signup">Sign In</button>
-            </form>
-        </div>
-    `;
-    document.body.appendChild(modal);
-}
-
-window.openSignInModal = function() {
-    ensureSignInModal();
-    const modal = document.getElementById('signInModal');
-    if (modal) modal.classList.add('active');
-};
-
-window.closeSignInModal = function() {
-    const modal = document.getElementById('signInModal');
-    if (modal) modal.classList.remove('active');
-};
-
-window.handleSignIn = async function(e) {
-    e.preventDefault();
-    const emailInput = document.getElementById('signInEmail');
-    const passInput = document.getElementById('signInPassword');
-    const userEmail = emailInput ? emailInput.value.trim() : '';
-    const userPassword = passInput ? passInput.value : '';
-
-    if (!userEmail || !userPassword) {
-        showLimitToast('Enter email and password');
-        return;
-    }
-
-    try {
-        const res = await fetch('https://localhost:3000/users/auth', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userEmail, userPassword })
-        });
-
-        if (!res.ok) {
-            showLimitToast('Invalid email or password');
-            return;
-        }
-
-        const result = await res.json();
-        const user = result.user || result;
-        if (result.token) {
-            localStorage.setItem('authToken', result.token);
-        }
-        localStorage.setItem('username', user.username || '');
-        localStorage.setItem('userUID', String(user.userUID || 0));
-        localStorage.setItem('userEmail', user.userEmail || userEmail);
-        localStorage.setItem('userTier', user.userTier || 'Free');
-        localStorage.setItem('userLanguage', user.userLanguage || (localStorage.getItem('userLanguage') || 'en'));
-        localStorage.setItem('searchCount', String(user.searchCount || 0));
-        localStorage.setItem('viewCount', String(user.viewCount || 0));
-        localStorage.setItem('allUIDs', JSON.stringify(user.allUIDs || []));
-        localStorage.setItem('isAdmin', user.isAdmin ? 'true' : 'false');
-
-        closeSignInModal();
-        safeReload();
-    } catch (err) {
-        console.error('Sign-in error:', err);
-        showLimitToast('Sign-in failed');
-    }
-};
-
-window.toggleAccountMenu = function() {
-    console.log("🎯 CLICK DETECTED: Running toggleAccountMenu...");
-
-    const dropdown = document.getElementById('accountDropdown');
-    
-    if (!dropdown) {
-        console.error("❌ ERROR: Could not find id='accountDropdown'.");
-        return;
-    }
-
-    // Toggle visibility
-    dropdown.classList.toggle('active');
-
-    if (dropdown.classList.contains('active')) {
-        const username = localStorage.getItem('username');
-        const tier = localStorage.getItem('userTier') || "Free";
-        const searches = parseInt(localStorage.getItem('searchCount')) || 0;
-        const views = parseInt(localStorage.getItem('viewCount')) || 0;
-        const isAdmin = localStorage.getItem('isAdmin') === 'true';
-
-        // --- AUTH CHECK: Disable/Enable Settings and Logout ---
-        const settingsLink = dropdown.querySelector('a[onclick="openSettings()"]');
-        const logoutLink = dropdown.querySelector('a[onclick="logout()"]');
-        const signInLink = dropdown.querySelector('#signInLink');
-        const signUpLink = dropdown.querySelector('#signUpLink');
-        const isSignedIn = !!username;
-
-        if (!isSignedIn) {
-            if (settingsLink) settingsLink.classList.add('link-disabled');
-            if (logoutLink) logoutLink.classList.add('link-disabled');
-            if (signInLink) signInLink.style.display = '';
-            if (signUpLink) signUpLink.style.display = '';
-            if (document.getElementById('navUsername')) document.getElementById('navUsername').innerText = "Guest";
-        } else {
-            if (settingsLink) settingsLink.classList.remove('link-disabled');
-            if (logoutLink) logoutLink.classList.remove('link-disabled');
-            if (signInLink) signInLink.style.display = 'none';
-            if (signUpLink) signUpLink.style.display = 'none';
-            if (document.getElementById('navUsername')) document.getElementById('navUsername').innerText = username;
-        }
-
-        // --- UPDATE STATS (Using IDs from your snippet) ---
-        const sLimit = tier === 'Premium' ? 50 : (tier === 'Gold' ? '∞' : 5);
-        const vLimit = tier === 'Premium' ? 20 : (tier === 'Gold' ? '∞' : 3);
-
-        if (document.getElementById('dropTier')) document.getElementById('dropTier').innerText = tier + " Tier";
-        if (document.getElementById('statSearch')) document.getElementById('statSearch').innerText = `${searches}/${sLimit}`;
-        if (document.getElementById('statView')) document.getElementById('statView').innerText = `${views}/${vLimit}`;
-
-        const existingAdminLink = dropdown.querySelector('#adminPanelLink');
-        if (isAdmin && !existingAdminLink) {
-            const adminLink = document.createElement('a');
-            adminLink.id = 'adminPanelLink';
-            adminLink.href = '/html/admin.html';
-            adminLink.className = 'drop-link';
-            adminLink.innerText = 'Admin Panel';
-
-            const settingsLinkAnchor = dropdown.querySelector('a[onclick="openSettings()"]');
-            if (settingsLinkAnchor && settingsLinkAnchor.parentNode) {
-                settingsLinkAnchor.parentNode.insertBefore(adminLink, settingsLinkAnchor);
-            } else {
-                dropdown.appendChild(adminLink);
-            }
-        }
-
-        if (!isAdmin && existingAdminLink) {
-            existingAdminLink.remove();
-        }
-    }
-};
-
-// Create an alias so the "X" button (toggleSidebar) also works
-window.toggleSidebar = window.toggleAccountMenu;
-
-window.logout = function() {
-    window.persistUserStats();
-    localStorage.clear();
-    safeReload();
-};
-// Stop the menu from closing itself when you click inside it
-document.addEventListener('DOMContentLoaded', () => {
-    const dropdown = document.getElementById('accountDropdown');
-    if (dropdown) {
-        dropdown.addEventListener('click', (e) => {
-            e.stopPropagation(); 
-        });
-    }
-});
-function showLimitToast(message) {
-    const existing = document.querySelector('.limit-toast');
-    if (existing) existing.remove();
-
-    const toast = document.createElement('div');
-    toast.className = 'limit-toast';
-    toast.innerHTML = `
-        <span>${message}</span>
-        <div class="toast-progress"></div>
-    `;
-
-    document.body.appendChild(toast);
-
-    const progressBar = toast.querySelector('.toast-progress');
-    progressBar.style.animation = 'progressShrink 3s linear forwards';
-
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        toast.style.transition = '0.5s';
-        setTimeout(() => toast.remove(), 500);
-    }, 3000);
-}
-// THE UPLOAD HANDLER (auto resize too)
-window.handlePFPUpload = function(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    
-    reader.onload = function(e) {
-        const img = new Image();
-        img.onload = function() {
-            const canvas = document.createElement('canvas');
-            const MAX_WIDTH = 150; 
-            const scaleSize = MAX_WIDTH / img.width;
-            
-            canvas.width = MAX_WIDTH;
-            canvas.height = img.height * scaleSize;
-            
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            
-            const smallBase64 = canvas.toDataURL('image/jpeg', 0.7);
-            
-            localStorage.setItem('userPFP', smallBase64);
-            
-            applyPFPToUI(smallBase64);
-            
-            console.log("Image resized and saved!");
-        };
-        img.src = e.target.result;
-    };
-    
-    reader.readAsDataURL(file);
-};
-
-// Function to apply the image to all PFP icons on the page
-function applyPFPToUI(imagePath) {
-    if (!imagePath) return;
-
-    const navPFP = document.querySelector('.grey-profile-pic');
-    const sidebarPFP = document.getElementById('sidebarPFP');
-
-    if (navPFP) navPFP.style.backgroundImage = `url(${imagePath})`;
-    if (sidebarPFP) sidebarPFP.style.backgroundImage = `url(${imagePath})`;
-}
-
-// Initialize PFP on page load
-document.addEventListener('DOMContentLoaded', () => {
-    const savedName = localStorage.getItem('username');
-
-    if (savedName) {
-        if (document.getElementById('navUsername')) {
-            document.getElementById('navUsername').innerText = savedName;
-        }
-        if (document.getElementById('sideUsername')) {
-            document.getElementById('sideUsername').innerText = savedName;
-        }
-    }
-    if (typeof ensureSignInModal === 'function') ensureSignInModal();
-});
-
-
-// PEN THE SETTINGS MODAL
-window.openSettings = function() {
-    if (!localStorage.getItem('username')) {
-        showLimitToast("⚠️ Sign in to access settings!");
-        return;
-    }
-    const modal = document.getElementById('settingsModal');
-    if (modal) {
-        modal.classList.add('active');
-        loadCurrentSettings();
-    }
-};
-
-window.getMovieSource = function() {
-    return localStorage.getItem('movieSource') || 'local';
-};
-
-window.withMovieSource = function(url) {
-    const source = window.getMovieSource ? window.getMovieSource() : 'local';
-    if (source !== 'api') return url;
-    return `${url}${url.includes('?') ? '&' : '?'}source=api`;
-};
-
-// Load current settings into the modal
-function loadCurrentSettings() {
-    const currentTheme = localStorage.getItem('userTheme') || 'dark';
-    document.querySelectorAll('.theme-option').forEach(btn => {
-        btn.classList.remove('active');
-        if (btn.dataset.theme === currentTheme) {
-            btn.classList.add('active');
-        }
-    });
-    
-    const lowDataMode = localStorage.getItem('lowDataMode') === 'true';
-    const lowDataCheckbox = document.getElementById('lowDataMode');
-    if (lowDataCheckbox) lowDataCheckbox.checked = lowDataMode;
-
-    const settingsLang = document.getElementById('settingsLanguage');
-    if (settingsLang) {
-        const currentLang = localStorage.getItem('userLanguage') || (window.i18n ? window.i18n.getCurrentLanguage() : 'en');
-        settingsLang.value = currentLang;
-    }
-
-    const settingsSource = document.getElementById('settingsMovieSource');
-    if (settingsSource) {
-        settingsSource.value = localStorage.getItem('movieSource') || 'local';
-    }
-    
-}
-
-window.selectThemeInSettings = function(themeName) {
-    document.querySelectorAll('.theme-option').forEach(btn => {
-        btn.classList.remove('active');
-        if (btn.dataset.theme === themeName) {
-            btn.classList.add('active');
-        }
-    });
-    
-    if (window.themeManager) {
-        window.themeManager.applyTheme(themeName);
-    }
-    
-    showLimitToast(`✨ ${themeName.charAt(0).toUpperCase() + themeName.slice(1)} theme applied!`);
-};
-
-window.toggleLowDataMode = function() {
-    const checkbox = document.getElementById('lowDataMode');
-    const enabled = checkbox.checked;
-    localStorage.setItem('lowDataMode', enabled);
-    window.dispatchEvent(new CustomEvent('lowDataModeChanged', { detail: { enabled } }));
-    
-    showLimitToast(enabled ? "📶 Low Data Mode enabled" : "📶 Low Data Mode disabled");
-};
-
-window.logout = function() {
-    if (!localStorage.getItem('username')) return; 
-    if (window.persistUserStats) window.persistUserStats();
-    localStorage.clear();
-    safeReload();
-};
-//CLOSE THE SETTINGS MODAL
-window.closeSettings = function() {
-    const modal = document.getElementById('settingsModal');
-    if (modal) modal.classList.remove('active');
-};
-
-//SAVE ACCOUNT CHANGES
-window.saveSettings = function() {
-    const newName = document.getElementById('settingsUsername').value;
-    const passInput = document.getElementById('settingsPassword');
-    const emailInput = document.getElementById('settingsEmail');
-
-    if (newName.trim() !== "") {
-        localStorage.setItem('username', newName);
-        
-        const navName = document.getElementById('navUsername');
-        const sideName = document.getElementById('sideUsername');
-        
-        if (navName) navName.innerText = newName;
-        if (sideName) sideName.innerText = newName;
-        
-        console.log("Username updated to:", newName);
-    }
-
-    if (emailInput && emailInput.value.trim() !== "") {
-        localStorage.setItem('userEmail', emailInput.value);
-    }
-    
-    closeSettings();
-    if (window.persistUserStats) window.persistUserStats();
-    showLimitToast("✅ Settings Saved!");
-};
-
-// --- PFP LOGIC: Targeting Classes properly ---
- 
- window.handlePFPUpload = function(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    
-    reader.onloadend = function() {
-        const base64Image = reader.result;
-        
-        localStorage.setItem('userPFP', base64Image);
-        
-        applyPFPToUI(base64Image);
-        
-        if (typeof showLimitToast === "function") {
-            showLimitToast("✅ Profile Picture Updated!");
-        }
-    };
-    
-    reader.readAsDataURL(file);
-};
-/* =========================================
-   CUSTOM TOAST HELPER
-   ========================================= */
-
-
-function applyPFPToUI(imagePath) {
-    if (!imagePath) return;
-
-    const icons = document.querySelectorAll('.grey-profile-pic, .large-profile-icon');
-    
-    icons.forEach(icon => {
-        icon.style.backgroundImage = `url('${imagePath}')`;
-        icon.style.backgroundSize = 'cover';
-        icon.style.backgroundPosition = 'center';
-        icon.style.backgroundColor = 'transparent'; 
-    });
-}
-
-// The Main 'Listener'
-document.addEventListener('DOMContentLoaded', () => {
-    console.log("🔄 App Initializing..."); 
-
-    const savedPFP = localStorage.getItem('userPFP');
-    if (savedPFP) {
-        console.log("✅ Restoring PFP from storage");
-        applyPFPToUI(savedPFP);
-    } else {
-        console.log("ℹ️ No PFP found in storage");
-    }
-
-    // 2. Restore Username
-    const savedName = localStorage.getItem('username');
-    const navName = document.getElementById('navUsername');
-    if (savedName && navName) {
-        navName.innerText = savedName;
-    }
-    
-    // 3. Load other components if they exist
-    if (typeof initHero === 'function') initHero();
-    if (typeof loadReviews === 'function') loadReviews();
-    updateCtaForGuest();
-});
-
-function updateCtaForGuest() {
-    const ctaStrip = document.getElementById('ctaStrip');
-    const primaryBtn = document.getElementById('ctaPrimaryBtn');
-    const secondaryBtn = document.getElementById('ctaSecondaryBtn');
-    if (!ctaStrip || !primaryBtn || !secondaryBtn) return;
-
-    const userUID = parseInt(localStorage.getItem('userUID')) || 0;
-    const username = localStorage.getItem('username');
-    const isGuest = !username || username === 'Guest' || userUID === 0;
-
-    if (isGuest) {
-        primaryBtn.textContent = 'Create Account';
-        primaryBtn.setAttribute('href', '#');
-        primaryBtn.onclick = (e) => {
-            e.preventDefault();
-            if (typeof openSignupModal === 'function') openSignupModal();
-        };
-
-        secondaryBtn.textContent = 'Sign In';
-        secondaryBtn.setAttribute('href', '#');
-        secondaryBtn.onclick = (e) => {
-            e.preventDefault();
-            if (typeof openSignInModal === 'function') openSignInModal();
-        };
-    } else {
-        primaryBtn.textContent = 'Go to Browse';
-        primaryBtn.setAttribute('href', '/html/indexBrowse.html');
-        primaryBtn.onclick = null;
-
-        secondaryBtn.textContent = 'Open Public Library';
-        secondaryBtn.setAttribute('href', '/html/customPlaylists.html');
-        secondaryBtn.onclick = null;
-    }
-}
-
-//  ssAVE SETTINGS BUTTON LOGIC
-window.saveSettings = function() {
-    // --- 1. Save Username ---
-    const nameInput = document.getElementById('settingsUsername');
-    if (nameInput) {
-        const newName = nameInput.value;
-        if (newName.trim() !== "") {
-            localStorage.setItem('username', newName);
-            
-            const navName = document.getElementById('navUsername');
-            if (navName) navName.innerText = newName;
-        }
-    }
-
-    // --- Save Language ---
-    const settingsLang = document.getElementById('settingsLanguage');
-    if (settingsLang && settingsLang.value) {
-        localStorage.setItem('userLanguage', settingsLang.value);
-    }
-
-    const prevSource = localStorage.getItem('movieSource') || 'local';
-    const settingsSource = document.getElementById('settingsMovieSource');
-    if (settingsSource && settingsSource.value) {
-        localStorage.setItem('movieSource', settingsSource.value);
-    }
-
-    const settingsModal = document.getElementById('settingsModal') 
-                       || document.querySelector('.settings-modal-overlay.active');
-    
-    if (settingsModal) {
-        settingsModal.classList.remove('active');
-    }
-
-    const nextSource = localStorage.getItem('movieSource') || 'local';
-    if (prevSource !== nextSource && typeof safeReload === 'function') {
-        safeReload();
-    }
-
-    console.log("Settings Saved & Closed");
-};
-/* =========================================
-   PUSH FORCEFULLY PFP SYNC FUNCTION
-   ========================================= */
-function syncProfilePic() {
-    // 1. Get the raw text data from storage
-    const savedPFP = localStorage.getItem('userPFP');
-    
-    if (!savedPFP) {
-        console.log("No PFP found in storage.");
-        return; 
-    }
-
-    const allProfileIcons = document.querySelectorAll('.grey-profile-pic, .large-profile-icon');
-
-    allProfileIcons.forEach(icon => {
-        icon.style.backgroundImage = `url('${savedPFP}')`;
-        icon.style.backgroundSize = 'cover';       
-        icon.style.backgroundPosition = 'center';   
-        icon.style.backgroundColor = 'transparent';  
-    });
-    
-    console.log("✅ PFP Force Synced!");
-}
-
-// CALL IT: Run ASAPPP  
-syncProfilePic();
-
-document.addEventListener('DOMContentLoaded', syncProfilePic);
-/* =========================================
-   UNIVERSAL TOAST NOTIFICATION (Self-Repairing)
-========================================= */
-
-// 1. Force-Inject the CSS  
-(function injectToastStyles() {
-    const styleId = 'toast-style-injection';
-    if (!document.getElementById(styleId)) {
-        const style = document.createElement('style');
-        style.id = styleId;
-        style.innerHTML = `
-            .custom-toast-popup {
-                position: fixed;
-                top: -100px;
-                left: 50%;
-                transform: translateX(-50%);
-                background-color: #f96d00; /* Netflix Red */
-                color: white;
-                padding: 16px 32px;
-                border-radius: 4px;
-                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                font-size: 16px;
-                font-weight: bold;
-                box-shadow: 0 4px 20px rgba(0,0,0,0.8);
-                z-index: 2147483647; /* MAX POSSIBLE Z-INDEX (On top of everything) */
-                transition: top 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                min-width: 300px;
-                justify-content: center;
-            }
-            .custom-toast-popup.active {
-                top: 40px;
-            }
-        `;
-        document.head.appendChild(style);
-        console.log("✅ Toast Styles Injected");
-    }
-})();
-
-// 2. The Toast Function
-window.showToast = function(message, isError = false) {
-    const existing = document.querySelector('.custom-toast-popup');
-    if (existing) existing.remove();
-
-    const toast = document.createElement('div');
-    toast.className = 'custom-toast-popup';
-    
-    const icon = isError ? '❌' : '✅';
-    toast.innerHTML = `<span>${icon}</span> <span>${message}</span>`;
-    
-    if (isError) {
-        toast.style.borderLeft = "5px solid #ff4444"; // Red accent for errors
-        toast.style.backgroundColor = "#1a1a1a";     // Darker background
-    } else {
-        toast.style.borderLeft = "5px solid #f96d00"; // Your signature Orange
-    }
-
-    document.body.appendChild(toast);
-
-    setTimeout(() => {
-        toast.classList.add('active');
-    }, 10);
-
-    setTimeout(() => {
-        toast.classList.remove('active');
-        setTimeout(() => toast.remove(), 500); 
-    }, 3500);
-};
-
-// MOBILE MENU TOGGLE(hbamburger)
- window.toggleMobileMenu = function() {
-    const nav = document.getElementById('navLinks');
-    const burger = document.querySelector('.hamburger');
-    const overlay = document.querySelector('.nav-overlay');
-
-    if (!nav) return;
-
-    const isOpen = !nav.classList.contains('active');
-    nav.classList.toggle('active', isOpen);
-    if (overlay) {
-        overlay.classList.toggle('active', isOpen);
-    }
-
-    if (burger) {
-        burger.classList.toggle('toggle-burger', isOpen);
-    }
-};
-/* =========================================
-   MOBILE SWIPE LOGIC (Global Scope)
-   ========================================= */
-
-window.moveSlide = function(direction) {
-    if (heroMovies.length === 0) return;
-
-    currentSlide += direction;
-
-    if (currentSlide >= heroMovies.length) {
-        currentSlide = 0; 
-    } else if (currentSlide < 0) {
-        currentSlide = heroMovies.length - 1;
-    }
-
-    updateHero(); 
-    updateDots();
-};
-let touchStartX = 0;
-let touchEndX = 0;
-
-function handleSwipe() {
-    const swipeThreshold = 50; 
-    const change = touchStartX - touchEndX;
-
-    if (change > swipeThreshold) {
-        moveSlide(1); 
-    } else if (change < -swipeThreshold) {
-        moveSlide(-1); 
-    }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    const heroSection = document.querySelector('.hero');
-    if (heroSection) {
-        heroSection.addEventListener('touchstart', (e) => {
-            touchStartX = e.changedTouches[0].screenX;
-        }, { passive: true });
-
-        heroSection.addEventListener('touchend', (e) => {
-            touchEndX = e.changedTouches[0].screenX;
-            handleSwipe();
-        }, { passive: true });
-    }
-});
-/* =========================================
-   THEME AND LANGUAGE CONTROLS
-   ========================================= */
-
-function toggleSiteTheme() {
-    const newTheme = window.themeManager.toggleTheme();
-    updateThemeButton(newTheme);
-}
-
-function updateThemeButton(theme) {
-    const icon = document.getElementById('themeIcon');
-    const label = document.getElementById('themeLabel');
-    if (!icon || !label) return;
-    
-    if (theme === 'dark') {
-        icon.textContent = '🌙';
-        label.textContent = 'Dark';
-    } else {
-        icon.textContent = '☀️';
-        label.textContent = 'Light';
-    }
-}
-
-// Initialize theme button on page load
-window.addEventListener('DOMContentLoaded', () => {
-    if (window.themeManager && typeof window.themeManager.getCurrentTheme === 'function') {
-        const currentTheme = window.themeManager.getCurrentTheme();
-        updateThemeButton(currentTheme);
-    }
-});
-
-// Language selection functions
-function toggleLanguageMenu() {
-    const dropdown = document.getElementById('languageDropdown');
-    if (!dropdown) return;
-    dropdown.classList.toggle('active');
-}
-
-function selectLanguage(lang) {
-    localStorage.setItem('userLanguage', lang);
-    window.i18n.changeLanguage(lang);
-    updateLanguageButton(lang);
-    if (lang === 'ru') {
-        console.log('🔤 Language switched to Russian');
-    }
-    if (window.translator && typeof window.translator.translatePageAuto === 'function') {
-        if (lang === 'en') {
-            if (typeof window.translator.resetAll === 'function') {
-                window.translator.resetAll();
-            }
-            if (typeof window.translator.clearCache === 'function') {
-                window.translator.clearCache();
-            }
-            if (typeof window.translator.setTargetLanguage === 'function') {
-                window.translator.setTargetLanguage('EN');
-            }
-        } else {
-            window.translator.translatePageAuto();
-        }
-    }
-    toggleLanguageMenu();
-}
-
-function updateLanguageButton(lang) {
-    const flags = {
-        'en': { flag: '��🇧', code: 'EN' },
-        'ru': { flag: '🇷🇺', code: 'RU' }
-    };
-    
-    const currentFlag = document.getElementById('currentFlag');
-    const currentLangCode = document.getElementById('currentLangCode');
-    if (!currentFlag || !currentLangCode) return;
-    
-    if (flags[lang]) {
-        currentFlag.textContent = flags[lang].flag;
-        currentLangCode.textContent = flags[lang].code;
-    }
-    
-    document.querySelectorAll('.language-option').forEach(opt => {
-        opt.classList.remove('selected');
-    });
-    const selectedOption = document.querySelector(`.language-option[onclick*="${lang}"]`);
-    if (selectedOption) {
-        selectedOption.classList.add('selected');
-    }
-}
-
-// Initialize language button on page load
-window.addEventListener('DOMContentLoaded', () => {
-    const currentLang = window.i18n.getCurrentLanguage();
-    updateLanguageButton(currentLang);
-    const settingsLang = document.getElementById('settingsLanguage');
-    if (settingsLang) {
-        settingsLang.value = currentLang;
-    }
-});
-
-// Close dropdowns when clicking outside
-document.addEventListener('click', (e) => {
-    if (!e.target.closest('.language-selector')) {
-        const dropdown = document.getElementById('languageDropdown');
-        if (dropdown) {
-            dropdown.classList.remove('active');
-        }
-    }
-});
-
-console.log('✅ Theme and language controls loaded');
-
-/* =========================================
-   NETFLIX FEATURES INITIALIZATION
-   ========================================= */
-
-// Initialize continue watching section
-function initContinueWatching() {
-    if (window.WatchHistoryUI) {
-        const continueWatchingItems = window.WatchHistory.getContinueWatching();
-        const section = document.getElementById('continueWatchingSection');
-        
-        if (continueWatchingItems.length > 0 && section) {
-            section.style.display = 'block';
-            window.WatchHistoryUI.renderContinueWatching('rowContinueWatching');
-        } else if (section) {
-            section.style.display = 'none';
-        }
-    }
-}
-
-// Add to page initialization
-window.addEventListener('DOMContentLoaded', () => {
-    setTimeout(initContinueWatching, 500);
-});
-
 
 function initHeroPreferencesPanel() {
     const isBrowsePage = window.location.pathname.includes('indexBrowse.html');
@@ -2017,8 +2077,878 @@ function initHeroPreferencesPanel() {
     });
 }
 
-// Refresh continue watching when user interacts with movies
-window.addEventListener('movieViewed', () => {
-    setTimeout(initContinueWatching, 1000);
+// Fallback helpers: keep browse/personal pages working even if upstream sections were trimmed.
+async function fetchMoviesByIds(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) return [];
+    const uniqueIds = Array.from(new Set(ids.map(id => String(id))));
+    const requests = uniqueIds.map(id => {
+        const baseUrl = `/movie/${id}`;
+        const requestUrl = window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl;
+        return fetch(requestUrl).then(res => (res.ok ? res.json() : null)).catch(() => null);
+    });
+    const results = await Promise.allSettled(requests);
+    return results
+        .filter(r => r.status === 'fulfilled' && r.value)
+        .map(r => r.value);
+}
+
+function createCard(movie) {
+    const year = movie.release_date ? String(movie.release_date).slice(0, 4) : (movie.Year || '----');
+    const runtime = movie.Runtime || '-- min';
+    const rating = movie.Rating || movie.imdb_rating || '--';
+    const plot = movie.Plot || 'No plot summary available.';
+    const genre = movie.Genre || '';
+
+    const rawType = movie._type || movie.Type || 'movie';
+    const cardType = (rawType === 'tv' || rawType === 'anime' || rawType === 'TV' || Number(rawType) === 2)
+        ? 'tv'
+        : 'movie';
+    const isTV = cardType === 'tv';
+    const tagLabel = isTV ? 'Anime' : 'Movie';
+    const navUrl = isTV
+        ? `movieInfo.html?id=${movie.ID}&type=tv`
+        : `movieInfo.html?id=${movie.ID}&type=movie`;
+
+    return `
+        <div class="grid-card" data-id="${movie.ID}" data-title="${movie['Movie Name'] || ''}" data-year="${year}" data-runtime="${runtime}" data-rating="${rating}" data-plot="${plot}" data-genre="${genre}" data-type="${cardType}" onmouseenter="handleCardHover(this)" onmouseleave="handleCardLeave(this)">
+            ${rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${rating}</span>` : ''}
+            <img src="${movie.poster_full_url || '/img/LOGO_Short.png'}" loading="lazy" onclick="window.location.href='${navUrl}'" onerror="this.src='/img/LOGO_Short.png'">
+            <div class="card-title-label">
+                <div class="card-title-name">${movie['Movie Name'] || 'Unknown'}</div>
+                <div class="card-title-tag">${tagLabel}</div>
+            </div>
+            <div class="card-hover-info">
+                <div class="hover-preview">
+                    <iframe class="card-trailer" title="Trailer" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+                </div>
+                <div class="hover-meta">
+                    <div class="hover-meta-title">${movie['Movie Name'] || 'Unknown'}</div>
+                    <div class="hover-meta-stats">
+                        <span>⭐ ${rating}</span>
+                        <span>${year}</span>
+                        <span>${runtime}</span>
+                    </div>
+                    <p class="hover-meta-desc">${plot}</p>
+                    <div class="hover-meta-actions">
+                        <button class="hover-play" onclick="window.location.href='${navUrl}'">▶</button>
+                        <a class="hover-info" href="${navUrl}">More Info</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function closeHoverModal() {
+    const modal = document.getElementById('hoverModal');
+    const modalTrailer = document.getElementById('hoverModalTrailer');
+    if (!modal || !modalTrailer) return;
+
+    if (window.__hoverModalShowTimer) {
+        clearTimeout(window.__hoverModalShowTimer);
+        window.__hoverModalShowTimer = null;
+    }
+    if (window.__hoverModalHideTimer) {
+        clearTimeout(window.__hoverModalHideTimer);
+        window.__hoverModalHideTimer = null;
+    }
+
+    window.__hoverModalHovered = false;
+    window.__hoverModalLocked = false;
+    window.__hoverCardTarget = null;
+    modal.classList.remove('active');
+    modalTrailer.src = '';
+}
+
+window.handleCardHover = async function(card) {
+    if (!card) return;
+    const modal = document.getElementById('hoverModal');
+    const modalTrailer = document.getElementById('hoverModalTrailer');
+    if (!modal || !modalTrailer) return;
+
+    // Keep current popup data stable while open until user clicks outside.
+    if (window.__hoverModalLocked && modal.classList.contains('active') && window.__hoverCardTarget !== card) {
+        return;
+    }
+
+    if (window.__hoverModalHideTimer) {
+        clearTimeout(window.__hoverModalHideTimer);
+        window.__hoverModalHideTimer = null;
+    }
+    if (window.__hoverModalShowTimer) {
+        clearTimeout(window.__hoverModalShowTimer);
+        window.__hoverModalShowTimer = null;
+    }
+
+    window.__hoverCardTarget = card;
+    window.__hoverModalShowTimer = setTimeout(async () => { // 3-second delay before popup shows
+        if (window.__hoverCardTarget !== card) return; // cursor moved away before delay elapsed
+
+        const title = card.dataset?.title || card.getAttribute('data-title') || 'Title';
+        const year = card.dataset?.year || card.getAttribute('data-year') || '----';
+        const runtime = card.dataset?.runtime || card.getAttribute('data-runtime') || '-- min';
+        const rating = card.dataset?.rating || card.getAttribute('data-rating') || '--';
+        const plot = card.dataset?.plot || card.getAttribute('data-plot') || 'No plot summary available.';
+        const movieId = card.dataset?.id || card.getAttribute('data-id') || '';
+        const cardType = card.dataset?.type || card.getAttribute('data-type') || 'movie';
+
+        const titleEl = document.getElementById('hoverModalTitle');
+        const ratingEl = document.getElementById('hoverModalRating');
+        const yearEl = document.getElementById('hoverModalYear');
+        const runtimeEl = document.getElementById('hoverModalRuntime');
+        const descEl = document.getElementById('hoverModalDesc');
+        const moreInfo = document.getElementById('hoverModalMoreInfo');
+
+        if (titleEl) titleEl.textContent = title;
+        if (ratingEl) ratingEl.textContent = `⭐ ${rating}`;
+        if (yearEl) yearEl.textContent = year;
+        if (runtimeEl) runtimeEl.textContent = runtime;
+        if (descEl) descEl.textContent = plot;
+        if (moreInfo) moreInfo.href = movieId ? `movieInfo.html?id=${movieId}&type=${cardType}` : 'movieInfo.html';
+
+        modal.classList.add('active');
+        window.__hoverModalLocked = true;
+
+        const cleanupHoverTrailer = () => {
+            clearHoverTrailerMonitor();
+            modalTrailer.src = '';
+        };
+
+        if (card.dataset.trailerId) {
+            setHoverTrailerSource(modalTrailer, [card.dataset.trailerId], cleanupHoverTrailer);
+            return;
+        }
+
+        if (!window.fetchYTIds) return;
+
+        try {
+            const keys = await window.fetchYTIds(`${title} ${year}`);
+            if (window.__hoverCardTarget !== card || !modal.classList.contains('active')) return;
+            if (keys && keys.length > 0) {
+                setHoverTrailerSource(modalTrailer, keys, cleanupHoverTrailer);
+            }
+        } catch (err) {
+            console.warn('Trailer fetch failed:', err);
+            cleanupHoverTrailer();
+        }
+    }, 3000);
+};
+
+window.handleCardLeave = function(card) {
+    const modal = document.getElementById('hoverModal');
+    const modalTrailer = document.getElementById('hoverModalTrailer');
+    if (!modal || !modalTrailer) return;
+
+    if (window.__hoverModalLocked && modal.classList.contains('active')) {
+        return;
+    }
+
+    if (window.__hoverCardTarget === card) {
+        window.__hoverCardTarget = null;
+    }
+    if (window.__hoverModalShowTimer) {
+        clearTimeout(window.__hoverModalShowTimer);
+        window.__hoverModalShowTimer = null;
+    }
+};
+
+function initHoverModalInteractions() {
+    const modal = document.getElementById('hoverModal');
+    const modalTrailer = document.getElementById('hoverModalTrailer');
+    if (!modal || !modalTrailer || window.__hoverModalInteractionsInit) return;
+    window.__hoverModalInteractionsInit = true;
+
+    modal.addEventListener('mouseenter', () => {
+        window.__hoverModalHovered = true;
+    });
+
+    modal.addEventListener('mouseleave', () => {
+        window.__hoverModalHovered = false;
+    });
+
+    document.addEventListener('pointerdown', (event) => {
+        if (!modal.classList.contains('active')) return;
+        if (modal.contains(event.target)) return;
+        closeHoverModal();
+    }, true);
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && modal.classList.contains('active')) {
+            closeHoverModal();
+        }
+    });
+}
+
+// ── AUTH HELPERS ───────────────────────────────────────────────────────────────
+
+function safeReload() {
+    location.reload();
+}
+
+window.showLimitToast = function(message) {
+    const existing = document.querySelector('.limit-toast');
+    if (existing) existing.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = 'limit-toast';
+    toast.innerHTML = `<span>${message}</span><div class="toast-progress"></div>`;
+    document.body.appendChild(toast);
+
+    const progressBar = toast.querySelector('.toast-progress');
+    if (progressBar) progressBar.style.animation = 'progressShrink 3s linear forwards';
+
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transition = '0.5s';
+        setTimeout(() => toast.remove(), 500);
+    }, 3000);
+}
+
+window.showLongToast = function(message, durationMs = 8000) {
+    const existing = document.querySelector('.limit-toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.className = 'limit-toast';
+    toast.innerHTML = `<span>${message}</span><div class="toast-progress"></div>`;
+    document.body.appendChild(toast);
+
+    const progressBar = toast.querySelector('.toast-progress');
+    if (progressBar) progressBar.style.animation = `progressShrink ${durationMs / 1000}s linear forwards`;
+
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transition = '0.5s';
+        setTimeout(() => toast.remove(), 500);
+    }, durationMs);
+}
+
+window.persistUserStats = function () {
+    const username = localStorage.getItem('username');
+    const userUID = localStorage.getItem('userUID');
+    if (!username || !userUID) return;
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+
+    const payload = {
+        username,
+        userUID: parseInt(userUID, 10),
+        userEmail: localStorage.getItem('userEmail') || '',
+        userTier: localStorage.getItem('userTier') || 'Free',
+        userLanguage: localStorage.getItem('userLanguage') || 'en',
+        searchCount: parseInt(localStorage.getItem('searchCount') || '0', 10),
+        viewCount: parseInt(localStorage.getItem('viewCount') || '0', 10),
+        allUIDs: JSON.parse(localStorage.getItem('allUIDs') || '[]')
+    };
+
+    fetch('/users', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+    }).catch(err => console.error('User stats save error:', err));
+};
+
+window.logout = function () {
+    window.persistUserStats();
+    const guestUID = localStorage.getItem('guestUID');
+    localStorage.clear();
+    if (guestUID) localStorage.setItem('guestUID', guestUID);
+    localStorage.removeItem('loginCode');
+    safeReload();
+};
+
+// ── SIGN-UP MODAL ─────────────────────────────────────────────────────────────
+
+function ensureSignupModal() {
+    if (document.getElementById('signupModal')) return;
+    const modal = document.createElement('div');
+    modal.id = 'signupModal';
+    modal.className = 'signup-overlay';
+    modal.style.display = 'none';
+    modal.innerHTML = `
+        <div class="signup-box">
+            <div class="signup-close" onclick="closeSignupModal()">✕</div>
+            <h2>Welcome to Legion Space</h2>
+            <p class="signup-subtitle">Create your free account to start watching.</p>
+            <form onsubmit="handleSignup(event)">
+                <div class="input-group">
+                    <input type="text" id="signupUser" required placeholder=" ">
+                    <label>Username</label>
+                </div>
+                <div class="input-group">
+                    <input type="email" id="signupEmail" required placeholder=" ">
+                    <label>Email Address</label>
+                </div>
+                <div class="input-group">
+                    <input type="password" id="signupPassword" required placeholder=" ">
+                    <label>Password</label>
+                </div>
+                <button type="submit" class="btn-signup">Create Account</button>
+            </form>
+        </div>
+    `;
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeSignupModal(); });
+    document.body.appendChild(modal);
+}
+
+window.openSignupModal = function () {
+    const dropdown = document.getElementById('accountDropdown');
+    if (dropdown) dropdown.classList.remove('active');
+    ensureSignupModal();
+    const modal = document.getElementById('signupModal');
+    if (modal) {
+        modal.style.cssText = 'display:flex; position:fixed; top:0; left:0; width:100vw; height:100vh; justify-content:center; align-items:center; z-index:10000; background:rgba(0,0,0,0.85); backdrop-filter:blur(8px);';
+        modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+};
+
+window.closeSignupModal = function () {
+    const modal = document.getElementById('signupModal');
+    if (modal) {
+        modal.classList.remove('active');
+        modal.style.cssText = 'display:none;';
+        document.body.style.overflow = 'auto';
+    }
+};
+
+window.handleSignup = async function (e) {
+    e.preventDefault();
+    const username = (document.getElementById('signupUser') || {}).value || 'Guest';
+    const email = (document.getElementById('signupEmail') || {}).value || '';
+    const password = (document.getElementById('signupPassword') || {}).value || '';
+    const tier = 'Free';
+    const userLanguage = localStorage.getItem('userLanguage') || 'en';
+
+    const btn = document.querySelector('.btn-signup');
+    if (btn) { btn.textContent = 'Creating Account…'; btn.disabled = true; btn.style.opacity = '0.7'; }
+
+    try {
+        const res = await fetch('/users/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, userEmail: email, userTier: tier, userPassword: password, userLanguage, guestAccountUID: localStorage.getItem('guestUID') || null })
+        });
+
+        if (!res.ok) {
+            const msg = await res.json().catch(() => ({}));
+            showLimitToast(msg.error || 'Registration failed');
+            if (btn) { btn.textContent = 'Create Account'; btn.disabled = false; btn.style.opacity = '1'; }
+            return;
+        }
+
+        const result = await res.json();
+        const user = result.user || result;
+        if (result.token) localStorage.setItem('authToken', result.token);
+        if (typeof user.loginCode !== 'undefined' && user.loginCode !== null) {
+            localStorage.setItem('loginCode', user.loginCode);
+        } else {
+            localStorage.removeItem('loginCode');
+        }
+        localStorage.setItem('username', user.username || username);
+        localStorage.setItem('userUID', String(user.userUID || 0));
+        if (user.accountUID) {
+            localStorage.setItem('guestUID', String(user.accountUID));
+        }
+        localStorage.setItem('userEmail', user.userEmail || email);
+        localStorage.setItem('userTier', user.userTier || tier);
+        localStorage.setItem('userLanguage', user.userLanguage || userLanguage);
+        localStorage.setItem('isAdmin', user.isAdmin ? 'true' : 'false');
+        localStorage.setItem('is_guest_local', String(user.is_guest === 1 ? 1 : 0));
+        localStorage.setItem('searchCount', '0');
+        localStorage.setItem('viewCount', '0');
+        localStorage.setItem('allUIDs', JSON.stringify(user.allUIDs || []));
+    } catch (err) {
+        showLimitToast('Registration failed');
+        if (btn) { btn.textContent = 'Create Account'; btn.disabled = false; btn.style.opacity = '1'; }
+        return;
+    }
+
+    closeSignupModal();
+    sessionStorage.setItem('greeted', 'true');
+    safeReload();
+};
+
+// ── SIGN-IN MODAL ─────────────────────────────────────────────────────────────
+
+function ensureSignInModal() {
+    if (document.getElementById('signInModal')) return;
+    const modal = document.createElement('div');
+    modal.id = 'signInModal';
+    modal.className = 'signup-overlay';
+    modal.style.display = 'none';
+    modal.innerHTML = `
+        <div class="signup-box">
+            <div class="signup-close" onclick="closeSignInModal()">✕</div>
+            <h2>Welcome Back</h2>
+            <p class="signup-subtitle">Sign in with email/password or login code.</p>
+            <form onsubmit="handleSignIn(event)">
+                <div class="input-group">
+                    <input type="email" id="signInEmail" placeholder=" ">
+                    <label>Email Address</label>
+                </div>
+                <div class="input-group">
+                    <input type="password" id="signInPassword" placeholder=" ">
+                    <label>Password</label>
+                </div>
+                <div class="divider">──────── OR ────────</div>
+                <div class="input-group">
+                    <input type="text" id="signInCode" placeholder="Enter your 10-character login code">
+                    <label>Login Code</label>
+                </div>
+                <button type="submit" class="btn-signup">Sign In</button>
+            </form>
+        </div>
+    `;
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeSignInModal(); });
+    document.body.appendChild(modal);
+}
+
+window.openSignInModal = function () {
+    const dropdown = document.getElementById('accountDropdown');
+    if (dropdown) dropdown.classList.remove('active');
+    ensureSignInModal();
+    const modal = document.getElementById('signInModal');
+    if (modal) {
+        modal.style.cssText = 'display:flex; position:fixed; top:0; left:0; width:100vw; height:100vh; justify-content:center; align-items:center; z-index:10000; background:rgba(0,0,0,0.85); backdrop-filter:blur(8px);';
+        modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+};
+
+window.closeSignInModal = function () {
+    const modal = document.getElementById('signInModal');
+    if (modal) {
+        modal.classList.remove('active');
+        modal.style.cssText = 'display:none;';
+        document.body.style.overflow = 'auto';
+    }
+};
+
+/* ─────────────────────────────────────────────────────────────────────
+   MOBILE LOGO INJECTION: Insert logo into navbar on mobile
+   ───────────────────────────────────────────────────────────────────── */
+function injectLogoIntoNavbar() {
+    const sidebar = document.querySelector('.left-sidebar.bottom-sidebar');
+    const navbar = document.querySelector('nav.navbar');
+    if (!sidebar || !navbar) return;
+
+    const logoWrap = sidebar.querySelector('.sidebar-logo-wrap');
+    if (!logoWrap) return;
+
+    const existingNavLogo = navbar.querySelector('.mobile-navbar-logo');
+    const isMobile = window.innerWidth <= 620;
+
+    if (isMobile && !existingNavLogo) {
+        // Clone the logo and insert it into navbar
+        const logoClone = logoWrap.cloneNode(true);
+        logoClone.classList.add('mobile-navbar-logo');
+        logoClone.style.display = 'flex';
+        logoClone.style.position = 'static';
+        logoClone.style.top = 'auto';
+        logoClone.style.left = 'auto';
+        logoClone.style.zIndex = 'auto';
+        logoClone.style.width = 'auto';
+        logoClone.style.height = 'auto';
+        logoClone.style.padding = '12px 16px';
+        logoClone.style.border = 'none';
+        logoClone.style.background = 'transparent';
+        logoClone.style.flexShrink = '0';
+        navbar.insertBefore(logoClone, navbar.firstChild);
+    } else if (!isMobile && existingNavLogo) {
+        // Remove logo from navbar when viewport > 620px
+        existingNavLogo.remove();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    injectLogoIntoNavbar();
+    window.addEventListener('resize', injectLogoIntoNavbar);
 });
+
+function bindHeroClickToPlay() {
+    const hero = document.getElementById('heroSection');
+    if (!hero) return;
+
+    hero.addEventListener('click', (event) => {
+        const blocked = event.target.closest('.slider-arrow, .slider-indicators, .dot, #heroTag, #heroPrefPanel, .hero-pref-chip, .btn-info, .btn-play, .hero-trailer-side, a');
+        if (blocked) return;
+        if (typeof window.triggerPlay === 'function') {
+            window.triggerPlay();
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', bindHeroClickToPlay);
+
+window.handleSignIn = async function (e) {
+    e.preventDefault();
+    const userEmail = ((document.getElementById('signInEmail') || {}).value || '').trim().toLowerCase();
+    const userPassword = (document.getElementById('signInPassword') || {}).value || '';
+    const loginCode = ((document.getElementById('signInCode') || {}).value || '').trim();
+
+    const payload = {};
+    if (loginCode) {
+        payload.loginCode = loginCode;
+    } else if (userEmail && userPassword) {
+        payload.userEmail = userEmail;
+        payload.userPassword = userPassword;
+    } else {
+        showLimitToast('Please enter either email/password or a login code.');
+        return;
+    }
+
+    try {
+        const res = await fetch('/users/auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({}));
+            showLimitToast(error.error || 'Invalid sign-in credentials');
+            return;
+        }
+
+        const result = await res.json();
+        const user = result.user || result;
+        if (result.token) localStorage.setItem('authToken', result.token);
+        if (typeof user.loginCode !== 'undefined' && user.loginCode !== null) {
+            localStorage.setItem('loginCode', user.loginCode);
+        } else {
+            localStorage.removeItem('loginCode');
+        }
+        localStorage.removeItem('guestUID');
+        if (user.accountUID) {
+            localStorage.setItem('accountUID', String(user.accountUID));
+        } else {
+            localStorage.removeItem('accountUID');
+        }
+        localStorage.setItem('username', user.username || '');
+        localStorage.setItem('userUID', String(user.userUID || 0));
+        localStorage.setItem('userEmail', user.userEmail || userEmail);
+        localStorage.setItem('userTier', user.userTier || 'Free');
+        localStorage.setItem('userLanguage', user.userLanguage || (localStorage.getItem('userLanguage') || 'en'));
+        localStorage.setItem('searchCount', String(user.searchCount || 0));
+        localStorage.setItem('viewCount', String(user.viewCount || 0));
+        localStorage.setItem('allUIDs', JSON.stringify(user.allUIDs || []));
+        localStorage.setItem('isAdmin', user.isAdmin ? 'true' : 'false');
+        localStorage.setItem('is_guest_local', String(user.is_guest === 1 ? 1 : 0));
+
+        closeSignInModal();
+        safeReload();
+    } catch (err) {
+        console.error('Sign-in error:', err);
+        showLimitToast('Sign-in failed');
+    }
+};
+
+// ── SETTINGS MODAL & PREFS ─────────────────────────────────────────────────────
+
+window.openSettings = function () {
+    if (!localStorage.getItem('username')) {
+        showLimitToast('⚠️ Sign in to access settings!');
+        return;
+    }
+    const modal = document.getElementById('settingsModal');
+    if (modal) {
+        modal.classList.add('active');
+        loadCurrentSettings();
+    }
+};
+
+window.closeSettings = function () {
+    const modal = document.getElementById('settingsModal');
+    if (modal) modal.classList.remove('active');
+};
+
+function loadCurrentSettings() {
+    const currentTheme = localStorage.getItem('userTheme') || 'dark';
+    document.querySelectorAll('.theme-option').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.theme === currentTheme) {
+            btn.classList.add('active');
+        }
+    });
+
+    const lowDataMode = localStorage.getItem('lowDataMode') === 'true';
+    const lowDataCheckbox = document.getElementById('lowDataMode');
+    if (lowDataCheckbox) lowDataCheckbox.checked = lowDataMode;
+
+    const settingsLang = document.getElementById('settingsLanguage');
+    if (settingsLang) {
+        const currentLang = localStorage.getItem('userLanguage') || (window.i18n ? window.i18n.getCurrentLanguage() : 'en');
+        settingsLang.value = currentLang;
+    }
+
+    const settingsSource = document.getElementById('settingsMovieSource');
+    if (settingsSource) {
+        settingsSource.value = localStorage.getItem('movieSource') || 'local';
+    }
+
+    const muteAudioCheckbox = document.getElementById('muteAudio');
+    if (muteAudioCheckbox) {
+        muteAudioCheckbox.checked = isHeroAudioMutedByPreference();
+    }
+
+    const nameInput = document.getElementById('settingsUsername');
+    if (nameInput) nameInput.value = localStorage.getItem('username') || 'Guest';
+
+    // Load mode toggle setting
+    const modeToggle = document.getElementById('settingsModeToggle');
+    if (modeToggle) {
+        modeToggle.value = window.__animeMode ? 'anime' : 'movie';
+    }
+}
+
+window.selectThemeInSettings = function (themeName) {
+    document.querySelectorAll('.theme-option').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.theme === themeName) {
+            btn.classList.add('active');
+        }
+    });
+
+    if (window.themeManager) {
+        window.themeManager.applyTheme(themeName);
+    }
+
+    showLimitToast(`✨ ${themeName.charAt(0).toUpperCase() + themeName.slice(1)} theme applied!`);
+};
+
+window.toggleLowDataMode = function () {
+    const checkbox = document.getElementById('lowDataMode');
+    const enabled = checkbox.checked;
+    localStorage.setItem('lowDataMode', enabled);
+    window.dispatchEvent(new CustomEvent('lowDataModeChanged', { detail: { enabled } }));
+    showLimitToast(enabled ? '📶 Low Data Mode enabled' : '📶 Low Data Mode disabled');
+};
+
+window.toggleMuteAudio = function (forceValue = null, silent = false) {
+    const checkbox = document.getElementById('muteAudio');
+    const muted = typeof forceValue === 'boolean'
+        ? forceValue
+        : (checkbox ? !!checkbox.checked : isHeroAudioMutedByPreference());
+
+    localStorage.setItem('muteHeroAudio', muted ? 'true' : 'false');
+    if (checkbox) checkbox.checked = muted;
+
+    if (muted || !heroAudioState.isHeroInView) {
+        muteHeroTrailerImmediate();
+        postHeroTrailerCommand('setVolume', [0]);
+        postHeroTrailerCommand('mute');
+    } else {
+        postHeroTrailerCommand('unMute');
+        fadeInHeroTrailerAudio();
+    }
+
+    if (!silent) {
+        showLimitToast(muted ? '🔇 Hero trailer muted' : '🔊 Hero trailer unmuted');
+    }
+};
+
+window.saveSettings = function () {
+    const newName = document.getElementById('settingsUsername').value;
+    const emailInput = document.getElementById('settingsEmail');
+
+    if (newName.trim() !== '') {
+        localStorage.setItem('username', newName);
+        const navName = document.getElementById('navUsername');
+        const sideName = document.getElementById('sideUsername');
+        if (navName) navName.innerText = newName;
+        if (sideName) sideName.innerText = newName;
+    }
+
+    if (emailInput && emailInput.value.trim() !== '') {
+        localStorage.setItem('userEmail', emailInput.value);
+    }
+
+    const muteAudioCheckbox = document.getElementById('muteAudio');
+    if (muteAudioCheckbox) {
+        window.toggleMuteAudio(!!muteAudioCheckbox.checked, true);
+    }
+
+    closeSettings();
+    if (window.persistUserStats) window.persistUserStats();
+    showLimitToast('✅ Settings Saved!');
+};
+
+window.handlePFPUpload = function (event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onloadend = function () {
+        const base64Image = reader.result;
+        localStorage.setItem('userPFP', base64Image);
+        applyPFPToUI(base64Image);
+        showLimitToast('✅ Profile Picture Updated!');
+    };
+    reader.readAsDataURL(file);
+};
+
+function applyPFPToUI(imagePath) {
+    if (!imagePath) return;
+    const icons = document.querySelectorAll('.grey-profile-pic, .large-profile-icon');
+    icons.forEach(icon => {
+        icon.style.backgroundImage = `url('${imagePath}')`;
+        icon.style.backgroundSize = 'cover';
+        icon.style.backgroundPosition = 'center';
+        icon.style.backgroundColor = 'transparent';
+    });
+}
+
+// ── MODE SWITCHER ─────────────────────────────────────────────────────────────
+
+window.switchContentMode = function (mode) {
+    if (mode === 'anime') {
+        window.__toggleAnimeMode && window.__toggleAnimeMode();
+    } else if (mode === 'movie' && window.__animeMode) {
+        window.__toggleAnimeMode && window.__toggleAnimeMode();
+    }
+    showLimitToast(`Switched to ${mode === 'anime' ? '⛩️ Anime' : '🎬 Movies'} mode`);
+};
+
+// ── ACCOUNT DROPDOWN ───────────────────────────────────────────────────────────
+
+window.toggleAccountMenu = function () {
+    const dropdown = document.getElementById('accountDropdown');
+    if (!dropdown) {
+        console.error("❌ ERROR: Could not find id='accountDropdown'.");
+        return;
+    }
+
+    dropdown.classList.toggle('active');
+
+    if (dropdown.classList.contains('active')) {
+        const username = localStorage.getItem('username');
+        const searches = parseInt(localStorage.getItem('searchCount')) || 0;
+        const views = parseInt(localStorage.getItem('viewCount')) || 0;
+        const isAdmin = localStorage.getItem('isAdmin') === 'true';
+        const isSignedIn = !!username;
+
+        const settingsLink = dropdown.querySelector('a[onclick="openSettings()"]');
+        const logoutLink = dropdown.querySelector('a[onclick="logout()"]');
+        const signInLink = dropdown.querySelector('#signInLink');
+        const signUpLink = dropdown.querySelector('#signUpLink');
+
+        if (!isSignedIn) {
+            if (settingsLink) settingsLink.classList.add('link-disabled');
+            if (logoutLink) logoutLink.classList.add('link-disabled');
+            if (signInLink) signInLink.style.display = '';
+            if (signUpLink) signUpLink.style.display = '';
+            if (document.getElementById('navUsername')) document.getElementById('navUsername').innerText = 'Guest';
+        } else {
+            if (settingsLink) settingsLink.classList.remove('link-disabled');
+            if (logoutLink) logoutLink.classList.remove('link-disabled');
+            if (signInLink) signInLink.style.display = 'none';
+            if (signUpLink) signUpLink.style.display = 'none';
+            if (document.getElementById('navUsername')) document.getElementById('navUsername').innerText = username;
+        }
+
+        if (document.getElementById('dropTier')) document.getElementById('dropTier').innerText = 'Free Member';
+        if (document.getElementById('statSearch')) document.getElementById('statSearch').innerText = searches;
+        if (document.getElementById('statView')) document.getElementById('statView').innerText = views;
+
+        const loginCode = localStorage.getItem('loginCode');
+        const loginRow = dropdown.querySelector('#loginCodeRow');
+        const loginValue = dropdown.querySelector('#loginCodeValue');
+        const loginToggle = dropdown.querySelector('.code-visibility-toggle');
+        if (loginRow && loginValue && isSignedIn) {
+            loginRow.classList.remove('hidden');
+            if (loginCode && loginToggle) {
+                loginValue.textContent = maskLoginCode(loginCode);
+                loginToggle.style.display = 'inline-flex';
+                loginToggle.dataset.visible = 'false';
+                loginToggle.setAttribute('aria-pressed', 'false');
+                loginToggle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>`;
+                loginToggle.style.background = 'transparent';
+                loginToggle.style.border = 'none';
+                loginToggle.style.padding = '0';
+            } else if (loginToggle) {
+                loginValue.textContent = 'No login code saved';
+                loginToggle.style.display = 'none';
+            }
+        } else if (loginRow) {
+            loginRow.classList.add('hidden');
+        }
+
+        const existingAdminLink = dropdown.querySelector('#adminPanelLink');
+        if (isAdmin && !existingAdminLink) {
+            const adminLink = document.createElement('a');
+            adminLink.id = 'adminPanelLink';
+            adminLink.href = '/html/admin.html';
+            adminLink.className = 'drop-link';
+            adminLink.innerText = 'Admin Panel';
+            const settingsLinkAnchor = dropdown.querySelector('a[onclick="openSettings()"]');
+            if (settingsLinkAnchor && settingsLinkAnchor.parentNode) {
+                settingsLinkAnchor.parentNode.insertBefore(adminLink, settingsLinkAnchor);
+            } else {
+                dropdown.appendChild(adminLink);
+            }
+        }
+        if (!isAdmin && existingAdminLink) {
+            existingAdminLink.remove();
+        }
+
+        // Close when clicking outside
+        const closeOnOutsideClick = (e) => {
+            if (!dropdown.contains(e.target) && !e.target.closest('.account-trigger')) {
+                dropdown.classList.remove('active');
+                document.removeEventListener('pointerdown', closeOnOutsideClick, true);
+            }
+        };
+        setTimeout(() => document.addEventListener('pointerdown', closeOnOutsideClick, true), 0);
+    }
+};
+
+window.toggleLoginCodeVisibility = function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.currentTarget || event.target;
+    const button = target.closest && target.closest('button.code-visibility-toggle') ? target.closest('button.code-visibility-toggle') : target;
+    console.log('pressed show/hide login code', { button });
+    if (!button) return;
+    const row = button.closest('.login-code-row');
+    console.log({ row });
+
+    const valueEl = row?.querySelector('#loginCodeValue');
+    console.log({ valueEl });
+
+    const loginCode = localStorage.getItem('loginCode');
+    console.log({ loginCode });
+
+    const visible = button.dataset.visible === 'true';
+    console.log({ visible });
+
+    if (!row) return;
+    if (!valueEl) return;
+    if (!loginCode) return;
+    if (visible) {
+        valueEl.textContent = maskLoginCode(loginCode);
+        button.dataset.visible = 'false';
+        button.setAttribute('aria-pressed', 'false');
+        button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>`;
+    } else {
+        valueEl.textContent = loginCode;
+        button.dataset.visible = 'true';
+        button.setAttribute('aria-pressed', 'true');
+        button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" /> <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>`;
+    }
+    console.log({ button });
+
+};
+function maskLoginCode(code) {
+    if (!code) return '';
+    const visibleChars = 4;
+    const maskedPart = 'X'.repeat(Math.max(0, code.length - visibleChars));
+    return `${maskedPart}${code.slice(-visibleChars)}`;
+}
+
+// Alias so any "X" button wired to toggleSidebar also works
+window.toggleSidebar = window.toggleAccountMenu;
 

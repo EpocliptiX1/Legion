@@ -1,0 +1,76 @@
+[2026-07-29T18:23:46.098Z] Cache CHECK 64196 S1: 13 rows found
+[2026-07-29T18:23:46.099Z]   └─ First ep: #1 title="End and Beginning" air_date="2015-07-07" still_path="/4kP9LokDvo8houeyTzBBuV8R1zE.jpg"
+[2026-07-29T18:23:46.099Z]   └─ Last ep:  #13 title="Player VS Non Player Character" air_date="2015-09-29"
+[2026-07-29T18:23:46.100Z] ✓ Cache HIT 64196 S1: all 13 episodes complete
+[2026-07-29T18:23:46.109Z] Cache CHECK 64196 S2: 13 rows found
+[2026-07-29T18:23:46.110Z]   └─ First ep: #1 title="The dawn of Despair" air_date="null" still_path="null"
+[2026-07-29T18:23:46.110Z]   └─ Last ep:  #13 title="The ultimate trump card" air_date="null"
+[2026-07-29T18:23:46.111Z] ⚠️  Cache CORRUPT 64196 S2: 13/13 episodes have NULLs
+[2026-07-29T18:23:46.111Z]     └─ Ep 1: air_date=NULL, still_path=NULL
+[2026-07-29T18:23:46.111Z]     └─ Ep 2: air_date=NULL, still_path=NULL
+[2026-07-29T18:23:46.111Z]     └─ Ep 3: air_date=NULL, still_path=NULL
+[2026-07-29T18:23:46.112Z]     └─ Ep 4: air_date=NULL, still_path=NULL
+[2026-07-29T18:23:46.112Z]     └─ Ep 5: air_date=NULL, still_path=NULL
+[2026-07-29T18:23:46.118Z]   └─ Deleted, fetching from TMDB...
+[2026-07-29T18:23:46.176Z] TMDB response 64196 S2: 0/13 episodes (ep1="The Dawn of Despair", air_date="2018-01-09")
+[2026-07-29T18:23:46.177Z] Cache WRITE START 64196 S2: deleting old data...
+[2026-07-29T18:23:46.178Z] Cache DELETE done for 64196 S2, inserting 13 episodes...
+[2026-07-29T18:23:46.232Z] Cache CHECK 64196 S3: 13 rows found
+[2026-07-29T18:23:46.233Z]   └─ First ep: #1 title="A Ruler’s Melancholy" air_date="2018-07-10" still_path="/hRQV2GxCEs4py7JQ99nv3rnqIHm.jpg"
+[2026-07-29T18:23:46.233Z]   └─ Last ep:  #13 title="Player vs Player" air_date="2018-10-02"
+[2026-07-29T18:23:46.233Z] ✓ Cache HIT 64196 S3: all 13 episodes complete
+[2026-07-29T18:23:46.288Z] Cache CHECK 64196 S4: 13 rows found
+[2026-07-29T18:23:46.289Z]   └─ First ep: #1 title="Ains Ooal Gown Nation of Leading Darkness" air_date="2022-07-05" still_path="/iwkVCzzY3Z9utQKDIJbbRKR8QsJ.jpg"
+[2026-07-29T18:23:46.289Z]   └─ Last ep:  #13 title="The Witch of the Falling Kingdom" air_date="2022-09-27"
+[2026-07-29T18:23:46.289Z] ✓ Cache HIT 64196 S4: all 13 episodes complete
+[2026-07-29T18:23:46.456Z] Cache WRITE DONE 64196 S2: all 13 episodes inserted ✓
+[2026-07-29T18:24:08.280Z] Cache CHECK 64196 S1: 13 rows found
+[2026-07-29T18:24:08.280Z]   └─ First ep: #1 title="End and Beginning" air_date="2015-07-07" still_path="/4kP9LokDvo8houeyTzBBuV8R1zE.jpg"
+[2026-07-29T18:24:08.280Z]   └─ Last ep:  #13 title="Player VS Non Player Character" air_date="2015-09-29"
+[2026-07-29T18:24:08.281Z] ✓ Cache HIT 64196 S1: all 13 episodes complete
+[2026-07-29T18:24:08.289Z] Cache CHECK 64196 S2: 13 rows found
+[2026-07-29T18:24:08.290Z]   └─ First ep: #1 title="The dawn of Despair" air_date="null" still_path="null"
+[2026-07-29T18:24:08.290Z]   └─ Last ep:  #13 title="The ultimate trump card" air_date="null"
+[2026-07-29T18:24:08.290Z] ⚠️  Cache CORRUPT 64196 S2: 13/13 episodes have NULLs
+[2026-07-29T18:24:08.291Z]     └─ Ep 1: air_date=NULL, still_path=NULL
+[2026-07-29T18:24:08.291Z]     └─ Ep 2: air_date=NULL, still_path=NULL
+[2026-07-29T18:24:08.291Z]     └─ Ep 3: air_date=NULL, still_path=NULL
+[2026-07-29T18:24:08.292Z]     └─ Ep 4: air_date=NULL, still_path=NULL
+[2026-07-29T18:24:08.292Z]     └─ Ep 5: air_date=NULL, still_path=NULL
+[2026-07-29T18:24:08.358Z] TMDB response 64196 S2: 0/13 episodes (ep1="The Dawn of Despair", air_date="2018-01-09")
+[2026-07-29T18:24:08.359Z] Cache WRITE START 64196 S2: deleting old data...
+[2026-07-29T18:24:08.361Z]   └─ Deleted, fetching from TMDB...
+[2026-07-29T18:24:08.362Z] Cache DELETE done for 64196 S2, inserting 13 episodes...
+[2026-07-29T18:24:08.382Z] Cache CHECK 64196 S3: 13 rows found
+[2026-07-29T18:24:08.383Z]   └─ First ep: #1 title="A Ruler’s Melancholy" air_date="2018-07-10" still_path="/hRQV2GxCEs4py7JQ99nv3rnqIHm.jpg"
+[2026-07-29T18:24:08.383Z]   └─ Last ep:  #13 title="Player vs Player" air_date="2018-10-02"
+[2026-07-29T18:24:08.383Z] ✓ Cache HIT 64196 S3: all 13 episodes complete
+[2026-07-29T18:24:08.399Z] Cache CHECK 64196 S4: 13 rows found
+[2026-07-29T18:24:08.399Z]   └─ First ep: #1 title="Ains Ooal Gown Nation of Leading Darkness" air_date="2022-07-05" still_path="/iwkVCzzY3Z9utQKDIJbbRKR8QsJ.jpg"
+[2026-07-29T18:24:08.400Z]   └─ Last ep:  #13 title="The Witch of the Falling Kingdom" air_date="2022-09-27"
+[2026-07-29T18:24:08.400Z] ✓ Cache HIT 64196 S4: all 13 episodes complete
+[2026-07-29T18:24:08.455Z] Cache WRITE DONE 64196 S2: all 13 episodes inserted ✓
+[2026-07-29T18:26:38.807Z] Cache CHECK 64196 S1: 0 rows found
+[2026-07-29T18:26:38.808Z] Cache MISS 64196 S1 (0 rows)
+[2026-07-29T18:26:38.893Z] TMDB response 64196 S1: 0/13 episodes (ep1="End and Beginning", air_date="2015-07-07")
+[2026-07-29T18:26:38.894Z] Cache WRITE START 64196 S1: deleting old data...
+[2026-07-29T18:26:38.895Z] Cache DELETE done for 64196 S1, inserting 13 episodes...
+[2026-07-29T18:26:38.937Z] Cache CHECK 64196 S2: 0 rows found
+[2026-07-29T18:26:38.937Z] Cache MISS 64196 S2 (0 rows)
+[2026-07-29T18:26:38.996Z] TMDB response 64196 S2: 0/13 episodes (ep1="The Dawn of Despair", air_date="2018-01-09")
+[2026-07-29T18:26:38.997Z] Cache WRITE START 64196 S2: deleting old data...
+[2026-07-29T18:26:39.015Z] Cache DELETE done for 64196 S2, inserting 13 episodes...
+[2026-07-29T18:26:39.036Z] Cache CHECK 64196 S3: 0 rows found
+[2026-07-29T18:26:39.037Z] Cache MISS 64196 S3 (0 rows)
+[2026-07-29T18:26:39.137Z] TMDB response 64196 S3: 0/13 episodes (ep1="A Ruler’s Melancholy", air_date="2018-07-10")
+[2026-07-29T18:26:39.137Z] Cache WRITE START 64196 S3: deleting old data...
+[2026-07-29T18:26:39.218Z] Cache CHECK 64196 S4: 0 rows found
+[2026-07-29T18:26:39.218Z] Cache MISS 64196 S4 (0 rows)
+[2026-07-29T18:26:39.219Z] Cache DELETE done for 64196 S3, inserting 13 episodes...
+[2026-07-29T18:26:39.385Z] TMDB response 64196 S4: 0/13 episodes (ep1="Ains Ooal Gown Nation of Leading Darkness", air_date="2022-07-05")
+[2026-07-29T18:26:39.385Z] Cache WRITE START 64196 S4: deleting old data...
+[2026-07-29T18:26:39.477Z] Cache WRITE DONE 64196 S1: all 13 episodes inserted ✓
+[2026-07-29T18:26:39.478Z] Cache DELETE done for 64196 S4, inserting 13 episodes...
+[2026-07-29T18:26:39.888Z] Cache WRITE DONE 64196 S2: all 13 episodes inserted ✓
+[2026-07-29T18:26:40.104Z] Cache WRITE DONE 64196 S3: all 13 episodes inserted ✓
+[2026-07-29T18:26:40.209Z] Cache WRITE DONE 64196 S4: all 13 episodes inserted ✓

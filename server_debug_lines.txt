@@ -1,0 +1,271 @@
+1860:                 ?.primaryContents?.sectionListRenderer
+1861:                 ?.contents?.[0]?.itemSectionRenderer?.contents || [];
+1862:         const firstVideo = contents.find(c => c.videoRenderer);
+1863:         const videoId = firstVideo?.videoRenderer?.videoId || '';
+1864:         res.json({ videoId });
+1865:     } catch (e) {
+1866:         console.error('[yt-search] Error:', e.message);
+1867:         res.json({ videoId: '' });
+1868:     }
+1869: });
+1870: 
+1871: // ── Random movie pick ──────────────────────────────────────────
+1872: app.get('/api/random-movie', (req, res) => {
+1873:     db.get(
+1874:         `SELECT m.ID, m."Movie Name" as title, m.Rating, m.Year, m.Genre, m.Poster
+1875:          FROM movies m
+1876:          WHERE m.Poster IS NOT NULL AND m.Poster != ''
+1877:          ORDER BY RANDOM() LIMIT 1`,
+1878:         (err, row) => {
+1879:             if (err || !row) return res.status(500).json({ error: 'No movie found' });
+1880:             res.json(row);
+1881:         }
+1882:     );
+1883: });
+1884: 
+1885: /*
+1886: app.get('/movies/library', async (req, res) => {
+1887:     const limit = parseInt(req.query.limit) || 50;
+1888:     const offset = parseInt(req.query.offset) || 0;
+1889:     
+1890:     const sortMode = req.query.sort || 'popularity_desc';
+1891:     const minYear = parseInt(req.query.year) || 1900;
+1892:     const genre = req.query.genre || '';
+1893:     const actor = req.query.actor || '';
+1894:     const director = req.query.director || '';
+1895:     const source = String(req.query.source || 'local').toLowerCase();
+1896:     const hydrate = String(req.query.hydrate || '') === '1';
+1897: 
+1898:     if (source === 'local') {
+1899:         let movies = loadLocalMoviesCsv();
+1900:         const minYear = parseInt(req.query.minYear || req.query.year) || 1900;
+1901:         const maxYear = parseInt(req.query.maxYear) || new Date().getFullYear();
+1902:         const genre = req.query.genre || '';
+1903:         const actor = req.query.actor || '';
+1904:         const director = req.query.director || '';
+1905:         const sortMode = req.query.sort || 'rating_desc';
+1906:         const limit = parseInt(req.query.limit) || 50;
+1907:         const offset = parseInt(req.query.offset) || 0;
+1908:         movies = movies.filter(m => {
+1909:             const y = parseInt(m.release_date ? m.release_date.split('/').pop() : m.Year || m.year || '');
+1910:             if (isNaN(y) || y < minYear || y > maxYear) return false;
+1911:             if (genre && (!m.Genre || !m.Genre.toLowerCase().includes(genre.toLowerCase()))) return false;
+1912:             if (actor && (!m.Stars || !m.Stars.toLowerCase().includes(actor.toLowerCase()))) return false;
+1913:             if (director && (!m.Directors || !m.Directors.toLowerCase().includes(director.toLowerCase()))) return false;
+1914:             return true;
+1915:         });
+1916:         if (sortMode === 'rating_desc') {
+1917:             movies.sort((a, b) => parseFloat(b.Rating || 0) - parseFloat(a.Rating || 0));
+1918:         } else if (sortMode === 'date_desc') {
+1919:             movies.sort((a, b) => {
+1920:                 const ay = parseInt(a.release_date ? a.release_date.split('/').pop() : a.Year || a.year || 0);
+1921:                 const by = parseInt(b.release_date ? b.release_date.split('/').pop() : b.Year || b.year || 0);
+1922:                 return by - ay;
+1923:             });
+1924:         } 
+1925:         movies = movies.slice(offset, offset + limit);
+1926:         res.json(movies);
+1927:         return;
+1928:     } else if (source === 'api') {
+1929:         try {
+1930:             const today = new Date().toISOString().slice(0, 10);
+1931:             // Map sort modes to TMDB API sort parameters
+1932:             // 'rating_desc' (Top Rated) uses vote_average.desc, but we enforce a vote_count.gte floor to avoid obscure movies
+1933:             // 'popularity_desc' and 'clicks_desc' use popularity.desc, which is heavily influenced by vote count and recent activity
+1934:             const sortMap = {
+1935:                 rating_desc: 'vote_average.desc', 
+1936:                 popularity_desc: 'popularity.desc', 
+1937:                 clicks_desc: 'popularity.desc',
+1938:                 date_desc: 'primary_release_date.desc',
+1939:                 date_new: 'primary_release_date.desc',
+1940:                 date_old: 'primary_release_date.asc',
+1941:                 duration_desc: 'popularity.desc',
+1942:                 success_desc: 'revenue.desc'
+1943:             };
+1944: 
+1945:             const genreKey = String(genre || '').trim().toLowerCase();
+1946:             const genreId = TMDB_GENRES[genreKey];
+1947: 
+1948:             const personQuery = (actor || director).trim();
+1949:             let personId = null;
+1950:             if (personQuery) {
+1951:                 const personData = await tmdbGet('/search/person', { query: personQuery, page: 1 });
+1952:                 personId = personData.results?.[0]?.id || null;
+1953:             }
+1954: 
+1955:             const pageSize = 20;
+1956:             const start = Math.max(0, offset);
+1957:             const end = start + Math.min(100, limit);
+1958:             const startPage = Math.floor(start / pageSize) + 1;
+1959:             const endPage = Math.floor((end - 1) / pageSize) + 1;
+1960: 
+1961:             let voteCountFloor = 20;
+1962:             if (sortMode === 'rating_desc') voteCountFloor = 200; 
+1963:             if (sortMode === 'rating_asc') voteCountFloor = 5;
+1964:             if (sortMode === 'success_asc') voteCountFloor = 100; 
+1965:             const params = {
+1966:                 sort_by: sortMap[sortMode] || 'vote_average.desc',
+1967:                 include_adult: false,
+1968:                 page: startPage,
+1969:                 'primary_release_date.lte': today,
+1970:                 'with_runtime.gte': 60,
+1971:                 'vote_count.gte': voteCountFloor
+1972:             };
+1973:             if (sortMode !== 'rating_asc') {
+1974:                 params['vote_average.gte'] = 4.5;
+1975:             }
+1976: 
+1977:             if (minYear) {
+1978:                 params['primary_release_date.gte'] = `${minYear}-01-01`;
+1979:             }
+1980:             if (genreId) params.with_genres = genreId;
+1981:             if (personId && actor) params.with_cast = personId;
+1982:             if (personId && director) params.with_crew = personId;
+1983: 
+1984:             const pagesToFetch = Math.min(3, endPage - startPage + 1);
+1985:             const pageResults = [];
+1986:             for (let i = 0; i < pagesToFetch; i++) {
+1987:                 const page = startPage + i;
+1988:                 const data = await tmdbGet('/discover/movie', { ...params, page });
+1989:                 pageResults.push(...(data.results || []));
+1990:             }
+1991: 
+1992:             const sliced = pageResults
+1993:                 .filter(m => m.release_date && m.release_date <= today)
+1994:                 .slice(start % pageSize, (start % pageSize) + limit);
+1995: 
+1996:             if (!hydrate) {
+1997:                 res.json(sliced.map(mapTmdbMovie));
+1998:                 return;
+1999:             }
+2000: 
+2001:             const hydrated = await Promise.all(sliced.map(async (m) => {
+2002:                 try {
+2003:                     const detail = await tmdbGet(`/movie/${m.id}`, { 
+2004:                         language: 'en-US',
+2005:                         append_to_response: 'credits'
+2006:                     });
+2007:                     return detail;
+2008:                 } catch {
+2009:                     return m;
+2010:                 }
+2011:             }));
+2012: 
+2013:             const filtered = hydrated.filter(m => {
+2014:                 const releaseDate = m.release_date || '';
+2015:                 const runtime = parseInt(String(m.runtime || m.Runtime || '').replace(/\D/g, ''), 10) || 0;
+2016:                 const status = m.status || m.Status || '';
+2017:                 return releaseDate && releaseDate <= today && runtime >= 60 && status === 'Released';
+2018:             });
+2019: 
+2020:             res.json(filtered.map(m => {
+2021:                 if (m.credits) {
+2022:                     return mapTmdbMovieWithCredits(m, m.credits);
+2023:                 }
+2024:                 return mapTmdbMovie(m);
+2025:             }));
+2026:         } catch (err) {
+2027:             const detail = err.response?.data || err.message;
+2028:             res.status(500).json({ error: 'TMDB library failed', detail });
+2029:         }
+2030:         return;
+2031:     }
+2032: 
+2033: 
+2034:     let sql = `SELECT m.*, COALESCE(c.click_count, 0) as clicks FROM movies m LEFT JOIN movie_clicks c ON m.ID = c.movie_id WHERE 1=1`;
+2035:     let params = [];
+2036: 
+2037:     const currentYear = new Date().getFullYear();
+2038:     // 1. Filter by Year (Released after X) + exclude future
+2039:     // Extract year from MM/DD/YYYY format (last 4 chars)
+2040:     sql += ` AND CAST(SUBSTR(m.release_date, LENGTH(m.release_date) - 3, 4) AS INTEGER) >= ? AND CAST(SUBSTR(m.release_date, LENGTH(m.release_date) - 3, 4) AS INTEGER) <= ?`;
+2041:     params.push(minYear, currentYear);
+2042: 
+2043:     // 2. Filter by Genre
+2044:     if (genre) {
+2045:         sql += ` AND m.Genre LIKE ?`;
+2046:         params.push(`%${genre}%`);
+2047:     }
+2048: 
+2049:     // 3. Filter by Actor
+2050:     if (actor) {
+2051:         sql += ` AND m.Stars LIKE ?`;
+2052:         params.push(`%${actor}%`);
+2053:     }
+2054: 
+2055:     // 4. Filter by Director
+2056:     if (director) {
+2057:         sql += ` AND m.Directors LIKE ?`;
+2058:         params.push(`%${director}%`);
+2059:     }
+2060: 
+2061:     // 5. Filter out movies with missing or zero revenue/rating/votes/status for relevant sorts
+2062:     if (["success_desc","success_asc"].includes(sortMode)) {
+2063:         sql += ` AND m.revenue IS NOT NULL AND m.revenue != '' AND m.revenue != 'N/A' AND CAST(m.revenue AS FLOAT) > 0`;
+2064:     }
+2065:     if (["rating_desc","rating_income_desc","rating_asc"].includes(sortMode)) {
+2066:         sql += ` AND m.Rating IS NOT NULL AND m.Rating != '' AND m.Rating != 'N/A' AND CAST(m.Rating AS FLOAT) > 0`;
+2067:     }
+2068:     if (["popularity_desc"].includes(sortMode)) {
+2069:         sql += ` AND m.Votes IS NOT NULL AND m.Votes != '' AND m.Votes != 'N/A' AND CAST(m.Votes AS INTEGER) >= 50`;
+2070:     }
+2071:     // Filter out movies with low votes, unknown status, or missing/invalid data for all sorts
+2072:     sql += ` AND m.Votes IS NOT NULL AND m.Votes != '' AND m.Votes != 'N/A' AND CAST(m.Votes AS INTEGER) >= 50`;
+2073:     // Only filter by Status if column exists
+2074:     try {
+2075:         db.get("SELECT Status FROM movies LIMIT 1", (err, row) => {
+2076:             if (!err && row && typeof row.Status !== 'undefined') {
+2077:                 sql += ` AND m.Status IS NOT NULL AND m.Status != '' AND m.Status != 'N/A' AND m.Status = 'Released'`;
+2078:             }
+2079:         });
+2080:     } catch (e) { /* just ignoree */ }
+2081: 
+2082:     // 5. Apply Sorting
+2083:     let orderBy = `CAST(m.Rating AS FLOAT) DESC`; 
+2084: 
+2085:     if (sortMode === 'date_desc') {
+2086:         orderBy = `CASE WHEN m.release_date IS NULL OR m.release_date = 'N/A' THEN 1 ELSE 0 END, CAST(SUBSTR(m.release_date, -4) AS INTEGER) DESC`;
+2087:     } 
+2088:     else if (sortMode === 'duration_desc') {
+2089:         orderBy = `CASE WHEN m.Runtime IS NULL OR m.Runtime = 'N/A' THEN 1 ELSE 0 END, CAST(REPLACE(m.Runtime, ' min', '') AS INTEGER) DESC`;
+2090:     } 
+2091:     else if (sortMode === 'success_desc') {
+2092:         orderBy = `CASE WHEN m.revenue IS NULL OR m.revenue = 'N/A' THEN 1 ELSE 0 END, ((CAST(m.revenue AS FLOAT) - CAST(m.budget AS FLOAT)) / NULLIF(CAST(m.budget AS FLOAT), 0)) DESC`;
+2093:     } 
+2094:     else if (sortMode === 'success_asc') {
+2095:         
+2096:         orderBy = `CASE WHEN m.revenue IS NULL OR m.revenue = 'N/A' OR m.revenue = '' OR CAST(m.revenue AS FLOAT) = 0 OR CAST(m.revenue AS FLOAT) > 10000000 THEN 1 ELSE 0 END, CAST(m.revenue AS FLOAT) ASC`;
+2097:     }
+2098:     else if (sortMode === 'rating_income_desc') {
+2099:         orderBy = `CASE WHEN m.Rating IS NULL OR m.Rating = 'N/A' OR m.revenue IS NULL OR m.revenue = 'N/A' THEN 1 ELSE 0 END, (CAST(m.Rating AS FLOAT) / NULLIF(CAST(m.revenue AS FLOAT), 0)) DESC`;
+2100:     }
+2101:     else if (sortMode === 'popularity_desc') {
+2102:         orderBy = `CASE WHEN m.Votes IS NULL OR m.Votes = 'N/A' THEN 1 ELSE 0 END, CAST(m.Votes AS INTEGER) DESC`;
+2103:     }
+2104: 
+2105:     else if (sortMode === 'clicks_desc') {
+2106:         orderBy = `CASE WHEN clicks IS NULL THEN 1 ELSE 0 END, clicks DESC`;
+2107:     }
+2108:     else {
+2109:         orderBy = `CASE WHEN m.Votes IS NULL OR m.Votes = '' OR m.Votes = 'N/A' THEN 1 ELSE 0 END, CAST(m.Votes AS INTEGER) DESC, CASE WHEN m.Rating IS NULL OR m.Rating = 'N/A' THEN 1 ELSE 0 END, CAST(m.Rating AS FLOAT) DESC`;
+2110:     }
+2111: 
+2112:     sql += ` ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
+2113:     params.push(limit, offset);
+2114: 
+2115:     db.all(sql, params, (err, rows) => {
+2116:         if (err) return res.status(500).json([]);
+2117:         res.json(rows || []);
+2118:     });
+2119: });
+2120: */
+2121: 
+2122: // =========================================
+2123: //  5. RECOMMENDATION ROUTES
+2124: // =========================================
+2125: 
+2126: app.get('/recommend/genre', (req, res) => {
+2127:     const { genre, exclude } = req.query;
+2128:     if (!genre) return res.json([]);
+2129:     const firstGenre = genre.split(',')[0].trim(); 
+2130:     const sql = `

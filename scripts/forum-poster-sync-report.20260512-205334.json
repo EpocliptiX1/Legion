@@ -1,0 +1,88 @@
+{
+  "mode": "dry-run",
+  "includeAll": true,
+  "limit": null,
+  "sourceFile": "C:\\Users\\Damir\\Desktop\\myhflixer\\CURRENT BACKUP\\Backend\\backend\\forum_movies.json",
+  "checked": 52,
+  "updatedCount": 0,
+  "unchangedCount": 41,
+  "ambiguousCount": 3,
+  "unmatchedCount": 8,
+  "updated": [],
+  "ambiguous": [
+    {
+      "movieId": "65336",
+      "movieTitle": "Re:ZERO",
+      "topScore": 0.9,
+      "secondScore": 0.9,
+      "topTitle": "Re:ZERO -Starting Life in Another World-",
+      "secondTitle": "Re:ZERO -Starting Life in Another World- Memory Snow"
+    },
+    {
+      "movieId": "2710",
+      "movieTitle": "Bleach: Thousand-Year Blood War",
+      "topScore": 0.9,
+      "secondScore": 0.9,
+      "topTitle": "Bleach: Thousand-Year Blood War - The Calamity",
+      "secondTitle": "Bleach"
+    },
+    {
+      "movieId": "65334",
+      "movieTitle": "KonoSuba",
+      "topScore": 0.9,
+      "secondScore": 0.9,
+      "topTitle": "KONOSUBA – An Explosion on This Wonderful World!",
+      "secondTitle": "KONOSUBA - God's blessing on this wonderful world!"
+    }
+  ],
+  "unmatched": [
+    {
+      "movieId": "250012",
+      "movieTitle": "Dr. Stone: Science Future Part 3",
+      "reason": "no-confident-match",
+      "topScore": 0
+    },
+    {
+      "movieId": "236081",
+      "movieTitle": "Dandadan",
+      "reason": "no-confident-match",
+      "topScore": 0.8
+    },
+    {
+      "movieId": "250010",
+      "movieTitle": "Battle Through The Heavens Season 5",
+      "reason": "no-confident-match",
+      "topScore": 0
+    },
+    {
+      "movieId": "250009",
+      "movieTitle": "Swallowed Star 4th Season",
+      "reason": "no-confident-match",
+      "topScore": 0
+    },
+    {
+      "movieId": "250006",
+      "movieTitle": "Heaven Official's Blessing Short Films",
+      "reason": "no-confident-match",
+      "topScore": 0
+    },
+    {
+      "movieId": "250016",
+      "movieTitle": "Holo Graffiti",
+      "reason": "no-confident-match",
+      "topScore": 0.813
+    },
+    {
+      "movieId": "250008",
+      "movieTitle": "Dorohedoro Season 2",
+      "reason": "no-confident-match",
+      "topScore": 0
+    },
+    {
+      "movieId": "250002",
+      "movieTitle": "Re:ZERO -Starting Life in Another World- Season 4",
+      "reason": "no-confident-match",
+      "topScore": 0
+    }
+  ]
+}

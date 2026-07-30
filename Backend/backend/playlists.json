@@ -29,6 +29,18 @@
         "movieTitle": "The Shawshank Redemption",
         "poster": "https://image.tmdb.org/t/p/w500/9cqNxx0GxF0bflZmeSMuL5tnGzr.jpg",
         "genre": "Drama"
+      },
+      {
+        "movieId": "31718",
+        "movieTitle": "Darker than Black",
+        "poster": "https://image.tmdb.org/t/p/w500/eei2eMxOnmYliY8IElsVc1f3Vag.jpg",
+        "genre": "Animation, Action & Adventure, Sci-Fi & Fantasy, Mystery"
+      },
+      {
+        "movieId": "155",
+        "movieTitle": "The Dark Knight",
+        "poster": "https://image.tmdb.org/t/p/w500/qJ2tW6WMUDux911r6m7haRef0WH.jpg",
+        "genre": "Action, Crime, Thriller"
       }
     ],
     "createdAt": "2026-02-08T14:52:45.471Z"
@@ -106,6 +118,12 @@
         "movieTitle": "The Godfather",
         "poster": "https://image.tmdb.org/t/p/w500/3bhkrj58Vtu7enYsRolD1fZdja1.jpg",
         "genre": "Crime, Drama"
+      },
+      {
+        "movieId": "31718",
+        "movieTitle": "Darker than Black",
+        "poster": "https://image.tmdb.org/t/p/w500/eei2eMxOnmYliY8IElsVc1f3Vag.jpg",
+        "genre": "Animation, Action & Adventure, Sci-Fi & Fantasy, Mystery"
       }
     ],
     "createdAt": "2026-02-01T07:14:09.293Z"

@@ -1,0 +1,56 @@
+/* Unique actor block styling for movieInfo.html */
+.actor-list-blocks {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+    justify-content: space-evenly;}
+.actor-block {
+  display: flex;
+  align-items: center;
+  background: #18181857;
+  border-radius: 12px;
+  padding: 12px 18px;
+  margin-bottom: 8px;
+  box-shadow: 0 2px 8px #0002;
+  min-width: 180px;
+  max-width: 320px;
+}
+.actor-block-pic {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #888;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 16px;
+}
+.actor-block-name {
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.actor-section-title {
+  color: #f96d00;
+  margin-bottom: 10px;
+  font-size: 1.2rem;
+}
+.actor-section {
+    width: 95%;
+    background: linear-gradient(90deg, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.6) 100%);
+    margin: 0 auto 0 auto;
+    margin-left: 0;
+    padding: 24px;
+    border-radius: 0 0 0px 12px;
+    box-shadow: 0 2px 16px #0004;
+}
+@media (max-width: 1810px) {
+    .actor-section{
+        border-radius: 0;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+}

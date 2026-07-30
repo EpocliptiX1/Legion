@@ -1,0 +1,16 @@
+﻿Status: 200 | Length: 66841
+Category slugs found: []
+DUB slugs: []
+
+Body chunk at list start:
+ last_episodes">0				
+				<div class="search_ads">
+<form class="filters" action="https://anitaku.to/search.html" autocomplete="off">
+    <div class="filter"><input type="text" class="form-control" placeholder="Search..." name="keyword" value="" /></div>
+    <div class="filter">
+        <div class="dropdown cls_genre">
+            <button class="btn btn-secondary dropdown-toggle" data-toggle="dropdown"><span class="value" data-placeholder="Select genre" data-label-placement="true">Select genre</span></button>
+            <ul class="dropdown-menu lg c4">
+                                                      <li title="action"><input type="checkbox" id="genre-action" name="genre[]" value="action"  /> <label for="genre-action">Action</label></li>
+                                                                        <li title="adventure"><input type="checkbox" id="genre-adventure" name="genre[]" value="adventure"  /> <label for="genre-adventure">Adventure</label></li>
+                     

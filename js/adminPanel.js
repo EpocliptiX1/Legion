@@ -227,7 +227,7 @@ async function loadStats() {
     adminContent.style.display = 'block';
 
     try {
-        const res = await fetch('https://localhost:3000/admin/stats', {
+        const res = await fetch('/admin/stats', {
             headers: {
                 'Authorization': `Bearer ${token}`
             }
@@ -258,3 +258,4 @@ if (refreshBtn) {
 }
 
 loadStats();
+

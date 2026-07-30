@@ -60,7 +60,7 @@ const translations = {
         device_tv: "TV",
         
         // Footer
-        footer_brand_desc: "The premium destination for cinema lovers in Astana. From Kazakh masterpieces to global blockbusters, we stream it all.",
+        footer_brand_desc: "A platform for all media lovers, contains all main stream content and more!",
         footer_browse: "Browse",
         footer_home: "Home",
         footer_library: "Movies Library",

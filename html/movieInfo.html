@@ -1,12 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-        <script src="/js/enhancedSearch.js"></script>
+    <script src="/js/enhancedSearch.js"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Movie Details - Legion Space</title>
     <link rel="stylesheet" href="/css/theme-enhancements.css">
-    <link rel="stylesheet" href="/css/style.css">   
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/actor-blocks.css">
     <script src="/js/theme.js"></script>
     <script src="/js/i18n.js"></script>
     <script src="/js/translator.js"></script>
@@ -16,30 +17,94 @@
     <script src="/js/tmdbStatus.js"></script>
     <script src="/js/allMovies.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-</head>
-<body>
+    <script src="/js/verticalHeight.js"></script>
+    <link
+        rel="stylesheet"
+        href="https://cdn.plyr.io/3.7.8/plyr.css"
+        />
 
-    <nav class="navbar">
-        <div class="hamburger" onclick="toggleMobileMenu()">
-            <span></span>
-            <span></span>
-            <span></span>
+    <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
+    <script>
+// Single, robust definition with debug logging
+window.openMovie = function(movie, type) {
+    console.log('[openMovie] called with:', movie, type);
+    let id = movie;
+    let t = type;
+    if (typeof movie === 'object' && movie !== null) {
+        id = movie.id || movie["_id"] || movie["Movie ID"] || movie["MovieId"] || movie["movieId"];
+        t = movie.type || movie["Type"] || movie["type"] || t || 'movie';
+    }
+    if (id) {
+        console.log('[openMovie] Navigating to:', `/html/movieInfo.html?id=${id}&type=${t || 'movie'}`);
+        window.location.href = `/html/movieInfo.html?id=${id}&type=${t || 'movie'}`;
+    } else {
+        alert('Could not open movie: missing ID');
+    }
+};
+    </script>
+</head>
+
+<body>
+    <!-- Loading Animation Overlay -->
+    <div id="movieLoadingOverlay" class="loading-overlay" style="display: none;">
+        <div class="loading-spinner">
+            <div class="loading-ring"></div>
         </div>
-        <div class="logo-container">
+    </div>
+
+    <!-- ── LEFT SIDEBAR NAVIGATION ─────────────────────────── -->
+    <div class="left-sidebar bottom-sidebar" id="leftSidebar">
+        <div class="sidebar-logo-wrap">
             <a href="/html/indexMain.html" class="logo-link">
-                <img src="/img/LOGO.png" alt="Logo" class="logo-img">
-                <img src="/img/LOGO_Short.png" alt="Logo" class="logo-img logo-imgS">
+                <img src="/img/LOGO_Short.png" alt="Logo" class="logo-img sidebar-logo-img">
             </a>
         </div>
-        <ul class="nav-links" id="navLinks">
-            <li><a href="/html/indexMain.html" class="myNavLink" data-i18n="nav_home">Home</a></li>
-            <li><a href="/html/indexBrowse.html" class="myNavLink">Browse</a></li>
-            <li><a href="/html/allMovies.html" class="myNavLink" data-i18n="nav_movies">Movies</a></li>
-            <li><a href="personalList.html" class="myNavLink" data-i18n="nav_mylist">My List</a></li>
-            <li><a href="/html/customPlaylists.html" class="myNavLink">Playlists</a></li>
-            <li><a href="/html/forum.html" class="myNavLink noborder">Forum</a></li>
+        <ul class="sidebar-nav-list">
+            <li><a href="/html/indexMain.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+                <span>Home</span>
+            </a></li>
+            <li><a href="/html/indexBrowse.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
+                <span>Browse</span>
+            </a></li>
+            <li><a href="/html/allMovies.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+                <span>Movies</span>
+            </a></li>
+            <li><a href="/html/personalList.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+                <span>My List</span>
+            </a></li>
+            <li><a href="/html/customPlaylists.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+                <span>Playlists</span>
+            </a></li>
+            <li><a href="/html/forum.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+                <span>Forum</span>
+            </a></li>
         </ul>
-        <div class="nav-tools">
+        <div class="sidebar-mode-wrap" id="modeToggleWrap" title="Switch between Movies and Anime">
+            <label class="mode-toggle-switch">
+                <input type="checkbox" id="animeModeCheck" onchange="window.__toggleAnimeMode && window.__toggleAnimeMode()">
+                <span class="mode-toggle-slider"></span>
+            </label>
+            <span class="mode-toggle-label sidebar-mode-label">⛩ Anime</span>
+        </div>
+    </div>
+
+    <!-- ── TOP NAVBAR ─────────────────────────────────────── -->
+    <nav class="navbar">
+        <div class="nav-tools" style="width:100%">
+            <ul class="navbar-page-links">
+                <li><a href="/html/indexMain.html">Home</a></li>
+                <li><a href="/html/indexBrowse.html">Browse</a></li>
+                <li><a href="/html/allMovies.html">Movies</a></li>
+                <li><a href="/html/personalList.html">My List</a></li>
+                <li><a href="/html/customPlaylists.html">Playlists</a></li>
+                <li><a href="/html/forum.html">Forum</a></li>
+            </ul>
             <div class="search-wrapper">
                 <div class="search-box">
                     <input type="text" id="mainSearch" placeholder="Titles..." data-i18n-placeholder="nav_search_placeholder" autocomplete="off">
@@ -51,6 +116,7 @@
                 </div>
                 <div class="search-results-menu" id="searchResults"></div>
             </div>
+
             <div class="account-trigger" onclick="toggleAccountMenu()">
                 <div class="grey-profile-pic"></div>
                 <span id="navUsername" data-i18n="nav_guest">Guest</span>
@@ -61,9 +127,19 @@
                     <div class="dropdown-stats">
                         <div class="stat-line">
                             <span data-i18n="nav_views">Views:</span>
-                            <span id="statView">0/3</span>
+                            <span id="statView">0</span>
+                        </div>
+                        <div class="stat-line login-code-row hidden" id="loginCodeRow">
+                            <span>Login Code:</span>
+                            <span id="loginCodeValue">XXXXXXXXXX</span>
+                            <button type="button" class="code-visibility-toggle" data-visible="false" aria-pressed="false" onclick="toggleLoginCodeVisibility(event)" aria-label="Toggle login code visibility">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
+                    <a href="#" id="convertGuestLink" class="drop-link hidden" onclick="openConvertGuestModal()">⭐ Convert to Full Account</a>
                     <hr>
                     <a href="#" id="signInLink" class="drop-link" onclick="openSignInModal()" data-i18n="nav_signin">Sign In</a>
                     <a href="#" id="signUpLink" class="drop-link" onclick="openSignupModal()" data-i18n="nav_signup">Create Account</a>
@@ -73,8 +149,68 @@
             </div>
         </div>
     </nav>
+<script id="navActiveScriptInserted">
+(function() {
+    const currentPath = window.location.pathname.split('/').pop().toLowerCase();
+    const pageMap = {
+        'movieinfo.html': '/html/allMovies.html',
+        'searchqueryresult.html': '/html/indexBrowse.html',
+        'indexbrowse.html': '/html/indexBrowse.html',
+        'indexmain.html': '/html/indexMain.html',
+        'allmovies.html': '/html/allMovies.html',
+        'personallist.html': '/html/personalList.html',
+        'customplaylists.html': '/html/customPlaylists.html',
+        'forum.html': '/html/forum.html'
+    };
+    const activeHref = pageMap[currentPath] || '/html/' + currentPath;
+
+    document.querySelectorAll('.sidebar-nav-link, .navbar-page-links a').forEach(link => {
+        const href = link.getAttribute('href');
+        if (!href) return;
+        const normalizedHref = href.split('#')[0].split('?')[0];
+        if (normalizedHref === activeHref) {
+            if (link.classList.contains('sidebar-nav-link')) {
+                link.classList.add('sidebar-active');
+            }
+            if (link.closest('.navbar-page-links')) {
+                link.classList.add('navbar-link-active');
+            }
+        } else {
+            link.classList.remove('sidebar-active');
+            link.classList.remove('navbar-link-active');
+        }
+    });
+})();
+</script>
+
 
     <style>
+    .vertical-recommend {
+        overflow-x: hidden;
+    }
+    .vertical-recommend .horizontal-scroll-row {
+        overflow-x: hidden !important;
+        display: flex;
+        /* gap: 12px; */
+
+        /* justify-content: space-between; */
+        flex-direction: column;
+    }
+    .vertical-recommend .movie-card, .vertical-recommend .mini-info {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100%;
+    }
+    .vertical-recommend .row-title, .vertical-recommend .movie-title {
+        white-space: normal;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100%;
+        min-height: 1.5em;
+        line-height: 1.2;
+        display: block;
+    }
     .server-badge {
         display: inline-block;
         background: #222;
@@ -97,97 +233,131 @@
         font-size: 16px;
         margin: 12px 0;
     }
+    .recommend-section {
+        padding-left: 24px;
+    }
     </style>
+
+
+    <div class="movie-flex-row">
     <header class="movie-header">
+        <div class="movie-header-main">
+            <div class="movie-header-main-inner">
         <div class="backdrop-bg" id="bgBackdrop"></div>
-        <div class="movie-content">
-            <img id="posterImg" src="" alt="Poster" class="movie-poster-large" onerror="this.src=''">
-            
-            <div class="movie-info-col">
-                <h1 class="movie-title" id="title">Loading...</h1>
-                
-                <div class="movie-meta">
-                    <span class="tag imdb-tag">IMDb <span id="rating">--</span></span>
-                    <span id="year">----</span>
-                    <span>•</span>
-                    <span id="runtime">-- min</span> </div>
+            <div class="movie-content">
+                                <div class="movie-poster-large-wrap">
+                                    <img id="posterImg" src="" alt="Poster" class="movie-poster-large" onerror="this.src=''">
+                                    <div class="movie-poster-large-fade"></div>
+                                </div>
+                <div class="movie-info-col">
+                    <h1 class="movie-title" id="title">Loading...</h1>
+                    <div class="movie-meta">
+                        <span class="tag imdb-tag">IMDb <span id="rating">--</span></span>
+                        <span id="year">----</span>
+                        <span id="dotMovieMetaSpec">•</span>
+                        <span id="runtime">-- min</span> </div>
+                    <div class="action-buttons">
+                        <button id="watchNowBtn" class="btn-watch" data-type="movie" onclick="handleWatchNowClick(event)">▶ Watch Now</button>
+                        <button id="watchVidsrcBtn" class="btn-watch" style="margin-right:8px; border:1px solid #f96d00;">▶ Watch Trailer</button>
+                        <script>
+                            function handleWatchNowClick(e) {
+                                const urlParams = new URLSearchParams(window.location.search);
+                                const type = (urlParams.get('type') || '').toLowerCase();
+                                const id = urlParams.get('id');
+                                let newUrl = window.location.pathname + '?id=' + id;
 
-                <div class="action-buttons">
+                                if (type === 'tv' || type === 'series') {
+                                    newUrl += '&type=' + type;
+                                }
 
-                    <button id="watchVidsrcBtn" class="btn-watch" style="margin-right:8px; background:#222; border:1px solid #f96d00;">▶ Watch on VidSrc</button>
-                    <button id="watchNowBtn" class="btn-watch" data-type="movie" onclick="handleWatchNowClick(event)">▶ Watch Now</button>
-                    <script>
-                    function handleWatchNowClick(e) {
-                        const urlParams = new URLSearchParams(window.location.search);
-                        const type = (urlParams.get('type') || '').toLowerCase();
-                        const id = urlParams.get('id');
-                        let newUrl = window.location.pathname + '?id=' + id;
-                        if (type === 'tv' || type === 'series') {
-                            newUrl += '&type=' + type;
-                        }
-                        window.history.replaceState({}, '', window.location.search);
-                        // Let the player script pick up the correct type
-                    }
-                    </script>
-
-                    <button id="infoListBtn" class="btn-watch btn-list" onclick="handleInfoAdd()">
-                        + Add to List
-                    </button>
-
-                    <button id="addToPlaylistBtn" class="btn-watch btn-list" onclick="openAddToPlaylistDialog()">
-                        + Add to Playlist
-                    </button>
-                </div>
-
-                <div class="scrollable-content">
-                                        <div id="techSpecs" class="tech-specs-container">
+                                window.history.replaceState({}, '', window.location.search);
+                                // Let the player script pick up the correct type
+                            }                            
+                        </script>
+                        <button id="infoListBtn" class="btn-watch btn-list" onclick="handleInfoAdd()">
+                            + Add to List
+                        </button>
+                        <button id="addToPlaylistBtn" class="btn-watch btn-list" onclick="openAddToPlaylistDialog()">
+                            + Add to Playlist
+                        </button>
                     </div>
-                    <h3 style="color:#f96d00; margin-bottom:10px; font-size:1.1rem;">Synopsis</h3>
-                    <p class="movie-plot" id="plot">Fetching movie details...</p>
-
-                    <div class="details-grid">
-                        <span class="detail-label">Visionary Director:</span>
-                        <span class="detail-value" id="directors">...</span> <span class="detail-label">Lead Ensemble:</span>
-                        <span class="detail-value" id="actors">...</span>
-                        
-                        <span class="detail-label">Visual Style:</span>
-                        <span class="detail-value" id="genre">...</span>
-                        
-                        <span class="detail-label">Votes:</span>
-                        <span class="detail-value" id="votes">...</span>
-
-                        <span class="detail-label">Production Value:</span>
-                        <span class="detail-value" id="budget">...</span>
-
-                        <span class="detail-label">Box Office Return:</span>
-                        <span class="detail-value" id="revenue">...</span>
-
-                        <span class="detail-label">Success:</span>
-                        <span class="detail-value" id="financialStatus">...</span>
-                        <span class="detail-label">IMDB ID:</span>
-                        <span class="detail-value" id="imdbId">...</span>
+                    <div class="scrollable-content">
+                        <div id="techSpecs" class="tech-specs-container"></div>
+                                                <h3 style="color:#f96d00; margin-bottom:10px; font-size:1.1rem;">Synopsis</h3>
+                                                <div class="movie-plot-wrap">
+                                                    <p class="movie-plot" id="plot">Fetching movie details...</p>
+                                                    <a id="plotReadMoreBtn" href="#" style="display:none;margin-top:8px;cursor:pointer;text-decoration:underline;font-size:1em;" class="plot-readmore-link">Read More</a>
+                                                </div>
+                        <script>
+                        // Replace player-info text after 730px
+                        function updatePlayerInfoText() {
+                            var info = document.querySelector('.player-info');
+                            if (!info) return;
+                            if (window.innerWidth <= 730) {
+                                info.innerHTML = `If current server doesn't work<br>please try other servers beside.<br><span style="color:#ff8000;font-weight:600;">Tip:</span><strong>Close all the AD windows the iframe opens.</strong>`;
+                            } else {
+                                // Optionally restore original text if needed
+                            }
+                        }
+                        window.addEventListener('DOMContentLoaded', updatePlayerInfoText);
+                        window.addEventListener('resize', updatePlayerInfoText);
+                        </script>
+                        <div class="details-grid">
+                            <span class="detail-label">Visionary Director:</span>
+                            <span class="detail-value" id="directors">...</span>
+                            <span class="detail-label">Visual Style:</span>
+                            <span class="detail-value" id="genre">...</span>
+                            <span class="detail-label">Votes:</span>
+                            <span class="detail-value" id="votes">...</span>
+                            <span class="detail-label">Production Value:</span>
+                            <span class="detail-value" id="budget">...</span>
+                            <span class="detail-label">Box Office Return:</span>
+                            <span class="detail-value" id="revenue">...</span>
+                            <span class="detail-label">Success:</span>
+                            <span class="detail-value" id="financialStatus">...</span>
+                            <span class="detail-label">IMDB ID:</span>
+                            <span class="detail-value" id="imdbId">...</span>
+                        </div>
                     </div>
                 </div>
             </div>
+            <section class="actor-section">
+                <h3 class="actor-section-title">Lead Ensemble</h3>
+                <ul id="actorList" class="actor-list-blocks"></ul>
+            </section>
+            <div class="vertical-recommend-row" id="verticalRecommendRow" style="display:none;">
+                <h2 class="row-title">Movies Like This <span>Based on Genre</span></h2>
+                <div class="horizontal-scroll-row vertical-slider" id="genreRowClone"></div>
+            </div>
+            </div>
+           
+            <div class="vertical-recommend">
+            <h2 class="row-title">Movies Like This <span>Based on Genre</span></h2>
+            <div class="horizontal-scroll-row vertical-slider" id="genreRow"></div>
         </div>
+        </div>
+
     </header>
-     <section class="container reviews-section">
+    </div>
+    <section class="container reviews-section">
         <div class="row-header">
             <h2 class="row-title">Community Reviews</h2>
         </div>
         <div id="reviewsGrid" class="reviews-grid">
             </div>
     </section>
-    <div class="recommend-section">
-        <h2 class="row-title">Movies Like This <span>Based on Genre</span></h2>
-        <div class="movie-row" id="genreRow"></div>
-    </div>
+    <!-- genre recommendations moved above as vertical slider -->
     <div class="recommend-section">
         <h2 class="row-title" id="directorTitle">More from the Director</h2>
         <div class="movie-row" id="directorRow"></div>
     </div>
 
-    <div class="recommend-section">
+    <div class="recommend-section" id="studioSection" style="display:none;">
+        <h2 class="row-title" id="studioTitle">More from the Studio</h2>
+        <div class="movie-row" id="studioRow"></div>
+    </div>
+
+    <div class="recommend-section" id="castPicker">
         <div class="row-header-flex">
             <h2 class="row-title" id="actorTitle">More from the Cast</h2>
             <select id="actorSelect" class="styled-select"></select>
@@ -243,14 +413,14 @@
         </div>
     </div>
     <div id="notification-toast" class="toast-hidden"></div>
-    <section class="container forum-cta-bar" id="forumCtaBar" style="display: none;">
+    <!-- <section class="container forum-cta-bar" id="forumCtaBar" style="display: none;">
         <div class="forum-cta-text">
             <h3>Join the Forum Discussion</h3>
             <p>See threads and share thoughts about this movie.</p>
         </div>
         <button class="forum-cta-action" onclick="openForumRedirectModal()">Open Forum</button>
-    </section>
-    <section class="container ad-section" id="adSection" style="padding: 60px 20px 20px;">
+    </section> -->
+    <!-- <section class="container ad-section" id="adSection" style="padding: 60px 20px 20px; padding-top: 0;">
         <div class="ad-card">
             <div class="ad-badge">ADVERTISEMENT</div>
             <div class="ad-content">
@@ -261,7 +431,7 @@
                 <button class="ad-cta">Advertise with us</button>
             </div>
         </div>
-    </section>
+    </section> -->
 
     <footer class="container site-footer">
         <div class="footer-content">
@@ -270,9 +440,8 @@
                 <div class="footer-brand">
                     <h3>LEGION SPACE</h3>
                     <p class="footer-desc">
-                        The premium destination for cinema lovers in Astana. 
-                        From Kazakh masterpieces to global blockbusters, 
-                        we stream it all.
+                        A platform for all media lovers, contains all main stream content and more!
+
                     </p>
                     <div class="social-links">
                         <a href="https://instagram.com" class="social-btn" title="Instagram">
@@ -343,7 +512,9 @@
             </div>
         </div>
     </div>
-        <div id="signupModal" class="signup-overlay">
+    <!-- Modals moved to top of body for proper centering -->
+    </div>
+    <div id="signupModal" class="signup-overlay" style="display:none;">
         <div class="signup-box">
             <div class="signup-close" onclick="closeSignupModal()">✕</div>
             
@@ -422,27 +593,11 @@
                         <button class="btn-small" onclick="document.getElementById('pfpInput').click()">Upload New Image (1MB)</button>
                         <input type="file" id="pfpInput" accept="image/*" style="display: none;" onchange="handlePFPUpload(event)">
                     </div>
-                    <div class="beta-notice-box">
-                        <div class="beta-badge">ALPHA v1.0</div>
-                        <p>You are currently using the <strong>Localized/TMDB API</strong> build of Legion Space.</p>
-                        <ul>
-                            <li>Dynamic API source: Local DB or TMDB.</li>
-                            <li>Region: Astana/Kazakhstan or Global (TMDB).</li>
-                        </ul>
-                        <p class="beta-small">Some settings are read-only during the current phase.</p>
-                    </div>
                     <div class="setting-item">
                         <label>Language</label>
                         <select id="settingsLanguage" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;" onchange="selectLanguage(this.value)">
                             <option value="en">🇬🇧 English</option>
                             <option value="ru">🇷🇺 Русский</option>
-                        </select>
-                    </div>
-                    <div class="setting-item">
-                        <label>Movie Data Source</label>
-                        <select id="settingsMovieSource" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;">
-                            <option value="local">Local Database</option>
-                            <option value="api">External API (TMDB)</option>
                         </select>
                     </div>
                 </div>
@@ -455,20 +610,16 @@
                             <div class="blur-overlay"><span>COMING SOON</span></div>
                         </div>
                     </div>
-                    <div class="setting-item coming-soon" style="margin-top: 15px;">
-                        <label>Cloud Sync (Multi-Device)</label>
-                        <div class="blurred-preview" style="height: 60px; background: #1a1a1a; display: flex; align-items: center; justify-content: center;">
-                            <span style="font-size: 24px;">☁️</span>
-                            <div class="blur-overlay"><span>PLANNED v2.0</span></div>
+
+                    <div class="setting-item hero-audio-setting">
+                        <div class="hero-audio-copy">
+                            <label for="muteAudio">Mute Hero Trailer</label>
+                            <p>Silence autoplay trailers on the home screen</p>
                         </div>
-                    </div>
-                    <div class="setting-item" style="margin-bottom: 0;">
-                        <label>TMDB Global Database</label>
-                        <div style="display: flex; align-items: center; gap: 12px; margin: 30px 0 30px 0; justify-content: center;">
-                            <span id="tmdbApiStatusCircle" style="width: 22px; height: 22px; border-radius: 50%; display: inline-block; background: #aaa; border: 2px solid #333;"></span>
-                            <span id="apiStatusText" style="font-size: 1.1em; color: #888;">Checking API...</span>
-                        </div>
-                        <div style="text-align: center; color: #aaa; font-size: 0.95em;">Checks if TMDB API key is valid and online.</div>
+                        <label class="hero-audio-switch" aria-label="Mute Hero Trailer Audio">
+                            <input type="checkbox" id="muteAudio" onchange="toggleMuteAudio()">
+                            <span class="hero-audio-slider"></span>
+                        </label>
                     </div>
                 </div>
             </div>
@@ -489,17 +640,21 @@
         </div>
     <script src="/js/movieLoading.js"></script>
     <script src="/js/moviePlayer.js"></script>
+    <script type="module" src="/js/downloadEpisode.js"></script>    
+    <script src="/js/animeEnrich.js"></script>
     <script src="/js/customPlaylist.js"></script>
-        <script src="/js/apiStatusPanel.js"></script>
+    <script src="/js/apiStatusPanel.js"></script>
+    <script src="/js/animePage.js"></script>
     
     <script>
             function handleInfoAdd() {
                 const urlParams = new URLSearchParams(window.location.search);
                 const movieId = urlParams.get('id');
+                const mediaType = (urlParams.get('type') || 'movie').toLowerCase();
                 const movieName = document.getElementById('title').innerText;
 
                 if (window.toggleMyList) {
-                    window.toggleMyList(movieId, movieName);
+                    window.toggleMyList(movieId, movieName, mediaType);
                     if (typeof updateInfoButtonUI === "function") {
                         updateInfoButtonUI(movieId);
                     }
@@ -512,14 +667,17 @@
                 const btn = document.getElementById('infoListBtn');
                 if (!btn) return;
 
-                const list = JSON.parse(localStorage.getItem('myList')) || [];
-                if (list.includes(String(id))) {
+                const raw = JSON.parse(localStorage.getItem('myList')) || [];
+                const inList = raw.some(item =>
+                    typeof item === 'object' ? item.id === String(id) : item === String(id)
+                );
+                if (inList) {
                     btn.innerText = "✓ In My List";
-                    btn.style.background = "#46d369"; 
+                    btn.style.background = "#46d369";
                     btn.style.color = "#000";
                 } else {
                     btn.innerText = "+ Add to List";
-                    btn.style.background = ""; 
+                    btn.style.background = "";
                     btn.style.color = "";
                 }
             }
@@ -530,6 +688,203 @@
                 setTimeout(() => updateInfoButtonUI(movieId), 500);
             });
         </script>
-    <script src="/js/mainPageControls.js"></script>
+        <script src="/js/mainPageControls.js"></script>
+        <script src="/js/recommendations.js"></script>
+
+        <div id="convertGuestModal" class="signup-overlay" style="display:none;">
+            <div class="signup-box">
+                <div class="signup-close" onclick="closeConvertGuestModal()">✕</div>
+                <h2>Convert Guest Account</h2>
+                <p class="signup-subtitle">Your watch history, playlists, reviews and preferences will be kept.</p>
+                <form onsubmit="handleConvertGuestAccount(event)">
+                    <div class="input-group">
+                        <input type="email" id="convertEmail" required placeholder=" ">
+                        <label>Email Address</label>
+                    </div>
+                    <div class="input-group">
+                        <input type="password" id="convertPassword" required placeholder=" ">
+                        <label>Password</label>
+                    </div>
+                    <div class="input-group">
+                        <input type="password" id="convertConfirmPassword" required placeholder=" ">
+                        <label>Confirm Password</label>
+                    </div>
+                    <button type="submit" class="btn-signup">Convert Account</button>
+                </form>
+                <div style="margin-top: 18px; color: #ddd; font-size: 0.95rem;">
+                    <p style="margin: 0 0 8px;">This will preserve:</p>
+                    <ul style="margin: 0; padding-left: 18px;">
+                        <li>Watch history</li>
+                        <li>My List</li>
+                        <li>Playlists</li>
+                        <li>Reviews</li>
+                        <li>Preferences</li>
+                        <li>Viewing statistics</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            function openConvertGuestModal() {
+                const modal = document.getElementById('convertGuestModal');
+                if (!modal) return;
+                modal.style.display = 'flex';
+                modal.classList.add('active');
+                document.body.style.overflow = 'hidden';
+            }
+
+            function closeConvertGuestModal() {
+                const modal = document.getElementById('convertGuestModal');
+                if (!modal) return;
+                modal.classList.remove('active');
+                modal.style.display = 'none';
+                document.body.style.overflow = 'auto';
+            }
+
+            async function handleConvertGuestAccount(event) {
+                event.preventDefault();
+                const email = (document.getElementById('convertEmail') || {}).value.trim().toLowerCase();
+                const password = (document.getElementById('convertPassword') || {}).value || '';
+                const confirmPassword = (document.getElementById('convertConfirmPassword') || {}).value || '';
+                const guestUID = localStorage.getItem('guestUID');
+
+                if (!email || !password || !confirmPassword) {
+                    showLimitToast('Please fill in all fields.');
+                    return;
+                }
+                if (password !== confirmPassword) {
+                    showLimitToast('Passwords do not match.');
+                    return;
+                }
+                if (!guestUID) {
+                    showLimitToast('Guest account not found.');
+                    return;
+                }
+
+                try {
+                    const res = await fetch('/users/guest/convert', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ guestUID, userEmail: email, userPassword: password })
+                    });
+                    const result = await res.json();
+                    if (!res.ok) {
+                        showLimitToast(result.error || 'Conversion failed.');
+                        return;
+                    }
+
+                    const user = result.user || {};
+                    if (typeof user.loginCode !== 'undefined' && user.loginCode !== null) {
+                        localStorage.setItem('loginCode', user.loginCode);
+                    } else {
+                        localStorage.removeItem('loginCode');
+                    }
+                    localStorage.setItem('userUID', String(user.userUID || localStorage.getItem('userUID') || '0'));
+                    localStorage.setItem('accountUID', String(user.accountUID || localStorage.getItem('accountUID') || ''));
+                    localStorage.setItem('userEmail', user.userEmail || email);
+                    localStorage.setItem('username', user.username || localStorage.getItem('username') || 'Guest');
+                    localStorage.setItem('userTier', user.userTier || 'Free');
+                    localStorage.setItem('userLanguage', user.userLanguage || localStorage.getItem('userLanguage') || 'en');
+                    localStorage.setItem('searchCount', String(user.searchCount || 0));
+                    localStorage.setItem('viewCount', String(user.viewCount || 0));
+                    localStorage.setItem('allUIDs', JSON.stringify(user.allUIDs || [String(user.accountUID || '')]));
+                    localStorage.setItem('isAdmin', user.isAdmin ? 'true' : 'false');
+                    localStorage.setItem('isGuest', 'false');
+                    localStorage.setItem('is_guest_local', '0');
+                    localStorage.removeItem('guestUID');
+
+                    closeConvertGuestModal();
+                    if (typeof showLongToast === 'function') {
+                        showLongToast(`🎉 Account successfully converted. Your guest account has been linked to ${email}. Your watch history, playlists and progress have all been preserved.`, 12000);
+                    } else {
+                        showLimitToast(`🎉 Account successfully converted. Your guest account has been linked to ${email}. Your watch history, playlists and progress have been preserved.`);
+                    }
+                    updateConvertGuestButton();
+                    if (typeof safeReload === 'function') safeReload();
+                } catch (err) {
+                    console.error('Guest conversion failed:', err);
+                    showLimitToast('Conversion failed. Please try again.');
+                }
+            }
+
+            function setConvertGuestLinkVisibility(isVisible) {
+                const link = document.getElementById('convertGuestLink');
+                if (!link) return;
+                link.classList.toggle('hidden', !isVisible);
+            }
+
+            async function updateConvertGuestButton() {
+                const link = document.getElementById('convertGuestLink');
+                if (!link) return;
+                const stored = localStorage.getItem('is_guest_local');
+                if (stored === '1') {
+                    setConvertGuestLinkVisibility(true);
+                    return;
+                }
+                if (stored === '0') {
+                    setConvertGuestLinkVisibility(false);
+                    return;
+                }
+
+                const authToken = localStorage.getItem('authToken');
+                const guestUID = localStorage.getItem('guestUID');
+                const accountUID = localStorage.getItem('accountUID');
+
+                if (guestUID && !authToken) {
+                    localStorage.setItem('is_guest_local', '1');
+                    setConvertGuestLinkVisibility(true);
+                    return;
+                }
+                if (authToken) {
+                    localStorage.setItem('is_guest_local', '0');
+                    setConvertGuestLinkVisibility(false);
+                    return;
+                }
+                if (accountUID) {
+                    try {
+                        const statusRes = await fetch(`/users/account-status?accountUID=${encodeURIComponent(accountUID)}`);
+                        if (statusRes.ok) {
+                            const statusData = await statusRes.json();
+                            const isGuest = String(statusData.is_guest) === '1';
+                            localStorage.setItem('is_guest_local', isGuest ? '1' : '0');
+                            setConvertGuestLinkVisibility(isGuest);
+                            return;
+                        }
+                    } catch (error) {
+                        console.error('Could not resolve account status:', error);
+                    }
+                }
+                setConvertGuestLinkVisibility(false);
+            }
+
+            document.addEventListener('DOMContentLoaded', updateConvertGuestButton);
+        </script>
+
+        <script>
+        // Height copying for .vertical-recommend is ENABLED and improved.
+        // Height matching logic removed as requested.
+        </script>
     </body>
+<script>
+// Responsive vertical-recommend-row toggle
+function toggleVerticalRecommendRow() {
+    const main = document.querySelector('.vertical-recommend');
+    const clone = document.getElementById('verticalRecommendRow');
+    if (!main || !clone) return;
+    if (window.innerWidth <= 1810) {
+        main.style.display = 'none';
+        clone.style.display = '';
+        // Optionally clone content if needed
+        if (main.querySelector('.vertical-slider') && clone.querySelector('.vertical-slider')) {
+            clone.querySelector('.vertical-slider').innerHTML = main.querySelector('.vertical-slider').innerHTML;
+        }
+    } else {
+        main.style.display = '';
+        clone.style.display = 'none';
+    }
+}
+window.addEventListener('DOMContentLoaded', toggleVerticalRecommendRow);
+window.addEventListener('resize', toggleVerticalRecommendRow);
+</script>
 </html>

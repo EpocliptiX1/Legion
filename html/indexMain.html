@@ -16,142 +16,308 @@
     <script src="/js/enhancedSearch.js"></script>
     <script src="/js/movieLoading.js"></script>
     <script src="/js/mainPageControls.js"></script>
+    <script src="/js/recommendations.js"></script>
     <script src="/js/apiStatusPanel.js"></script>
+    <script src="/js/animePage.js"></script>
 </head>
 <body>
 
-    <nav class="navbar">
-        <div class="hamburger" onclick="toggleMobileMenu()">
-            <span></span>
-            <span></span>
-            <span></span>
+    <!-- ── PAGE LOADING OVERLAY ────────────────────────────── -->
+    <div id="pageLoadingOverlay" class="loading-overlay page-load-overlay">
+        <div class="loading-spinner">
+            <div class="loading-ring"></div>
         </div>
+        <div class="page-load-label">Legion Space is loading</div>
+    </div>
 
-        <div class="logo-container">
+    <!-- ── LEFT SIDEBAR NAVIGATION ─────────────────────────── -->
+    <div class="left-sidebar bottom-sidebar" id="leftSidebar">
+        <div class="sidebar-logo-wrap">
             <a href="/html/indexMain.html" class="logo-link">
-                <img src="/img/LOGO.png" alt="Logo" class="logo-img">
-                <img src="/img/LOGO_Short.png" alt="Logo" class="logo-img logo-imgS">
+                <img src="/img/LOGO_Short.png" alt="Logo" class="logo-img sidebar-logo-img">
             </a>
         </div>
-
-        <ul class="nav-links" id="navLinks">
-            <li><a href="/html/indexMain.html" class="myNavLink" data-i18n="nav_home">Home</a></li>
-            <li><a href="/html/indexBrowse.html" class="myNavLink">Browse</a></li>
-            <li><a href="/html/allMovies.html" class="myNavLink" data-i18n="nav_movies">Movies</a></li>
-            <li><a href="personalList.html" class="myNavLink" data-i18n="nav_mylist">My List</a></li>
-            <li><a href="/html/customPlaylists.html" class="myNavLink">Playlists</a></li>
-            <li><a href="/html/forum.html" class="myNavLink noborder">Forum</a></li>
-        </ul>       
-
-        
-            
-            <div class="nav-tools">
-                <div class="search-wrapper">
-                    <div class="search-box">
-                        <input type="text" id="mainSearch" placeholder="Titles..." data-i18n-placeholder="nav_search_placeholder" autocomplete="off">
-                        <button id="voiceSearchBtn" title="Voice Search" style="background: none; border: none; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); cursor: pointer; padding: 0;">
-                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <path d="M12 15c1.66 0 3-1.34 3-3V6c0-1.66-1.34-3-3-3s-3 1.34-3 3v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-2.08c3.39-.49 6-3.39 6-6.92h-2z" fill="#888"/>
-                            </svg>
-                        </button>
-                    <script>
-                    // Voice search button event
-                    document.addEventListener('DOMContentLoaded', function() {
-                        var micBtn = document.getElementById('voiceSearchBtn');
-                        if (micBtn && window.VoiceSearch) {
-                            micBtn.addEventListener('click', function(e) {
-                                e.preventDefault();
-                                window.VoiceSearch.start();
-                            });
-                        }
-                    });
-                    </script>
-                    </div>
-                    <div class="search-results-menu" id="searchResults"></div>
-        </div>
-
-        <div class="account-trigger" onclick="toggleAccountMenu()">
-        <div class="grey-profile-pic"></div>
-            
-            <span id="navUsername" data-i18n="nav_guest">Guest</span>
-            
-            <div class="account-dropdown" id="accountDropdown">
-                <div class="dropdown-header">
-                    <p id="dropTier" class="tier-badge" data-i18n="nav_free_tier">Free Tier</p>
-                </div>
-                <div class="dropdown-stats">
-                    <div class="stat-line">
-                        <span data-i18n="nav_views">Views:</span>
-                        <span id="statView">0/3</span>
-                    </div>
-                </div>
-                <hr>
-                <a href="#" id="signInLink" class="drop-link" onclick="openSignInModal()" data-i18n="nav_signin">Sign In</a>
-                <a href="#" id="signUpLink" class="drop-link" onclick="openSignupModal()" data-i18n="nav_signup">Create Account</a>
-                <a href="#" class="drop-link" onclick="openSettings()" data-i18n="nav_settings">Settings</a>
-                <a href="#" class="drop-link" onclick="logout()" data-i18n="nav_logout">Logout</a>
+        <ul class="sidebar-nav-list">
+            <li><a href="/html/indexMain.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+                <span>Home</span>
+            </a></li>
+            <li><a href="/html/indexBrowse.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
+                <span>Browse</span>
+            </a></li>
+            <li><a href="/html/allMovies.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+                <span>Movies</span>
+            </a></li>
+            <li><a href="/html/personalList.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+                <span>My List</span>
+            </a></li>
+            <li><a href="/html/customPlaylists.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+                <span>Playlists</span>
+            </a></li>
+            <li><a href="/html/forum.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+                <span>Forum</span>
+            </a></li>
+        </ul>
+        <div class="sidebar-mode-wrap" id="modeToggleWrap" title="Switch between Movies and Anime">
+            <label class="mode-toggle-switch">
+                <input type="checkbox" id="animeModeCheck" onchange="window.__toggleAnimeMode && window.__toggleAnimeMode()">
+                <span class="mode-toggle-slider"></span>
+            </label>
+            <span class="mode-toggle-label sidebar-mode-label">⛩ Anime</span>
         </div>
     </div>
+
+    <!-- ── TOP NAVBAR ─────────────────────────────────────── -->
+    <nav class="navbar">
+        <div class="nav-tools" style="width:100%">
+            <ul class="navbar-page-links">
+                <li><a href="/html/indexMain.html">Home</a></li>
+                <li><a href="/html/indexBrowse.html">Browse</a></li>
+                <li><a href="/html/allMovies.html" >Movies</a></li>
+                <li><a href="/html/personalList.html">My List</a></li>
+                <li><a href="/html/customPlaylists.html">Playlists</a></li>
+                <li><a href="/html/forum.html">Forum</a></li>
+            </ul>
+            <div class="search-wrapper">
+                <div class="search-box">
+                    <input type="text" id="mainSearch" placeholder="Titles..." data-i18n-placeholder="nav_search_placeholder" autocomplete="off">
+                    <button id="voiceSearchBtn" title="Voice Search" style="background: none; border: none; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); cursor: pointer; padding: 0;">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 15c1.66 0 3-1.34 3-3V6c0-1.66-1.34-3-3-3s-3 1.34-3 3v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-2.08c3.39-.49 6-3.39 6-6.92h-2z" fill="#888"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="search-results-menu" id="searchResults"></div>
+            </div>
+
+            <div class="account-trigger" onclick="toggleAccountMenu()">
+                <div class="grey-profile-pic"></div>
+                <span id="navUsername" data-i18n="nav_guest">Guest</span>
+                <div class="account-dropdown" id="accountDropdown">
+                    <div class="dropdown-header">
+                        <p id="dropTier" class="tier-badge" data-i18n="nav_free_tier">Free Tier</p>
+                    </div>
+                    <div class="dropdown-stats">
+                        <div class="stat-line">
+                            <span data-i18n="nav_views">Views:</span>
+                            <span id="statView">0</span>
+                        </div>
+                        <div class="stat-line login-code-row hidden" id="loginCodeRow">
+                            <span>Login Code:</span>
+                            <span id="loginCodeValue">XXXXXXXXXX</span>
+                            <button type="button" class="code-visibility-toggle" data-visible="false" aria-pressed="false" onclick="toggleLoginCodeVisibility(event)" aria-label="Toggle login code visibility">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <a href="#" id="convertGuestLink" class="drop-link hidden" onclick="openConvertGuestModal()">⭐ Convert to Full Account</a>
+                    <hr>
+                    <a href="#" id="signInLink" class="drop-link" onclick="openSignInModal()" data-i18n="nav_signin">Sign In</a>
+                    <a href="#" id="signUpLink" class="drop-link" onclick="openSignupModal()" data-i18n="nav_signup">Create Account</a>
+                    <a href="#" class="drop-link" onclick="openSettings()" data-i18n="nav_settings">Settings</a>
+                    <a href="#" class="drop-link" onclick="logout()" data-i18n="nav_logout">Logout</a>
+                </div>
+            </div>
         </div>
     </nav>
+<script id="navActiveScriptInserted">
+(function() {
+    const currentPath = window.location.pathname.split('/').pop().toLowerCase();
+    const pageMap = {
+        'movieinfo.html': '/html/allMovies.html',
+        'searchqueryresult.html': '/html/indexBrowse.html',
+        'indexbrowse.html': '/html/indexBrowse.html',
+        'indexmain.html': '/html/indexMain.html',
+        'allmovies.html': '/html/allMovies.html',
+        'personallist.html': '/html/personalList.html',
+        'customplaylists.html': '/html/customPlaylists.html',
+        'forum.html': '/html/forum.html'
+    };
+    const activeHref = pageMap[currentPath] || '/html/' + currentPath;
 
-    <header class="hero" id="heroSection">
+    document.querySelectorAll('.sidebar-nav-link, .navbar-page-links a').forEach(link => {
+        const href = link.getAttribute('href');
+        if (!href) return;
+        const normalizedHref = href.split('#')[0].split('?')[0];
+        if (normalizedHref === activeHref) {
+            if (link.classList.contains('sidebar-nav-link')) {
+                link.classList.add('sidebar-active');
+            }
+            if (link.closest('.navbar-page-links')) {
+                link.classList.add('navbar-link-active');
+            }
+        } else {
+            link.classList.remove('sidebar-active');
+            link.classList.remove('navbar-link-active');
+        }
+    });
+})();
+</script>
+
+
+    <header class="hero hero-main-page" id="heroSection">
+
+        <!-- Trailer as full-bleed background -->
+        <div class="hero-bg-trailer">
+            <iframe
+                id="heroTrailerFrame"
+                src=""
+                title="Trailer"
+                frameborder="0"
+                allow="autoplay; encrypted-media"
+                allowfullscreen>
+            </iframe>
+        </div>
+
+        <!-- Gradient overlays -->
         <div class="hero-overlay"></div>
+        <div class="hero-left-fade"></div>
 
+        <!-- Slider arrows -->
         <div class="slider-arrow arrow-left" onclick="prevSlide()">
             <span>&#10094;</span>
         </div>
-
         <div class="slider-arrow arrow-right" onclick="nextSlide()">
             <span>&#10095;</span>
         </div>
 
-        <div class="hero-glass-container">
-            <div class="hero-content">
+        <!-- Content layer -->
+        <div class="hero-main-body">
+            <div class="hero-main-left hero-content">
+                <span class="hero-spotlight-tag" id="heroTag">✦ Spotlight Today</span>
                 <h1 class="hero-title" id="heroTitle" data-i18n="hero_loading">Loading...</h1>
-                
-                <div class="hero-meta">
-                    <div class="stat-group">
-                        <span id="statRating">--</span>
-                        <span id="statDate">----</span>
-                        <span id="statRuntime">-- min</span>
-                    </div>
+                <div class="hero-meta-row">
+                    <span class="hero-meta-rating" id="statRating">--</span>
+                    <span class="hero-meta-dot">·</span>
+                    <span class="hero-meta-year" id="statDate">----</span>
+                    <span class="hero-meta-dot">·</span>
+                    <span class="hero-meta-runtime" id="statRuntime">-- min</span>
                 </div>
-                
                 <p class="hero-desc" id="heroDesc" data-i18n="hero_connecting">
                     Connecting to Legion Space database...
                 </p>
-
                 <div class="hero-buttons">
-                    <button class="btn btn-play" onclick="triggerPlay()">▶ <span data-i18n="hero_play">Play</span></button>
-                    <button class="btn btn-info" onclick="openRedirectModal()">ⓘ <span data-i18n="hero_more_info">More Info</span></button>
+                    <button class="btn btn-play" onclick="triggerPlay()">▶ <span data-i18n="hero_play">Watch Now</span></button>
+                    <button class="btn btn-info" onclick="openRedirectModal()">+ <span data-i18n="hero_more_info">My List</span></button>
                 </div>
             </div>
-
-            <div class="hero-trailer-side" onclick="openMovie()">
-                <iframe 
-                    id="heroTrailerFrame"
-                    src="" 
-                    title="Trailer" 
-                    frameborder="0" 
-                    allow="autoplay; encrypted-media" 
-                    allowfullscreen>
-                </iframe>
-                <div class="trailer-tooltip">
-                    <span class="tooltip-icon">!</span>
-                    <span data-i18n="hero_tooltip">Left click to interact</span>
-                </div>
+            <div class="hero-main-poster">
+                <img id="heroPosterImg" src="" alt="" style="display:none">
             </div>
-
-            <div class="slider-indicators" id="sliderDots"></div>
         </div>
+
+        <div class="slider-indicators" id="sliderDots"></div>
     </header>
 
     <main class="container" id="subSec" style="padding-bottom: 0;">
-        <section class="row">
-            <h2 class="row-title">Most Recent</h2>
-            <div class="horizontal-scroll-row" id="rowNewest"></div>
-        </section>
+
+        <!-- ── TWO-COLUMN DISCOVERY: Trending + Weekly Schedule ── -->
+        <div class="discovery-two-col">
+
+            <!-- LEFT: Trending Now -->
+            <div class="discovery-panel">
+                <div class="discovery-panel-bg" id="trendingPanelBg"></div>
+                <div class="discovery-panel-content">
+                    <div class="discovery-panel-header">
+                        <div class="discovery-panel-title">
+                            <span class="discovery-accent">⚡</span> Trending Now
+                        </div>
+                        <div style="display:flex;align-items:center;gap:10px">
+                            <div class="row-arrows">
+                                <button class="row-arrow-btn" onclick="scrollRow('trendingRankedList',-1)">&#8249;</button>
+                                <button class="row-arrow-btn" onclick="scrollRow('trendingRankedList',1)">&#8250;</button>
+                            </div>
+                            <a href="/html/allMovies.html" class="view-all-link">View All →</a>
+                        </div>
+                    </div>
+                    <div class="trending-cards-row" id="trendingRankedList">
+                        <p style="color:#444;font-size:.8rem;padding:8px">Loading...</p>
+                    </div>
+                    <div class="trending-genre-pills" id="trendingGenrePills"></div>
+                </div>
+            </div>
+
+            <!-- RIGHT: This Week's Anime Schedule — Jikan API -->
+            <div class="discovery-panel">
+                <div class="discovery-panel-bg" id="schedulePanelBg"></div>
+                <div class="discovery-panel-content">
+                    <div class="discovery-panel-header">
+                        <div class="discovery-panel-title">
+                            <span class="discovery-accent">⛩</span> This Week's Schedule
+                        </div>
+                        <div style="display:flex;align-items:center;gap:10px">
+                            <div class="row-arrows">
+                                <button class="row-arrow-btn" onclick="scrollRow('scheduleAnimeList',-1)">&#8249;</button>
+                                <button class="row-arrow-btn" onclick="scrollRow('scheduleAnimeList',1)">&#8250;</button>
+                            </div>
+                            <a href="/html/indexBrowse.html" class="view-all-link">Browse →</a>
+                        </div>
+                    </div>
+                    <div class="schedule-day-tabs" id="scheduleDayTabs"></div>
+                    <div class="schedule-cards-row" id="scheduleAnimeList">
+                        <p style="color:#444;font-size:.8rem;padding:8px">Loading...</p>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ── HOME WIDGETS ──────────────────────────────────────── -->
+        <div class="home-widgets-area">
+
+            <!-- Quick Stats strip -->
+            <div class="qs-strip">
+                <div class="qs-strip-label"><span class="discovery-accent">◉</span> Your Space</div>
+                <div class="qs-stats-row" id="quickStatsRow">
+                    <div class="qs-skeleton"></div>
+                </div>
+            </div>
+
+            <!-- Community Pulse + Right column row -->
+            <div class="home-split-row">
+
+                <!-- Community Pulse -->
+                <div class="home-widget-panel cp-panel">
+                    <div class="home-widget-header">
+                        <div class="home-widget-title"><span class="discovery-accent">◎</span> Community Pulse</div>
+                        <a href="/html/forum.html" class="view-all-link">Forum →</a>
+                    </div>
+                    <div class="cp-list" id="communityPulseList">
+                        <p style="color:#444;font-size:.8rem;padding:10px">Loading...</p>
+                    </div>
+                </div>
+
+                <!-- Right column: Random Discovery + Announcements stacked -->
+                <div class="home-widget-right-col">
+
+                    <div class="home-widget-panel rd-panel">
+                        <div class="rd-inner">
+                            <div class="rd-dice">🎲</div>
+                            <div class="rd-copy">
+                                <div class="home-widget-title" style="margin-bottom:4px">Random Discovery</div>
+                                <p class="rd-sub">Surprise yourself from 1M+ titles</p>
+                            </div>
+                            <button class="apply-btn rd-btn" id="randomDiscoveryBtn">Surprise Me</button>
+                        </div>
+                    </div>
+
+                    <div class="home-widget-panel ann-panel">
+                        <div class="home-widget-header" style="margin-bottom:12px">
+                            <div class="home-widget-title"><span class="discovery-accent">✦</span> What's New</div>
+                        </div>
+                        <div class="ann-list" id="announcementsList"></div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
 
         <section class="intro-section" id="introSection">
             <div class="intro-grid">
@@ -210,13 +376,13 @@
             </div>
             <div class="roadmap-grid">
                 <div class="roadmap-card">
-                    <h4>YouTube API Integration</h4>
-                    <p>Official trailer embeds with reliable playback and metadata.</p>
+                    <h4>TMDB Trailer Integration</h4>
+                    <p>Building a rough result displayer and a main page.</p>
                     <span class="roadmap-tag reached">Reached</span>
                 </div>
                 <div class="roadmap-card">
-                    <h4>Live Translation (RU/EN)</h4>
-                    <p>Real-time UI localization across Russian and English.</p>
+                    <h4>Integration of IMDb</h4>
+                    <p>A backup source of data reserved as a final fallback</p>
                     <span class="roadmap-tag reached">Reached</span>
                 </div>
                 <div class="roadmap-card">
@@ -226,36 +392,57 @@
                 </div>
                 <div class="roadmap-card">
                     <h4>Forum Blocks</h4>
-                    <p>Moderation controls to block users and filter abusive content.</p>
+                    <p>Introduction to a forum page and comments</p>
                     <span class="roadmap-tag reached">Reached</span>
                 </div>
                 <div class="roadmap-card">
-                    <h4>TMDB Global Database</h4>
-                    <p>Expanded metadata and deeper catalog coverage.</p>
-                    <span class="roadmap-tag reached">Recently Implemented</span>
+                    <h4>Media source</h4>
+                    <p>Actual development/scraping of media sources, TV/Movies</p>
+                    <span class="roadmap-tag reached">Reached</span>
                 </div>
                 <div class="roadmap-card">
                     <h4>Cloud Sync</h4>
                     <p>Cross‑device watch history and playlists.</p>
-                    <span class="roadmap-tag">Beta V.2</span>
+                    <span class="roadmap-tag reached">Reached</span>
                 </div>
                 <div class="roadmap-card">
-                    <h4>Movie Transcripts</h4>
-                    <p>Accessible transcripts and searchable dialogue.</p>
-                    <span class="roadmap-tag">In Progress</span>
+                    <h4>Integration of MAL</h4>
+                    <p>Using MAL for anime related mechanics</p>
+                    <span class="roadmap-tag reached">Reached</span>
                 </div>
-
+                <div class="roadmap-card">
+                    <h4>Mobile support</h4>
+                    <p>Optimizing the platform for mobile devices and tablets.</p>
+                    <span class="roadmap-tag ">IN PROGRESS</span>
+                </div>
             </div>
         </section>
 
         <section class="cta-strip" id="ctaStrip">
-            <div>
-                <h3>Ready to dive in?</h3>
-                <p>Browse the full experience or jump straight into the library.</p>
-            </div>
+ 
             <div class="cta-actions">
-                <a id="ctaPrimaryBtn" href="/html/indexBrowse.html" class="apply-btn">Go to Browse</a>
-                <a id="ctaSecondaryBtn" href="/html/customPlaylists.html" class="apply-btn ghost-btn">Open Public Library</a>
+
+                <div class="about-grid">
+                    <div class="about-text">
+                    <h2>About Legion Space</h2>
+                    <p style="display: inline-block; margin-bottom: 25px;">
+                        Your all-in-one destination for both Movie and Anime lovers. This platform is based on the TMDB database while at the same time mixing in anilist and jikan for the website's anime mode, that you can toggle on the bottom left part of your screen. You can browse Anime/Movies at any time and in any mode, yet flicking it to what you are in need of will provide you better info/recommendations.
+                    </p>
+                    <a id="ctaPrimaryBtn" href="/html/indexBrowse.html" class="apply-btn" style="margin-bottom: 15px;">Go to Browse</a>
+                    <a id="ctaSecondaryBtn" href="/html/customPlaylists.html" class="apply-btn ghost-btn">Open Public Library</a>
+          
+                </div>
+            </div>
+            </div>
+            <div class="device-support cta-device-support">
+                <h3>Available On</h3>
+                <ul class="device-list">
+                    <li><span class="device-icon">📱</span><span class="device-name">Phone</span></li>
+                    <li><span class="device-icon">📟</span><span class="device-name">Tablet</span></li>
+                    <li><span class="device-icon">💻</span><span class="device-name">Laptop</span></li>
+                    <li><span class="device-icon">🖥️</span><span class="device-name">PC</span></li>
+                    <li><span class="device-icon">📺</span><span class="device-name">TV</span></li>
+                </ul>
             </div>
         </section>
 
@@ -314,7 +501,7 @@
         </div>
     </main>
 
-    <section class="container ad-section" id="adSection">
+    <!-- <section class="container ad-section" id="adSection">
         <div class="ad-card">
             <div class="ad-badge">ADVERTISEMENT</div>
             <div class="ad-content">
@@ -325,9 +512,9 @@
                 <button class="ad-cta">Advertise with us</button>
             </div>
         </div>
-    </section>
+    </section> -->
 
-    <section class="container about-section" id="aboutSection">
+    <!-- <section class="container about-section" id="aboutSection">
         <div class="about-grid">
             <div class="about-text">
                 <h2>About Legion Space</h2>
@@ -337,19 +524,8 @@
                     Want to witness the magic of accessible and modern experience? Legion Space is your go-to destination for all things film.
                 </p>
             </div>
-
-            <div class="device-support">
-                <h3>Available On</h3>
-                <ul class="device-list">
-                    <li><span class="device-icon">📱</span><span class="device-name">Phone</span></li>
-                    <li><span class="device-icon">📟</span><span class="device-name">Tablet</span></li>
-                    <li><span class="device-icon">💻</span><span class="device-name">Laptop</span></li>
-                    <li><span class="device-icon">🖥️</span><span class="device-name">PC</span></li>
-                    <li><span class="device-icon">📺</span><span class="device-name">TV</span></li>
-                </ul>
-            </div>
         </div>
-    </section>
+    </section> -->
     
     <div id="notification-toast" class="toast-hidden"></div>
         <footer class="container site-footer">
@@ -359,9 +535,8 @@
                 <div class="footer-brand">
                     <h3>LEGION SPACE</h3>
                     <p class="footer-desc">
-                        The premium destination for cinema lovers in Astana. 
-                        From Kazakh masterpieces to global blockbusters, 
-                        we stream it all.
+                        A platform for all media lovers, contains all main stream content and more!
+
                     </p>
                     <div class="social-links">
                         <a href="https://instagram.com" class="social-btn" title="Instagram">
@@ -418,7 +593,7 @@
 
         </div>
     </footer>
-    <div id="signupModal" class="signup-overlay">
+    <div id="signupModal" class="signup-overlay" style="display:none;">
         <div class="signup-box">
             <div class="signup-close" onclick="closeSignupModal()">✕</div>
             
@@ -440,21 +615,14 @@
                     <input type="password" id="signupPassword" required placeholder=" ">
                     <label>Password</label>
                 </div>
-                <div class="input-group">
-                    <select id="signupTier" class="styled-select" style="width: 100%; margin-top: 10px;">
-                        <option value="Free">Free (3 Views)</option>
-                        <option value="Premium">Premium (20 Views)</option>
-                        <option value="Gold">Gold (Unlimited)</option>
-                    </select>
-                </div>
                 <button type="submit" class="btn-signup">Create Account</button>
                 
-                <div class="divider">OR</div>
+                <!-- <div class="divider">OR</div>
                 
                 <button type="button" class="btn-google">
                     <svg width="18" height="18" viewBox="0 0 24 24"><path d="M21.35 11.1h-9.17v2.73h6.51c-.33 3.81-3.5 5.44-6.5 5.44C8.36 19.27 5 16.25 5 12c0-4.1 3.2-7.27 7.2-7.27 3.09 0 4.9 1.97 4.9 1.97L19 4.72S16.56 2 12.1 2C6.42 2 2.03 6.8 2.03 12c0 5.05 4.13 10 10.22 10 5.35 0 9.25-3.67 9.25-9.09 0-1.15-.15-1.81-.15-1.81z" fill="currentColor"/></svg>
                     Continue with Google
-                </button>
+                </button> -->
             </form>
         </div>
     </div>
@@ -490,27 +658,11 @@
                         
                         <input type="file" id="pfpInput" accept="image/*" style="display: none;" onchange="handlePFPUpload(event)">
                     </div>
-                    <div class="beta-notice-box">
-                        <div class="beta-badge">ALPHA v1.0</div>
-                        <p>You are currently using the <strong>Localized/TMDB API</strong> build of Legion Space.</p>
-                        <ul>
-                            <li>Dynamic API source: Local DB or TMDB.</li>
-                            <li>Region: Astana/Kazakhstan or Global (TMDB).</li>
-                        </ul>
-                        <p class="beta-small">Some settings are read-only during the current phase.</p>
-                    </div>
                     <div class="setting-item">
                         <label>Language</label>
                         <select id="settingsLanguage" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;" onchange="selectLanguage(this.value)">
                             <option value="en">🇬🇧 English</option>
                             <option value="ru">🇷🇺 Русский</option>
-                        </select>
-                    </div>                    
-                    <div class="setting-item">
-                        <label>Movie Data Source</label>
-                        <select id="settingsMovieSource" class="styled-select" style="width: 100%; padding: 10px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;">
-                            <option value="local">Local Database</option>
-                            <option value="api">External API (TMDB)</option>
                         </select>
                     </div>
                 </div>
@@ -525,21 +677,15 @@
                         </div>
                     </div>
 
-                    <div class="setting-item coming-soon" style="margin-top: 15px;">
-                        <label>Cloud Sync (Multi-Device)</label>
-                        <div class="blurred-preview" style="height: 60px; background: #1a1a1a; display: flex; align-items: center; justify-content: center;">
-                            <span style="font-size: 24px;">☁️</span>
-                            <div class="blur-overlay"><span>PLANNED v2.0</span></div>
+                    <div class="setting-item hero-audio-setting">
+                        <div class="hero-audio-copy">
+                            <label for="muteAudio">Mute Hero Trailer</label>
+                            <p>Silence autoplay trailers on the home screen</p>
                         </div>
-                    </div>
-
-                    <div class="setting-item" style="margin-bottom: 0;">
-                        <label>TMDB Global Database</label>
-                        <div style="display: flex; align-items: center; gap: 12px; margin: 30px 0 30px 0; justify-content: center;">
-                            <span id="tmdbApiStatusCircle" style="width: 22px; height: 22px; border-radius: 50%; display: inline-block; background: #aaa; border: 2px solid #333;"></span>
-                            <span id="tmdbApiStatusText" style="font-size: 1.1em; color: #888;">Checking API...</span>
-                        </div>
-                        <div style="text-align: center; color: #aaa; font-size: 0.95em;">Checks if TMDB API key is valid and online.</div>
+                        <label class="hero-audio-switch" aria-label="Mute Hero Trailer Audio">
+                            <input type="checkbox" id="muteAudio" onchange="toggleMuteAudio()">
+                            <span class="hero-audio-slider"></span>
+                        </label>
                     </div>
                 </div>
             </div>
@@ -559,5 +705,7 @@
                 </div>
             </div>
         </div>
+
+    <script src="/js/indexmainGetManager.js"></script>
 </body>
 </html>

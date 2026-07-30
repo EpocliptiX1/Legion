@@ -1,5 +1,5 @@
 // Custom Playlists UI & API client
-const API_BASE = 'https://localhost:3000';
+const API_BASE = '';
 
 let activePlaylistId = null;
 let activePlaylistOwnerUID = null;
@@ -721,3 +721,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
     renderPlaylistsGrid();
 });
+
