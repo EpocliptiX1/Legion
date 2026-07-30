@@ -6385,6 +6385,9 @@ app.get('/api/anime-neko-log', async (req, res) => {
             logNekoDebug(`[Neko] Episode ${episode} not in current part (max: ${maxEpisodeNum}), searching for continuation parts...`);
 
             try {
+                // Track cumulative episodes as we search through parts
+                let cumulativeEpisodes = maxEpisodeNum; // Start with Part 1's episodes
+
                 // Search for Part 2, Part 3, Part 4, etc. until we find the right one
                 for (let partNum = 2; partNum <= 5; partNum++) {
                     const searchQuery = `${rawTitle} Part ${partNum}`;
@@ -6430,9 +6433,9 @@ app.get('/api/anime-neko-log', async (req, res) => {
                                 });
                                 const maxPartEpNum = Math.max(...partEpisodes, 0);
 
-                                // Local episode = requested - episodes from previous parts
-                                const localEpisodeNum = requestedEpNum - maxEpisodeNum;
-                                logNekoDebug(`[Neko] Part ${partNum} has max ${maxPartEpNum} local episodes. Looking for global ep${requestedEpNum} = local ep${localEpisodeNum}`);
+                                // Local episode = requested - episodes from all PREVIOUS parts
+                                const localEpisodeNum = requestedEpNum - cumulativeEpisodes;
+                                logNekoDebug(`[Neko] Part ${partNum}: cumulative=${cumulativeEpisodes}, max=${maxPartEpNum}. Looking for global ep${requestedEpNum} = local ep${localEpisodeNum}`);
 
                                 epElement = $epList(`a[data-num="${localEpisodeNum}"]`).first();
                                 if (!epElement.length) epElement = $epList(`a[data-slug="${localEpisodeNum}"]`).first();
@@ -6440,6 +6443,10 @@ app.get('/api/anime-neko-log', async (req, res) => {
                                 if (epElement.length) {
                                     logNekoDebug(`[Neko] ✓ Found episode ${requestedEpNum} (local ep${localEpisodeNum}) in Part ${partNum}!`);
                                     break;
+                                } else {
+                                    // Update cumulative for next part
+                                    cumulativeEpisodes += maxPartEpNum;
+                                    logNekoDebug(`[Neko] Episode not found in Part ${partNum}. Updated cumulative to ${cumulativeEpisodes}`);
                                 }
                             }
                         } catch (err) {
