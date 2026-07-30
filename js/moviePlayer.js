@@ -2018,15 +2018,15 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                     }
 
-                    const hasSpecials = data.seasons && data.seasons.some(s => s.season_number === 0);
-
-                    let specialsOption = '';
-                    if (hasSpecials && useAnimeSeasonUX) {
-                        specialsOption = '<option value="specials">Specials</option>';
-                    }
+                    // TODO: Specials (Season 0) not available on NekoStream yet - comment out until available
+                    // const hasSpecials = data.seasons && data.seasons.some(s => s.season_number === 0);
+                    // let specialsOption = '';
+                    // if (hasSpecials && useAnimeSeasonUX) {
+                    //     specialsOption = '<option value="specials">Specials</option>';
+                    // }
 
                     seasonSelect.innerHTML = useAnimeSeasonUX
-                        ? `<option value="all">All eps</option>${seasonEntries.map(s => `<option value="${s.season_number}">Season ${s.season_number}</option>`).join('')}${specialsOption}`
+                        ? `<option value="all">All eps</option>${seasonEntries.map(s => `<option value="${s.season_number}">Season ${s.season_number}</option>`).join('')}`
                         : seasonEntries.map(s => `<option value="${s.season_number}">Season ${s.season_number}</option>`).join('');
                     if (seasonPickerWrap) {
                         seasonPickerWrap.style.display = useAnimeSeasonUX ? 'flex' : 'none';
@@ -2042,13 +2042,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
                         try {
                             const bySeason = [];
-                            if (mode === 'specials') {
-                                console.log('[Episodes] Fetching Season 0 (Specials)...');
-                                const seasonRes = await fetch(`/api/tmdb-proxy/tv/${tmdbId}/season/0`);
-                                const seasonData = await seasonRes.json();
-                                console.log(`[Episodes] Season 0 fetched: ${Array.isArray(seasonData?.episodes) ? seasonData.episodes.length : 0} episodes`);
-                                bySeason.push({ seasonNumber: 0, episodes: Array.isArray(seasonData?.episodes) ? seasonData.episodes : [] });
-                            } else if (mode === 'all' && useAnimeSeasonUX) {
+                            // TODO: Specials handling disabled - not available on NekoStream
+                            // if (mode === 'specials') {
+                            //     console.log('[Episodes] Fetching Season 0 (Specials)...');
+                            //     const seasonRes = await fetch(`/api/tmdb-proxy/tv/${tmdbId}/season/0`);
+                            //     const seasonData = await seasonRes.json();
+                            //     console.log(`[Episodes] Season 0 fetched: ${Array.isArray(seasonData?.episodes) ? seasonData.episodes.length : 0} episodes`);
+                            //     bySeason.push({ seasonNumber: 0, episodes: Array.isArray(seasonData?.episodes) ? seasonData.episodes : [] });
+                            // } else
+                            if (mode === 'all' && useAnimeSeasonUX) {
                                 if (resolvedSeasonGroups && resolvedSeasonGroups.length > 0) {
                                     bySeason.push(...resolvedSeasonGroups.map(g => ({ seasonNumber: g.seasonNumber, episodes: g.episodes })));
                                 } else {
