@@ -644,22 +644,22 @@ document.addEventListener('DOMContentLoaded', function() {
 
             console.log('[Preload] Starting background source preload:', { tmdbId, season, episode, malId });
 
-            // Preload KAA sources
-            const kaaUrl = `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}&audio=sub&itemType=tv&title=${encodeURIComponent(title)}`;
+            // Preload KAA sources (without audio type - sources work for all audio types)
+            const kaaUrl = `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}&audio=dub&itemType=tv&title=${encodeURIComponent(title)}`;
             fetch(kaaUrl).then(res => res.json()).then(data => {
                 if (data?.sources?.length > 0) {
                     window.__preloadedKaaSources = data;
                     window.__preloadedKaaEpisode = { season, ep: episode };
-                    console.log('[Preload] KAA sources cached for S' + season + 'E' + episode);
+                    console.log('[Preload] KAA sources cached for S' + season + 'E' + episode, { sourceCount: data.sources.length });
                 }
             }).catch(err => console.log('[Preload] KAA preload failed:', err));
 
-            // Preload Neko sources
+            // Preload Neko sources (without audio type - sources work for all audio types)
             const nekoQuery = new URLSearchParams({
                 malId: malId || '',
                 tmdbId: tmdbId || '',
                 title,
-                type: 'sub',
+                type: 'dub',
                 season: season || 1,
                 ep: episode || 1
             });
@@ -668,7 +668,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (data?.stream || data?.sources?.file) {
                     window.__preloadedNekoSources = data;
                     window.__preloadedNekoEpisode = { season, ep: episode };
-                    console.log('[Preload] Neko sources cached for S' + season + 'E' + episode);
+                    console.log('[Preload] Neko sources cached for S' + season + 'E' + episode, { hasStream: !!data.stream });
                 }
             }).catch(err => console.log('[Preload] Neko preload failed:', err));
 
@@ -1323,10 +1323,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     document.getElementById("title")?.textContent.trim() || "";
 
                 let data;
-                if (window.__preloadedKaaSources && parseInt(selectedSeason) === parseInt(window.__preloadedKaaEpisode?.season || 1) && parseInt(episode) === parseInt(window.__preloadedKaaEpisode?.ep || 1)) {
-                    console.log('[KAA] Using preloaded sources');
+                const preloadedEp = window.__preloadedKaaEpisode;
+                if (window.__preloadedKaaSources && preloadedEp && parseInt(selectedSeason) === parseInt(preloadedEp.season || 1) && parseInt(episode) === parseInt(preloadedEp.ep || 1)) {
+                    console.log('[KAA] Using preloaded sources for S' + selectedSeason + 'E' + episode);
                     data = window.__preloadedKaaSources;
                     window.__preloadedKaaSources = null;
+                    window.__preloadedKaaEpisode = null;
                 } else {
                     const res = await fetch(
                         `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=${encodeURIComponent(requestedType)}&title=${encodeURIComponent(title)}`
@@ -1511,10 +1513,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 }, 10000);
 
                 let data;
-                if (window.__preloadedNekoSources && parseInt(season) === parseInt(window.__preloadedNekoEpisode?.season || 1) && parseInt(episode) === parseInt(window.__preloadedNekoEpisode?.ep || 1)) {
-                    console.log('[Neko] Using preloaded sources');
+                const preloadedNekoEp = window.__preloadedNekoEpisode;
+                if (window.__preloadedNekoSources && preloadedNekoEp && parseInt(season) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1)) {
+                    console.log('[Neko] Using preloaded sources for S' + season + 'E' + episode);
                     data = window.__preloadedNekoSources;
                     window.__preloadedNekoSources = null;
+                    window.__preloadedNekoEpisode = null;
                 } else {
                     const res = await fetch(`/api/anime-neko-log?${query.toString()}`);
                     data = await res.json().catch(() => ({}));
