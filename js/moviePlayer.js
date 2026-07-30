@@ -2293,6 +2293,31 @@ document.addEventListener('DOMContentLoaded', function() {
                                 window.currentEpisodeThumb = firstThumb || animePosterThumb;
                                 window.currentAnimePosterThumb = animePosterThumb;
 
+                                // DEBUG: Continuously mark active episode every second for 10 seconds
+                                let debugAttempt = 0;
+                                const debugInterval = setInterval(() => {
+                                    debugAttempt++;
+                                    const continueS = window.__continueFromSeason;
+                                    const continueE = window.__continueFromEpisode;
+                                    if (continueS && continueE) {
+                                        console.log(`[DEBUG Attempt ${debugAttempt}] Trying to mark S${continueS}E${continueE} as active`);
+                                        const activeItem = document.querySelector(`.episode-list-item[data-season="${continueS}"][data-ep="${continueE}"]`);
+                                        if (activeItem) {
+                                            document.querySelectorAll('.episode-list-item.active').forEach(el => el.classList.remove('active'));
+                                            activeItem.classList.add('active');
+                                            console.log(`[DEBUG ✓] Found and marked S${continueS}E${continueE} as active`);
+                                        } else {
+                                            console.log(`[DEBUG ✗] Could not find S${continueS}E${continueE} in DOM`);
+                                        }
+                                    } else {
+                                        console.log(`[DEBUG Attempt ${debugAttempt}] continue_from still empty: season=${continueS} ep=${continueE}`);
+                                    }
+                                    if (debugAttempt >= 10) {
+                                        clearInterval(debugInterval);
+                                        console.log('[DEBUG] Stopped after 10 attempts');
+                                    }
+                                }, 1000);
+
                                 wireEpisodeSearch();
 
                             }
