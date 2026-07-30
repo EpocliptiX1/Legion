@@ -5982,9 +5982,16 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, episodeNumber, audioT
         const isSpecial = title.includes('special') || title.includes('ova') || title.includes('ona') || title.includes('movie');
         const isMovieOrOVA = parsed.isMovie || parsed.isOVA || parsed.isONA || parsed.isSpecial;
 
-        // Skip specials/OVAs/movies when looking for regular episodes - only accumulate TV series
-        if (isSpecial || isMovieOrOVA) {
-            logKaaDebug('[KAA Resolve] skipping non-TV candidate', { title: entry.result.title });
+        // For movies (wantedSeason=1), accept the movie result
+        // For TV seasons (wantedSeason>1), skip movies and only accept TV series
+        if ((isSpecial || isMovieOrOVA) && wantedSeason !== 1) {
+            logKaaDebug('[KAA Resolve] skipping non-TV candidate', { title: entry.result.title, wantedSeason });
+            continue;
+        }
+
+        // For movie requests (wantedSeason=1), skip OVAs/specials but accept movies
+        if ((isSpecial || isMovieOrOVA) && wantedSeason === 1 && !(parsed.isMovie)) {
+            logKaaDebug('[KAA Resolve] skipping OVA/special for movie request', { title: entry.result.title });
             continue;
         }
 
