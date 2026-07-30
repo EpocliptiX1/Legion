@@ -6462,7 +6462,16 @@ app.get('/api/anime-neko-log', async (req, res) => {
         }
 
         // Last resort: use first episode
-        if (!epElement.length) epElement = $ep('a[data-ids]').first();
+        if (!epElement.length) {
+            if (season === 0) {
+                logNekoDebug(`[Neko] ⚠️  Special episode ${episode} not found on any part`);
+                return res.status(404).json({
+                    ok: false,
+                    error: `Special episode ${episode} is not available on NekoStream. These episodes may not be hosted on streaming platforms yet.`
+                });
+            }
+            epElement = $ep('a[data-ids]').first();
+        }
 
         const serverToken = epElement.attr('data-ids');
         const mal = epElement.attr('data-mal');
