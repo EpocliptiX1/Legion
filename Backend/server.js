@@ -6320,6 +6320,15 @@ app.get('/api/anime-neko-log', async (req, res) => {
         return res.status(400).json({ ok: false, error: 'Title is required' });
     }
 
+    // Special episodes (Season 0) are typically not available on streaming sites
+    if (season === 0) {
+        logNekoDebug('[Neko] ⚠️  Season 0 (Specials) not available on NekoStream');
+        return res.status(400).json({
+            ok: false,
+            error: 'Special episodes are not available on NekoStream. These are typically OVAs or bonus content only on TMDB.'
+        });
+    }
+
     try {
         // 0. Search Anikoto and resolve watch URL with Season filtering
         logNekoDebug(`[Neko] 0. Resolving watch URL for: "${rawTitle}" (Season ${season})`);
