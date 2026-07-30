@@ -6382,65 +6382,75 @@ app.get('/api/anime-neko-log', async (req, res) => {
         const requestedEpNum = parseInt(episode, 10) || 0;
 
         if (!epElement.length && requestedEpNum > maxEpisodeNum && requestedEpNum > 16) {
-            logNekoDebug(`[Neko] Episode ${episode} not in current part (max: ${maxEpisodeNum}), searching for Part 2...`);
+            logNekoDebug(`[Neko] Episode ${episode} not in current part (max: ${maxEpisodeNum}), searching for continuation parts...`);
 
             try {
-                // Search for "Part 2" in the anime title
-                const searchQuery = `${rawTitle} Part 2`;
-                logNekoDebug(`[Neko] Searching: "${searchQuery}"`);
+                // Search for Part 2, Part 3, Part 4, etc. until we find the right one
+                for (let partNum = 2; partNum <= 5; partNum++) {
+                    const searchQuery = `${rawTitle} Part ${partNum}`;
+                    logNekoDebug(`[Neko] Searching: "${searchQuery}"`);
 
-                const part2SearchRes = await axios.get(
-                    `https://anikoto.cz/ajax/anime/search?keyword=${encodeURIComponent(searchQuery)}`,
-                    { headers: baseHeaders }
-                );
+                    const partSearchRes = await axios.get(
+                        `https://anikoto.cz/ajax/anime/search?keyword=${encodeURIComponent(searchQuery)}`,
+                        { headers: baseHeaders }
+                    );
 
-                const part2HtmlData = part2SearchRes.data?.result?.html || part2SearchRes.data?.html || '';
-                const $part2Search = cheerio.load(part2HtmlData);
-                const part2Results = [];
+                    const partHtmlData = partSearchRes.data?.result?.html || partSearchRes.data?.html || '';
+                    const $partSearch = cheerio.load(partHtmlData);
+                    const partResults = [];
 
-                $part2Search('a[href*="/watch/"]').each((i, el) => {
-                    const href = $part2Search(el).attr('href') || '';
-                    const text = $part2Search(el).text().trim();
-                    if (!href.includes('/ep-') && (text.includes('Part 2') || text.includes('part-2'))) {
-                        part2Results.push({ url: href.startsWith('http') ? href : `https://anikoto.cz${href}`, text });
-                    }
-                });
-
-                logNekoDebug(`[Neko] Found ${part2Results.length} Part 2 results`);
-
-                // Try each Part 2 result
-                for (const part2Result of part2Results) {
-                    try {
-                        logNekoDebug(`[Neko] Trying: ${part2Result.text}`);
-                        const page2Res = await axios.get(part2Result.url, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
-                        const $page2 = cheerio.load(page2Res.data);
-                        const id2 = $page2('#watch-main').attr('data-id');
-
-                        if (id2) {
-                            logNekoDebug(`[Neko] Part 2 found! Internal ID: ${id2}`);
-                            const ep2ListRes = await axios.get(`https://anikoto.cz/ajax/episode/list/${id2}?vrf=`, { headers: baseHeaders });
-                            const html2Data = ep2ListRes.data.result || ep2ListRes.data.html || ep2ListRes.data;
-                            const $ep2 = cheerio.load(html2Data);
-
-                            // Part 2 episodes are renumbered locally (1-12) not globally (17-28)
-                            // So episode 17 globally = episode 1 locally in Part 2
-                            const localEpisodeNum = requestedEpNum - maxEpisodeNum;
-                            logNekoDebug(`[Neko] Looking for global ep${requestedEpNum} = local ep${localEpisodeNum} in Part 2`);
-
-                            epElement = $ep2(`a[data-num="${localEpisodeNum}"]`).first();
-                            if (!epElement.length) epElement = $ep2(`a[data-slug="${localEpisodeNum}"]`).first();
-
-                            if (epElement.length) {
-                                logNekoDebug(`[Neko] ✓ Found episode ${requestedEpNum} (local ep${localEpisodeNum}) in Part 2!`);
-                                break;
-                            }
+                    $partSearch('a[href*="/watch/"]').each((i, el) => {
+                        const href = $partSearch(el).attr('href') || '';
+                        const text = $partSearch(el).text().trim();
+                        if (!href.includes('/ep-') && (text.includes(`Part ${partNum}`) || text.includes(`part-${partNum}`))) {
+                            partResults.push({ url: href.startsWith('http') ? href : `https://anikoto.cz${href}`, text });
                         }
-                    } catch (err) {
-                        logNekoDebug(`[Neko] Part 2 attempt failed: ${err.message}`);
+                    });
+
+                    logNekoDebug(`[Neko] Found ${partResults.length} Part ${partNum} results`);
+
+                    // Try each result for this part
+                    for (const partResult of partResults) {
+                        try {
+                            logNekoDebug(`[Neko] Trying: ${partResult.text}`);
+                            const pageRes = await axios.get(partResult.url, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
+                            const $page = cheerio.load(pageRes.data);
+                            const partId = $page('#watch-main').attr('data-id');
+
+                            if (partId) {
+                                logNekoDebug(`[Neko] Part ${partNum} found! Internal ID: ${partId}`);
+                                const epListRes = await axios.get(`https://anikoto.cz/ajax/episode/list/${partId}?vrf=`, { headers: baseHeaders });
+                                const htmlData = epListRes.data.result || epListRes.data.html || epListRes.data;
+                                const $epList = cheerio.load(htmlData);
+
+                                // Check how many episodes this part has
+                                const partEpisodes = [];
+                                $epList('a[data-num]').each((i, el) => {
+                                    partEpisodes.push(parseInt($epList(el).attr('data-num'), 10) || 0);
+                                });
+                                const maxPartEpNum = Math.max(...partEpisodes, 0);
+
+                                // Local episode = requested - episodes from previous parts
+                                const localEpisodeNum = requestedEpNum - maxEpisodeNum;
+                                logNekoDebug(`[Neko] Part ${partNum} has max ${maxPartEpNum} local episodes. Looking for global ep${requestedEpNum} = local ep${localEpisodeNum}`);
+
+                                epElement = $epList(`a[data-num="${localEpisodeNum}"]`).first();
+                                if (!epElement.length) epElement = $epList(`a[data-slug="${localEpisodeNum}"]`).first();
+
+                                if (epElement.length) {
+                                    logNekoDebug(`[Neko] ✓ Found episode ${requestedEpNum} (local ep${localEpisodeNum}) in Part ${partNum}!`);
+                                    break;
+                                }
+                            }
+                        } catch (err) {
+                            logNekoDebug(`[Neko] Part ${partNum} attempt failed: ${err.message}`);
+                        }
                     }
+
+                    if (epElement.length) break;
                 }
             } catch (err) {
-                logNekoDebug(`[Neko] Part 2 search error: ${err.message}`);
+                logNekoDebug(`[Neko] Part search error: ${err.message}`);
             }
         }
 
