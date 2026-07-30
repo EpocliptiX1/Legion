@@ -755,18 +755,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 .episode-search-input:focus { border-color:#ff8000; }
                 .episode-list { list-style:none; padding:0; margin:0; flex:1; min-height:0; overflow-y: auto; }
                 .episode-list-item { display:flex; align-items:center; gap:10px; padding:8px 12px; font-size:0.94rem; color:#fff; border-bottom:1px solid #1f1f1f; background:#080808; transition:background 0.2s; cursor:pointer; position:relative; z-index:26; pointer-events:auto; }
-                .episode-list-item.active { background:#ff8000; color:#fff; font-weight:700; box-shadow:0 0 16px #ff800099, inset 0 0 8px #00000055; border-left:4px solid #00ff00; }
-                .episode-list-item.watched.active { background:#ff8000; color:#fff; font-weight:700; box-shadow:0 0 16px #ff800099, inset 0 0 8px #00000055; border-left:4px solid #00ff00; }
+                .episode-list-item.active { background:#ff8000 !important; color:#fff !important; font-weight:700 !important; box-shadow:0 0 16px #ff800099, inset 0 0 8px #00000055 !important; border-left:4px solid #00ff00 !important; }
+                .episode-list-item.active .episode-num { color:#fff !important; }
+                .episode-list-item.watched.active { background:#ff8000 !important; color:#fff !important; font-weight:700 !important; box-shadow:0 0 16px #ff800099, inset 0 0 8px #00000055 !important; border-left:4px solid #00ff00 !important; }
                 .episode-list-item:hover { background:#ff8000aa; color:#fff; }
                 .episode-num { width:22px; text-align:center; font-weight:700; color:#ff8000; font-size:0.82rem; }
                 .episode-thumb { width:74px; height:42px; border-radius:6px; object-fit:cover; background:#141414; flex:0 0 auto; border:1px solid #242424; }
                 .episode-text { min-width:0; flex:1; display:flex; flex-direction:column; gap:2px; }
-                .episode-list-item.active .episode-num { color:#fff; }
                 .episode-title { margin:0; font-size:0.83rem; line-height:1.2; white-space:normal; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
                 .episode-meta { color:#9a9a9a; font-size:0.74rem; }
                 .episode-play { margin-left:auto; color:#fff; font-size:1.2rem; }
-                .episode-list-item.watched { background:#1a1a1a !important; color:#666 !important; font-weight:400; border-left:3px solid #444; }
-                .episode-list-item.watched .episode-num { color:#666 !important; }
+                .episode-list-item.watched { background:#1a1a1a; color:#666; font-weight:400; border-left:3px solid #444; }
+                .episode-list-item.watched .episode-num { color:#666; }
                 .episode-list-item.hidden-by-search { display:none; }
                 /* Custom Scrollbar for Episode List */
                 .episode-list::-webkit-scrollbar { width: 8px; }
