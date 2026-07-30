@@ -2118,15 +2118,17 @@ document.addEventListener('DOMContentLoaded', function() {
                                         ? new Date(ep.air_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
                                         : 'TBA';
 
-                                    const epIdStr = `S${ep._season_number || 1}E${ep.episode_number}`;
+                                    // Use nullish coalescing to preserve season 0 (specials)
+                                    const seasonNum = ep._season_number !== undefined ? ep._season_number : 1;
+                                    const epIdStr = `S${seasonNum}E${ep.episode_number}`;
                                     const isWatched = watchedStates.includes(epIdStr) ? ' watched' : '';
 
                                     listHTML += `
-                                        <li class="episode-list-item${isWatched}" data-season="${ep._season_number || 1}" data-ep="${ep.episode_number}" onclick="window.__handleEpisodeItemClick && window.__handleEpisodeItemClick(this)">
+                                        <li class="episode-list-item${isWatched}" data-season="${seasonNum}" data-ep="${ep.episode_number}" onclick="window.__handleEpisodeItemClick && window.__handleEpisodeItemClick(this)">
                                             <span class="episode-num">${ep.episode_number}</span>
                                             <img class="episode-thumb" src="${thumb}" alt="Episode ${ep.episode_number}" loading="lazy" decoding="async" onerror="this.src='/img/LOGO_Short.png'">
                                             <div class="episode-text">
-                                                <span class="episode-title">S${ep._season_number || 1} · ${epName}</span>
+                                                <span class="episode-title">S${seasonNum} · ${epName}</span>
                                                 <span class="episode-meta">${airDate}</span>
                                             </div>
                                             <span class="episode-play">▶</span>
