@@ -6905,6 +6905,7 @@ async function aniListGetMediaWithRelations(anilistId) {
                 episodes
                 title { romaji english }
                 startDate { year month day }
+                streamingEpisodes { title thumbnail }
                 relations {
                     edges {
                         relationType(version: 2)
@@ -6985,7 +6986,11 @@ async function buildSeasonGroupsFromAniList(anilistId) {
             metaList.push({
                 title: media.title?.english || media.title?.romaji || `Season ${metaList.length + 1}`,
                 episodesCount: Number(media.episodes || 0),
-                airDate: aniListDateToIso(media.startDate)
+                airDate: aniListDateToIso(media.startDate),
+                // Real per-episode titles/thumbnails when AniList has them (it often does, via
+                // crunchyroll/funimation listings), so synthetic seasons don't have to fall back
+                // to "Episode N" placeholders with no thumbnail.
+                streamingEpisodes: Array.isArray(media.streamingEpisodes) ? media.streamingEpisodes : []
             });
         }
 
@@ -7064,12 +7069,20 @@ function metaListToGroups(metaList) {
     const sorted = [...metaList].sort((a, b) => sortKey(a.airDate) - sortKey(b.airDate));
     return sorted.map((m, idx) => {
         const total = Math.max(1, Number(m.episodesCount || 0));
-        const episodes = Array.from({ length: total }, (_, i) => ({
-            episode_number: i + 1,
-            name: `Episode ${i + 1}`,
-            air_date: null,
-            still_path: null
-        }));
+        const streaming = Array.isArray(m.streamingEpisodes) ? m.streamingEpisodes : [];
+        const episodes = Array.from({ length: total }, (_, i) => {
+            const real = streaming[i];
+            // AniList titles these like "Episode 1 - Undertaker"; the frontend already
+            // prefixes "S{n} · " on its own, so strip the leading "Episode N - " to avoid
+            // "S2 · Episode 1 - Undertaker" doubling up.
+            const realName = real?.title ? real.title.replace(/^Episode\s*\d+\s*[-:]\s*/i, '').trim() : '';
+            return {
+                episode_number: i + 1,
+                name: realName || `Episode ${i + 1}`,
+                air_date: null,
+                still_path: real?.thumbnail || null
+            };
+        });
         return {
             seasonNumber: idx + 1,
             label: m.title || `Season ${idx + 1}`,

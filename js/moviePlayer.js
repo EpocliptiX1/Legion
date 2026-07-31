@@ -2270,10 +2270,20 @@ document.addEventListener('DOMContentLoaded', function() {
                                 });
                                 flatEpisodes.forEach((ep, idx) => {
                                     const epName = ep.name || `Episode ${ep.episode_number}`;
-                                    const epIsUnreleased = !ep.air_date || new Date(ep.air_date) > new Date();
-                                    const thumb = (animeNotReleasedYet || epIsUnreleased)
-                                        ? animePosterThumb
-                                        : (ep.still_path ? `https://image.tmdb.org/t/p/w300${ep.still_path}` : animePosterThumb);
+                                    // A real thumbnail (TMDB still or a full external URL from AniList's
+                                    // streamingEpisodes) wins regardless of air_date — synthetic seasons
+                                    // never carry an air_date, so treating a missing one as "unreleased"
+                                    // was masking real thumbnails behind the generic poster every time.
+                                    const isFullUrl = /^https?:\/\//i.test(ep.still_path || '');
+                                    let thumb;
+                                    if (ep.still_path && isFullUrl) {
+                                        thumb = ep.still_path;
+                                    } else {
+                                        const epIsUnreleased = !ep.air_date || new Date(ep.air_date) > new Date();
+                                        thumb = (animeNotReleasedYet || epIsUnreleased)
+                                            ? animePosterThumb
+                                            : (ep.still_path ? `https://image.tmdb.org/t/p/w300${ep.still_path}` : animePosterThumb);
+                                    }
 
                                     // Capture first episode's thumb
                                     if (idx === 0) firstThumb = thumb;
