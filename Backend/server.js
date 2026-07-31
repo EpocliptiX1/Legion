@@ -6892,18 +6892,16 @@ app.get(['/api/stream/mal/:malId/:episode', '/api/stream/mal/:malId/:episode/:la
 // --- MEGAPLAY DOWNLOAD EXTRACTOR ---
 
 // =========================================
-//  9b2. ANIME SEASON GROUPS (Jikan/MAL-backed)
+//  9b2. ANIME SEASON GROUPS (AniList-backed, Jikan/MAL fallback)
 // =========================================
 
-// AniList path disabled for now — still produced wrong season groupings for some titles
-// even after the TV-only format filter. Kept here commented out in case it's revisited.
-/*
 async function aniListGetMediaWithRelations(anilistId) {
     const query = `
         query ($id: Int) {
             Media(id: $id, type: ANIME) {
                 id
                 idMal
+                format
                 episodes
                 title { romaji english }
                 startDate { year month day }
@@ -6997,6 +6995,10 @@ async function buildSeasonGroupsFromAniList(anilistId) {
             if (rType !== 'SEQUEL' && rType !== 'PREQUEL') return;
             const node = edge?.node;
             if (!node || String(node.type || '').toUpperCase() !== 'ANIME') return;
+            // Only keep walking through other TV entries. A movie/OVA branch off a real
+            // season is very unlikely to lead anywhere but more movies/OVAs, and each
+            // extra hop is a full GraphQL round trip we don't need to spend.
+            if (!['TV', 'TV_SHORT'].includes(String(node.format || '').toUpperCase())) return;
             const relId = Number(node.id || 0);
             if (relId > 0 && !visited.has(relId)) queue.push(relId);
         });
@@ -7004,7 +7006,6 @@ async function buildSeasonGroupsFromAniList(anilistId) {
 
     return { metaList, failedLookups };
 }
-*/
 
 async function buildSeasonGroupsFromJikan(malId) {
     const visited = new Set();
@@ -7107,38 +7108,37 @@ app.get('/api/anime-season-groups', async (req, res) => {
         let failedLookups = 0;
         let source = null;
 
-        // Primary: Jikan/MAL relations graph.
-        if (ids.malId) {
+        // Primary: AniList relations graph.
+        if (ids.anilistId) {
             try {
-                const r = await buildSeasonGroupsFromJikan(ids.malId);
+                const r = await buildSeasonGroupsFromAniList(ids.anilistId);
                 metaList = r.metaList;
                 failedLookups = r.failedLookups;
-                source = 'jikan';
+                source = 'anilist';
             } catch (err) {
-                console.warn(`[anime-season-groups] jikan primary failed for tmdb ${tmdbId}:`, err.message);
+                console.warn(`[anime-season-groups] anilist primary failed for tmdb ${tmdbId}:`, err.message);
             }
         }
 
-        // AniList fallback disabled for now (produced wrong results even after the TV-only
-        // filter fix — reverting to plain Jikan -> frontend TMDB fallback until revisited).
-        // if (metaList.length <= 1 && ids.anilistId) {
-        //     try {
-        //         const r = await buildSeasonGroupsFromAniList(ids.anilistId);
-        //         if (r.metaList.length > metaList.length) {
-        //             metaList = r.metaList;
-        //             failedLookups = r.failedLookups;
-        //             source = 'anilist';
-        //         }
-        //     } catch (err) {
-        //         console.warn(`[anime-season-groups] anilist fallback failed for tmdb ${tmdbId}:`, err.message);
-        //     }
-        // }
+        // Fallback: Jikan/MAL relations graph, only if AniList found nothing beyond the base season.
+        if (metaList.length <= 1 && ids.malId) {
+            try {
+                const r = await buildSeasonGroupsFromJikan(ids.malId);
+                if (r.metaList.length > metaList.length) {
+                    metaList = r.metaList;
+                    failedLookups = r.failedLookups;
+                    source = 'jikan';
+                }
+            } catch (err) {
+                console.warn(`[anime-season-groups] jikan fallback failed for tmdb ${tmdbId}:`, err.message);
+            }
+        }
 
         if (metaList.length === 0) {
-            // Jikan resolved nothing; the frontend's own TMDB title-search fallback
-            // (buildTmdbRelatedSeasonGroups) is the last tier.
+            // Neither AniList nor Jikan resolved anything; the frontend's own TMDB
+            // title-search fallback (buildTmdbRelatedSeasonGroups) is the last tier.
             if (diskCache) return res.json({ groups: diskCache.groups, cached: true, stale: true });
-            return res.status(404).json({ error: 'Could not resolve season groups from MAL' });
+            return res.status(404).json({ error: 'Could not resolve season groups from AniList or MAL' });
         }
 
         const groups = metaListToGroups(metaList);
