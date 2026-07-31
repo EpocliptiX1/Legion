@@ -7062,15 +7062,61 @@ async function buildSeasonGroupsFromJikan(malId) {
     return { metaList, failedLookups };
 }
 
-function metaListToGroups(metaList) {
+// TMDB often doesn't split a multi-cour anime into separate seasons at all — it just
+// lists one long season covering every cour (e.g. tmdb:100565 "86" has one 23-episode
+// season, episodes 1-11 being Part 1 and 12-23 being Part 2, matching AniList's own
+// 11+12 split exactly). That real, per-episode TMDB data (titles/dates/thumbnails) is
+// almost always better than anything AniList/Jikan can offer at the episode level, so
+// use AniList/Jikan only to find the *split point* and slice TMDB's real array by it.
+async function fetchTmdbRealSeasonEpisodes(tmdbId) {
+    const showRes = await axios.get(`${TMDB_BASE_URL}/tv/${tmdbId}`, { params: { api_key: TMDB_API_KEY } });
+    const seasons = Array.isArray(showRes.data?.seasons) ? showRes.data.seasons.filter(s => Number(s.season_number) > 0) : [];
+    if (seasons.length === 0) return [];
+    const target = seasons.reduce((a, b) => (Number(b.episode_count) > Number(a.episode_count) ? b : a));
+    const seasonRes = await axios.get(`${TMDB_BASE_URL}/tv/${tmdbId}/season/${target.season_number}`, { params: { api_key: TMDB_API_KEY } });
+    return Array.isArray(seasonRes.data?.episodes) ? seasonRes.data.episodes : [];
+}
+
+function metaListToGroups(metaList, tmdbEpisodes = []) {
     // Missing/unparseable dates sort last, not to epoch-0 first — an unannounced season
     // has no date yet, but it still airs after everything that already has one.
     const sortKey = (d) => { const t = Date.parse(d || ''); return Number.isNaN(t) ? Infinity : t; };
     const sorted = [...metaList].sort((a, b) => sortKey(a.airDate) - sortKey(b.airDate));
+
+    // AniList sometimes duplicates one season's streamingEpisodes listing onto a sibling
+    // season's entry (confirmed live: "86" and "86 Part 2" both return the identical
+    // 11-episode Crunchyroll list). This is only used as a last-resort fallback now (real
+    // TMDB data wins whenever available), but still worth guarding against.
+    const seenEpisodeLists = new Set();
+    sorted.forEach(m => {
+        const key = JSON.stringify((m.streamingEpisodes || []).map(e => e.title));
+        if (key === '[]') return;
+        if (seenEpisodeLists.has(key)) {
+            m.streamingEpisodes = [];
+        } else {
+            seenEpisodeLists.add(key);
+        }
+    });
+
+    let tmdbOffset = 0;
     return sorted.map((m, idx) => {
         const total = Math.max(1, Number(m.episodesCount || 0));
+        const tmdbSlice = tmdbEpisodes.slice(tmdbOffset, tmdbOffset + total);
+        tmdbOffset += total;
+
         const streaming = Array.isArray(m.streamingEpisodes) ? m.streamingEpisodes : [];
         const episodes = Array.from({ length: total }, (_, i) => {
+            const tmdbEp = tmdbSlice[i];
+            if (tmdbEp) {
+                return {
+                    episode_number: i + 1,
+                    name: tmdbEp.name || `Episode ${i + 1}`,
+                    air_date: tmdbEp.air_date || null,
+                    still_path: tmdbEp.still_path || null
+                };
+            }
+            // No real TMDB data for this slot (counts didn't line up, or TMDB is short).
+            // Fall back to AniList's streaming listing, then a plain placeholder.
             const real = streaming[i];
             // AniList titles these like "Episode 1 - Undertaker"; the frontend already
             // prefixes "S{n} · " on its own, so strip the leading "Episode N - " to avoid
@@ -7154,7 +7200,14 @@ app.get('/api/anime-season-groups', async (req, res) => {
             return res.status(404).json({ error: 'Could not resolve season groups from AniList or MAL' });
         }
 
-        const groups = metaListToGroups(metaList);
+        let tmdbEpisodes = [];
+        try {
+            tmdbEpisodes = await fetchTmdbRealSeasonEpisodes(tmdbId);
+        } catch (err) {
+            console.warn(`[anime-season-groups] TMDB real-episode fetch failed for tmdb ${tmdbId}, falling back to AniList streaming data:`, err.message);
+        }
+
+        const groups = metaListToGroups(metaList, tmdbEpisodes);
 
         // A partial walk can hide seasons we already have on disk from a healthier run,
         // so only overwrite the cache when this result is at least as complete.
