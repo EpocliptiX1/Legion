@@ -278,10 +278,20 @@ document.addEventListener('DOMContentLoaded', function() {
     const grid = document.getElementById('libraryGrid');
     if (!grid) return;
 
+    // Movies and anime get separate filter panels (#filterPanel / #filterPanelAnime) rather
+    // than one shared panel with anime-inapplicable fields (Actor/Director) disabled --
+    // those don't map to anime the way Format/Status do. Only one panel is ever shown.
+    const animeMode = isAnimeLibraryMode();
+    const activePanel = document.getElementById(animeMode ? 'filterPanelAnime' : 'filterPanel');
+    const inactivePanel = document.getElementById(animeMode ? 'filterPanel' : 'filterPanelAnime');
+    if (inactivePanel) {
+        inactivePanel.style.display = 'none';
+    }
+
     const toggleBtn = document.getElementById('filterToggle');
-    if (toggleBtn) {
+    if (toggleBtn && activePanel) {
         toggleBtn.onclick = () => {
-            document.getElementById('filterPanel').classList.toggle('open');
+            activePanel.classList.toggle('open');
         };
     }
 
@@ -289,21 +299,17 @@ document.addEventListener('DOMContentLoaded', function() {
     const minSel = document.getElementById('yearPickerMin');
     const maxSel = document.getElementById('yearPickerMax');
 
-    if (isAnimeLibraryMode()) {
+    if (animeMode) {
         const titleEl = document.querySelector('.list-title');
         if (titleEl) titleEl.textContent = 'Anime Library';
 
-        const actorInput = document.getElementById('actorInput');
-        const directorInput = document.getElementById('directorInput');
-        if (actorInput) {
-            actorInput.value = '';
-            actorInput.placeholder = 'Disabled in Anime mode';
-            actorInput.disabled = true;
-        }
-        if (directorInput) {
-            directorInput.value = '';
-            directorInput.placeholder = 'Disabled in Anime mode';
-            directorInput.disabled = true;
+        // UI only for now -- not wired to actual filtering yet, since the anime library
+        // still runs on Jikan (AniList migration is a separate, larger piece of work).
+        const applyBtnAnime = document.getElementById('applyFiltersAnime');
+        if (applyBtnAnime) {
+            applyBtnAnime.onclick = () => {
+                console.log('[allMovies] Anime filters UI clicked (not wired to filtering logic yet)');
+            };
         }
     }
 

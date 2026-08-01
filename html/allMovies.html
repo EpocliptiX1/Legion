@@ -236,30 +236,36 @@
                 <script>
                 document.addEventListener('DOMContentLoaded', function() {
                     const minYear = 1930, maxYear = 2026;
-                    const minSel = document.getElementById('yearPickerMin');
-                    const maxSel = document.getElementById('yearPickerMax');
-                    if (!minSel || !maxSel) return;
-                    minSel.innerHTML = '';
-                    maxSel.innerHTML = '';
-                    for (let y = minYear; y <= maxYear; y++) {
-                        minSel.innerHTML += `<option value="${y}">${y}</option>`;
-                        maxSel.innerHTML += `<option value="${y}">${y}</option>`;
-                    }
-                    minSel.value = minYear;
-                    maxSel.value = maxYear;
 
-                    function ensureOrder() {
-                        let minVal = parseInt(minSel.value);
-                        let maxVal = parseInt(maxSel.value);
-                        if (minVal > maxVal) {
-                            // Swap values
-                            [minSel.value, maxSel.value] = [maxSel.value, minSel.value];
+                    function wireYearPicker(minId, maxId) {
+                        const minSel = document.getElementById(minId);
+                        const maxSel = document.getElementById(maxId);
+                        if (!minSel || !maxSel) return;
+                        minSel.innerHTML = '';
+                        maxSel.innerHTML = '';
+                        for (let y = minYear; y <= maxYear; y++) {
+                            minSel.innerHTML += `<option value="${y}">${y}</option>`;
+                            maxSel.innerHTML += `<option value="${y}">${y}</option>`;
                         }
+                        minSel.value = minYear;
+                        maxSel.value = maxYear;
+
+                        function ensureOrder() {
+                            let minVal = parseInt(minSel.value);
+                            let maxVal = parseInt(maxSel.value);
+                            if (minVal > maxVal) {
+                                // Swap values
+                                [minSel.value, maxSel.value] = [maxSel.value, minSel.value];
+                            }
+                        }
+
+                        minSel.addEventListener('change', ensureOrder);
+                        maxSel.addEventListener('change', ensureOrder);
                     }
 
-                    minSel.addEventListener('change', ensureOrder);
-                    maxSel.addEventListener('change', ensureOrder);
-                }); 
+                    wireYearPicker('yearPickerMin', 'yearPickerMax');
+                    wireYearPicker('animeYearPickerMin', 'animeYearPickerMax');
+                });
                 </script>
                 <div class="filter-group">
                     <label>Genre</label>
@@ -299,12 +305,95 @@
                 </div>
 
                 <div class="filter-group">
-                    <label style="visibility: hidden;">Spacer</label> 
+                    <label style="visibility: hidden;">Spacer</label>
                     <button id="applyFilters" class="apply-btn">Apply Filters</button>
                 </div>
             </div>
         </div>
-        
+
+        <!-- Anime-mode filter panel. Separate from #filterPanel (movies) rather than
+             reusing it with fields disabled -- Actor/Director don't map to anime the way
+             Format/Status/Genre do. Only one of the two panels is shown at a time, decided
+             by isAnimeLibraryMode() in allMovies.js. UI only for now, not wired to filtering
+             logic yet (allMovies.js still runs on Jikan, which is getting less reliable --
+             the actual anime data source is moving to AniList separately). -->
+        <div id="filterPanelAnime" class="filter-panel">
+            <div class="filter-grid">
+
+                <div class="filter-group">
+                    <label>Sort By</label>
+                    <select id="animeSortBy" class="filter-input">
+                        <option value="POPULARITY_DESC">Popularity</option>
+                        <option value="SCORE_DESC">Score</option>
+                        <option value="TRENDING_DESC">Trending</option>
+                        <option value="START_DATE_DESC">Newest</option>
+                        <option value="START_DATE">Oldest</option>
+                        <option value="TITLE_ROMAJI">Title (A-Z)</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label style="margin-bottom: 6px;">Released Between:</label>
+                    <div class="year-picker-row">
+                        <select id="animeYearPickerMin" class="year-picker filter-input"></select>
+                        <span style="margin: 0 6px;">—</span>
+                        <select id="animeYearPickerMax" class="year-picker filter-input"></select>
+                    </div>
+                </div>
+
+                <div class="filter-group">
+                    <label>Genre</label>
+                    <select id="animeGenreInput" class="filter-input">
+                        <option value="">All Genres</option>
+                        <option value="Action">Action</option>
+                        <option value="Adventure">Adventure</option>
+                        <option value="Comedy">Comedy</option>
+                        <option value="Drama">Drama</option>
+                        <option value="Ecchi">Ecchi</option>
+                        <option value="Fantasy">Fantasy</option>
+                        <option value="Horror">Horror</option>
+                        <option value="Mecha">Mecha</option>
+                        <option value="Music">Music</option>
+                        <option value="Mystery">Mystery</option>
+                        <option value="Psychological">Psychological</option>
+                        <option value="Romance">Romance</option>
+                        <option value="Sci-Fi">Sci-Fi</option>
+                        <option value="Slice of Life">Slice of Life</option>
+                        <option value="Sports">Sports</option>
+                        <option value="Supernatural">Supernatural</option>
+                        <option value="Thriller">Thriller</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label>Format</label>
+                    <select id="animeFormatInput" class="filter-input">
+                        <option value="">Any Format</option>
+                        <option value="TV">TV</option>
+                        <option value="MOVIE">Movie</option>
+                        <option value="OVA">OVA</option>
+                        <option value="ONA">ONA</option>
+                        <option value="SPECIAL">Special</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label>Status</label>
+                    <select id="animeStatusInput" class="filter-input">
+                        <option value="">Any Status</option>
+                        <option value="RELEASING">Currently Airing</option>
+                        <option value="FINISHED">Finished</option>
+                        <option value="NOT_YET_RELEASED">Not Yet Released</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label style="visibility: hidden;">Spacer</label>
+                    <button id="applyFiltersAnime" class="apply-btn">Apply Filters</button>
+                </div>
+            </div>
+        </div>
+
         <div class="netflix-grid" id="libraryGrid">
             </div>
     </div>
