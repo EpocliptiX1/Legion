@@ -50,7 +50,14 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         const items = currentKaaSkipSegments.slice(0, 4).map(item => {
-            const type = String(item.type || item.raw?.type?.name || 'skip').replace(/_/g, ' ');
+            // item.type is the raw AnimeSkip type object ({id, name}), not a string — a bare
+            // String(item.type || ...) always wins that `||` (an object is truthy) and prints
+            // "[object Object]" instead of ever reaching the .name fallback.
+            const rawType = item.type;
+            const typeName = (typeof rawType === 'object' && rawType !== null)
+                ? (rawType.name || rawType.id || 'skip')
+                : (rawType || item.raw?.type?.name || 'skip');
+            const type = String(typeName).replace(/_/g, ' ');
             return `<span style="display:inline-block;margin-right:10px;">${formatTimestamp(getKaaSegmentStart(item))} ${type}</span>`;
         }).join('');
         wrap.innerHTML = `<strong>Skip metadata:</strong> ${items}${currentKaaSkipSegments.length > 4 ? '…' : ''}`;
