@@ -1382,6 +1382,25 @@ document.addEventListener('DOMContentLoaded', function() {
                     skipSegments: currentKaaSkipSegments
                 };
                 if (!streamUrl) {
+                    // KAA has nothing for this episode. Try Megaplay next, silently — it's
+                    // the most reliable fallback, so don't surface a "server 1 failed" message
+                    // to the user before trying it; only report failure if that also fails.
+                    if (infoDiv) infoDiv.textContent = 'Loading stream...';
+                    const seasonGroups = window.__resolvedSeasonGroups || [];
+                    const seasonMatch = seasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
+                    const megaplayMalId = seasonMatch?.malId || malId;
+                    try {
+                        const mpRes = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(episode)}/${encodeURIComponent(audioType)}`);
+                        const mpData = await mpRes.json().catch(() => ({}));
+                        if (mpRes.ok && mpData?.embedUrl) {
+                            console.log('[Megaplay fallback] KAA had no sources, using Megaplay embed:', mpData.embedUrl);
+                            showIframePlayer(mpData.embedUrl);
+                            if (infoDiv) infoDiv.textContent = 'Megaplay: Streaming.';
+                            return true;
+                        }
+                    } catch (e) {
+                        console.warn('[Megaplay fallback] request failed:', e.message);
+                    }
                     if (infoDiv) infoDiv.textContent = 'KickAssAnime: No playable stream found.';
                     return false;
                 }
@@ -2141,6 +2160,10 @@ document.addEventListener('DOMContentLoaded', function() {
                             const groups = Array.isArray(malGroups?.groups) ? malGroups.groups : [];
                             if (groups.length > 1) {
                                 resolvedSeasonGroups = groups;
+                                // Split-cour seasons are separate MAL entries (e.g. "86" vs "86
+                                // Part 2") with their own local episode numbering. Providers keyed
+                                // by MAL id need this season's id, not the base show's.
+                                window.__resolvedSeasonGroups = groups;
                                 seasonEntries = groups.map(g => ({ season_number: g.seasonNumber }));
                             }
                         } catch (e) {

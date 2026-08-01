@@ -6427,16 +6427,26 @@ async function resolveExactWatchUrl(title, targetSeason = '1') {
         score: r.__score
     })));
 
+    // A -40 penalty can't stop a recap/special from outranking the real season when its
+    // title happens to be a closer string match (confirmed live: "86 EIGHTY-SIX Season 2
+    // Recap" outscored "Eighty Six: 2nd Season" 250 to -80, purely because the recap's
+    // title starts with the exact query text). Rather than tune penalty weights forever,
+    // exclude recap/special/ova/movie entries from regular-season selection outright, and
+    // only fall back to them if nothing else is left to pick from.
+    const isRecapOrSpecial = (r) => /ple\s*ple|pleiades|special|ova|ona|movie|recap|trailer|pv/i.test(r.title);
+    const regularCandidates = isSpecialSearch ? rankedResults : rankedResults.filter(r => !isRecapOrSpecial(r));
+
     // For specials: just pick top result (no season filtering)
     // For regular seasons: match explicit season if it exists
     if (isSpecialSearch) {
       targetResult = rankedResults[0];
     } else if (seasonNum === 1) {
-      targetResult = rankedResults[0];
+      targetResult = regularCandidates[0] || rankedResults[0];
     } else {
       // For Season 2+: Match explicit requested season (e.g. Season 2)
       const seasonRegex = new RegExp(`season\\s*${seasonNum}|season-${seasonNum}|${seasonNum}nd|${seasonNum}rd|${seasonNum}th`, 'i');
-      targetResult = rankedResults.find(r => seasonRegex.test(r.url) || seasonRegex.test(r.title));
+      targetResult = regularCandidates.find(r => seasonRegex.test(r.url) || seasonRegex.test(r.title))
+        || rankedResults.find(r => seasonRegex.test(r.url) || seasonRegex.test(r.title));
     }
 
     if (!targetResult) {
@@ -6990,7 +7000,12 @@ async function buildSeasonGroupsFromAniList(anilistId) {
                 // Real per-episode titles/thumbnails when AniList has them (it often does, via
                 // crunchyroll/funimation listings), so synthetic seasons don't have to fall back
                 // to "Episode N" placeholders with no thumbnail.
-                streamingEpisodes: Array.isArray(media.streamingEpisodes) ? media.streamingEpisodes : []
+                streamingEpisodes: Array.isArray(media.streamingEpisodes) ? media.streamingEpisodes : [],
+                // Each split-cour season is its own MAL entry (e.g. "86" is 41457, "86 Part 2"
+                // is 48569) with its own local episode numbering. Providers keyed by MAL id
+                // (Megaplay) need THIS season's id, not the base show's, or they'll resolve
+                // the wrong episode entirely.
+                malId: media.idMal || null
             });
         }
 
@@ -7043,7 +7058,8 @@ async function buildSeasonGroupsFromJikan(malId) {
             metaList.push({
                 title: info.title || info.title_english || `Season ${metaList.length + 1}`,
                 episodesCount: Number(info.episodes || 0),
-                airDate: info?.aired?.from ? String(info.aired.from).slice(0, 10) : null
+                airDate: info?.aired?.from ? String(info.aired.from).slice(0, 10) : null,
+                malId: info.mal_id || id
             });
         }
 
@@ -7132,6 +7148,7 @@ function metaListToGroups(metaList, tmdbEpisodes = []) {
         return {
             seasonNumber: idx + 1,
             label: m.title || `Season ${idx + 1}`,
+            malId: m.malId || null,
             episodes
         };
     });
