@@ -1389,8 +1389,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     );
                     data = await res.json().catch(() => ({}));
                     if (!res.ok) {
-                        if (infoDiv) infoDiv.textContent = `KickAssAnime: ${data?.error || 'Failed to resolve stream.'}`;
-                        return false;
+                        // Don't return here — KAA can fail with a hard error (e.g. "No valid
+                        // KickAssAnime match found", a 404) just as often as it can return 200
+                        // with an empty sources array, and both should hit the same Neko/
+                        // Megaplay fallback below instead of stopping dead on this one.
+                        console.log('[KAA] request failed, falling through to fallback:', data?.error);
+                        data = {};
                     }
                 }
 
