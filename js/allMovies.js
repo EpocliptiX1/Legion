@@ -1,6 +1,9 @@
-let currentPage = 1; 
+let currentPage = 1;
 const limit = 50;
 let isLoading = false;
+// While an AniList-filtered anime view is showing, the scroll-triggered loadMovies() (Jikan
+// path) must not fire -- it would append unrelated, unfiltered results underneath.
+let anilistFilteredViewActive = false;
 
 function isAnimeLibraryMode() {
     return localStorage.getItem('animeMode') === 'true';
@@ -303,12 +306,20 @@ document.addEventListener('DOMContentLoaded', function() {
         const titleEl = document.querySelector('.list-title');
         if (titleEl) titleEl.textContent = 'Anime Library';
 
-        // UI only for now -- not wired to actual filtering yet, since the anime library
-        // still runs on Jikan (AniList migration is a separate, larger piece of work).
         const applyBtnAnime = document.getElementById('applyFiltersAnime');
         if (applyBtnAnime) {
-            applyBtnAnime.onclick = () => {
-                console.log('[allMovies] Anime filters UI clicked (not wired to filtering logic yet)');
+            applyBtnAnime.onclick = async () => {
+                const filters = {
+                    sort: document.getElementById('animeSortBy')?.value || 'POPULARITY_DESC',
+                    genre: document.getElementById('animeGenreInput')?.value || '',
+                    tag: document.getElementById('animeTagInput')?.value || '',
+                    format: document.getElementById('animeFormatInput')?.value || '',
+                    status: document.getElementById('animeStatusInput')?.value || '',
+                    yearMin: document.getElementById('animeYearPickerMin')?.value || '',
+                    yearMax: document.getElementById('animeYearPickerMax')?.value || ''
+                };
+                anilistFilteredViewActive = true;
+                await loadAnimeLibraryFromAniList(grid, filters);
             };
         }
     }
@@ -394,7 +405,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     window.onscroll = function() {
         if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 500) {
-            if (!isLoading) loadMovies();
+            if (!isLoading && !anilistFilteredViewActive) loadMovies();
         }
     };
 });
@@ -557,6 +568,150 @@ window.toggleMyList = function(id, name, type) {
     }
 
     if (typeof updateInfoButtonUI === 'function') updateInfoButtonUI(id);
+}
+
+// Powers the anime filter panel's Apply Filters button. Every argument is optional --
+// GraphQL just drops an omitted variable, so leaving a dropdown on "All"/"Any" naturally
+// removes that filter with no branching needed here. Verified live against the real API
+// with every field combined at once before wiring this in.
+const ANILIST_FILTER_QUERY = `
+query (
+    $page: Int
+    $perPage: Int
+    $sort: [MediaSort]
+    $genre: String
+    $tag: String
+    $format: MediaFormat
+    $status: MediaStatus
+    $yearMin: FuzzyDateInt
+    $yearMax: FuzzyDateInt
+) {
+    Page(page: $page, perPage: $perPage) {
+        pageInfo { total hasNextPage }
+        media(
+            type: ANIME
+            isAdult: false
+            genre: $genre
+            tag: $tag
+            format: $format
+            status: $status
+            startDate_greater: $yearMin
+            startDate_lesser: $yearMax
+            sort: $sort
+        ) {
+            id
+            idMal
+            title { romaji english }
+            format
+            seasonYear
+            coverImage { large }
+        }
+    }
+}`;
+
+async function fetchAniListFilteredAnime(filters, page = 1, perPage = 30) {
+    // FuzzyDateInt is YYYYMMDD as a plain integer, not a real date type.
+    const variables = {
+        page,
+        perPage,
+        sort: [filters.sort || 'POPULARITY_DESC'],
+        genre: filters.genre || undefined,
+        tag: filters.tag || undefined,
+        format: filters.format || undefined,
+        status: filters.status || undefined,
+        yearMin: filters.yearMin ? Number(`${filters.yearMin}0101`) : undefined,
+        yearMax: filters.yearMax ? Number(`${filters.yearMax}1231`) : undefined
+    };
+
+    const res = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ query: ANILIST_FILTER_QUERY, variables })
+    });
+    const data = await res.json();
+    if (data?.errors) {
+        throw new Error(data.errors.map(e => e.message).join('; '));
+    }
+    return data?.data?.Page?.media || [];
+}
+
+async function loadAnimeLibraryFromAniList(grid, filters) {
+    if (!grid) return;
+    grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Loading filtered anime…</p>';
+
+    try {
+        const mediaList = await fetchAniListFilteredAnime(filters);
+        if (!mediaList.length) {
+            grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No anime match these filters.</p>';
+            return;
+        }
+
+        // The site's own pages are TMDB-id-based (movieInfo.html?id=<tmdbId>), so every
+        // result still needs a TMDB match -- same resolver already used by the anime
+        // recommendations feature (cached after the first lookup, not a cold search each time).
+        const withTmdb = await Promise.all(mediaList.map(async (media) => {
+            const title = media.title?.english || media.title?.romaji;
+            if (!title) return null;
+            try {
+                const params = new URLSearchParams({
+                    anilistId: media.id,
+                    title,
+                    titleEnglish: media.title?.english || '',
+                    titleRomaji: media.title?.romaji || '',
+                    malId: media.idMal || ''
+                });
+                const res = await fetch(`/api/anime-tmdb-id?${params.toString()}`);
+                const data = await res.json().catch(() => ({}));
+                return data?.tmdb_id ? { media, tmdbId: data.tmdb_id } : null;
+            } catch {
+                return null;
+            }
+        }));
+
+        const results = withTmdb.filter(Boolean);
+        if (!results.length) {
+            grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Found matching anime, but couldn\'t link any to a TMDB entry.</p>';
+            return;
+        }
+
+        const plusIconSVG = `
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="currentColor"/>
+            </svg>`;
+
+        grid.innerHTML = '';
+        results.forEach(({ media, tmdbId }) => {
+            const title = media.title?.english || media.title?.romaji || 'Unknown';
+            const safeName = title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const posterUrl = media.coverImage?.large || '/img/default_poster.png';
+            const year = media.seasonYear || '';
+            const inferredType = media.format === 'MOVIE' ? 'movie' : 'anime';
+            const typeLabel = media.format || 'Anime';
+
+            const card = document.createElement('div');
+            card.className = 'grid-card';
+            card.setAttribute('data-type', inferredType);
+            card.innerHTML = `
+                <img src="${posterUrl}" loading="lazy" decoding="async" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'" alt="${safeName}">
+                <div class="card-hover-info">
+                    <div class="hover-btns">
+                        <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'">▶</button>
+                        <button class="hover-add" onclick="toggleMyList('${tmdbId}', '${safeName}', '${inferredType}')">
+                            ${plusIconSVG}
+                        </button>
+                    </div>
+                    <div class="info-text">
+                        <h4>${safeName}</h4>
+                        <span class="match-score">${year ? year : ''} ${typeLabel}</span>
+                    </div>
+                </div>
+            `;
+            grid.appendChild(card);
+        });
+    } catch (err) {
+        console.error('AniList filtered anime library failed to load:', err);
+        grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Error loading filtered anime. Check console.</p>';
+    }
 }
 
 async function loadAnimeLibraryFromJikan(grid) {
