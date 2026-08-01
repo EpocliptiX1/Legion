@@ -1324,6 +1324,33 @@ document.addEventListener('DOMContentLoaded', function() {
             startEpisodePanelHeightSyncBurst();
             return true;
         }
+        window.__nekoPreloadInFlight = window.__nekoPreloadInFlight || new Set();
+
+        // Kick off a Neko resolution for this exact episode if one isn't already cached or
+        // in flight. Fire-and-forget: runs in parallel with the KAA attempt so that if KAA
+        // comes back empty, there's a good chance Neko has already resolved by then and can
+        // be used instead of falling straight to Megaplay. KAA and Neko are ours (real HLS
+        // sources we control); Megaplay is an external embed, kept as the last resort.
+        function preloadNekoForEpisode(season, episode, audioType) {
+            const key = `${season}:${episode}:${audioType}`;
+            const already = window.__preloadedNekoEpisode;
+            if (window.__preloadedNekoSources && already && parseInt(season) === parseInt(already.season || 1) && parseInt(episode) === parseInt(already.ep || 1)) {
+                return;
+            }
+            if (window.__nekoPreloadInFlight.has(key)) return;
+            window.__nekoPreloadInFlight.add(key);
+
+            const title = animeTitle || document.getElementById('title')?.textContent.trim() || '';
+            const query = new URLSearchParams({ malId: malId || '', tmdbId: tmdbId || '', title, type: audioType, season: season || 1, ep: episode || 1 });
+            fetch(`/api/anime-neko-log?${query.toString()}`).then(res => res.json()).then(data => {
+                if (data?.stream || data?.sources?.file) {
+                    window.__preloadedNekoSources = data;
+                    window.__preloadedNekoEpisode = { season, ep: episode };
+                    console.log(`[Preload] ✓ Neko ready for S${season}E${episode}`);
+                }
+            }).catch(() => {}).finally(() => window.__nekoPreloadInFlight.delete(key));
+        }
+
         async function loadKickAssAnimeVideo(
             episode,
             audioType
@@ -1336,6 +1363,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (infoDiv) infoDiv.textContent = 'KickAssAnime: Loading stream...';
                 const seasonSelectEl = document.getElementById('seasonSelect');
                 const selectedSeason = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || 1;
+                // Race a Neko resolution in parallel with KAA. If KAA turns out empty below,
+                // there's a good chance this has already finished by then.
+                preloadNekoForEpisode(selectedSeason, episode, audioType);
                 if (!watchHistoryCache && typeof window.getActivityUID === 'function') {
                     const activityUID = window.getActivityUID();
                     await fetchWatchHistory(activityUID, tmdbId).then(setWatchHistoryCache);
@@ -1382,10 +1412,26 @@ document.addEventListener('DOMContentLoaded', function() {
                     skipSegments: currentKaaSkipSegments
                 };
                 if (!streamUrl) {
-                    // KAA has nothing for this episode. Try Megaplay next, silently — it's
-                    // the most reliable fallback, so don't surface a "server 1 failed" message
-                    // to the user before trying it; only report failure if that also fails.
+                    // KAA has nothing for this episode. Prefer Neko if the parallel preload
+                    // above already resolved it (KAA and Neko are ours — real HLS we control).
+                    // Only fall to Megaplay, an external embed, if Neko isn't ready either.
                     if (infoDiv) infoDiv.textContent = 'Loading stream...';
+
+                    // Note: only window.currentServer (used for KAA-specific UI gating, like
+                    // the skip-segment overlay) is updated here. The local `currentServer`
+                    // variable deliberately stays 'srvPahe1' — it's what the next episode's
+                    // updateSource(currentServer) call reads, and KAA should get a fresh
+                    // attempt on every new episode rather than sticking to whatever this one
+                    // fell back to.
+                    const preloadedNekoEp = window.__preloadedNekoEpisode;
+                    if (window.__preloadedNekoSources && preloadedNekoEp && parseInt(selectedSeason) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1)) {
+                        console.log('[Fallback] KAA had no sources, using preloaded Neko instead');
+                        document.querySelectorAll('.server-btn').forEach(btn => btn.classList.toggle('active', btn.id === 'srvNeko1'));
+                        window.currentServer = 'srvNeko1';
+                        showServerInfo('srvNeko1');
+                        return await loadNekoStreamVideo(episode, audioType, selectedSeason);
+                    }
+
                     const seasonGroups = window.__resolvedSeasonGroups || [];
                     const seasonMatch = seasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
                     const megaplayMalId = seasonMatch?.malId || malId;
@@ -1394,6 +1440,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         const mpData = await mpRes.json().catch(() => ({}));
                         if (mpRes.ok && mpData?.embedUrl) {
                             console.log('[Megaplay fallback] KAA had no sources, using Megaplay embed:', mpData.embedUrl);
+                            document.querySelectorAll('.server-btn').forEach(btn => btn.classList.toggle('active', btn.id === 'srvMega1'));
+                            window.currentServer = 'srvMega1';
                             showIframePlayer(mpData.embedUrl);
                             if (infoDiv) infoDiv.textContent = 'Megaplay: Streaming.';
                             return true;
@@ -1483,8 +1531,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (infoDiv) infoDiv.textContent = 'MegaPlay: MAL ID unavailable for this title.';
                 return false;
             }
+            // Split-cour seasons (e.g. "86 Part 2") are their own MAL entry with local
+            // episode numbering — using the base show's malId here would silently load
+            // the wrong season's episode.
+            const seasonSelectEl = document.getElementById('seasonSelect');
+            const selectedSeason = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || 1;
+            const seasonGroups = window.__resolvedSeasonGroups || [];
+            const seasonMatch = seasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
+            const megaplayMalId = seasonMatch?.malId || malId;
             try {
-                const res = await fetch(`/api/stream/mal/${encodeURIComponent(malId)}/${encodeURIComponent(episode)}/${encodeURIComponent(audioType)}`);
+                const res = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(episode)}/${encodeURIComponent(audioType)}`);
                 if (!res.ok) {
                     if (infoDiv) infoDiv.textContent = 'MegaPlay: Failed to resolve stream.';
                     return false;
