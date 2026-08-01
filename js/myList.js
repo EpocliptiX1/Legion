@@ -357,24 +357,29 @@ async function resolveMyListRecords(savedItems) {
         }
     }
 
-    for (const item of tvItems) {
+    // These were fetched one at a time in a sequential for-loop -- each TMDB round trip
+    // waiting for the last to finish before starting the next, turning a 20-show list into
+    // 20x a single request's latency instead of roughly 1x. Fire them all in parallel.
+    const tvResults = await Promise.all(tvItems.map(async item => {
         try {
             const res = await fetch(`/api/tmdb-proxy/tv/${item.id}`);
             const tv = await res.json();
             if (tv && (tv.name || tv.title)) {
-                records.push({
+                return {
                     id: String(item.id),
                     type: item.type,
                     title: tv.name || tv.title || 'Unknown',
                     poster: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.png',
                     rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--',
                     year: toYear(tv.first_air_date)
-                });
+                };
             }
         } catch (err) {
             console.warn('[myList] failed to fetch tv row:', err.message);
         }
-    }
+        return null;
+    }));
+    records.push(...tvResults.filter(Boolean));
 
     records.sort((a, b) => {
         return (orderMap.get(String(a.id)) ?? 9999) - (orderMap.get(String(b.id)) ?? 9999);
@@ -410,12 +415,14 @@ async function resolveHistoryRecords(historyRows) {
         }
     }
 
-    for (const row of tvItems) {
+    // Same sequential-loop fix as resolveMyListRecords -- parallelize instead of awaiting
+    // each TMDB round trip one at a time.
+    const tvResults = await Promise.all(tvItems.map(async row => {
         try {
             const res = await fetch(`/api/tmdb-proxy/tv/${row.movie_id}`);
             const tv = await res.json();
             if (tv && (tv.name || tv.title)) {
-                records.push({
+                return {
                     id: String(row.movie_id),
                     type: row.item_type || 'tv',
                     title: tv.name || tv.title || 'Unknown',
@@ -423,12 +430,14 @@ async function resolveHistoryRecords(historyRows) {
                     rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--',
                     year: toYear(tv.first_air_date),
                     watchedAt: row.watched_at || ''
-                });
+                };
             }
         } catch (err) {
             console.warn('[myList] failed to fetch history tv rows:', err.message);
         }
-    }
+        return null;
+    }));
+    records.push(...tvResults.filter(Boolean));
 
     const historyIndex = new Map(historyRows.map((h, index) => [String(h.movie_id), index]));
     records.sort((a, b) => {
