@@ -5524,6 +5524,46 @@ app.get("/api/anime-info", (req, res) => {
     );
 });
 
+// Lets personalList.html (and anything else showing an anime's title/thumbnail/rating/year
+// in a simple listing) read from the already-cached AniList data instead of hitting TMDB,
+// for anime that were already viewed on their info page at least once. Movies and non-anime
+// TV never touch this table, so this endpoint is anime-only by construction (anime_cache is
+// only ever written from the anime info-page flow).
+app.get('/api/anime-cache-by-tmdb', (req, res) => {
+    const tmdbId = Number(req.query.tmdbId);
+    if (!tmdbId) {
+        return res.status(400).json({ error: 'Missing tmdbId.' });
+    }
+
+    animeCacheDb.get(
+        `SELECT english_title, romaji_title, cover_image, score, json FROM anime_cache WHERE tmdb_id = ? ORDER BY last_accessed DESC LIMIT 1`,
+        [tmdbId],
+        (err, row) => {
+            if (err) {
+                console.error('[anime-cache-by-tmdb]', err.message);
+                return res.status(500).json({ exists: false, error: 'Database error.' });
+            }
+            if (!row) {
+                return res.json({ exists: false });
+            }
+
+            let seasonYear = null;
+            try {
+                const parsed = JSON.parse(row.json || '{}');
+                seasonYear = parsed?.seasonYear || null;
+            } catch {}
+
+            res.json({
+                exists: true,
+                title: row.english_title || row.romaji_title || null,
+                thumbnail: row.cover_image || null,
+                rating: row.score != null ? (row.score / 10).toFixed(1) : null,
+                year: seasonYear
+            });
+        }
+    );
+});
+
 app.get('/api/anime-recommendations', async (req, res) => {
     const tmdbId = parseInt(req.query.tmdbId, 10);
     if (!tmdbId) {

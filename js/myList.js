@@ -325,6 +325,55 @@ function normalizeSavedItems(rawList, historyTypeMap) {
     });
 }
 
+// Anime that's already been viewed on its info page has its title/thumbnail/rating cached
+// locally from that AniList fetch -- reuse it instead of hitting TMDB again. Deliberately
+// scoped to type === 'anime' only: a cache miss here (never-viewed anime) falls through to
+// the exact same TMDB call as before, so this can only add a shortcut, never remove the
+// fallback. Plain 'tv' and 'movie' items never call this at all.
+async function fetchAnimeCacheRow(tmdbId) {
+    try {
+        const res = await fetch(`/api/anime-cache-by-tmdb?tmdbId=${encodeURIComponent(tmdbId)}`);
+        const data = await res.json().catch(() => ({}));
+        return (res.ok && data?.exists) ? data : null;
+    } catch (err) {
+        console.warn('[myList] anime cache lookup failed, falling back to TMDB:', err.message);
+        return null;
+    }
+}
+
+async function resolveTvOrAnimeRow(item) {
+    if (item.type === 'anime') {
+        const cached = await fetchAnimeCacheRow(item.id);
+        if (cached) {
+            return {
+                id: String(item.id),
+                type: item.type,
+                title: cached.title || 'Unknown',
+                poster: cached.thumbnail || '/img/LOGO_Short.png',
+                rating: cached.rating || '--',
+                year: cached.year ? String(cached.year) : ''
+            };
+        }
+    }
+    try {
+        const res = await fetch(`/api/tmdb-proxy/tv/${item.id}`);
+        const tv = await res.json();
+        if (tv && (tv.name || tv.title)) {
+            return {
+                id: String(item.id),
+                type: item.type,
+                title: tv.name || tv.title || 'Unknown',
+                poster: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.png',
+                rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--',
+                year: toYear(tv.first_air_date)
+            };
+        }
+    } catch (err) {
+        console.warn('[myList] failed to fetch tv row:', err.message);
+    }
+    return null;
+}
+
 async function resolveMyListRecords(savedItems) {
     const localItems = savedItems.filter(i => i.type === 'movie');
     const tvItems = savedItems.filter(i => i.type === 'tv' || i.type === 'anime');
@@ -360,25 +409,9 @@ async function resolveMyListRecords(savedItems) {
     // These were fetched one at a time in a sequential for-loop -- each TMDB round trip
     // waiting for the last to finish before starting the next, turning a 20-show list into
     // 20x a single request's latency instead of roughly 1x. Fire them all in parallel.
-    const tvResults = await Promise.all(tvItems.map(async item => {
-        try {
-            const res = await fetch(`/api/tmdb-proxy/tv/${item.id}`);
-            const tv = await res.json();
-            if (tv && (tv.name || tv.title)) {
-                return {
-                    id: String(item.id),
-                    type: item.type,
-                    title: tv.name || tv.title || 'Unknown',
-                    poster: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.png',
-                    rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--',
-                    year: toYear(tv.first_air_date)
-                };
-            }
-        } catch (err) {
-            console.warn('[myList] failed to fetch tv row:', err.message);
-        }
-        return null;
-    }));
+    // Anime items also check the local AniList cache first (resolveTvOrAnimeRow); plain tv
+    // items go straight to TMDB, same as before.
+    const tvResults = await Promise.all(tvItems.map(resolveTvOrAnimeRow));
     records.push(...tvResults.filter(Boolean));
 
     records.sort((a, b) => {
@@ -416,26 +449,11 @@ async function resolveHistoryRecords(historyRows) {
     }
 
     // Same sequential-loop fix as resolveMyListRecords -- parallelize instead of awaiting
-    // each TMDB round trip one at a time.
+    // each TMDB round trip one at a time. Anime rows also check the local AniList cache
+    // first via resolveTvOrAnimeRow; plain tv rows go straight to TMDB, same as before.
     const tvResults = await Promise.all(tvItems.map(async row => {
-        try {
-            const res = await fetch(`/api/tmdb-proxy/tv/${row.movie_id}`);
-            const tv = await res.json();
-            if (tv && (tv.name || tv.title)) {
-                return {
-                    id: String(row.movie_id),
-                    type: row.item_type || 'tv',
-                    title: tv.name || tv.title || 'Unknown',
-                    poster: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.png',
-                    rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--',
-                    year: toYear(tv.first_air_date),
-                    watchedAt: row.watched_at || ''
-                };
-            }
-        } catch (err) {
-            console.warn('[myList] failed to fetch history tv rows:', err.message);
-        }
-        return null;
+        const base = await resolveTvOrAnimeRow({ id: row.movie_id, type: row.item_type || 'tv' });
+        return base ? { ...base, watchedAt: row.watched_at || '' } : null;
     }));
     records.push(...tvResults.filter(Boolean));
 
