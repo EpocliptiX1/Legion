@@ -2456,7 +2456,6 @@ window.handleSignup = async function (e) {
         localStorage.setItem('userEmail', user.userEmail || email);
         localStorage.setItem('userTier', user.userTier || tier);
         localStorage.setItem('userLanguage', user.userLanguage || userLanguage);
-        localStorage.setItem('isAdmin', user.isAdmin ? 'true' : 'false');
         localStorage.setItem('is_guest_local', String(user.is_guest === 1 ? 1 : 0));
         localStorage.setItem('searchCount', '0');
         localStorage.setItem('viewCount', '0');
@@ -2636,7 +2635,6 @@ window.handleSignIn = async function (e) {
         localStorage.setItem('searchCount', String(user.searchCount || 0));
         localStorage.setItem('viewCount', String(user.viewCount || 0));
         localStorage.setItem('allUIDs', JSON.stringify(user.allUIDs || []));
-        localStorage.setItem('isAdmin', user.isAdmin ? 'true' : 'false');
         localStorage.setItem('is_guest_local', String(user.is_guest === 1 ? 1 : 0));
 
         closeSignInModal();
@@ -2828,7 +2826,6 @@ window.toggleAccountMenu = function () {
         const username = localStorage.getItem('username');
         const searches = parseInt(localStorage.getItem('searchCount')) || 0;
         const views = parseInt(localStorage.getItem('viewCount')) || 0;
-        const isAdmin = localStorage.getItem('isAdmin') === 'true';
         const isSignedIn = !!username;
 
         const settingsLink = dropdown.querySelector('a[onclick="openSettings()"]');
@@ -2875,24 +2872,6 @@ window.toggleAccountMenu = function () {
             }
         } else if (loginRow) {
             loginRow.classList.add('hidden');
-        }
-
-        const existingAdminLink = dropdown.querySelector('#adminPanelLink');
-        if (isAdmin && !existingAdminLink) {
-            const adminLink = document.createElement('a');
-            adminLink.id = 'adminPanelLink';
-            adminLink.href = '/html/admin.html';
-            adminLink.className = 'drop-link';
-            adminLink.innerText = 'Admin Panel';
-            const settingsLinkAnchor = dropdown.querySelector('a[onclick="openSettings()"]');
-            if (settingsLinkAnchor && settingsLinkAnchor.parentNode) {
-                settingsLinkAnchor.parentNode.insertBefore(adminLink, settingsLinkAnchor);
-            } else {
-                dropdown.appendChild(adminLink);
-            }
-        }
-        if (!isAdmin && existingAdminLink) {
-            existingAdminLink.remove();
         }
 
         // Close when clicking outside

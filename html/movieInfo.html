@@ -789,7 +789,6 @@ window.openMovie = function(movie, type) {
                     localStorage.setItem('searchCount', String(user.searchCount || 0));
                     localStorage.setItem('viewCount', String(user.viewCount || 0));
                     localStorage.setItem('allUIDs', JSON.stringify(user.allUIDs || [String(user.accountUID || '')]));
-                    localStorage.setItem('isAdmin', user.isAdmin ? 'true' : 'false');
                     localStorage.setItem('isGuest', 'false');
                     localStorage.setItem('is_guest_local', '0');
                     localStorage.removeItem('guestUID');
