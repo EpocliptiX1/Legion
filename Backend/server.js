@@ -1098,7 +1098,8 @@ function buildClientUser(user) {
         loginCode: user.login_code || null,
         created_at: user.created_at,
         last_seen: user.last_seen,
-        isAdmin: isAdminUser(user)
+        isAdmin: isAdminUser(user),
+        profilePic: user.profile_pic || null
     };
 }
 
@@ -1564,6 +1565,7 @@ usersDb.serialize(() => {
     usersDb.run(`ALTER TABLE users ADD COLUMN login_code_expires_at INTEGER`, () => {});
     usersDb.run(`ALTER TABLE users ADD COLUMN created_at INTEGER`, () => {});
     usersDb.run(`ALTER TABLE users ADD COLUMN last_seen INTEGER`, () => {});
+    usersDb.run(`ALTER TABLE users ADD COLUMN profile_pic TEXT`, () => {});
     usersDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_accountUID ON users(accountUID)`);
     usersDb.run(`UPDATE users SET accountUID = CAST(userUID AS TEXT) WHERE accountUID IS NULL OR accountUID = ''`);
     usersDb.run(`UPDATE users SET userEmail = NULL WHERE TRIM(IFNULL(userEmail, '')) = ''`, () => {});
@@ -2833,6 +2835,50 @@ app.post('/users/change-password', requireAuth, async (req, res) => {
         console.error('Error changing password:', err);
         res.status(500).json({ error: 'Could not change password' });
     }
+});
+
+// Profile picture: stored as a base64 data URI directly in the users table (SQLite),
+// unlike /users and /users/change-password above which write to a JSON file that login
+// (/users/auth) never actually reads from -- this one is wired to the real source of truth.
+const PROFILE_PIC_MAX_BYTES = 1.4 * 1024 * 1024; // ~1MB image becomes ~1.33MB as base64; leave headroom
+
+app.post('/users/profile-picture', requireAuth, async (req, res) => {
+    try {
+        const { profilePic } = req.body || {};
+        if (!profilePic || typeof profilePic !== 'string' || !profilePic.startsWith('data:image/')) {
+            return res.status(400).json({ error: 'profilePic must be a base64 image data URI' });
+        }
+        if (profilePic.length > PROFILE_PIC_MAX_BYTES) {
+            return res.status(413).json({ error: 'Image too large (max ~1MB)' });
+        }
+        const uidNum = parseInt(req.user.userUID, 10);
+        if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+        usersDb.run('UPDATE users SET profile_pic = ? WHERE userUID = ?', [profilePic, uidNum], function (err) {
+            if (err) {
+                console.error('Error saving profile picture:', err.message);
+                return res.status(500).json({ error: 'Could not save profile picture' });
+            }
+            if (this.changes === 0) return res.status(404).json({ error: 'User not found' });
+            res.json({ success: true, profilePic });
+        });
+    } catch (err) {
+        console.error('Error saving profile picture:', err);
+        res.status(500).json({ error: 'Could not save profile picture' });
+    }
+});
+
+app.get('/users/profile-picture', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    usersDb.get('SELECT profile_pic FROM users WHERE userUID = ?', [uidNum], (err, row) => {
+        if (err) {
+            console.error('Error loading profile picture:', err.message);
+            return res.status(500).json({ error: 'Could not load profile picture' });
+        }
+        res.json({ profilePic: row?.profile_pic || null });
+    });
 });
 
 // =========================================

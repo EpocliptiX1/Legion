@@ -2780,10 +2780,34 @@ window.handlePFPUpload = function (event) {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onloadend = function () {
+    reader.onloadend = async function () {
         const base64Image = reader.result;
+        // localStorage keeps the same-session instant-apply behavior; the backend save is
+        // what actually survives a refresh/new device -- previously this only ever wrote to
+        // localStorage, so it looked "reset" the moment a fresh page load didn't happen to
+        // re-read it (which nothing did -- applyPFPToUI was never called on page load either).
         localStorage.setItem('userPFP', base64Image);
         applyPFPToUI(base64Image);
+
+        const token = localStorage.getItem('authToken');
+        if (token) {
+            try {
+                const res = await fetch('/users/profile-picture', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    body: JSON.stringify({ profilePic: base64Image })
+                });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    showLimitToast(`⚠️ Saved locally, but server save failed: ${data.error || 'unknown error'}`);
+                    return;
+                }
+            } catch (err) {
+                console.error('Profile picture save error:', err);
+                showLimitToast('⚠️ Saved locally, but could not reach server.');
+                return;
+            }
+        }
         showLimitToast('✅ Profile Picture Updated!');
     };
     reader.readAsDataURL(file);
@@ -2799,6 +2823,31 @@ function applyPFPToUI(imagePath) {
         icon.style.backgroundColor = 'transparent';
     });
 }
+
+// Re-apply the saved profile picture on every page load -- previously nothing called
+// applyPFPToUI() except right after an upload, so the picture looked "reset" on refresh
+// even when it was still sitting in localStorage untouched.
+async function restoreProfilePicture() {
+    const cached = localStorage.getItem('userPFP');
+    if (cached) applyPFPToUI(cached);
+
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+    try {
+        const res = await fetch('/users/profile-picture', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        if (data.profilePic && data.profilePic !== cached) {
+            localStorage.setItem('userPFP', data.profilePic);
+            applyPFPToUI(data.profilePic);
+        }
+    } catch (err) {
+        console.warn('Profile picture restore failed, using local cache if present:', err.message);
+    }
+}
+document.addEventListener('DOMContentLoaded', restoreProfilePicture);
 
 // ── MODE SWITCHER ─────────────────────────────────────────────────────────────
 
