@@ -1223,7 +1223,7 @@ app.post('/users/guest/convert', strictLimiter, async (req, res) => {
         }
 
         const normalizedEmail = String(userEmail).trim().toLowerCase();
-        usersDb.get('SELECT * FROM users WHERE userEmail = ?', [normalizedEmail], async (emailErr, existingEmailUser) => {
+        usersDb.get('SELECT * FROM users WHERE LOWER(userEmail) = ?', [normalizedEmail], async (emailErr, existingEmailUser) => {
             if (emailErr) return res.status(500).json({ error: 'Database error' });
             if (existingEmailUser) return res.status(409).json({ error: 'Email already registered' });
 
@@ -1281,7 +1281,7 @@ app.post('/users/login-code/request', strictLimiter, async (req, res) => {
 
         if (userEmail) {
             const normalizedEmail = String(userEmail).trim().toLowerCase();
-            usersDb.get('SELECT * FROM users WHERE userEmail = ?', [normalizedEmail], async (err, user) => {
+            usersDb.get('SELECT * FROM users WHERE LOWER(userEmail) = ?', [normalizedEmail], async (err, user) => {
                 if (err) return res.status(500).json({ error: 'Database error' });
                 queryUser(user);
             });
@@ -1322,7 +1322,7 @@ app.post('/users/auth-code', strictLimiter, async (req, res) => {
         const normalizedCode = normalizeLoginCode(loginCode);
 
         const query = userEmail
-            ? { sql: 'SELECT * FROM users WHERE userEmail = ?', params: [String(userEmail).trim().toLowerCase()] }
+            ? { sql: 'SELECT * FROM users WHERE LOWER(userEmail) = ?', params: [String(userEmail).trim().toLowerCase()] }
             : { sql: 'SELECT * FROM users WHERE accountUID = ?', params: [normalizeAccountUID(accountUID)] };
 
         usersDb.get(query.sql, query.params, async (err, user) => {
@@ -2636,7 +2636,7 @@ app.post('/users/register', strictLimiter, async (req, res) => {
             getUserByAccountUID(normalizedGuestUID, async (err, existingGuest) => {
                 if (err) return res.status(500).json({ error: 'Database error' });
                 if (existingGuest) {
-                    usersDb.get('SELECT * FROM users WHERE userEmail = ? AND userUID != ?', [normalizedEmail, existingGuest.userUID], async (emailErr, emailTaken) => {
+                    usersDb.get('SELECT * FROM users WHERE LOWER(userEmail) = ? AND userUID != ?', [normalizedEmail, existingGuest.userUID], async (emailErr, emailTaken) => {
                         if (emailErr) return res.status(500).json({ error: 'Database error' });
                         if (emailTaken) return res.status(409).json({ error: 'Email already registered' });
 
@@ -2686,7 +2686,7 @@ app.post('/users/register', strictLimiter, async (req, res) => {
                     return;
                 }
 
-                usersDb.get('SELECT * FROM users WHERE userEmail = ?', [normalizedEmail], (emailErr, row) => {
+                usersDb.get('SELECT * FROM users WHERE LOWER(userEmail) = ?', [normalizedEmail], (emailErr, row) => {
                     if (emailErr) return res.status(500).json({ error: 'Database error' });
                     if (row) return res.status(409).json({ error: 'Email already registered' });
                     createNewRegisteredUser();
@@ -2695,7 +2695,7 @@ app.post('/users/register', strictLimiter, async (req, res) => {
             return;
         }
 
-        usersDb.get('SELECT * FROM users WHERE userEmail = ?', [normalizedEmail], (err, row) => {
+        usersDb.get('SELECT * FROM users WHERE LOWER(userEmail) = ?', [normalizedEmail], (err, row) => {
             if (err) return res.status(500).json({ error: 'Database error' });
             if (row) return res.status(409).json({ error: 'Email already registered' });
             createNewRegisteredUser();
@@ -2784,7 +2784,12 @@ app.post('/users/auth', strictLimiter, async (req, res) => {
         }
 
         const normalizedEmail = String(userEmail).trim().toLowerCase();
-        usersDb.get('SELECT * FROM users WHERE userEmail = ?', [normalizedEmail], async (err, user) => {
+        // SQLite's = is case-sensitive by default. Emails are stored in whatever case they
+        // were originally typed at registration (not lowercased), so a plain = match against
+        // the lowercased input silently fails for any account with uppercase letters in its
+        // stored email -- confirmed live: login always returned "Invalid credentials" for a
+        // correct password because of this, not a real credentials problem.
+        usersDb.get('SELECT * FROM users WHERE LOWER(userEmail) = ?', [normalizedEmail], async (err, user) => {
             if (err) return res.status(500).json({ error: 'Database error' });
             if (!user) return res.status(401).json({ error: 'Invalid credentials' });
             const passwordMatch = await bcrypt.compare(userPassword, user.userPassword);
@@ -2842,9 +2847,13 @@ app.post('/users/change-password', requireAuth, async (req, res) => {
 // (/users/auth) never actually reads from -- this one is wired to the real source of truth.
 const PROFILE_PIC_MAX_BYTES = 1.4 * 1024 * 1024; // ~1MB image becomes ~1.33MB as base64; leave headroom
 
+const _pfpDebug = (msg) => { try { fs.appendFileSync(path.join(__dirname, 'pfp_debug.txt'), `[${new Date().toISOString()}] ${msg}\n`); } catch {} };
+
 app.post('/users/profile-picture', requireAuth, async (req, res) => {
     try {
+        _pfpDebug(`req.user=${JSON.stringify(req.user)}`);
         const { profilePic } = req.body || {};
+        _pfpDebug(`profilePic present=${!!profilePic} type=${typeof profilePic} len=${profilePic?.length} startsOk=${String(profilePic).startsWith('data:image/')}`);
         if (!profilePic || typeof profilePic !== 'string' || !profilePic.startsWith('data:image/')) {
             return res.status(400).json({ error: 'profilePic must be a base64 image data URI' });
         }
@@ -2852,9 +2861,11 @@ app.post('/users/profile-picture', requireAuth, async (req, res) => {
             return res.status(413).json({ error: 'Image too large (max ~1MB)' });
         }
         const uidNum = parseInt(req.user.userUID, 10);
+        _pfpDebug(`uidNum=${uidNum}`);
         if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
 
         usersDb.run('UPDATE users SET profile_pic = ? WHERE userUID = ?', [profilePic, uidNum], function (err) {
+            _pfpDebug(`UPDATE result err=${err?.message} changes=${this?.changes}`);
             if (err) {
                 console.error('Error saving profile picture:', err.message);
                 return res.status(500).json({ error: 'Could not save profile picture' });
@@ -2863,6 +2874,7 @@ app.post('/users/profile-picture', requireAuth, async (req, res) => {
             res.json({ success: true, profilePic });
         });
     } catch (err) {
+        _pfpDebug(`THREW ${err.stack}`);
         console.error('Error saving profile picture:', err);
         res.status(500).json({ error: 'Could not save profile picture' });
     }
