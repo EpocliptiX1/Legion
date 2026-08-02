@@ -1013,7 +1013,7 @@ app.use(cors({
     },
     credentials: true,
 }));
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '8mb' })); // raised from 5mb for base64 profile picture uploads
 
 // Secret-header guard — backend refuses any request that didn't come through the middleware.
 // Override the default with the MIDDLEWARE_SECRET environment variable (must match middleware.js).
@@ -2845,7 +2845,11 @@ app.post('/users/change-password', requireAuth, async (req, res) => {
 // Profile picture: stored as a base64 data URI directly in the users table (SQLite),
 // unlike /users and /users/change-password above which write to a JSON file that login
 // (/users/auth) never actually reads from -- this one is wired to the real source of truth.
-const PROFILE_PIC_MAX_BYTES = 1.4 * 1024 * 1024; // ~1MB image becomes ~1.33MB as base64; leave headroom
+// A base64 image is ~4/3 the size of the raw file. The global express.json() limit (see
+// app.use near the top of the file) had to be raised to make room for this -- adding a
+// second, route-scoped express.json() here wouldn't work: the global one already runs first
+// in declaration order and consumes/rejects the body before this route is ever reached.
+const PROFILE_PIC_MAX_BYTES = 7 * 1024 * 1024; // leave headroom under the raised global body limit
 
 const _pfpDebug = (msg) => { try { fs.appendFileSync(path.join(__dirname, 'pfp_debug.txt'), `[${new Date().toISOString()}] ${msg}\n`); } catch {} };
 
