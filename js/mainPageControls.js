@@ -2770,6 +2770,10 @@ window.hostWatch2Gether = async function () {
         showLimitToast(`✅ Invite sent to ${data.friendUsername || 'your friend'}!`);
         if (input) input.value = '';
         closeWatch2GetherModal();
+        // Poll fast for a couple minutes waiting for the response -- the normal 3-minute
+        // notification poll is way too slow to notice an accept in any reasonable time.
+        localStorage.setItem('w2gPendingInviteUntil', String(Date.now() + 2 * 60 * 1000));
+        window.fetchNotifications?.();
     } catch (e) {
         showLimitToast('⚠️ Could not reach server.');
     }
@@ -3335,9 +3339,24 @@ window.broadcastNotificationRefresh = function () {
     notifChannel?.postMessage('refresh');
 };
 
+// Self-rescheduling instead of a fixed interval so it can speed up around
+// Watch2Gether events (waiting on an invite response, or actively hosting where a
+// control-request could arrive any time) without polling fast forever for everyone.
+function scheduleNextNotificationPoll() {
+    const pendingInviteUntil = Number(localStorage.getItem('w2gPendingInviteUntil')) || 0;
+    const isHosting = !!localStorage.getItem('w2gHostingSessionId');
+    const fastWindow = isHosting || Date.now() < pendingInviteUntil;
+    const delay = fastWindow ? 2500 : 3 * 60 * 1000;
+
+    setTimeout(async () => {
+        await window.fetchNotifications();
+        scheduleNextNotificationPoll();
+    }, delay);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     window.fetchNotifications();
-    setInterval(window.fetchNotifications, 3 * 60 * 1000);
+    scheduleNextNotificationPoll();
 });
 
 // ── ACCOUNT DROPDOWN ───────────────────────────────────────────────────────────
