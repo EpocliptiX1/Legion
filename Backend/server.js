@@ -1950,6 +1950,8 @@ activityDb.serialize(() => {
         control_expires_at  INTEGER NOT NULL DEFAULT 0,
         last_click_selector TEXT,
         last_click_at       INTEGER NOT NULL DEFAULT 0,
+        video_paused        INTEGER,
+        video_time          REAL,
         created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     )`);
@@ -1957,6 +1959,8 @@ activityDb.serialize(() => {
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN control_expires_at INTEGER NOT NULL DEFAULT 0`, () => {});
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN last_click_selector TEXT`, () => {});
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN last_click_at INTEGER NOT NULL DEFAULT 0`, () => {});
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN video_paused INTEGER`, () => {});
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN video_time REAL`, () => {});
     activityDb.run(`CREATE TABLE IF NOT EXISTS notification_gen_state (
         userUID       TEXT PRIMARY KEY,
         last_generated INTEGER NOT NULL DEFAULT 0
@@ -2634,6 +2638,12 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
     const clickSelector = req.body?.clickSelector ? String(req.body.clickSelector).slice(0, 300) : null;
     const clickAt = clickSelector ? Date.now() : null;
 
+    // Optional -- real <video> playback state (paused/currentTime), synced directly rather than
+    // via click replay since native <video controls> aren't reachable as clickable DOM nodes.
+    const hasVideoState = typeof req.body?.videoPaused === 'boolean';
+    const videoPaused = hasVideoState ? (req.body.videoPaused ? 1 : 0) : null;
+    const videoTime = hasVideoState ? Number(req.body.videoTime) || 0 : null;
+
     activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
         if (err) return res.status(500).json({ error: 'Database error' });
         if (!row) return res.status(404).json({ error: 'Session not found' });
@@ -2646,17 +2656,26 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
                 return res.status(403).json({ error: 'Not currently in control of this session', controlOwner: session.control_owner });
             }
 
-            const sql = clickSelector
-                ? `UPDATE watch2gether_sessions SET path = ?, scroll_y = ?, last_click_selector = ?, last_click_at = ?, updated_at = strftime('%s','now') WHERE id = ?`
-                : `UPDATE watch2gether_sessions SET path = ?, scroll_y = ?, updated_at = strftime('%s','now') WHERE id = ?`;
-            const params = clickSelector
-                ? [path, scrollY, clickSelector, clickAt, sessionId]
-                : [path, scrollY, sessionId];
+            const setClauses = ['path = ?', 'scroll_y = ?', `updated_at = strftime('%s','now')`];
+            const params = [path, scrollY];
+            if (clickSelector) {
+                setClauses.push('last_click_selector = ?', 'last_click_at = ?');
+                params.push(clickSelector, clickAt);
+            }
+            if (hasVideoState) {
+                setClauses.push('video_paused = ?', 'video_time = ?');
+                params.push(videoPaused, videoTime);
+            }
+            params.push(sessionId);
 
-            activityDb.run(sql, params, (updateErr) => {
-                if (updateErr) return res.status(500).json({ error: 'Database error' });
-                res.json({ ok: true });
-            });
+            activityDb.run(
+                `UPDATE watch2gether_sessions SET ${setClauses.join(', ')} WHERE id = ?`,
+                params,
+                (updateErr) => {
+                    if (updateErr) return res.status(500).json({ error: 'Database error' });
+                    res.json({ ok: true });
+                }
+            );
         });
     });
 });
@@ -2684,7 +2703,9 @@ app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
                     controlExpiresAt: session.control_expires_at,
                     isHost: session.host_uid === uidNum,
                     clickSelector: session.last_click_selector || null,
-                    clickAt: session.last_click_at || 0
+                    clickAt: session.last_click_at || 0,
+                    videoPaused: session.video_paused == null ? null : !!session.video_paused,
+                    videoTime: session.video_time == null ? null : session.video_time
                 });
             });
         }

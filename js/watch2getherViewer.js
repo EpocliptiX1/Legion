@@ -59,14 +59,21 @@
                 clearTimeout(reportThrottle);
                 reportThrottle = setTimeout(reportOwnState, 250);
             }, { passive: true });
+            // Native <video controls> has no clickable DOM node -- exclude the player from
+            // click replay and sync its actual paused/currentTime state instead.
             doc.addEventListener('click', (e) => {
-                if (!iHaveControl) return;
+                if (!iHaveControl || e.target.closest?.('#moviePlayerFrameWrap')) return;
                 const selector = buildSelector(doc, e.target);
                 if (selector) {
                     pendingClickSelector = selector;
                     reportOwnState();
                 }
             }, { capture: true });
+            ['play', 'pause', 'seeked'].forEach(evt => {
+                doc.addEventListener(evt, (e) => {
+                    if (iHaveControl && e.target?.id === 'moviePlayerVideo') reportOwnState();
+                }, { capture: true });
+            });
             iframeListenersBound = true;
         } catch (e) {}
     }
@@ -84,6 +91,13 @@
             body.clickSelector = pendingClickSelector;
             pendingClickSelector = null;
         }
+        try {
+            const video = frame.contentDocument.getElementById('moviePlayerVideo');
+            if (video) {
+                body.videoPaused = video.paused;
+                body.videoTime = video.currentTime;
+            }
+        } catch (e) {}
 
         try {
             const res = await fetch(`/watch2gether/session/${encodeURIComponent(sessionId)}/state`, {
@@ -167,6 +181,16 @@
                 if (data.clickSelector && data.clickAt > lastReplayedClickAt) {
                     lastReplayedClickAt = data.clickAt;
                     try { frame.contentDocument.querySelector(data.clickSelector)?.click(); } catch (e) {}
+                }
+                if (typeof data.videoPaused === 'boolean') {
+                    try {
+                        const video = frame.contentDocument.getElementById('moviePlayerVideo');
+                        if (video) {
+                            if (Math.abs(video.currentTime - (data.videoTime || 0)) > 1.5) video.currentTime = data.videoTime || 0;
+                            if (data.videoPaused && !video.paused) video.pause();
+                            if (!data.videoPaused && video.paused) video.play().catch(() => {});
+                        }
+                    } catch (e) {}
                 }
             }
         } catch (e) {}

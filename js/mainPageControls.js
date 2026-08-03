@@ -2843,8 +2843,24 @@ function w2gBuildSelector(el) {
     return parts.length ? parts.join(' > ') : null;
 }
 
+// Only ever broadcast from the tab the user is actually looking at -- otherwise every open tab
+// of the site independently reports its own (possibly stale) page, and whichever tab's report
+// happens to land last in the database "wins", regardless of which one the host is using.
+function _w2gIsActiveTab() {
+    return document.visibilityState === 'visible';
+}
+
+// The video player uses native <video controls> -- native play/pause/fullscreen/seek controls
+// live in browser-rendered UI with no clickable DOM node, so they can never be captured via
+// click-selector replay. Clicks landing inside the player are ignored here; real playback state
+// (paused/currentTime) is synced separately via the video element's own events instead.
+function _w2gIsInsidePlayer(el) {
+    return !!el.closest?.('#moviePlayerFrameWrap');
+}
+
 document.addEventListener('click', (e) => {
-    if (!localStorage.getItem('w2gHostingSessionId') || _w2gFollowing) return;
+    if (!localStorage.getItem('w2gHostingSessionId') || _w2gFollowing || !_w2gIsActiveTab()) return;
+    if (_w2gIsInsidePlayer(e.target)) return;
     const selector = w2gBuildSelector(e.target);
     if (selector) {
         _w2gPendingClickSelector = selector;
@@ -2852,15 +2868,26 @@ document.addEventListener('click', (e) => {
     }
 }, { capture: true });
 
+['play', 'pause', 'seeked'].forEach(evt => {
+    document.addEventListener(evt, (e) => {
+        if (e.target?.id === 'moviePlayerVideo') _w2gReportState();
+    }, { capture: true });
+});
+
 function _w2gReportState() {
     const sessionId = localStorage.getItem('w2gHostingSessionId');
     const token = localStorage.getItem('authToken');
-    if (!sessionId || !token || _w2gFollowing) return;
+    if (!sessionId || !token || _w2gFollowing || !_w2gIsActiveTab()) return;
 
     const body = { path: window.location.pathname + window.location.search, scrollY: window.scrollY };
     if (_w2gPendingClickSelector) {
         body.clickSelector = _w2gPendingClickSelector;
         _w2gPendingClickSelector = null;
+    }
+    const video = document.getElementById('moviePlayerVideo');
+    if (video) {
+        body.videoPaused = video.paused;
+        body.videoTime = video.currentTime;
     }
 
     fetch(`/watch2gether/session/${sessionId}/state`, {
@@ -2875,7 +2902,7 @@ function _w2gReportState() {
 async function _w2gPollForFollowOrControl() {
     const sessionId = localStorage.getItem('w2gHostingSessionId');
     const token = localStorage.getItem('authToken');
-    if (!sessionId || !token) return;
+    if (!sessionId || !token || !_w2gIsActiveTab()) return;
 
     try {
         const res = await fetch(`/watch2gether/session/${sessionId}/state`, { headers: { 'Authorization': `Bearer ${token}` } });
@@ -2895,6 +2922,12 @@ async function _w2gPollForFollowOrControl() {
             if (data.clickSelector && data.clickAt > _w2gLastReplayedClickAt) {
                 _w2gLastReplayedClickAt = data.clickAt;
                 try { document.querySelector(data.clickSelector)?.click(); } catch (e) {}
+            }
+            const video = document.getElementById('moviePlayerVideo');
+            if (video && typeof data.videoPaused === 'boolean') {
+                if (Math.abs(video.currentTime - (data.videoTime || 0)) > 1.5) video.currentTime = data.videoTime || 0;
+                if (data.videoPaused && !video.paused) video.pause();
+                if (!data.videoPaused && video.paused) video.play().catch(() => {});
             }
         } else if (_w2gFollowing) {
             // Control window expired -- hand back to normal host broadcasting.
