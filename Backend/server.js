@@ -2699,6 +2699,7 @@ app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
                     path: session.path,
                     scrollY: session.scroll_y,
                     updatedAt: session.updated_at,
+                    createdAt: session.created_at,
                     controlOwner: session.control_owner,
                     controlExpiresAt: session.control_expires_at,
                     isHost: session.host_uid === uidNum,

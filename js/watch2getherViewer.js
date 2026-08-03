@@ -1,6 +1,7 @@
 (function () {
     const sessionId = new URLSearchParams(window.location.search).get('session');
     const frame = document.getElementById('w2gFrame');
+    const waitingEl = document.getElementById('w2gWaiting');
     const statusText = document.getElementById('w2gStatusText');
     const requestBtn = document.getElementById('w2gRequestBtn');
 
@@ -12,6 +13,7 @@
     let reportThrottle = null;
     let pendingClickSelector = null;
     let lastReplayedClickAt = 0;
+    let hostHasReported = false;
 
     if (!sessionId) {
         statusText.textContent = 'Missing session — close this tab and try again.';
@@ -141,6 +143,9 @@
             const secondsLeft = Math.max(0, controlExpiresAt - Math.floor(Date.now() / 1000));
             statusText.textContent = `You're in control — ${secondsLeft}s left`;
             requestBtn.style.display = 'none';
+        } else if (!hostHasReported) {
+            statusText.textContent = 'Waiting for your friend to start...';
+            requestBtn.style.display = 'none';
         } else {
             statusText.textContent = 'Watching along with your friend';
             requestBtn.style.display = '';
@@ -169,6 +174,17 @@
             updateStatusBar();
 
             if (iHaveControl) return; // we're the source of truth right now, don't overwrite ourselves
+
+            if (!hostHasReported) {
+                // No real report from the host yet -- don't guess, just wait. Showing the DB's
+                // placeholder path here is exactly what caused "friend lands on indexMain while
+                // host is on movieInfo": that placeholder isn't real data, it's just what an
+                // unstarted session happens to default to.
+                if (data.updatedAt <= data.createdAt) return;
+                hostHasReported = true;
+                waitingEl.style.display = 'none';
+                frame.style.display = '';
+            }
 
             if (!data.path) return;
             pendingScrollY = data.scrollY || 0;

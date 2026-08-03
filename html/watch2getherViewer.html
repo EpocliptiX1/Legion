@@ -74,18 +74,30 @@
             border: none;
             display: block;
         }
+        .w2g-waiting {
+            position: absolute;
+            top: 46px; left: 0; right: 0; bottom: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: rgba(255,255,255,0.5);
+            font-size: 0.9rem;
+            text-align: center;
+            padding: 20px;
+        }
     </style>
 </head>
 <body>
     <div class="w2g-bar">
-        <div class="w2g-bar-label"><span class="w2g-dot" id="w2gDot"></span> <span id="w2gStatusText">Watching along with your friend</span></div>
+        <div class="w2g-bar-label"><span class="w2g-dot" id="w2gDot"></span> <span id="w2gStatusText">Waiting for your friend to start...</span></div>
         <div class="w2g-bar-right">
             <button class="w2g-request" id="w2gRequestBtn" onclick="requestWatch2GetherControl()">🙋 Request to Interact</button>
             <button class="w2g-leave" onclick="window.close()">Leave</button>
         </div>
     </div>
     <div class="w2g-frame-wrap">
-        <iframe id="w2gFrame" src="/html/indexMain.html"></iframe>
+        <div class="w2g-waiting" id="w2gWaiting">Waiting for your friend to start hosting...</div>
+        <iframe id="w2gFrame" style="display:none;"></iframe>
     </div>
     <script src="/js/watch2getherViewer.js"></script>
 </body>
