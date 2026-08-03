@@ -2819,16 +2819,54 @@ window.respondWatch2Gether = async function (notificationId, accept) {
 let _w2gScrollThrottle = null;
 let _w2gFollowing = false;
 let _w2gLastAppliedPath = null;
+let _w2gPendingClickSelector = null;
+let _w2gLastReplayedClickAt = 0;
+
+// Builds a selector stable enough to find the same element again on the other side's copy of
+// the same page (host and friend are both viewing identical markup for a given path). Prefers
+// #id when present; otherwise walks up an nth-child chain to a reasonably short, precise path.
+function w2gBuildSelector(el) {
+    if (!el || el === document.body || el === document.documentElement) return null;
+    if (el.id) return `#${CSS.escape(el.id)}`;
+
+    const parts = [];
+    let node = el;
+    for (let depth = 0; node && node !== document.body && depth < 6; depth++) {
+        if (node.id) { parts.unshift(`#${CSS.escape(node.id)}`); break; }
+        const parent = node.parentElement;
+        if (!parent) break;
+        const siblings = Array.from(parent.children).filter(c => c.tagName === node.tagName);
+        const index = siblings.indexOf(node) + 1;
+        parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
+        node = parent;
+    }
+    return parts.length ? parts.join(' > ') : null;
+}
+
+document.addEventListener('click', (e) => {
+    if (!localStorage.getItem('w2gHostingSessionId') || _w2gFollowing) return;
+    const selector = w2gBuildSelector(e.target);
+    if (selector) {
+        _w2gPendingClickSelector = selector;
+        _w2gReportState();
+    }
+}, { capture: true });
 
 function _w2gReportState() {
     const sessionId = localStorage.getItem('w2gHostingSessionId');
     const token = localStorage.getItem('authToken');
     if (!sessionId || !token || _w2gFollowing) return;
 
+    const body = { path: window.location.pathname + window.location.search, scrollY: window.scrollY };
+    if (_w2gPendingClickSelector) {
+        body.clickSelector = _w2gPendingClickSelector;
+        _w2gPendingClickSelector = null;
+    }
+
     fetch(`/watch2gether/session/${sessionId}/state`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ path: window.location.pathname + window.location.search, scrollY: window.scrollY })
+        body: JSON.stringify(body)
     }).then(res => {
         if (res.status === 403) _w2gFollowing = true; // friend just took control -- stop pushing, start following
     }).catch(() => {});
@@ -2854,6 +2892,10 @@ async function _w2gPollForFollowOrControl() {
                 }
             }
             window.scrollTo(0, data.scrollY || 0);
+            if (data.clickSelector && data.clickAt > _w2gLastReplayedClickAt) {
+                _w2gLastReplayedClickAt = data.clickAt;
+                try { document.querySelector(data.clickSelector)?.click(); } catch (e) {}
+            }
         } else if (_w2gFollowing) {
             // Control window expired -- hand back to normal host broadcasting.
             _w2gFollowing = false;
@@ -2862,9 +2904,27 @@ async function _w2gPollForFollowOrControl() {
     } catch (e) {}
 }
 
+// Idempotent -- safe to call both at page load (if hosting was already active before this
+// page load happened) and mid-session (when hosting starts via an accepted-invite notification,
+// which fires long after DOMContentLoaded already ran). Previously the interval/scroll-listener
+// setup only lived inside the DOMContentLoaded handler, so hosting that started mid-session sent
+// exactly one report and then never updated again until the host happened to load a new page.
+let _w2gLoopsStarted = false;
+function _w2gEnsureLoopsRunning() {
+    if (_w2gLoopsStarted) return;
+    _w2gLoopsStarted = true;
+    setInterval(_w2gReportState, 1500);
+    setInterval(_w2gPollForFollowOrControl, 1000);
+    window.addEventListener('scroll', () => {
+        clearTimeout(_w2gScrollThrottle);
+        _w2gScrollThrottle = setTimeout(_w2gReportState, 250);
+    }, { passive: true });
+}
+
 window.startWatch2GetherHosting = function (sessionId, silent) {
     localStorage.setItem('w2gHostingSessionId', String(sessionId));
     _w2gReportState();
+    _w2gEnsureLoopsRunning();
     if (!silent) showLimitToast('📡 Now hosting Watch2Gether — your friend will see what you see.');
 };
 
@@ -2904,12 +2964,7 @@ window.grantWatch2GetherControl = async function (notificationId, sessionId) {
 document.addEventListener('DOMContentLoaded', () => {
     if (!localStorage.getItem('w2gHostingSessionId')) return;
     _w2gReportState();
-    setInterval(_w2gReportState, 1500);
-    setInterval(_w2gPollForFollowOrControl, 1000);
-    window.addEventListener('scroll', () => {
-        clearTimeout(_w2gScrollThrottle);
-        _w2gScrollThrottle = setTimeout(_w2gReportState, 250);
-    }, { passive: true });
+    _w2gEnsureLoopsRunning();
 });
 
 function loadCurrentSettings() {

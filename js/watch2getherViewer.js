@@ -8,8 +8,10 @@
     let pendingScrollY = null;
     let iHaveControl = false;
     let controlExpiresAt = 0;
-    let iframeScrollBound = false;
+    let iframeListenersBound = false;
     let reportThrottle = null;
+    let pendingClickSelector = null;
+    let lastReplayedClickAt = 0;
 
     if (!sessionId) {
         statusText.textContent = 'Missing session — close this tab and try again.';
@@ -28,14 +30,44 @@
         try { frame.contentWindow.scrollTo(0, y); } catch (e) {}
     }
 
-    function bindIframeReporting() {
-        if (iframeScrollBound) return;
+    // Same selector strategy as the host side (mainPageControls.js) -- both sides are viewing
+    // identical markup for a given path, so an nth-of-type chain is stable enough to replay.
+    function buildSelector(doc, el) {
+        if (!el || el === doc.body || el === doc.documentElement) return null;
+        if (el.id) return `#${CSS.escape(el.id)}`;
+
+        const parts = [];
+        let node = el;
+        for (let depth = 0; node && node !== doc.body && depth < 6; depth++) {
+            if (node.id) { parts.unshift(`#${CSS.escape(node.id)}`); break; }
+            const parent = node.parentElement;
+            if (!parent) break;
+            const siblings = Array.from(parent.children).filter(c => c.tagName === node.tagName);
+            const index = siblings.indexOf(node) + 1;
+            parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
+            node = parent;
+        }
+        return parts.length ? parts.join(' > ') : null;
+    }
+
+    function bindIframeListeners() {
+        if (iframeListenersBound) return;
         try {
-            frame.contentWindow.addEventListener('scroll', () => {
+            const win = frame.contentWindow;
+            const doc = frame.contentDocument;
+            win.addEventListener('scroll', () => {
                 clearTimeout(reportThrottle);
                 reportThrottle = setTimeout(reportOwnState, 250);
             }, { passive: true });
-            iframeScrollBound = true;
+            doc.addEventListener('click', (e) => {
+                if (!iHaveControl) return;
+                const selector = buildSelector(doc, e.target);
+                if (selector) {
+                    pendingClickSelector = selector;
+                    reportOwnState();
+                }
+            }, { capture: true });
+            iframeListenersBound = true;
         } catch (e) {}
     }
 
@@ -47,19 +79,26 @@
             scrollY = frame.contentWindow.scrollY;
         } catch (e) { return; }
 
+        const body = { path, scrollY };
+        if (pendingClickSelector) {
+            body.clickSelector = pendingClickSelector;
+            pendingClickSelector = null;
+        }
+
         try {
             const res = await fetch(`/watch2gether/session/${encodeURIComponent(sessionId)}/state`, {
                 method: 'POST',
                 headers: authHeaders(true),
-                body: JSON.stringify({ path, scrollY })
+                body: JSON.stringify(body)
             });
             if (res.status === 403) iHaveControl = false; // control window expired server-side
         } catch (e) {}
     }
 
     frame.addEventListener('load', () => {
+        iframeListenersBound = false;
         if (iHaveControl) {
-            bindIframeReporting();
+            bindIframeListeners();
             reportOwnState();
         } else if (pendingScrollY != null) {
             applyScroll(pendingScrollY);
@@ -110,7 +149,7 @@
             const nowHasControl = data.controlOwner === 'friend';
             if (nowHasControl !== iHaveControl) {
                 iHaveControl = nowHasControl;
-                if (iHaveControl) bindIframeReporting();
+                if (iHaveControl) bindIframeListeners();
             }
             controlExpiresAt = data.controlExpiresAt || 0;
             updateStatusBar();
@@ -125,6 +164,10 @@
                 frame.src = data.path;
             } else {
                 applyScroll(pendingScrollY);
+                if (data.clickSelector && data.clickAt > lastReplayedClickAt) {
+                    lastReplayedClickAt = data.clickAt;
+                    try { frame.contentDocument.querySelector(data.clickSelector)?.click(); } catch (e) {}
+                }
             }
         } catch (e) {}
     }

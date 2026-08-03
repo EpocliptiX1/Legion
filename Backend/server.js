@@ -1948,11 +1948,15 @@ activityDb.serialize(() => {
         scroll_y            INTEGER NOT NULL DEFAULT 0,
         control_owner       TEXT    NOT NULL DEFAULT 'host',
         control_expires_at  INTEGER NOT NULL DEFAULT 0,
+        last_click_selector TEXT,
+        last_click_at       INTEGER NOT NULL DEFAULT 0,
         created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     )`);
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN control_owner TEXT NOT NULL DEFAULT 'host'`, () => {});
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN control_expires_at INTEGER NOT NULL DEFAULT 0`, () => {});
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN last_click_selector TEXT`, () => {});
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN last_click_at INTEGER NOT NULL DEFAULT 0`, () => {});
     activityDb.run(`CREATE TABLE IF NOT EXISTS notification_gen_state (
         userUID       TEXT PRIMARY KEY,
         last_generated INTEGER NOT NULL DEFAULT 0
@@ -2625,6 +2629,11 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
     const scrollY = Math.max(0, parseInt(req.body?.scrollY, 10) || 0);
     if (!path) return res.status(400).json({ error: 'Missing path' });
 
+    // Optional -- present only when this report is piggybacking a click the host/in-control
+    // friend just made, so the other side can replay it.
+    const clickSelector = req.body?.clickSelector ? String(req.body.clickSelector).slice(0, 300) : null;
+    const clickAt = clickSelector ? Date.now() : null;
+
     activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
         if (err) return res.status(500).json({ error: 'Database error' });
         if (!row) return res.status(404).json({ error: 'Session not found' });
@@ -2637,14 +2646,17 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
                 return res.status(403).json({ error: 'Not currently in control of this session', controlOwner: session.control_owner });
             }
 
-            activityDb.run(
-                `UPDATE watch2gether_sessions SET path = ?, scroll_y = ?, updated_at = strftime('%s','now') WHERE id = ?`,
-                [path, scrollY, sessionId],
-                (updateErr) => {
-                    if (updateErr) return res.status(500).json({ error: 'Database error' });
-                    res.json({ ok: true });
-                }
-            );
+            const sql = clickSelector
+                ? `UPDATE watch2gether_sessions SET path = ?, scroll_y = ?, last_click_selector = ?, last_click_at = ?, updated_at = strftime('%s','now') WHERE id = ?`
+                : `UPDATE watch2gether_sessions SET path = ?, scroll_y = ?, updated_at = strftime('%s','now') WHERE id = ?`;
+            const params = clickSelector
+                ? [path, scrollY, clickSelector, clickAt, sessionId]
+                : [path, scrollY, sessionId];
+
+            activityDb.run(sql, params, (updateErr) => {
+                if (updateErr) return res.status(500).json({ error: 'Database error' });
+                res.json({ ok: true });
+            });
         });
     });
 });
@@ -2670,7 +2682,9 @@ app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
                     updatedAt: session.updated_at,
                     controlOwner: session.control_owner,
                     controlExpiresAt: session.control_expires_at,
-                    isHost: session.host_uid === uidNum
+                    isHost: session.host_uid === uidNum,
+                    clickSelector: session.last_click_selector || null,
+                    clickAt: session.last_click_at || 0
                 });
             });
         }
