@@ -1941,14 +1941,18 @@ activityDb.serialize(() => {
     activityDb.run(`ALTER TABLE notifications ADD COLUMN data TEXT`, () => {});
     activityDb.run(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(userUID, created_at)`);
     activityDb.run(`CREATE TABLE IF NOT EXISTS watch2gether_sessions (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        host_uid    TEXT    NOT NULL,
-        friend_uid  TEXT    NOT NULL,
-        path        TEXT    NOT NULL DEFAULT '/html/indexMain.html',
-        scroll_y    INTEGER NOT NULL DEFAULT 0,
-        created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        host_uid            TEXT    NOT NULL,
+        friend_uid          TEXT    NOT NULL,
+        path                TEXT    NOT NULL DEFAULT '/html/indexMain.html',
+        scroll_y            INTEGER NOT NULL DEFAULT 0,
+        control_owner       TEXT    NOT NULL DEFAULT 'host',
+        control_expires_at  INTEGER NOT NULL DEFAULT 0,
+        created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     )`);
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN control_owner TEXT NOT NULL DEFAULT 'host'`, () => {});
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN control_expires_at INTEGER NOT NULL DEFAULT 0`, () => {});
     activityDb.run(`CREATE TABLE IF NOT EXISTS notification_gen_state (
         userUID       TEXT PRIMARY KEY,
         last_generated INTEGER NOT NULL DEFAULT 0
@@ -2595,8 +2599,25 @@ app.post('/watch2gether/respond', requireAuth, async (req, res) => {
     );
 });
 
+const WATCH2GETHER_CONTROL_WINDOW_SEC = 60;
+
+// Lazily expires a friend's temporary control window -- checked on every read/write instead of
+// a background timer, so "control reverts to host after 60s" just falls out of normal polling.
+function w2gExpireControlIfNeeded(row, callback) {
+    const now = Math.floor(Date.now() / 1000);
+    if (row.control_owner === 'friend' && row.control_expires_at && now > row.control_expires_at) {
+        activityDb.run(
+            `UPDATE watch2gether_sessions SET control_owner = 'host', control_expires_at = 0 WHERE id = ?`,
+            [row.id],
+            () => callback({ ...row, control_owner: 'host', control_expires_at: 0 })
+        );
+        return;
+    }
+    callback(row);
+}
+
 app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
-    const uidNum = parseInt(req.user.userUID, 10);
+    const uidNum = String(parseInt(req.user.userUID, 10));
     const sessionId = parseInt(req.params.id, 10);
     if (!uidNum || !sessionId) return res.status(400).json({ error: 'Invalid request' });
 
@@ -2604,16 +2625,28 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
     const scrollY = Math.max(0, parseInt(req.body?.scrollY, 10) || 0);
     if (!path) return res.status(400).json({ error: 'Missing path' });
 
-    activityDb.run(
-        `UPDATE watch2gether_sessions SET path = ?, scroll_y = ?, updated_at = strftime('%s','now')
-         WHERE id = ? AND host_uid = ?`,
-        [path, scrollY, sessionId, String(uidNum)],
-        function (err) {
-            if (err) return res.status(500).json({ error: 'Database error' });
-            if (this.changes === 0) return res.status(403).json({ error: 'Not the host of this session' });
-            res.json({ ok: true });
-        }
-    );
+    activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!row) return res.status(404).json({ error: 'Session not found' });
+
+        w2gExpireControlIfNeeded(row, (session) => {
+            const isHost = session.host_uid === uidNum;
+            const isFriend = session.friend_uid === uidNum;
+            const allowed = (isHost && session.control_owner === 'host') || (isFriend && session.control_owner === 'friend');
+            if (!allowed) {
+                return res.status(403).json({ error: 'Not currently in control of this session', controlOwner: session.control_owner });
+            }
+
+            activityDb.run(
+                `UPDATE watch2gether_sessions SET path = ?, scroll_y = ?, updated_at = strftime('%s','now') WHERE id = ?`,
+                [path, scrollY, sessionId],
+                (updateErr) => {
+                    if (updateErr) return res.status(500).json({ error: 'Database error' });
+                    res.json({ ok: true });
+                }
+            );
+        });
+    });
 });
 
 app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
@@ -2622,7 +2655,7 @@ app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
     if (!sessionId) return res.status(400).json({ error: 'Invalid session' });
 
     activityDb.get(
-        `SELECT id, host_uid, friend_uid, path, scroll_y, updated_at FROM watch2gether_sessions WHERE id = ?`,
+        `SELECT * FROM watch2gether_sessions WHERE id = ?`,
         [sessionId],
         (err, row) => {
             if (err) return res.status(500).json({ error: 'Database error' });
@@ -2630,9 +2663,62 @@ app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
             if (row.host_uid !== uidNum && row.friend_uid !== uidNum) {
                 return res.status(403).json({ error: 'Not part of this session' });
             }
-            res.json({ path: row.path, scrollY: row.scroll_y, updatedAt: row.updated_at });
+            w2gExpireControlIfNeeded(row, (session) => {
+                res.json({
+                    path: session.path,
+                    scrollY: session.scroll_y,
+                    updatedAt: session.updated_at,
+                    controlOwner: session.control_owner,
+                    controlExpiresAt: session.control_expires_at,
+                    isHost: session.host_uid === uidNum
+                });
+            });
         }
     );
+});
+
+app.post('/watch2gether/session/:id/request-control', requireAuth, async (req, res) => {
+    const uidNum = String(parseInt(req.user.userUID, 10));
+    const sessionId = parseInt(req.params.id, 10);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session' });
+
+    activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], async (err, row) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!row || row.friend_uid !== uidNum) return res.status(403).json({ error: 'Not the friend on this session' });
+
+        const requesterUsername = req.user.username || 'Your friend';
+        await notifInsert(
+            row.host_uid,
+            'watch2gether_control_request',
+            `w2g-control:${sessionId}:${Date.now()}`,
+            'Interaction Request',
+            `${requesterUsername} wants to interact for 60 seconds.`,
+            null, null,
+            { sessionId }
+        );
+        res.json({ ok: true });
+    });
+});
+
+app.post('/watch2gether/session/:id/grant-control', requireAuth, (req, res) => {
+    const uidNum = String(parseInt(req.user.userUID, 10));
+    const sessionId = parseInt(req.params.id, 10);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session' });
+
+    activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!row || row.host_uid !== uidNum) return res.status(403).json({ error: 'Not the host of this session' });
+
+        const expiresAt = Math.floor(Date.now() / 1000) + WATCH2GETHER_CONTROL_WINDOW_SEC;
+        activityDb.run(
+            `UPDATE watch2gether_sessions SET control_owner = 'friend', control_expires_at = ? WHERE id = ?`,
+            [expiresAt, sessionId],
+            (updateErr) => {
+                if (updateErr) return res.status(500).json({ error: 'Database error' });
+                res.json({ ok: true, expiresAt });
+            }
+        );
+    });
 });
 
 app.post('/notifications/mark-read', (req, res) => {
@@ -2649,7 +2735,7 @@ app.post('/notifications/mark-read', (req, res) => {
         // watch2gether_invite is actionable (Accept/Decline), not just informational -- it must
         // only ever be marked read via /watch2gether/respond, never swept up by "mark all read".
         activityDb.run(
-            `UPDATE notifications SET read = 1 WHERE userUID = ? AND type != 'watch2gether_invite'`,
+            `UPDATE notifications SET read = 1 WHERE userUID = ? AND type NOT IN ('watch2gether_invite', 'watch2gether_control_request')`,
             [safeUID],
             (err) => {
                 if (err) return res.status(500).json({ error: 'db error' });

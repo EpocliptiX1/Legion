@@ -48,6 +48,23 @@
             cursor: pointer;
         }
         .w2g-leave:hover { border-color: #f96d00; color: #f96d00; }
+        .w2g-request {
+            background: #f96d00;
+            border: 1px solid #f96d00;
+            color: #fff;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .w2g-request:disabled {
+            background: rgba(255,255,255,0.08);
+            border-color: rgba(255,255,255,0.15);
+            color: rgba(255,255,255,0.4);
+            cursor: default;
+        }
+        .w2g-bar-right { display: flex; align-items: center; gap: 10px; }
         .w2g-frame-wrap {
             position: absolute;
             top: 46px; left: 0; right: 0; bottom: 0;
@@ -61,8 +78,11 @@
 </head>
 <body>
     <div class="w2g-bar">
-        <div class="w2g-bar-label"><span class="w2g-dot"></span> Watching along with your friend</div>
-        <button class="w2g-leave" onclick="window.close()">Leave</button>
+        <div class="w2g-bar-label"><span class="w2g-dot" id="w2gDot"></span> <span id="w2gStatusText">Watching along with your friend</span></div>
+        <div class="w2g-bar-right">
+            <button class="w2g-request" id="w2gRequestBtn" onclick="requestWatch2GetherControl()">🙋 Request to Interact</button>
+            <button class="w2g-leave" onclick="window.close()">Leave</button>
+        </div>
     </div>
     <div class="w2g-frame-wrap">
         <iframe id="w2gFrame" src="/html/indexMain.html"></iframe>

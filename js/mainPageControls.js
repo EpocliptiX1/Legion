@@ -2809,18 +2809,53 @@ window.respondWatch2Gether = async function (notificationId, accept) {
 // Reports the host's current path + scroll position periodically so the friend's
 // viewer tab can mirror it. Persists across page loads via localStorage since
 // the host keeps navigating the real site while hosting (not a single page).
+// When the friend has been granted temporary control (see below), this flips
+// into "follow mode" instead -- the host's real page gets steered to match
+// whatever the friend is doing in their viewer, for up to 60 seconds.
 let _w2gScrollThrottle = null;
+let _w2gFollowing = false;
+let _w2gLastAppliedPath = null;
 
 function _w2gReportState() {
     const sessionId = localStorage.getItem('w2gHostingSessionId');
     const token = localStorage.getItem('authToken');
-    if (!sessionId || !token) return;
+    if (!sessionId || !token || _w2gFollowing) return;
 
     fetch(`/watch2gether/session/${sessionId}/state`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ path: window.location.pathname + window.location.search, scrollY: window.scrollY })
+    }).then(res => {
+        if (res.status === 403) _w2gFollowing = true; // friend just took control -- stop pushing, start following
     }).catch(() => {});
+}
+
+async function _w2gPollForFollowOrControl() {
+    const sessionId = localStorage.getItem('w2gHostingSessionId');
+    const token = localStorage.getItem('authToken');
+    if (!sessionId || !token) return;
+
+    try {
+        const res = await fetch(`/watch2gether/session/${sessionId}/state`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (data.controlOwner === 'friend') {
+            _w2gFollowing = true;
+            if (data.path !== _w2gLastAppliedPath) {
+                _w2gLastAppliedPath = data.path;
+                if (window.location.pathname + window.location.search !== data.path) {
+                    window.location.href = data.path;
+                    return;
+                }
+            }
+            window.scrollTo(0, data.scrollY || 0);
+        } else if (_w2gFollowing) {
+            // Control window expired -- hand back to normal host broadcasting.
+            _w2gFollowing = false;
+            _w2gLastAppliedPath = null;
+        }
+    } catch (e) {}
 }
 
 window.startWatch2GetherHosting = function (sessionId, silent) {
@@ -2831,13 +2866,42 @@ window.startWatch2GetherHosting = function (sessionId, silent) {
 
 window.stopWatch2GetherHosting = function () {
     localStorage.removeItem('w2gHostingSessionId');
+    _w2gFollowing = false;
     showLimitToast('Stopped hosting Watch2Gether.');
+};
+
+window.grantWatch2GetherControl = async function (notificationId, sessionId) {
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+    try {
+        const res = await fetch(`/watch2gether/session/${sessionId}/grant-control`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) {
+            showLimitToast('⚠️ Could not grant control.');
+            return;
+        }
+        showLimitToast('🙋 Your friend has control for 60 seconds.');
+        const userUID = localStorage.getItem('userUID');
+        if (userUID) {
+            fetch('/notifications/mark-read', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userUID, id: notificationId })
+            }).catch(() => {});
+        }
+        window.fetchNotifications?.();
+    } catch (e) {
+        showLimitToast('⚠️ Could not reach server.');
+    }
 };
 
 document.addEventListener('DOMContentLoaded', () => {
     if (!localStorage.getItem('w2gHostingSessionId')) return;
     _w2gReportState();
     setInterval(_w2gReportState, 1500);
+    setInterval(_w2gPollForFollowOrControl, 1000);
     window.addEventListener('scroll', () => {
         clearTimeout(_w2gScrollThrottle);
         _w2gScrollThrottle = setTimeout(_w2gReportState, 250);
@@ -3084,7 +3148,7 @@ window.switchContentMode = function (mode) {
 
 window.__notifications = [];
 
-const NOTIF_ICONS = { continue_watching: '▶', new_episode: '⛩', download_ready: '⬇', watch2gether_invite: '🎬', watch2gether_accepted: '🎉' };
+const NOTIF_ICONS = { continue_watching: '▶', new_episode: '⛩', download_ready: '⬇', watch2gether_invite: '🎬', watch2gether_accepted: '🎉', watch2gether_control_request: '🙋' };
 
 function notifEscapeHtml(text) {
     return String(text || '')
@@ -3159,6 +3223,21 @@ function renderNotificationList() {
             </div>`;
         }
 
+        if (n.type === 'watch2gether_control_request' && !n.read && n.data?.sessionId) {
+            return `<div class="notif-item unread">
+                <div class="notif-item-icon">${icon}</div>
+                <div class="notif-item-body">
+                    <div class="notif-item-title">${notifEscapeHtml(n.title)}</div>
+                    <div class="notif-item-desc">${notifEscapeHtml(n.body)}</div>
+                    <div class="notif-item-time">${notifTimeAgo(n.created_at)}</div>
+                    <div style="display:flex;gap:8px;margin-top:6px;">
+                        <button class="btn-small" onclick="event.stopPropagation(); grantWatch2GetherControl(${n.id}, ${n.data.sessionId})">Accept</button>
+                        <button class="btn-small" onclick="event.stopPropagation(); markNotificationRead(${n.id})">Decline</button>
+                    </div>
+                </div>
+            </div>`;
+        }
+
         const href = n.link || '#';
         return `<a class="notif-item${n.read ? '' : ' unread'}" href="${href}">
             <div class="notif-item-icon">${icon}</div>
@@ -3170,6 +3249,16 @@ function renderNotificationList() {
         </a>`;
     }).join('');
 }
+
+window.markNotificationRead = function (notificationId) {
+    const userUID = localStorage.getItem('userUID');
+    if (!userUID) return;
+    fetch('/notifications/mark-read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userUID, id: notificationId })
+    }).then(() => window.fetchNotifications?.()).catch(() => {});
+};
 
 window.fetchNotifications = async function () {
     const userUID = localStorage.getItem('userUID');
@@ -3183,6 +3272,19 @@ window.fetchNotifications = async function () {
         window.__notifications = data.notifications || [];
         renderNotificationBadge(data.unread || 0);
         renderNotificationList();
+
+        // Auto-start hosting the instant we learn our invite was accepted -- previously this
+        // required the host to notice the notification and click "Start Hosting" themselves,
+        // which meant nothing synced until they did (looked like a broken feature).
+        const freshAccept = window.__notifications.find(n => n.type === 'watch2gether_accepted' && !n.read && n.data?.sessionId);
+        if (freshAccept) {
+            window.startWatch2GetherHosting(freshAccept.data.sessionId, true);
+            fetch('/notifications/mark-read', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userUID, id: freshAccept.id })
+            }).catch(() => {});
+        }
     } catch (err) {
         console.warn('Notifications fetch failed:', err.message);
     }
