@@ -1830,13 +1830,10 @@ async function loadRecommendedRow() {
             : [];
         const seed = (history || []).find(h => (h.item_type || 'movie') === 'movie' && h.movie_id);
         if (seed) {
-            const recRes = await fetch(`/api/tmdb-proxy/movie/${seed.movie_id}/recommendations?language=en-US&page=1`);
-            let results = recRes.ok ? ((await recRes.json())?.results || []) : [];
-            if (!results.length) {
-                const simRes = await fetch(`/api/tmdb-proxy/movie/${seed.movie_id}/similar?language=en-US&page=1`);
-                results = simRes.ok ? ((await simRes.json())?.results || []) : [];
-            }
-            movies = results.map(mapTmdbMovieForCard).filter(Boolean);
+            // Cache-first via movieCache.db (falls back to /similar server-side on miss).
+            const recRes = await fetch(`/api/movie-recommendations?tmdbId=${seed.movie_id}&type=movie`);
+            const recData = recRes.ok ? await recRes.json() : null;
+            movies = (recData?.results || []).map(mapTmdbMovieForCard).filter(Boolean);
         }
     } catch (e) {
         console.warn('[Recommended] TMDB-based seed failed, falling back:', e.message);
@@ -2696,6 +2693,92 @@ window.closeSettings = function () {
     if (modal) modal.classList.remove('active');
 };
 
+// ── WATCH2GETHER (v1: friend-code invite + accept/decline, no sync yet) ────────
+window.openWatch2GetherModal = async function () {
+    if (!localStorage.getItem('username')) {
+        showLimitToast('⚠️ Sign in to use Watch2Gether!');
+        return;
+    }
+    const modal = document.getElementById('watch2getherModal');
+    if (!modal) return;
+    modal.classList.add('active');
+
+    const codeInput = document.getElementById('watch2getherOwnCode');
+    const token = localStorage.getItem('authToken');
+    if (codeInput && token) {
+        try {
+            const res = await fetch('/users/watch2gether-code', { headers: { 'Authorization': `Bearer ${token}` } });
+            const data = res.ok ? await res.json() : null;
+            codeInput.value = data?.code || 'Could not load code';
+        } catch (e) {
+            codeInput.value = 'Could not load code';
+        }
+    }
+};
+
+window.closeWatch2GetherModal = function () {
+    const modal = document.getElementById('watch2getherModal');
+    if (modal) modal.classList.remove('active');
+};
+
+window.hostWatch2Gether = async function () {
+    const input = document.getElementById('watch2getherFriendCode');
+    const friendCode = (input?.value || '').trim();
+    if (!friendCode) {
+        showLimitToast('⚠️ Enter your friend\'s code first.');
+        return;
+    }
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+        showLimitToast('⚠️ Sign in to use Watch2Gether!');
+        return;
+    }
+    try {
+        const res = await fetch('/watch2gether/invite', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ friendCode })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            showLimitToast(`⚠️ ${data.error || 'Could not send invite.'}`);
+            return;
+        }
+        showLimitToast(`✅ Invite sent to ${data.friendUsername || 'your friend'}!`);
+        if (input) input.value = '';
+        closeWatch2GetherModal();
+    } catch (e) {
+        showLimitToast('⚠️ Could not reach server.');
+    }
+};
+
+window.respondWatch2Gether = async function (notificationId, accept) {
+    const userUID = localStorage.getItem('userUID');
+    const token = localStorage.getItem('authToken');
+    if (!userUID || !token) return;
+
+    try {
+        const res = await fetch('/watch2gether/respond', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ notificationId, accept })
+        });
+        if (!res.ok) {
+            showLimitToast('⚠️ Could not respond to invite.');
+            return;
+        }
+        if (accept) {
+            window.open('https://google.com', '_blank');
+            showLimitToast('✅ Invite accepted!');
+        } else {
+            showLimitToast('Invite declined.');
+        }
+        window.fetchNotifications?.();
+    } catch (e) {
+        showLimitToast('⚠️ Could not reach server.');
+    }
+};
+
 function loadCurrentSettings() {
     const currentTheme = localStorage.getItem('userTheme') || 'dark';
     document.querySelectorAll('.theme-option').forEach(btn => {
@@ -2936,7 +3019,7 @@ window.switchContentMode = function (mode) {
 
 window.__notifications = [];
 
-const NOTIF_ICONS = { continue_watching: '▶', new_episode: '⛩', download_ready: '⬇' };
+const NOTIF_ICONS = { continue_watching: '▶', new_episode: '⛩', download_ready: '⬇', watch2gether_invite: '🎬', watch2gether_accepted: '🎉' };
 
 function notifEscapeHtml(text) {
     return String(text || '')
@@ -2978,6 +3061,22 @@ function renderNotificationList() {
     }
     list.innerHTML = items.map(n => {
         const icon = NOTIF_ICONS[n.type] || '🔔';
+
+        if (n.type === 'watch2gether_invite' && !n.read) {
+            return `<div class="notif-item unread">
+                <div class="notif-item-icon">${icon}</div>
+                <div class="notif-item-body">
+                    <div class="notif-item-title">${notifEscapeHtml(n.title)}</div>
+                    <div class="notif-item-desc">${notifEscapeHtml(n.body)}</div>
+                    <div class="notif-item-time">${notifTimeAgo(n.created_at)}</div>
+                    <div style="display:flex;gap:8px;margin-top:6px;">
+                        <button class="btn-small" onclick="event.stopPropagation(); respondWatch2Gether(${n.id}, true)">Accept</button>
+                        <button class="btn-small" onclick="event.stopPropagation(); respondWatch2Gether(${n.id}, false)">Decline</button>
+                    </div>
+                </div>
+            </div>`;
+        }
+
         const href = n.link || '#';
         return `<a class="notif-item${n.read ? '' : ' unread'}" href="${href}">
             <div class="notif-item-icon">${icon}</div>

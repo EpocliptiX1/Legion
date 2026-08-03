@@ -256,6 +256,101 @@ app.use('/api/tmdb-proxy', async (req, res) => {
     }
 });
 
+// ── Cached TMDB recommendations/similar ────────────────────────────────────────
+// Cache-first: serve from movieCache.db when fresh, otherwise fetch live (trying
+// /recommendations first, falling back to /similar if empty) and store whichever
+// succeeded. Used for both regular movie/TV recommendations AND as the fallback
+// target when anime mode's AniList-based recommendations come back empty/down --
+// one cache serves both paths since they render into the same "Recommended" row.
+const MOVIE_REC_REFRESH_MS = 3 * 24 * 60 * 60 * 1000;
+
+function movieRecGet(tmdbId, mediaType) {
+    return new Promise((resolve, reject) => {
+        movieCacheDb.get(
+            `SELECT json, source, cached_at FROM tmdb_recommendations WHERE tmdb_id = ? AND media_type = ?`,
+            [tmdbId, mediaType],
+            (err, row) => {
+                if (err) return reject(err);
+                if (!row) return resolve(null);
+                const now = Date.now();
+                movieCacheDb.run(
+                    `UPDATE tmdb_recommendations SET last_accessed = ? WHERE tmdb_id = ? AND media_type = ?`,
+                    [now, tmdbId, mediaType]
+                );
+                resolve(row);
+            }
+        );
+    });
+}
+
+function movieRecUpsert(tmdbId, mediaType, source, resultsJson) {
+    return new Promise((resolve, reject) => {
+        const now = Date.now();
+        movieCacheDb.run(
+            `INSERT INTO tmdb_recommendations (tmdb_id, media_type, source, json, cached_at, last_accessed)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(tmdb_id, media_type) DO UPDATE SET
+                 source = excluded.source,
+                 json = excluded.json,
+                 cached_at = excluded.cached_at,
+                 last_accessed = excluded.last_accessed`,
+            [tmdbId, mediaType, source, resultsJson, now, now],
+            (err) => err ? reject(err) : resolve()
+        );
+    });
+}
+
+app.get('/api/movie-recommendations', async (req, res) => {
+    const tmdbId = parseInt(req.query.tmdbId, 10);
+    const mediaType = req.query.type === 'tv' ? 'tv' : 'movie';
+    if (!tmdbId) return res.status(400).json({ error: 'Missing tmdbId' });
+
+    let cached = null;
+    try {
+        cached = await movieRecGet(tmdbId, mediaType);
+    } catch (err) {
+        console.warn('[Movie Recommendations] cache read failed', err.message);
+    }
+
+    if (cached && (Date.now() - cached.cached_at) < MOVIE_REC_REFRESH_MS) {
+        return res.json({ results: JSON.parse(cached.json), source: cached.source, cached: true });
+    }
+
+    try {
+        let source = 'recommendations';
+        let response = await axios.get(
+            `${TMDB_BASE_URL}/${mediaType}/${tmdbId}/recommendations`,
+            { params: { api_key: TMDB_API_KEY, language: 'en-US', page: 1 } }
+        ).catch(() => null);
+        let results = response?.data?.results || [];
+
+        if (!results.length) {
+            source = 'similar';
+            response = await axios.get(
+                `${TMDB_BASE_URL}/${mediaType}/${tmdbId}/similar`,
+                { params: { api_key: TMDB_API_KEY, language: 'en-US', page: 1 } }
+            ).catch(() => null);
+            results = response?.data?.results || [];
+        }
+
+        if (results.length) {
+            await movieRecUpsert(tmdbId, mediaType, source, JSON.stringify(results));
+            return res.json({ results, source, cached: false });
+        }
+
+        if (cached) {
+            return res.json({ results: JSON.parse(cached.json), source: cached.source, cached: true, stale: true });
+        }
+        return res.json({ results: [], source, cached: false });
+    } catch (err) {
+        console.error('[Movie Recommendations] live fetch failed', err.message);
+        if (cached) {
+            return res.json({ results: JSON.parse(cached.json), source: cached.source, cached: true, stale: true });
+        }
+        return res.status(502).json({ error: 'Failed to fetch recommendations' });
+    }
+});
+
 // --- MEGACLOUD STREAM API (via Consumet/FlixHQ) ---
 const { MOVIES, ANIME } = require('@consumet/extensions');
 const flixhq = new MOVIES.FlixHQ();
@@ -620,6 +715,26 @@ const ANIME_CACHE_DB_FILE = path.join(__dirname, 'animeCache.db');
 const animeCacheDb = new sqlite3.Database(ANIME_CACHE_DB_FILE, (err) => {
     if (err) console.error('Anime cache DB error:', err.message);
     else console.log('✅ Connected to anime cache database');
+});
+
+const MOVIE_CACHE_DB_FILE = path.join(__dirname, 'movieCache.db');
+const movieCacheDb = new sqlite3.Database(MOVIE_CACHE_DB_FILE, (err) => {
+    if (err) console.error('Movie cache DB error:', err.message);
+    else console.log('✅ Connected to movie cache database');
+});
+movieCacheDb.serialize(() => {
+    movieCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS tmdb_recommendations (
+            tmdb_id       INTEGER NOT NULL,
+            media_type    TEXT    NOT NULL,
+            source        TEXT    NOT NULL,
+            json          TEXT    NOT NULL,
+            cached_at     INTEGER NOT NULL,
+            last_accessed INTEGER NOT NULL,
+            PRIMARY KEY(tmdb_id, media_type)
+        )
+    `);
+    movieCacheDb.run(`CREATE INDEX IF NOT EXISTS idx_tmdb_recommendations_last_accessed ON tmdb_recommendations(last_accessed)`);
 });
 
 // Episode cache logging
@@ -1568,6 +1683,7 @@ usersDb.serialize(() => {
     usersDb.run(`ALTER TABLE users ADD COLUMN created_at INTEGER`, () => {});
     usersDb.run(`ALTER TABLE users ADD COLUMN last_seen INTEGER`, () => {});
     usersDb.run(`ALTER TABLE users ADD COLUMN profile_pic TEXT`, () => {});
+    usersDb.run(`ALTER TABLE users ADD COLUMN watch2gether_code TEXT`, () => {});
     usersDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_accountUID ON users(accountUID)`);
     usersDb.run(`UPDATE users SET accountUID = CAST(userUID AS TEXT) WHERE accountUID IS NULL OR accountUID = ''`);
     usersDb.run(`UPDATE users SET userEmail = NULL WHERE TRIM(IFNULL(userEmail, '')) = ''`, () => {});
@@ -1822,6 +1938,7 @@ activityDb.serialize(() => {
         created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         UNIQUE(userUID, dedupe_key)
     )`);
+    activityDb.run(`ALTER TABLE notifications ADD COLUMN data TEXT`, () => {});
     activityDb.run(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(userUID, created_at)`);
     activityDb.run(`CREATE TABLE IF NOT EXISTS notification_gen_state (
         userUID       TEXT PRIMARY KEY,
@@ -2170,15 +2287,15 @@ app.post('/activity/list/remove', (req, res) => {
 const NOTIF_GEN_THROTTLE_MS = 10 * 60 * 1000;
 const NOTIF_WEEK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-function notifInsert(userUID, type, dedupeKey, title, body, link, poster) {
+function notifInsert(userUID, type, dedupeKey, title, body, link, poster, data) {
     return new Promise((resolve) => {
         activityDb.run(
-            `INSERT OR IGNORE INTO notifications (userUID, type, dedupe_key, title, body, link, poster)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [userUID, type, dedupeKey, title, body || null, link || null, poster || null],
-            (err) => {
-                if (err) console.warn('[Notifications] insert failed', err.message);
-                resolve();
+            `INSERT OR IGNORE INTO notifications (userUID, type, dedupe_key, title, body, link, poster, data)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [userUID, type, dedupeKey, title, body || null, link || null, poster || null, data ? JSON.stringify(data) : null],
+            function (err) {
+                if (err) { console.warn('[Notifications] insert failed', err.message); return resolve(null); }
+                resolve(this.lastID);
             }
         );
     });
@@ -2348,14 +2465,105 @@ app.get('/notifications', async (req, res) => {
     await generateNotificationsForUser(userUID);
 
     activityDb.all(
-        `SELECT id, type, title, body, link, poster, read, created_at FROM notifications
+        `SELECT id, type, title, body, link, poster, read, created_at, data FROM notifications
          WHERE userUID = ? ORDER BY created_at DESC LIMIT 30`,
         [userUID],
         (err, rows) => {
             if (err) { console.error('[Notifications] list failed', err.message); return res.json({ notifications: [], unread: 0 }); }
-            const notifications = rows || [];
+            const notifications = (rows || []).map(n => ({ ...n, data: n.data ? JSON.parse(n.data) : null }));
             const unread = notifications.filter(n => !n.read).length;
             res.json({ notifications, unread });
+        }
+    );
+});
+
+// ── WATCH2GETHER (v1: friend-code invite + accept/decline, no sync yet) ────────
+function normalizeWatch2getherCode(code) {
+    return String(code || '').trim().toUpperCase().slice(0, 16);
+}
+
+function generateWatch2getherCode() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I ambiguity
+    let code = '';
+    for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
+    return code;
+}
+
+app.get('/users/watch2gether-code', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    usersDb.get('SELECT watch2gether_code FROM users WHERE userUID = ?', [uidNum], (err, row) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (row?.watch2gether_code) return res.json({ code: row.watch2gether_code });
+
+        const code = generateWatch2getherCode();
+        usersDb.run('UPDATE users SET watch2gether_code = ? WHERE userUID = ?', [code, uidNum], (updateErr) => {
+            if (updateErr) return res.status(500).json({ error: 'Could not generate code' });
+            res.json({ code });
+        });
+    });
+});
+
+app.post('/watch2gether/invite', requireAuth, async (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    const friendCode = normalizeWatch2getherCode(req.body?.friendCode);
+    if (!friendCode) return res.status(400).json({ error: 'Missing friend code' });
+
+    usersDb.get('SELECT userUID, username FROM users WHERE watch2gether_code = ?', [friendCode], async (err, friend) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!friend) return res.status(404).json({ error: 'No user found with that code' });
+        if (friend.userUID === uidNum) return res.status(400).json({ error: "That's your own code" });
+
+        const hostUsername = req.user.username || 'Someone';
+        await notifInsert(
+            String(friend.userUID),
+            'watch2gether_invite',
+            `w2g:${uidNum}:${Date.now()}`,
+            'Watch2Gether Invite',
+            `${hostUsername} wants to watch together!`,
+            null,
+            null,
+            { hostUID: uidNum, hostUsername }
+        );
+        res.json({ ok: true, friendUsername: friend.username });
+    });
+});
+
+app.post('/watch2gether/respond', requireAuth, async (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    const notifId = parseInt(req.body?.notificationId, 10);
+    const accept = !!req.body?.accept;
+    if (!notifId) return res.status(400).json({ error: 'Missing notificationId' });
+
+    activityDb.get(
+        `SELECT * FROM notifications WHERE id = ? AND userUID = ? AND type = 'watch2gether_invite'`,
+        [notifId, String(uidNum)],
+        async (err, notif) => {
+            if (err) return res.status(500).json({ error: 'Database error' });
+            if (!notif) return res.status(404).json({ error: 'Invite not found' });
+
+            activityDb.run('UPDATE notifications SET read = 1 WHERE id = ?', [notifId]);
+
+            let hostUID = null;
+            try { hostUID = JSON.parse(notif.data || '{}').hostUID; } catch {}
+
+            if (accept && hostUID) {
+                const accepterUsername = req.user.username || 'Your friend';
+                await notifInsert(
+                    String(hostUID),
+                    'watch2gether_accepted',
+                    `w2g-accepted:${uidNum}:${Date.now()}`,
+                    'Invite Accepted!',
+                    `${accepterUsername} accepted your Watch2Gether invite.`,
+                    null, null, null
+                );
+            }
+            res.json({ ok: true, accepted: accept });
         }
     );
 });
@@ -2371,10 +2579,16 @@ app.post('/notifications/mark-read', (req, res) => {
             res.json({ ok: true });
         });
     } else {
-        activityDb.run(`UPDATE notifications SET read = 1 WHERE userUID = ?`, [safeUID], (err) => {
-            if (err) return res.status(500).json({ error: 'db error' });
-            res.json({ ok: true });
-        });
+        // watch2gether_invite is actionable (Accept/Decline), not just informational -- it must
+        // only ever be marked read via /watch2gether/respond, never swept up by "mark all read".
+        activityDb.run(
+            `UPDATE notifications SET read = 1 WHERE userUID = ? AND type != 'watch2gether_invite'`,
+            [safeUID],
+            (err) => {
+                if (err) return res.status(500).json({ error: 'db error' });
+                res.json({ ok: true });
+            }
+        );
     }
 });
 

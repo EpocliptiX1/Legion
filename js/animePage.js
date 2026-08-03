@@ -151,11 +151,7 @@
 
     window.__toggleAnimeMode = function () {
         localStorage.setItem('animeMode', isAnimeMode() ? 'false' : 'true');
-        if (_isMain || _isBrowse || _isAllMovies || _isCalendar) {
-            window.location.reload();
-        } else {
-            window.location.href = '/html/indexMain.html';
-        }
+        window.location.reload();
     };
 
     // ── TMDB fetch helper ─────────────────────────────────────────

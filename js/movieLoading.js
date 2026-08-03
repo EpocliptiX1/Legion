@@ -713,15 +713,11 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                 // Shared TMDB recommendations/similar renderer -- used as the primary source in
                 // movie mode, and as a fallback for anime titles when AniList/the anime-rec cache
                 // comes back empty (e.g. AniList having an outage) instead of a dead-end row.
+                // Backed by the server-side cache in movieCache.db (cache-first, TMDB on miss).
                 async function renderTmdbTvRecommendations() {
-                    const d = await fetch(`/api/tmdb-proxy/tv/${movieId}/recommendations?language=en-US&page=1`).then(r => r.json()).catch(() => null);
-                    let results = d?.results || [];
-                    let label = 'Recommended';
-                    if (!results.length) {
-                        const simData = await fetch(`/api/tmdb-proxy/tv/${movieId}/similar?language=en-US&page=1`).then(r => r.json()).catch(() => null);
-                        results = simData?.results || [];
-                        label = 'Similar Titles';
-                    }
+                    const d = await fetch(`/api/movie-recommendations?tmdbId=${movieId}&type=tv`).then(r => r.json()).catch(() => null);
+                    const results = d?.results || [];
+                    const label = d?.source === 'similar' ? 'Similar Titles' : 'Recommended';
 
                     genreRow.innerHTML = '';
                     const cards = [];
@@ -1404,15 +1400,11 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
         if (tmdbMovieId) {
             apiCredits = await getCredits(tmdbMovieId);
             console.log('[TMDB] Credits', apiCredits);
-            // Use dynamic recommendations endpoint, falling back to /similar for titles that
-            // don't have recommendations yet (very new or niche releases).
-            let recData = await tmdbFetch(`/${type}/${tmdbMovieId}/recommendations`, { page: 1, language: 'en-US' });
+            // Cache-first recommendations (falls back to /similar server-side for titles that
+            // don't have recommendations yet) via movieCache.db.
+            const recData = await fetch(`/api/movie-recommendations?tmdbId=${tmdbMovieId}&type=${type}`).then(r => r.json()).catch(() => null);
             console.log('[TMDB] Recommendations raw', recData);
-            let recLabel = 'Recommended';
-            if (!(recData?.results || []).length) {
-                recData = await tmdbFetch(`/${type}/${tmdbMovieId}/similar`, { page: 1, language: 'en-US' });
-                recLabel = 'Similar Titles';
-            }
+            const recLabel = recData?.source === 'similar' ? 'Similar Titles' : 'Recommended';
             const recs = (recData?.results || []).map(mapTmdbResult);
             console.log('[TMDB] Recommendations count', recs.length);
             renderRow(recs, 'genreRow', recLabel);

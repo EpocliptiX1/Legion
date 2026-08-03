@@ -123,6 +123,7 @@
                     <hr>
                     <a href="#" id="signInLink" class="drop-link" onclick="openSignInModal()" data-i18n="nav_signin">Sign In</a>
                     <a href="#" id="signUpLink" class="drop-link" onclick="openSignupModal()" data-i18n="nav_signup">Create Account</a>
+                    <a href="#" class="drop-link" onclick="openWatch2GetherModal()">🎬 Watch2Gether</a>
                     <a href="#" class="drop-link" onclick="openSettings()" data-i18n="nav_settings">Settings</a>
                     <a href="#" class="drop-link" onclick="logout()" data-i18n="nav_logout">Logout</a>
                 </div>
@@ -360,6 +361,28 @@
             </div>
         </div>
     </div>
+    <div id="watch2getherModal" class="settings-modal-overlay">
+        <div class="settings-content" style="max-width:420px;">
+            <span class="close-settings" onclick="closeWatch2GetherModal()">&times;</span>
+            <h2>Watch2Gether</h2>
+            <div class="settings-grid" style="grid-template-columns:1fr;">
+                <div class="settings-section">
+                    <h3>Your Code</h3>
+                    <div class="setting-item">
+                        <p style="font-size:11px;color:var(--text-secondary,#888);margin:2px 0 6px;">Share this with a friend so they can invite you.</p>
+                        <input type="text" id="watch2getherOwnCode" readonly placeholder="Loading...">
+                    </div>
+                    <h3>Host a Session</h3>
+                    <div class="setting-item">
+                        <p style="font-size:11px;color:var(--text-secondary,#888);margin:2px 0 6px;">Enter your friend's code and send them an invite.</p>
+                        <input type="text" id="watch2getherFriendCode" placeholder="Friend's code" style="margin-bottom:8px;text-transform:uppercase;">
+                        <button class="btn-small" onclick="hostWatch2Gether()">Host</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
         <!-- Signup Modal (hidden by default) -->
         <div id="signupModal" class="signup-overlay" style="display:none;">
             <div class="signup-box">
