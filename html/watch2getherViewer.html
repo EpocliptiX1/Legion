@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Watch2Gether - Legion Space</title>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; height: 100%; background: #0c0c0c; font-family: Arial, sans-serif; }
+        .w2g-bar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 46px;
+            background: #141414;
+            border-bottom: 1px solid #333;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            z-index: 10;
+        }
+        .w2g-bar-label {
+            color: #fff;
+            font-size: 0.85rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .w2g-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #f96d00;
+            animation: w2g-pulse 1.4s infinite;
+        }
+        @keyframes w2g-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.35; }
+        }
+        .w2g-leave {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.15);
+            color: #fff;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .w2g-leave:hover { border-color: #f96d00; color: #f96d00; }
+        .w2g-frame-wrap {
+            position: absolute;
+            top: 46px; left: 0; right: 0; bottom: 0;
+        }
+        iframe {
+            width: 100%; height: 100%;
+            border: none;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="w2g-bar">
+        <div class="w2g-bar-label"><span class="w2g-dot"></span> Watching along with your friend</div>
+        <button class="w2g-leave" onclick="window.close()">Leave</button>
+    </div>
+    <div class="w2g-frame-wrap">
+        <iframe id="w2gFrame" src="/html/indexMain.html"></iframe>
+    </div>
+    <script src="/js/watch2getherViewer.js"></script>
+</body>
+</html>

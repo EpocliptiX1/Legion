@@ -2714,6 +2714,29 @@ window.openWatch2GetherModal = async function () {
             codeInput.value = 'Could not load code';
         }
     }
+
+    const activeSession = localStorage.getItem('w2gHostingSessionId');
+    const settingsGrid = modal.querySelector('.settings-grid');
+    let statusRow = document.getElementById('watch2getherHostingStatus');
+    if (activeSession) {
+        if (!statusRow && settingsGrid) {
+            statusRow = document.createElement('div');
+            statusRow.id = 'watch2getherHostingStatus';
+            statusRow.className = 'settings-section';
+            settingsGrid.appendChild(statusRow);
+        }
+        if (statusRow) {
+            statusRow.innerHTML = `
+                <h3>Currently Hosting</h3>
+                <div class="setting-item">
+                    <p style="font-size:11px;color:var(--text-secondary,#888);margin:2px 0 6px;">Your friend is following along as you browse.</p>
+                    <button class="btn-small" onclick="stopWatch2GetherHosting(); closeWatch2GetherModal();">Stop Hosting</button>
+                </div>
+            `;
+        }
+    } else if (statusRow) {
+        statusRow.remove();
+    }
 };
 
 window.closeWatch2GetherModal = function () {
@@ -2763,12 +2786,15 @@ window.respondWatch2Gether = async function (notificationId, accept) {
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
             body: JSON.stringify({ notificationId, accept })
         });
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
             showLimitToast('⚠️ Could not respond to invite.');
             return;
         }
-        if (accept) {
-            window.open('https://google.com', '_blank');
+        if (accept && data.sessionId) {
+            window.open(`/html/watch2getherViewer.html?session=${data.sessionId}`, '_blank');
+            showLimitToast('✅ Invite accepted! Following along in the new tab.');
+        } else if (accept) {
             showLimitToast('✅ Invite accepted!');
         } else {
             showLimitToast('Invite declined.');
@@ -2778,6 +2804,45 @@ window.respondWatch2Gether = async function (notificationId, accept) {
         showLimitToast('⚠️ Could not reach server.');
     }
 };
+
+// ── Watch2Gether host-side broadcasting ─────────────────────────────────────
+// Reports the host's current path + scroll position periodically so the friend's
+// viewer tab can mirror it. Persists across page loads via localStorage since
+// the host keeps navigating the real site while hosting (not a single page).
+let _w2gScrollThrottle = null;
+
+function _w2gReportState() {
+    const sessionId = localStorage.getItem('w2gHostingSessionId');
+    const token = localStorage.getItem('authToken');
+    if (!sessionId || !token) return;
+
+    fetch(`/watch2gether/session/${sessionId}/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ path: window.location.pathname + window.location.search, scrollY: window.scrollY })
+    }).catch(() => {});
+}
+
+window.startWatch2GetherHosting = function (sessionId, silent) {
+    localStorage.setItem('w2gHostingSessionId', String(sessionId));
+    _w2gReportState();
+    if (!silent) showLimitToast('📡 Now hosting Watch2Gether — your friend will see what you see.');
+};
+
+window.stopWatch2GetherHosting = function () {
+    localStorage.removeItem('w2gHostingSessionId');
+    showLimitToast('Stopped hosting Watch2Gether.');
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    if (!localStorage.getItem('w2gHostingSessionId')) return;
+    _w2gReportState();
+    setInterval(_w2gReportState, 1500);
+    window.addEventListener('scroll', () => {
+        clearTimeout(_w2gScrollThrottle);
+        _w2gScrollThrottle = setTimeout(_w2gReportState, 250);
+    }, { passive: true });
+});
 
 function loadCurrentSettings() {
     const currentTheme = localStorage.getItem('userTheme') || 'dark';
@@ -3072,6 +3137,23 @@ function renderNotificationList() {
                     <div style="display:flex;gap:8px;margin-top:6px;">
                         <button class="btn-small" onclick="event.stopPropagation(); respondWatch2Gether(${n.id}, true)">Accept</button>
                         <button class="btn-small" onclick="event.stopPropagation(); respondWatch2Gether(${n.id}, false)">Decline</button>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        if (n.type === 'watch2gether_accepted' && n.data?.sessionId) {
+            const isHosting = localStorage.getItem('w2gHostingSessionId') === String(n.data.sessionId);
+            return `<div class="notif-item${n.read ? '' : ' unread'}">
+                <div class="notif-item-icon">${icon}</div>
+                <div class="notif-item-body">
+                    <div class="notif-item-title">${notifEscapeHtml(n.title)}</div>
+                    <div class="notif-item-desc">${notifEscapeHtml(n.body)}</div>
+                    <div class="notif-item-time">${notifTimeAgo(n.created_at)}</div>
+                    <div style="margin-top:6px;">
+                        <button class="btn-small" onclick="event.stopPropagation(); startWatch2GetherHosting(${n.data.sessionId})" ${isHosting ? 'disabled' : ''}>
+                            ${isHosting ? 'Hosting...' : 'Start Hosting'}
+                        </button>
                     </div>
                 </div>
             </div>`;

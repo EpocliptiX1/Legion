@@ -1940,6 +1940,15 @@ activityDb.serialize(() => {
     )`);
     activityDb.run(`ALTER TABLE notifications ADD COLUMN data TEXT`, () => {});
     activityDb.run(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(userUID, created_at)`);
+    activityDb.run(`CREATE TABLE IF NOT EXISTS watch2gether_sessions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        host_uid    TEXT    NOT NULL,
+        friend_uid  TEXT    NOT NULL,
+        path        TEXT    NOT NULL DEFAULT '/html/indexMain.html',
+        scroll_y    INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    )`);
     activityDb.run(`CREATE TABLE IF NOT EXISTS notification_gen_state (
         userUID       TEXT PRIMARY KEY,
         last_generated INTEGER NOT NULL DEFAULT 0
@@ -2554,16 +2563,74 @@ app.post('/watch2gether/respond', requireAuth, async (req, res) => {
 
             if (accept && hostUID) {
                 const accepterUsername = req.user.username || 'Your friend';
-                await notifInsert(
-                    String(hostUID),
-                    'watch2gether_accepted',
-                    `w2g-accepted:${uidNum}:${Date.now()}`,
-                    'Invite Accepted!',
-                    `${accepterUsername} accepted your Watch2Gether invite.`,
-                    null, null, null
+
+                activityDb.run(
+                    `INSERT INTO watch2gether_sessions (host_uid, friend_uid) VALUES (?, ?)`,
+                    [String(hostUID), String(uidNum)],
+                    async function (sessionErr) {
+                        if (sessionErr) {
+                            console.error('[Watch2Gether] session create failed', sessionErr.message);
+                            return res.status(500).json({ error: 'Could not start session' });
+                        }
+                        const sessionId = this.lastID;
+
+                        // The host needs the sessionId to start broadcasting their state --
+                        // deliver it via their own notification.
+                        await notifInsert(
+                            String(hostUID),
+                            'watch2gether_accepted',
+                            `w2g-accepted:${uidNum}:${Date.now()}`,
+                            'Invite Accepted!',
+                            `${accepterUsername} accepted your Watch2Gether invite.`,
+                            null, null,
+                            { sessionId }
+                        );
+                        res.json({ ok: true, accepted: true, sessionId });
+                    }
                 );
+                return;
             }
             res.json({ ok: true, accepted: accept });
+        }
+    );
+});
+
+app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    const sessionId = parseInt(req.params.id, 10);
+    if (!uidNum || !sessionId) return res.status(400).json({ error: 'Invalid request' });
+
+    const path = String(req.body?.path || '').slice(0, 500);
+    const scrollY = Math.max(0, parseInt(req.body?.scrollY, 10) || 0);
+    if (!path) return res.status(400).json({ error: 'Missing path' });
+
+    activityDb.run(
+        `UPDATE watch2gether_sessions SET path = ?, scroll_y = ?, updated_at = strftime('%s','now')
+         WHERE id = ? AND host_uid = ?`,
+        [path, scrollY, sessionId, String(uidNum)],
+        function (err) {
+            if (err) return res.status(500).json({ error: 'Database error' });
+            if (this.changes === 0) return res.status(403).json({ error: 'Not the host of this session' });
+            res.json({ ok: true });
+        }
+    );
+});
+
+app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
+    const uidNum = String(parseInt(req.user.userUID, 10));
+    const sessionId = parseInt(req.params.id, 10);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session' });
+
+    activityDb.get(
+        `SELECT id, host_uid, friend_uid, path, scroll_y, updated_at FROM watch2gether_sessions WHERE id = ?`,
+        [sessionId],
+        (err, row) => {
+            if (err) return res.status(500).json({ error: 'Database error' });
+            if (!row) return res.status(404).json({ error: 'Session not found' });
+            if (row.host_uid !== uidNum && row.friend_uid !== uidNum) {
+                return res.status(403).json({ error: 'Not part of this session' });
+            }
+            res.json({ path: row.path, scrollY: row.scroll_y, updatedAt: row.updated_at });
         }
     );
 });
