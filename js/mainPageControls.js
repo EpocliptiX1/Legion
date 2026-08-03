@@ -19,11 +19,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (nameInput) nameInput.value = username;
         if (navName) navName.innerText = username;
 
-        const langInput = document.getElementById('settingsLanguage');
-        if (langInput && localStorage.getItem('userLanguage')) {
-            langInput.value = localStorage.getItem('userLanguage');
-        }
-
         const sourceInput = document.getElementById('settingsMovieSource');
         if (sourceInput && localStorage.getItem('movieSource')) {
             sourceInput.value = localStorage.getItem('movieSource');
@@ -1804,16 +1799,53 @@ function applyBrowseRowBg(sectionId) {
 }
 window.applyBrowseRowBg = applyBrowseRowBg;
 
-// Always-visible recommendations row (works from first visit using localStorage)
+function mapTmdbMovieForCard(item) {
+    if (!item || !item.id) return null;
+    return {
+        ID: item.id,
+        'Movie Name': item.title || item.name || 'Unknown',
+        poster_full_url: item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png',
+        Rating: item.vote_average ? item.vote_average.toFixed(1) : '--',
+        release_date: item.release_date || item.first_air_date || '',
+        _type: 'movie'
+    };
+}
+
+// Seeds "Recommended for You" off TMDB's own /recommendations (falling back to /similar) for
+// the user's most recently watched movie -- a real per-title signal instead of guessing from
+// clicked genres. Anime mode has its own recommendation logic (animePage.js), so this only
+// runs in movie mode. Falls back to the local genre+year engine if there's no watch history yet
+// (new user) or the TMDB lookup comes back empty.
 async function loadRecommendedRow() {
     const section = document.getElementById('recommendedSection');
     const container = document.getElementById('rowRecommended');
     if (!section || !container) return;
+    if (window.__animeMode) return;
 
     let movies = [];
-    if (window.recommendationsSystem?.generateRecommendations) {
+
+    try {
+        const history = window.recommendationsSystem?.fetchActivityHistory
+            ? await window.recommendationsSystem.fetchActivityHistory(5)
+            : [];
+        const seed = (history || []).find(h => (h.item_type || 'movie') === 'movie' && h.movie_id);
+        if (seed) {
+            const recRes = await fetch(`/api/tmdb-proxy/movie/${seed.movie_id}/recommendations?language=en-US&page=1`);
+            let results = recRes.ok ? ((await recRes.json())?.results || []) : [];
+            if (!results.length) {
+                const simRes = await fetch(`/api/tmdb-proxy/movie/${seed.movie_id}/similar?language=en-US&page=1`);
+                results = simRes.ok ? ((await simRes.json())?.results || []) : [];
+            }
+            movies = results.map(mapTmdbMovieForCard).filter(Boolean);
+        }
+    } catch (e) {
+        console.warn('[Recommended] TMDB-based seed failed, falling back:', e.message);
+    }
+
+    if (!movies.length && window.recommendationsSystem?.generateRecommendations) {
         movies = await window.recommendationsSystem.generateRecommendations(6);
     }
+
     if (!movies || movies.length === 0) {
         section.style.display = 'none';
         return;
@@ -2677,12 +2709,6 @@ function loadCurrentSettings() {
     const lowDataCheckbox = document.getElementById('lowDataMode');
     if (lowDataCheckbox) lowDataCheckbox.checked = lowDataMode;
 
-    const settingsLang = document.getElementById('settingsLanguage');
-    if (settingsLang) {
-        const currentLang = localStorage.getItem('userLanguage') || (window.i18n ? window.i18n.getCurrentLanguage() : 'en');
-        settingsLang.value = currentLang;
-    }
-
     const settingsSource = document.getElementById('settingsMovieSource');
     if (settingsSource) {
         settingsSource.value = localStorage.getItem('movieSource') || 'local';
@@ -2775,6 +2801,50 @@ window.saveSettings = function () {
     showLimitToast('✅ Settings Saved!');
 };
 
+window.changePassword = async function () {
+    const currentInput = document.getElementById('settingsCurrentPassword');
+    const newInput = document.getElementById('settingsNewPassword');
+    const confirmInput = document.getElementById('settingsConfirmPassword');
+    const currentPassword = currentInput?.value || '';
+    const newPassword = newInput?.value || '';
+    const confirmPassword = confirmInput?.value || '';
+
+    if (!currentPassword || !newPassword) {
+        showLimitToast('⚠️ Enter your current and new password.');
+        return;
+    }
+    if (newPassword !== confirmPassword) {
+        showLimitToast('⚠️ New password and confirmation do not match.');
+        return;
+    }
+
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+        showLimitToast('⚠️ You must be logged in to change your password.');
+        return;
+    }
+
+    try {
+        const res = await fetch('/users/change-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ currentPassword, newPassword })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            showLimitToast(`⚠️ ${data.error || 'Could not change password.'}`);
+            return;
+        }
+        if (currentInput) currentInput.value = '';
+        if (newInput) newInput.value = '';
+        if (confirmInput) confirmInput.value = '';
+        showLimitToast('✅ Password Updated!');
+    } catch (err) {
+        console.error('Password change error:', err);
+        showLimitToast('⚠️ Could not reach server.');
+    }
+};
+
 window.handlePFPUpload = function (event) {
     const file = event.target.files[0];
     if (!file) return;
@@ -2859,6 +2929,133 @@ window.switchContentMode = function (mode) {
     }
     showLimitToast(`Switched to ${mode === 'anime' ? '⛩️ Anime' : '🎬 Movies'} mode`);
 };
+
+// ── NOTIFICATIONS DROPDOWN ──────────────────────────────────────────────────────
+// Backed by GET /notifications (continue-watching nudges, new-episode alerts, and
+// download-ready pings, generated server-side) -- polled on load and periodically.
+
+window.__notifications = [];
+
+const NOTIF_ICONS = { continue_watching: '▶', new_episode: '⛩', download_ready: '⬇' };
+
+function notifEscapeHtml(text) {
+    return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/'/g, '&#39;')
+        .replace(/"/g, '&quot;');
+}
+
+function notifTimeAgo(unixSeconds) {
+    const diff = Date.now() - (unixSeconds * 1000);
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+}
+
+function renderNotificationBadge(count) {
+    const badge = document.getElementById('notifBadge');
+    if (!badge) return;
+    if (count > 0) {
+        badge.textContent = count > 9 ? '9+' : String(count);
+        badge.classList.remove('hidden');
+    } else {
+        badge.classList.add('hidden');
+    }
+}
+
+function renderNotificationList() {
+    const list = document.getElementById('notifList');
+    if (!list) return;
+    const items = window.__notifications || [];
+    if (!items.length) {
+        list.innerHTML = '<p class="notif-empty">No notifications yet</p>';
+        return;
+    }
+    list.innerHTML = items.map(n => {
+        const icon = NOTIF_ICONS[n.type] || '🔔';
+        const href = n.link || '#';
+        return `<a class="notif-item${n.read ? '' : ' unread'}" href="${href}">
+            <div class="notif-item-icon">${icon}</div>
+            <div class="notif-item-body">
+                <div class="notif-item-title">${notifEscapeHtml(n.title)}</div>
+                <div class="notif-item-desc">${notifEscapeHtml(n.body)}</div>
+                <div class="notif-item-time">${notifTimeAgo(n.created_at)}</div>
+            </div>
+        </a>`;
+    }).join('');
+}
+
+window.fetchNotifications = async function () {
+    const userUID = localStorage.getItem('userUID');
+    const token = localStorage.getItem('authToken');
+    if (!userUID || !token) return;
+
+    try {
+        const res = await fetch(`/notifications?userUID=${encodeURIComponent(userUID)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        window.__notifications = data.notifications || [];
+        renderNotificationBadge(data.unread || 0);
+        renderNotificationList();
+    } catch (err) {
+        console.warn('Notifications fetch failed:', err.message);
+    }
+};
+
+window.toggleNotificationsMenu = function (event) {
+    if (event) event.stopPropagation();
+
+    const dropdown = document.getElementById('notifDropdown');
+    if (!dropdown) {
+        console.error("❌ ERROR: Could not find id='notifDropdown'.");
+        return;
+    }
+
+    dropdown.classList.toggle('active');
+
+    if (dropdown.classList.contains('active')) {
+        renderNotificationList();
+
+        const userUID = localStorage.getItem('userUID');
+        if (userUID && window.__notifications.some(n => !n.read)) {
+            setTimeout(() => {
+                fetch('/notifications/mark-read', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userUID })
+                }).then(() => renderNotificationBadge(0)).catch(() => {});
+            }, 1500);
+        }
+
+        const closeOnOutsideClick = (e) => {
+            if (!dropdown.contains(e.target) && !e.target.closest('.notif-trigger')) {
+                dropdown.classList.remove('active');
+                document.removeEventListener('pointerdown', closeOnOutsideClick, true);
+            }
+        };
+        setTimeout(() => document.addEventListener('pointerdown', closeOnOutsideClick, true), 0);
+    }
+};
+
+// Lets any open tab refresh its bell the instant something happens in another tab (e.g. a
+// download finishing on movieInfo.html) instead of waiting up to 3 minutes for the next poll.
+const notifChannel = ('BroadcastChannel' in window) ? new BroadcastChannel('legion-notifications') : null;
+notifChannel?.addEventListener('message', (event) => {
+    if (event.data === 'refresh') window.fetchNotifications();
+});
+window.broadcastNotificationRefresh = function () {
+    notifChannel?.postMessage('refresh');
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    window.fetchNotifications();
+    setInterval(window.fetchNotifications, 3 * 60 * 1000);
+});
 
 // ── ACCOUNT DROPDOWN ───────────────────────────────────────────────────────────
 

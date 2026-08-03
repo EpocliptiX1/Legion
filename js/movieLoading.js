@@ -698,29 +698,50 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                     return [];
                 }
 
+                // Real per-title anime detection (Animation genre + Japanese origin), not the
+                // site-wide toggle -- an anime title should get AniList-flavored recommendations
+                // even if the user happens to be browsing with the Movie/Anime toggle off.
                 const isAnime = movie.genres.some(g => g.name === 'Animation' || g.name === 'Anime') && (movie.original_language === 'ja' || movie.origin_country?.includes('JP'));
 
-                if (isAnime) {
-                    const recs = await waitForAnimeRecommendations(movieId);
+                const rowHeadings = document.querySelectorAll('.vertical-recommend .row-title, .vertical-recommend-row .row-title');
+                rowHeadings.forEach(h => {
+                    h.innerHTML = isAnime
+                        ? 'Animes Like This <span>Based on Genre</span>'
+                        : 'Movies Like This <span>Based on Genre</span>';
+                });
+
+                // Shared TMDB recommendations/similar renderer -- used as the primary source in
+                // movie mode, and as a fallback for anime titles when AniList/the anime-rec cache
+                // comes back empty (e.g. AniList having an outage) instead of a dead-end row.
+                async function renderTmdbTvRecommendations() {
+                    const d = await fetch(`/api/tmdb-proxy/tv/${movieId}/recommendations?language=en-US&page=1`).then(r => r.json()).catch(() => null);
+                    let results = d?.results || [];
+                    let label = 'Recommended';
+                    if (!results.length) {
+                        const simData = await fetch(`/api/tmdb-proxy/tv/${movieId}/similar?language=en-US&page=1`).then(r => r.json()).catch(() => null);
+                        results = simData?.results || [];
+                        label = 'Similar Titles';
+                    }
+
                     genreRow.innerHTML = '';
                     const cards = [];
-                    recs.forEach(item => {
-                        if (!item || !item.ID || item.ID === movie.id) return;
-                        const displayName = item['Movie Name'] || 'Unknown';
-                        const year = item.Year || 'N/A';
-                        const poster = item.poster_full_url || '/img/LOGO_Short.png';
+                    results.forEach(item => {
+                        if (item.id === movie.id) return;
+                        const displayName = item.name || item.title || 'Unknown';
+                        const year = (item.first_air_date || '').split('-')[0] || 'N/A';
+                        const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
                         const card = document.createElement('div');
                         card.className = 'mini-card';
                         card.innerHTML = `
                             <img src="${poster}" alt="${displayName}">
                             <div class="mini-info">
                                 <h4>${displayName}</h4>
-                                <p>⭐ ${item.Rating || '--'} (${item.Votes || 0}) <span style='font-size:11px;color:#aaa;'>${year}</span></p>
-                                <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">AniList Recommendations</p>
+                                <p>⭐ ${item.vote_average || '--'} (${item.vote_count || 0}) <span style='font-size:11px;color:#aaa;'>${year}</span></p>
+                                <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">${label}</p>
                             </div>
                         `;
                         card.onclick = () => {
-                            window.location.href = `movieInfo.html?id=${item.ID}&type=tv`;
+                            window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
                         };
                         genreRow.appendChild(card);
                         cards.push(card.outerHTML);
@@ -730,10 +751,9 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                         genreRowClone.innerHTML = cards.join('');
                         Array.from(genreRowClone.querySelectorAll('.mini-card')).forEach((el, idx) => {
                             el.onclick = () => {
-                                const mappedItems = recs.filter(item => item && item.ID && item.ID !== movie.id);
-                                const item = mappedItems[idx];
+                                const item = results.filter(item => item.id !== movie.id)[idx];
                                 if (item) {
-                                    window.location.href = `movieInfo.html?id=${item.ID}&type=tv`;
+                                    window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
                                 }
                             };
                         });
@@ -743,55 +763,60 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                     } else {
                         buildPlaylist(movie.name);
                     }
+                }
+
+                if (isAnime) {
+                    const recs = await waitForAnimeRecommendations(movieId);
+                    if (!recs.length) {
+                        // AniList/anime-rec cache came back empty -- could be a genuine miss or
+                        // AniList being down. Either way, fall back to TMDB rather than dead-ending.
+                        await renderTmdbTvRecommendations();
+                    } else {
+                        genreRow.innerHTML = '';
+                        const cards = [];
+                        recs.forEach(item => {
+                            if (!item || !item.ID || item.ID === movie.id) return;
+                            const displayName = item['Movie Name'] || 'Unknown';
+                            const year = item.Year || 'N/A';
+                            const poster = item.poster_full_url || '/img/LOGO_Short.png';
+                            const card = document.createElement('div');
+                            card.className = 'mini-card';
+                            card.innerHTML = `
+                                <img src="${poster}" alt="${displayName}">
+                                <div class="mini-info">
+                                    <h4>${displayName}</h4>
+                                    <p>⭐ ${item.Rating || '--'} (${item.Votes || 0}) <span style='font-size:11px;color:#aaa;'>${year}</span></p>
+                                    <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">AniList Recommendations</p>
+                                </div>
+                            `;
+                            card.onclick = () => {
+                                window.location.href = `movieInfo.html?id=${item.ID}&type=tv`;
+                            };
+                            genreRow.appendChild(card);
+                            cards.push(card.outerHTML);
+                        });
+                        const genreRowClone = document.getElementById('genreRowClone');
+                        if (genreRowClone) {
+                            genreRowClone.innerHTML = cards.join('');
+                            Array.from(genreRowClone.querySelectorAll('.mini-card')).forEach((el, idx) => {
+                                el.onclick = () => {
+                                    const mappedItems = recs.filter(item => item && item.ID && item.ID !== movie.id);
+                                    const item = mappedItems[idx];
+                                    if (item) {
+                                        window.location.href = `movieInfo.html?id=${item.ID}&type=tv`;
+                                    }
+                                };
+                            });
+                        }
+                        if (cards.length === 0) {
+                            genreRow.innerHTML = `<p style="color:#666; padding:20px;">No similar titles found.</p>`;
+                        } else {
+                            buildPlaylist(movie.name);
+                        }
+                    }
 
                 } else {
-                    let discoverUrl;
-                    const genreIds = movie.genres.map(g=>g.id).join(',');
-                    discoverUrl = `/api/tmdb-proxy/discover/tv?with_genres=${genreIds}&page=1`;
-                    fetch(discoverUrl)
-                        .then(r => r.json())
-                        .then(d => {
-                            genreRow.innerHTML = '';
-                            const cards = [];
-                            (d.results || []).forEach(item => {
-                                if (item.id === movie.id) return;
-                                const displayName = item.name || item.title || 'Unknown';
-                                const year = (item.first_air_date || '').split('-')[0] || 'N/A';
-                                const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
-                                const card = document.createElement('div');
-                                card.className = 'mini-card';
-                                card.innerHTML = `
-                                    <img src="${poster}" alt="${displayName}">
-                                    <div class="mini-info">
-                                        <h4>${displayName}</h4>
-                                        <p>⭐ ${item.vote_average || '--'} (${item.vote_count || 0}) <span style='font-size:11px;color:#aaa;'>${year}</span></p>
-                                        <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">Similar Genre</p>
-                                    </div>
-                                `;
-                                card.onclick = () => {
-                                    window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
-                                };
-                                genreRow.appendChild(card);
-                                cards.push(card.outerHTML);
-                            });
-                            const genreRowClone = document.getElementById('genreRowClone');
-                            if (genreRowClone) {
-                                genreRowClone.innerHTML = cards.join('');
-                                Array.from(genreRowClone.querySelectorAll('.mini-card')).forEach((el, idx) => {
-                                    el.onclick = () => {
-                                        const item = (d.results || []).filter(item => item.id !== movie.id)[idx];
-                                        if (item) {
-                                            window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
-                                        }
-                                    };
-                                });
-                            }
-                            if (cards.length === 0) {
-                                genreRow.innerHTML = `<p style="color:#666; padding:20px;">No similar titles found.</p>`;
-                            } else {
-                                buildPlaylist(movie.name);
-                            }
-                        });
+                    await renderTmdbTvRecommendations();
                 }
             } else {
                 // (Overlay hiding handled globally after 2s)
@@ -976,8 +1001,40 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                 timelineRow.innerHTML = '<p style="color:#888;">Loading...</p>';
                 if (eraTitle) eraTitle.innerHTML = `Series from ${movieYear - 5} - ${movieYear + 5}`;
 
-                const isAnime = isAnimeModeEnabled() && movie.genres.some(g => g.name === 'Animation' || g.name === 'Anime');
-                if (isAnime) {
+                // Per-title anime detection (matches the Recommended row above) -- not gated on
+                // the site-wide toggle, so an anime title always gets AniList-based "Same Era"
+                // results regardless of what mode the user happens to be browsing in.
+                const isAnimeEra = movie.genres.some(g => g.name === 'Animation' || g.name === 'Anime');
+
+                async function renderTmdbEraRow() {
+                    const d = await fetch(`/api/tmdb-proxy/discover/tv?first_air_date.gte=${movieYear - 5}-01-01&first_air_date.lte=${movieYear + 5}-12-31&sort_by=popularity.desc&vote_count.gte=20&page=1`).then(r => r.json()).catch(() => null);
+                    timelineRow.innerHTML = '';
+                    (d?.results || []).forEach(item => {
+                        if (item.id === movie.id) return;
+                        const displayName = item.name || item.title || 'Unknown';
+                        const year = (item.first_air_date || '').split('-')[0] || 'N/A';
+                        const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                        const card = document.createElement('div');
+                        card.className = 'mini-card';
+                        card.innerHTML = `
+                            <img src="${poster}" alt="${displayName}">
+                            <div class="mini-info">
+                                <h4>${displayName}</h4>
+                                <p>⭐ ${item.vote_average || '--'} (${item.vote_count || 0}) <span style='font-size:11px;color:#aaa;'>${year}</span></p>
+                                <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">Same Era</p>
+                            </div>
+                        `;
+                        card.onclick = () => {
+                            window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
+                        };
+                        timelineRow.appendChild(card);
+                    });
+                    if (!timelineRow.children.length) {
+                        timelineRow.innerHTML = '<p style="color:#888;">No similar titles found.</p>';
+                    }
+                }
+
+                if (isAnimeEra) {
                     fetchAniListTimelineRow(movieYear).then(async items => {
                         timelineRow.innerHTML = '';
                         const seen = new Set();
@@ -1011,36 +1068,13 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                             timelineRow.appendChild(card);
                         }
                         if (!timelineRow.children.length) {
-                            timelineRow.innerHTML = '<p style="color:#888;">No similar titles found.</p>';
+                            // AniList timeline came back empty -- genuine miss or AniList down.
+                            // Fall back to TMDB's date-range discover instead of a dead-end row.
+                            await renderTmdbEraRow();
                         }
                     });
                 } else {
-                    const discoverUrl = `/api/tmdb-proxy/discover/tv?first_air_date.gte=${movieYear - 5}-01-01&first_air_date.lte=${movieYear + 5}-12-31&sort_by=popularity.desc&vote_count.gte=20&page=1`;
-                    fetch(discoverUrl)
-                        .then(r => r.json())
-                        .then(d => {
-                            timelineRow.innerHTML = '';
-                            (d.results || []).forEach(item => {
-                                if (item.id === movie.id) return;
-                                const displayName = item.name || item.title || 'Unknown';
-                                const year = (item.first_air_date || '').split('-')[0] || 'N/A';
-                                const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
-                                const card = document.createElement('div');
-                                card.className = 'mini-card';
-                                card.innerHTML = `
-                                    <img src="${poster}" alt="${displayName}">
-                                    <div class="mini-info">
-                                        <h4>${displayName}</h4>
-                                        <p>⭐ ${item.vote_average || '--'} (${item.vote_count || 0}) <span style='font-size:11px;color:#aaa;'>${year}</span></p>
-                                        <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">Same Era</p>
-                                    </div>
-                                `;
-                                card.onclick = () => {
-                                    window.location.href = `movieInfo.html?id=${item.id}&type=tv`;
-                                };
-                                timelineRow.appendChild(card);
-                            });
-                        });
+                    await renderTmdbEraRow();
                 }
             }
 
@@ -1370,12 +1404,18 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
         if (tmdbMovieId) {
             apiCredits = await getCredits(tmdbMovieId);
             console.log('[TMDB] Credits', apiCredits);
-            // Use dynamic recommendations endpoint
-            const recData = await tmdbFetch(`/${type}/${tmdbMovieId}/recommendations`, { page: 1, language: 'en-US' });
+            // Use dynamic recommendations endpoint, falling back to /similar for titles that
+            // don't have recommendations yet (very new or niche releases).
+            let recData = await tmdbFetch(`/${type}/${tmdbMovieId}/recommendations`, { page: 1, language: 'en-US' });
             console.log('[TMDB] Recommendations raw', recData);
+            let recLabel = 'Recommended';
+            if (!(recData?.results || []).length) {
+                recData = await tmdbFetch(`/${type}/${tmdbMovieId}/similar`, { page: 1, language: 'en-US' });
+                recLabel = 'Similar Titles';
+            }
             const recs = (recData?.results || []).map(mapTmdbResult);
             console.log('[TMDB] Recommendations count', recs.length);
-            renderRow(recs, 'genreRow', 'Recommended');
+            renderRow(recs, 'genreRow', recLabel);
         }
     } else {
         fetch(`/recommend/genre?genre=${encodeURIComponent(movie.Genre)}&exclude=${movie.ID}`)

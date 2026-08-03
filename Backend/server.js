@@ -672,13 +672,15 @@ animeCacheDb.serialize(() => {
     animeCacheDb.run(`CREATE INDEX IF NOT EXISTS idx_anime_recommendations_last_accessed ON anime_recommendations(last_accessed)`);
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS anime_schedule (
-            day TEXT PRIMARY KEY,
+            date TEXT PRIMARY KEY,
+            day TEXT NOT NULL,
             json TEXT NOT NULL,
             cached_at INTEGER NOT NULL,
             last_accessed INTEGER NOT NULL
         );
     `);
     animeCacheDb.run(`CREATE INDEX IF NOT EXISTS idx_anime_schedule_last_accessed ON anime_schedule(last_accessed)`);
+    animeCacheDb.run(`CREATE INDEX IF NOT EXISTS idx_anime_schedule_day ON anime_schedule(day)`);
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS anime_tmdb_mapping (
             tmdb_id INTEGER PRIMARY KEY,
@@ -1807,6 +1809,24 @@ activityDb.serialize(() => {
         added_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         UNIQUE(userUID, item_id)
     )`);
+    activityDb.run(`CREATE TABLE IF NOT EXISTS notifications (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        userUID     TEXT    NOT NULL,
+        type        TEXT    NOT NULL,
+        dedupe_key  TEXT    NOT NULL,
+        title       TEXT    NOT NULL,
+        body        TEXT,
+        link        TEXT,
+        poster      TEXT,
+        read        INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        UNIQUE(userUID, dedupe_key)
+    )`);
+    activityDb.run(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(userUID, created_at)`);
+    activityDb.run(`CREATE TABLE IF NOT EXISTS notification_gen_state (
+        userUID       TEXT PRIMARY KEY,
+        last_generated INTEGER NOT NULL DEFAULT 0
+    )`);
 
     // Repair legacy/broken watch_history schemas that used strftime(chr(...)) in default value.
     // SQLite doesn't have chr(), so inserts fail at runtime with "unknown function: chr()".
@@ -2139,6 +2159,223 @@ app.post('/activity/list/remove', (req, res) => {
             res.json({ ok: true });
         }
     );
+});
+
+// ── NOTIFICATIONS ──────────────────────────────────────────────────────────────
+// No background scheduler here -- generation runs lazily whenever a user's client
+// asks for their notifications (GET /notifications), throttled to once per 10
+// minutes per user via notification_gen_state. That's enough to feel "periodic"
+// for a small site without needing real cron infrastructure.
+
+const NOTIF_GEN_THROTTLE_MS = 10 * 60 * 1000;
+const NOTIF_WEEK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function notifInsert(userUID, type, dedupeKey, title, body, link, poster) {
+    return new Promise((resolve) => {
+        activityDb.run(
+            `INSERT OR IGNORE INTO notifications (userUID, type, dedupe_key, title, body, link, poster)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [userUID, type, dedupeKey, title, body || null, link || null, poster || null],
+            (err) => {
+                if (err) console.warn('[Notifications] insert failed', err.message);
+                resolve();
+            }
+        );
+    });
+}
+
+function activityAll(query, params) {
+    return new Promise((resolve, reject) => {
+        activityDb.all(query, params, (err, rows) => err ? reject(err) : resolve(rows || []));
+    });
+}
+
+// Resolves a TMDB id to {anilistId} only if it's a known anime, using the same
+// resolver the rest of the site trusts (Fribb mapping -> cache -> Jikan lookup).
+async function resolveAnilistIdIfAnime(tmdbId) {
+    try {
+        const ids = await resolveAnimeIds(tmdbId, 1);
+        return ids?.anilistId || null;
+    } catch {
+        return null;
+    }
+}
+
+async function generateContinueWatchingNotifications(userUID) {
+    const rows = await activityAll(
+        `SELECT movie_id, title, watched_at FROM watch_history
+         WHERE userUID = ? AND item_type = 'tv' AND timeStamp_continue IS NOT NULL
+         ORDER BY watched_at DESC LIMIT 8`,
+        [userUID]
+    );
+
+    const todayIso = isoDateUTC(new Date());
+    let matched = 0;
+    for (const row of rows) {
+        if (matched >= 2) break;
+        const tmdbId = parseInt(row.movie_id, 10);
+        if (!tmdbId) continue;
+        const anilistId = await resolveAnilistIdIfAnime(tmdbId);
+        if (!anilistId) continue;
+
+        matched++;
+        const title = row.title || 'this anime';
+        await notifInsert(
+            userUID,
+            'continue_watching',
+            `continue:${tmdbId}:${todayIso}`,
+            `Pick up where you left off`,
+            `You haven't finished ${title} yet — continue watching?`,
+            `/html/movieInfo.html?id=${tmdbId}&type=tv`,
+            null
+        );
+    }
+}
+
+async function generateNewEpisodeNotifications(userUID) {
+    const watched = await activityAll(
+        `SELECT movie_id FROM watch_history WHERE userUID = ? AND item_type = 'tv' ORDER BY watched_at DESC LIMIT 5`,
+        [userUID]
+    );
+    const listed = await activityAll(
+        `SELECT item_id AS movie_id FROM user_list WHERE userUID = ? AND item_type = 'tv' ORDER BY added_at DESC LIMIT 5`,
+        [userUID]
+    );
+
+    const tmdbIds = Array.from(new Set(
+        [...watched, ...listed].map(r => parseInt(r.movie_id, 10)).filter(Boolean)
+    ));
+
+    const now = Date.now();
+    for (const tmdbId of tmdbIds) {
+        const anilistId = await resolveAnilistIdIfAnime(tmdbId);
+        if (!anilistId) continue;
+
+        let info;
+        try {
+            const response = await axios.post(
+                'https://graphql.anilist.co',
+                {
+                    query: `query ($id: Int) { Media(id: $id, type: ANIME) {
+                        title { romaji english }
+                        coverImage { large }
+                        nextAiringEpisode { airingAt episode }
+                    } }`,
+                    variables: { id: anilistId }
+                },
+                { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }
+            );
+            info = response.data?.data?.Media;
+        } catch (err) {
+            console.warn('[Notifications] AniList nextAiringEpisode lookup failed', err.message);
+            continue;
+        }
+
+        const next = info?.nextAiringEpisode;
+        if (!next) continue;
+
+        const airingAtMs = next.airingAt * 1000;
+        // "New episode this week" -- already aired within the last week, or airs within the
+        // coming week. Outside that window it's not relevant yet/anymore.
+        if (Math.abs(airingAtMs - now) > NOTIF_WEEK_WINDOW_MS) continue;
+
+        const title = info.title?.english || info.title?.romaji || 'this anime';
+        const hasAired = airingAtMs <= now;
+        await notifInsert(
+            userUID,
+            'new_episode',
+            `episode:${tmdbId}:${next.episode}`,
+            hasAired ? `New episode is out` : `New episode airing soon`,
+            `${title} — episode ${next.episode} ${hasAired ? 'is now available' : 'airs this week'}.`,
+            `/html/movieInfo.html?id=${tmdbId}&type=tv`,
+            info.coverImage?.large || null
+        );
+    }
+}
+
+async function generateNotificationsForUser(userUID) {
+    const state = await new Promise((resolve) => {
+        activityDb.get(`SELECT last_generated FROM notification_gen_state WHERE userUID = ?`, [userUID], (err, row) => {
+            resolve(row || null);
+        });
+    });
+
+    if (state && (Date.now() - state.last_generated) < NOTIF_GEN_THROTTLE_MS) {
+        return; // generated recently, skip re-checking sources
+    }
+
+    activityDb.run(
+        `INSERT INTO notification_gen_state (userUID, last_generated) VALUES (?, ?)
+         ON CONFLICT(userUID) DO UPDATE SET last_generated = excluded.last_generated`,
+        [userUID, Date.now()]
+    );
+
+    try {
+        await generateContinueWatchingNotifications(userUID);
+        await generateNewEpisodeNotifications(userUID);
+    } catch (err) {
+        console.error('[Notifications] generation failed', err.message);
+    }
+}
+
+// The KAA episode downloader (js/downloadEpisode.js) runs entirely client-side -- it fetches
+// HLS segments, muxes with ffmpeg.wasm, and triggers the browser save itself, so unlike a
+// server-redirect download the frontend genuinely knows the exact moment the file is ready.
+// This endpoint just persists that event so it survives across tabs/pages/history.
+app.post('/notifications/download-complete', async (req, res) => {
+    const { userUID, tmdbId, title, season, episode } = req.body || {};
+    const safeUID = String(userUID || '').slice(0, 64);
+    if (!safeUID) return res.status(400).json({ error: 'userUID required' });
+
+    const safeTmdbId = tmdbId ? parseInt(tmdbId, 10) : null;
+    const epLabel = (season && episode) ? ` S${season}E${episode}` : '';
+    await notifInsert(
+        safeUID,
+        'download_ready',
+        `download:${safeTmdbId || 'x'}:${season || ''}:${episode || ''}:${Date.now()}`,
+        'Download complete',
+        `${title || 'Your episode'}${epLabel} finished downloading.`,
+        safeTmdbId ? `/html/movieInfo.html?id=${safeTmdbId}&type=tv` : null,
+        null
+    );
+    res.json({ ok: true });
+});
+
+app.get('/notifications', async (req, res) => {
+    const userUID = String(req.query.userUID || '').slice(0, 64);
+    if (!userUID) return res.json({ notifications: [], unread: 0 });
+
+    await generateNotificationsForUser(userUID);
+
+    activityDb.all(
+        `SELECT id, type, title, body, link, poster, read, created_at FROM notifications
+         WHERE userUID = ? ORDER BY created_at DESC LIMIT 30`,
+        [userUID],
+        (err, rows) => {
+            if (err) { console.error('[Notifications] list failed', err.message); return res.json({ notifications: [], unread: 0 }); }
+            const notifications = rows || [];
+            const unread = notifications.filter(n => !n.read).length;
+            res.json({ notifications, unread });
+        }
+    );
+});
+
+app.post('/notifications/mark-read', (req, res) => {
+    const { userUID, id } = req.body || {};
+    const safeUID = String(userUID || '').slice(0, 64);
+    if (!safeUID) return res.status(400).json({ error: 'userUID required' });
+
+    if (id) {
+        activityDb.run(`UPDATE notifications SET read = 1 WHERE userUID = ? AND id = ?`, [safeUID, id], (err) => {
+            if (err) return res.status(500).json({ error: 'db error' });
+            res.json({ ok: true });
+        });
+    } else {
+        activityDb.run(`UPDATE notifications SET read = 1 WHERE userUID = ?`, [safeUID], (err) => {
+            if (err) return res.status(500).json({ error: 'db error' });
+            res.json({ ok: true });
+        });
+    }
 });
 
 // ── YouTube trailer scraper (server-side, no API key needed) ──
@@ -2570,8 +2807,6 @@ if (!fs.existsSync(playlistsPath)) {
 
 app.post('/users', requireAuth, async (req, res) => {
     try {
-        const data = fs.readFileSync(usersPath, 'utf8');
-        const users = JSON.parse(data) || [];
         const {
             username,
             userUID,
@@ -2590,24 +2825,38 @@ app.post('/users', requireAuth, async (req, res) => {
             return res.status(403).json({ error: 'Cannot update another user' });
         }
 
-        const idx = users.findIndex(u => parseInt(u.userUID, 10) === uidNum);
-        if (idx === -1) return res.status(404).json({ error: 'User not found' });
-        
-        const userRecord = {
-            username: username || users[idx].username,
-            userUID: uidNum,
-            userEmail: userEmail || users[idx].userEmail || '',
-            userTier: userTier || users[idx].userTier || 'Free',
-            userLanguage: userLanguage || users[idx].userLanguage || 'en',
-            searchCount: parseInt(searchCount, 10) || 0,
-            viewCount: parseInt(viewCount, 10) || 0,
-            allUIDs: Array.isArray(allUIDs) ? allUIDs : users[idx].allUIDs || []
-        };
+        usersDb.get('SELECT * FROM users WHERE userUID = ?', [uidNum], (err, existing) => {
+            if (err) {
+                console.error('Error saving user:', err.message);
+                return res.status(500).json({ error: 'Could not save user' });
+            }
+            if (!existing) return res.status(404).json({ error: 'User not found' });
 
-        users[idx] = { ...users[idx], ...userRecord };
+            const userRecord = {
+                username: username || existing.username,
+                userUID: uidNum,
+                userEmail: userEmail || existing.userEmail || '',
+                userTier: userTier || existing.userTier || 'Free',
+                userLanguage: userLanguage || existing.userLanguage || 'en',
+                searchCount: parseInt(searchCount, 10) || 0,
+                viewCount: parseInt(viewCount, 10) || 0,
+                allUIDs: Array.isArray(allUIDs) ? allUIDs : (() => {
+                    try { return JSON.parse(existing.allUIDs || '[]'); } catch { return []; }
+                })()
+            };
 
-        fs.writeFileSync(usersPath, JSON.stringify(users, null, 2));
-        res.json(userRecord);
+            usersDb.run(
+                `UPDATE users SET username = ?, userEmail = ?, userTier = ?, userLanguage = ?, searchCount = ?, viewCount = ?, allUIDs = ? WHERE userUID = ?`,
+                [userRecord.username, userRecord.userEmail, userRecord.userTier, userRecord.userLanguage, userRecord.searchCount, userRecord.viewCount, JSON.stringify(userRecord.allUIDs), uidNum],
+                function (updateErr) {
+                    if (updateErr) {
+                        console.error('Error saving user:', updateErr.message);
+                        return res.status(500).json({ error: 'Could not save user' });
+                    }
+                    res.json(userRecord);
+                }
+            );
+        });
     } catch (err) {
         console.error('Error saving user:', err);
         res.status(500).json({ error: 'Could not save user' });
@@ -2807,35 +3056,33 @@ app.post('/users/auth', strictLimiter, async (req, res) => {
 // Change user password (requires current password, new password, and authentication)
 app.post('/users/change-password', requireAuth, async (req, res) => {
     try {
-        console.log('Password change endpoint called');
         const { currentPassword, newPassword } = req.body || {};
         if (!currentPassword || !newPassword) {
-            console.log('Missing current or new password');
             return res.status(400).json({ error: 'Current and new password required' });
         }
-        const data = fs.readFileSync(usersPath, 'utf8');
-        const users = JSON.parse(data) || [];
         const uidNum = parseInt(req.user.userUID, 10);
-        if (!uidNum) {
-            console.log('Invalid token user');
-            return res.status(401).json({ error: 'Invalid token user' });
-        }
-        const idx = users.findIndex(u => parseInt(u.userUID, 10) === uidNum);
-        if (idx === -1) {
-            console.log('User not found');
-            return res.status(404).json({ error: 'User not found' });
-        }
-        const user = users[idx];
-        const passwordMatch = await bcrypt.compare(currentPassword, user.userPassword);
-        if (!passwordMatch) {
-            console.log('Current password is incorrect');
-            return res.status(401).json({ error: 'Current password is incorrect' });
-        }
-        const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
-        users[idx].userPassword = hashedPassword;
-        console.log('Writing new password hash to file:', usersPath);
-        fs.writeFileSync(usersPath, JSON.stringify(users, null, 2));
-        res.json({ message: 'Password updated successfully' });
+        if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+        usersDb.get('SELECT * FROM users WHERE userUID = ?', [uidNum], async (err, user) => {
+            if (err) {
+                console.error('Error changing password:', err.message);
+                return res.status(500).json({ error: 'Could not change password' });
+            }
+            if (!user) return res.status(404).json({ error: 'User not found' });
+
+            const passwordMatch = await bcrypt.compare(currentPassword, user.userPassword);
+            if (!passwordMatch) {
+                return res.status(401).json({ error: 'Current password is incorrect' });
+            }
+            const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
+            usersDb.run('UPDATE users SET userPassword = ? WHERE userUID = ?', [hashedPassword, uidNum], function (updateErr) {
+                if (updateErr) {
+                    console.error('Error changing password:', updateErr.message);
+                    return res.status(500).json({ error: 'Could not change password' });
+                }
+                res.json({ message: 'Password updated successfully' });
+            });
+        });
     } catch (err) {
         console.error('Error changing password:', err);
         res.status(500).json({ error: 'Could not change password' });
@@ -5010,19 +5257,19 @@ app.get('/api/jikan', async (req, res) => {
     }
 });
 
-function animeScheduleGet(day) {
+function animeScheduleGet(date) {
     return new Promise((resolve, reject) => {
         animeCacheDb.get(
-            `SELECT json, cached_at FROM anime_schedule WHERE day = ?`,
-            [day],
+            `SELECT json, cached_at FROM anime_schedule WHERE date = ?`,
+            [date],
             (err, row) => {
                 if (err) return reject(err);
                 if (!row) return resolve(null);
 
                 const now = Date.now();
                 animeCacheDb.run(
-                    `UPDATE anime_schedule SET last_accessed = ? WHERE day = ?`,
-                    [now, day],
+                    `UPDATE anime_schedule SET last_accessed = ? WHERE date = ?`,
+                    [now, date],
                     (updateErr) => {
                         if (updateErr) console.warn('[Anime Schedule] failed to update last_accessed', updateErr.message || updateErr);
                     }
@@ -5038,17 +5285,17 @@ function animeScheduleGet(day) {
     });
 }
 
-function animeScheduleUpsert(day, json) {
+function animeScheduleUpsert(date, day, json) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
         animeCacheDb.run(
-            `INSERT INTO anime_schedule (day, json, cached_at, last_accessed)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT(day) DO UPDATE SET
+            `INSERT INTO anime_schedule (date, day, json, cached_at, last_accessed)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(date) DO UPDATE SET
                  json = excluded.json,
                  cached_at = excluded.cached_at,
                  last_accessed = excluded.last_accessed`,
-            [day, json, now, now],
+            [date, day, json, now, now],
             function (err) {
                 if (err) return reject(err);
                 resolve(this.changes || 0);
@@ -5063,40 +5310,118 @@ function getAnimeScheduleRefreshWindowDays() {
     return lookup[dow] || 7;
 }
 
+// Dates are treated as plain calendar days (UTC midnight) so the weekday derived here always
+// matches what the frontend computed, regardless of either side's local timezone offset.
+function dayNameFromDate(dateStr) {
+    const names = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    return names[new Date(`${dateStr}T00:00:00Z`).getUTCDay()];
+}
+
+function isoDateUTC(d) {
+    return d.toISOString().slice(0, 10);
+}
+
+// Jikan's /schedules/{day} only ever reflects the CURRENT recurring weekly broadcast lineup --
+// it cannot answer "what aired on this exact past date" or "what airs on this future date".
+// AniList's airingSchedules query is genuinely date-specific (it's a real per-episode airing
+// timestamp, not a recurring day-of-week snapshot), so it's what actually makes a real
+// multi-week calendar possible instead of an artificial "only the current week" wall.
+async function fetchAniListDaySchedule(dateIso) {
+    const dayStartSec = Math.floor(new Date(`${dateIso}T00:00:00Z`).getTime() / 1000);
+    const dayEndSec = dayStartSec + 86400 - 1;
+
+    const query = `
+        query ($from: Int, $to: Int) {
+            Page(page: 1, perPage: 50) {
+                airingSchedules(airingAt_greater: $from, airingAt_lesser: $to, sort: TIME) {
+                    airingAt
+                    episode
+                    media {
+                        id
+                        idMal
+                        title { romaji english native }
+                        coverImage { large extraLarge }
+                        averageScore
+                        episodes
+                        format
+                    }
+                }
+            }
+        }
+    `;
+
+    const response = await axios.post(
+        'https://graphql.anilist.co',
+        { query, variables: { from: dayStartSec, to: dayEndSec } },
+        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
+    );
+
+    const schedules = response.data?.data?.Page?.airingSchedules || [];
+    return schedules
+        .filter(s => s.media && s.media.format !== 'MOVIE')
+        .map(s => {
+            const airDate = new Date(s.airingAt * 1000);
+            const hh = String(airDate.getUTCHours()).padStart(2, '0');
+            const mm = String(airDate.getUTCMinutes()).padStart(2, '0');
+            return {
+                title: s.media.title?.romaji || s.media.title?.native || '',
+                title_english: s.media.title?.english || null,
+                images: {
+                    jpg: {
+                        image_url: s.media.coverImage?.large || '',
+                        large_image_url: s.media.coverImage?.extraLarge || s.media.coverImage?.large || ''
+                    }
+                },
+                broadcast: { time: `${hh}:${mm}` },
+                score: s.media.averageScore ? (s.media.averageScore / 10) : null,
+                episodes: s.media.episodes || null,
+                idMal: s.media.idMal || null,
+                episode: s.episode || null
+            };
+        });
+}
+
 app.get('/api/anime-schedule', async (req, res) => {
-    const day = String(req.query.day || '').toLowerCase();
-    const allowedDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-    if (!allowedDays.includes(day)) {
-        return res.status(400).json({ error: 'Missing or invalid day parameter' });
+    const dateParam = String(req.query.date || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+        return res.status(400).json({ error: 'Missing or invalid date parameter (expected YYYY-MM-DD)' });
+    }
+    const day = dayNameFromDate(dateParam);
+    const isPast = dateParam < isoDateUTC(new Date());
+
+    let cached = null;
+    try {
+        cached = await animeScheduleGet(dateParam);
+    } catch (err) {
+        console.warn('[Anime Schedule] cache read failed', err.message || err);
+    }
+
+    if (cached && cached.data) {
+        if (isPast) {
+            // Historical airings are immutable once the date has passed -- cache forever.
+            return res.json(cached.data);
+        }
+        const refreshDays = getAnimeScheduleRefreshWindowDays();
+        const refreshWindowMs = refreshDays * 24 * 60 * 60 * 1000;
+        const ageMs = Date.now() - cached.cached_at;
+        if (ageMs < refreshWindowMs) {
+            return res.json(cached.data);
+        }
+        console.log(`[Anime Schedule] stale cache for ${dateParam} (${day}): age=${Math.round(ageMs / 1000 / 60)}m threshold=${refreshDays}d, refreshing cache`);
     }
 
     try {
-        const refreshDays = getAnimeScheduleRefreshWindowDays();
-        const refreshWindowMs = refreshDays * 24 * 60 * 60 * 1000;
-        const cached = await animeScheduleGet(day);
-
-        if (cached && cached.data) {
-            const ageMs = Date.now() - cached.cached_at;
-            if (ageMs < refreshWindowMs) {
-                return res.json(cached.data);
-            }
-            console.log(`[Anime Schedule] stale cache for ${day}: age=${Math.round(ageMs / 1000 / 60)}m threshold=${refreshDays}d, refreshing cache`);
-        }
-
-        const data = await jikanGet(`/schedules/${day}`);
-        if (!data || !data.data) {
-            if (cached && cached.data) {
-                console.warn('[Anime Schedule] Jikan fetch failed, returning stale cache');
-                return res.json(cached.data);
-            }
-            return res.status(502).json({ error: 'Jikan schedule fetch failed' });
-        }
-
-        await animeScheduleUpsert(day, JSON.stringify(data));
-        return res.json(data);
+        const items = await fetchAniListDaySchedule(dateParam);
+        const payload = { data: items };
+        await animeScheduleUpsert(dateParam, day, JSON.stringify(payload));
+        return res.json(payload);
     } catch (err) {
-        console.error('[Anime Schedule] Failed to fetch or cache schedule', err);
-        return res.status(500).json({ error: 'Failed to fetch anime schedule' });
+        console.error('[Anime Schedule] AniList fetch failed', err.message || err);
+        if (cached && cached.data) {
+            console.warn('[Anime Schedule] returning stale cache after live fetch failure');
+            return res.json(cached.data);
+        }
+        return res.status(502).json({ error: 'AniList schedule fetch failed' });
     }
 });
 

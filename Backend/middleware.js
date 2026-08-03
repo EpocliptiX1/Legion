@@ -80,12 +80,10 @@ app.use(
 // Apply limits before proxying to backend.
 app.use('/api', apiLimiter);
 app.use(['/api/megacloud', '/api/anime-embed', '/api/anime-allanime', '/api/anime-animetsu', '/api/anime-kite-servers', '/api/yt-search', '/api/jikan', '/api/anime-mal-id'], heavyApiLimiter);
-app.use(['/users/register', '/users/auth'], authLimiter);
+app.use(['/users/register', '/users/auth', '/users/change-password'], authLimiter);
 
 // Friendly redirects
-app.get('/',           (req, res) => res.redirect('/html/indexMain.html'));
-app.get('/admin',      (req, res) => res.redirect('/html/admin.html'));
-app.get('/html/admin', (req, res) => res.redirect('/html/admin.html'));
+app.get('/', (req, res) => res.redirect('/html/indexMain.html'));
 
 // ── API Proxy ─────────────────────────────────────────────────────────────────
 // Forward all non-static requests to the backend.

@@ -608,6 +608,30 @@ async function updateDownloadButtons(streamUrl) {
     }
 }
 
+function notifyDownloadCompleteForEpisode(video) {
+    const userUID = localStorage.getItem('userUID');
+    const token = localStorage.getItem('authToken');
+    if (!userUID || !token) return;
+
+    const tmdbId = new URLSearchParams(window.location.search).get('id');
+    const title = window.currentDownloadContext?.title || video?.title || 'Your episode';
+
+    fetch('/notifications/download-complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+            userUID,
+            tmdbId,
+            title,
+            season: video?.season || window.currentDownloadContext?.season || null,
+            episode: video?.episode || window.currentDownloadContext?.episode || null
+        })
+    }).then(() => {
+        window.fetchNotifications?.();
+        window.broadcastNotificationRefresh?.();
+    }).catch(err => console.warn('[Download] notification create failed:', err.message));
+}
+
 async function downloadKAAEpisode() {
     downloadedBytes = 0;
     downloadInProgress = true;
@@ -881,6 +905,7 @@ async function downloadKAAEpisode() {
         setTaskStatus("Download complete!");
         downloadInProgress = false;
         task.finish(true);
+        notifyDownloadCompleteForEpisode(video);
         setTimeout(() => {
             hideDownloadModal();
         }, 1000);

@@ -268,10 +268,14 @@
         const weekEnd = toIsoDateLocal(end);
         const cacheKey = `movie-week-${weekStart}`;
         if (!scheduleCache[cacheKey]) {
+            // `release_date.gte/lte` matches ANY regional release-date entry on a movie (a
+            // re-release, digital release, festival premiere, etc.), not just its real release --
+            // that let decades-old films leak into "this week". `primary_release_date.gte/lte`
+            // filters against the single canonical release date instead.
             const queries = [
-                `/api/tmdb-proxy/discover/movie?language=en-US&sort_by=release_date.asc&include_adult=false&release_date.gte=${weekStart}&release_date.lte=${weekEnd}&page=1`,
-                `/api/tmdb-proxy/discover/movie?language=en-US&sort_by=release_date.asc&include_adult=false&release_date.gte=${weekStart}&release_date.lte=${weekEnd}&page=2`,
-                `/api/tmdb-proxy/discover/movie?language=en-US&sort_by=primary_release_date.asc&include_adult=false&primary_release_date.gte=${weekStart}&primary_release_date.lte=${weekEnd}&page=1`
+                `/api/tmdb-proxy/discover/movie?language=en-US&sort_by=popularity.desc&include_adult=false&primary_release_date.gte=${weekStart}&primary_release_date.lte=${weekEnd}&page=1`,
+                `/api/tmdb-proxy/discover/movie?language=en-US&sort_by=popularity.desc&include_adult=false&primary_release_date.gte=${weekStart}&primary_release_date.lte=${weekEnd}&page=2`,
+                `/api/tmdb-proxy/discover/movie?language=en-US&sort_by=popularity.desc&include_adult=false&primary_release_date.gte=${weekStart}&primary_release_date.lte=${weekEnd}&page=3`
             ];
 
             const responses = await Promise.allSettled(queries.map(q => fetch(q)));
@@ -290,7 +294,9 @@
             const uniq = [];
             const seen = new Set();
             for (const item of merged) {
-                if (!item || !item.id || seen.has(item.id)) continue;
+                // No poster means it's almost always obscure homemade/unreleasable filler --
+                // not worth showing in the schedule widget.
+                if (!item || !item.id || !item.poster_path || seen.has(item.id)) continue;
                 seen.add(item.id);
                 uniq.push(item);
             }
@@ -374,7 +380,12 @@
         const day = DAYS[dayIdx];
         if (!scheduleCache[day]) {
             try {
-                const res = await fetch(`/api/anime-schedule?day=${encodeURIComponent(day)}`);
+                const monday = getWeekStartMonday(new Date());
+                const dateForDay = new Date(monday);
+                dateForDay.setDate(monday.getDate() + dayIdx);
+                const dateIso = toIsoDateLocal(dateForDay);
+
+                const res = await fetch(`/api/anime-schedule?date=${encodeURIComponent(dateIso)}`);
                 if (!res.ok) throw new Error(res.status);
                 const data = await res.json();
                 scheduleCache[day] = data.data || [];
@@ -401,6 +412,20 @@
         // ── Resolve all TMDB IDs in parallel via title search ────────────
         const slice = animes.slice(0, 14);
 
+        function buildTitleCandidates(title) {
+            const candidates = [title];
+            const add = (c) => { if (c && c !== title && !candidates.includes(c)) candidates.push(c); };
+
+            add(title.replace(/\s+(Season\s+\d+|\d+(st|nd|rd|th)\s+Season)$/i, '').trim());
+            add(title.replace(/\s+(Part\s+\d+|Cour\s+\d+|\d+(st|nd|rd|th)\s+Part)$/i, '').trim());
+            add(title.replace(/\s*[:\-–]\s*(Part|Season)?\s*(II|III|IV|V|VI|VII|VIII|IX|X)$/i, '').trim());
+            add(title.replace(/\s+(II|III|IV|VI{0,3}|IX|X)$/, '').trim());
+            add(title.replace(/\s+\d+$/, '').trim());
+            add(title.split(/[:\-–]/)[0].trim());
+
+            return candidates;
+        }
+
         async function tmdbTitleSearch(q) {
             const trySearch = async (query) => {
                 const r = await fetch(`/api/tmdb-proxy/search/tv?query=${encodeURIComponent(query)}&language=en-US`);
@@ -408,12 +433,12 @@
                 const d = await r.json();
                 return (d.results || [])[0] || null;
             };
-            let hit = await trySearch(q);
-            if (!hit) {
-                const stripped = q.replace(/\s+(Season\s+\d+|\d+(st|nd|rd|th)\s+Season)$/i, '').trim();
-                if (stripped !== q) hit = await trySearch(stripped);
+
+            for (const candidate of buildTitleCandidates(q)) {
+                const hit = await trySearch(candidate);
+                if (hit) return hit.id;
             }
-            return hit ? hit.id : null;
+            return null;
         }
 
         const tmdbIds = await Promise.all(

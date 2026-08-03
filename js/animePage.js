@@ -146,11 +146,12 @@
     const _isMain = _path.includes('indexMain.html') || _path === '/' || _path.endsWith('/');
     const _isBrowse = _path.includes('indexBrowse.html');
     const _isAllMovies = _path.includes('allMovies.html');
-    window.__animeMode = isAnimeMode() && (_isMain || _isBrowse || _isAllMovies);
+    const _isCalendar = _path.includes('calendar.html');
+    window.__animeMode = isAnimeMode() && (_isMain || _isBrowse || _isAllMovies || _isCalendar);
 
     window.__toggleAnimeMode = function () {
         localStorage.setItem('animeMode', isAnimeMode() ? 'false' : 'true');
-        if (_isMain || _isBrowse || _isAllMovies) {
+        if (_isMain || _isBrowse || _isAllMovies || _isCalendar) {
             window.location.reload();
         } else {
             window.location.href = '/html/indexMain.html';
