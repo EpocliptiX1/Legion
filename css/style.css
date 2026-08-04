@@ -1717,20 +1717,76 @@ body {
     display: flex;
     flex-direction: column;
 }
-
+.hero-audio-setting{
+    padding-left: 12px;
+}
 .setting-item label {
     font-size: 13px;
     color: #999;
     margin-bottom: 8px;
 }
 
-.setting-item input[type="text"], 
-.setting-item input[type="password"] {
+.setting-item input[type="text"],
+.setting-item input[type="password"],
+.setting-item input[type="email"],
+.setting-item input[type="search"] {
     background: #222;
     border: 1px solid #444;
     padding: 10px;
     color: white;
     border-radius: 4px;
+    width: 100%;
+    font-size: 0.9rem;
+    transition: border-color 0.15s;
+}
+
+.setting-item input[type="text"]:focus,
+.setting-item input[type="password"]:focus,
+.setting-item input[type="email"]:focus,
+.setting-item input[type="search"]:focus {
+    outline: none;
+    border-color: #f96d00;
+}
+
+.setting-item input[type="text"]::placeholder,
+.setting-item input[type="password"]::placeholder,
+.setting-item input[type="email"]::placeholder,
+.setting-item input[type="search"]::placeholder {
+    color: #666;
+}
+
+.setting-item input + input {
+    margin-top: 8px;
+}
+
+.setting-hint {
+    font-size: 11px;
+    color: var(--text-secondary, #888);
+    margin: 2px 0 6px;
+}
+
+/* Watch2Gether modal */
+#watch2getherModal .settings-section h3 {
+    margin-top: 18px;
+}
+#watch2getherModal .settings-section h3:first-child {
+    margin-top: 0;
+}
+#watch2getherOwnCode {
+    text-align: center;
+    font-family: 'Courier New', monospace;
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: #f96d00 !important;
+    cursor: text;
+}
+#watch2getherFriendCode {
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+#watch2getherModal .btn-small {
+    width: 100%;
 }
 
 /* Beta Notice */

@@ -580,7 +580,7 @@
                     <h3>Account Details</h3>
                     <div class="setting-item">
                         <label>Username</label>
-                        <p style="font-size:11px;color:var(--text-secondary,#888);margin:2px 0 6px;">Click below to change your username, then hit Save Changes</p>
+                        <p class="setting-hint">Click below to change your username, then hit Save Changes</p>
                         <input type="text" id="settingsUsername" placeholder="Enter new username">
                     </div>
                     <div class="setting-item">
@@ -592,13 +592,13 @@
                     </div>
                         <div class="setting-item">
                             <label>Merge Guest Session</label>
-                            <p style="font-size:11px;color:var(--text-secondary,#888);margin:2px 0 6px;">If you have leftover watch history from browsing as a guest on this device, fold it into this account.</p>
+                            <p class="setting-hint">If you have leftover watch history from browsing as a guest on this device, fold it into this account.</p>
                             <button class="btn-small" onclick="mergeGuestIntoAccount()">Merge Guest Activity</button>
                         </div>
                         <div class="setting-item">
                             <label>Merge Another Account</label>
-                            <p style="font-size:11px;color:var(--text-secondary,#888);margin:2px 0 6px;">Combine another account's watch history and list into this one. This permanently deletes the other account.</p>
-                            <input type="email" id="mergeOtherEmail" placeholder="Other account's email" autocomplete="off" style="margin-bottom:8px;">
+                            <p class="setting-hint">Combine another account's watch history and list into this one. This permanently deletes the other account.</p>
+                            <input type="email" id="mergeOtherEmail" placeholder="Other account's email" autocomplete="off">
                             <input type="password" id="mergeOtherPassword" name="merge-other-password" placeholder="Other account's password" autocomplete="new-password" data-lpignore="true" data-form-type="other" style="margin-bottom:8px;">
                             <button class="btn-small" onclick="mergeOtherAccount()">Merge Account</button>
                         </div>
@@ -642,13 +642,13 @@
                 <div class="settings-section">
                     <h3>Your Code</h3>
                     <div class="setting-item">
-                        <p style="font-size:11px;color:var(--text-secondary,#888);margin:2px 0 6px;">Share this with a friend so they can invite you.</p>
+                        <p class="setting-hint">Share this with a friend so they can invite you.</p>
                         <input type="text" id="watch2getherOwnCode" readonly placeholder="Loading...">
                     </div>
                     <h3>Host a Session</h3>
                     <div class="setting-item">
-                        <p style="font-size:11px;color:var(--text-secondary,#888);margin:2px 0 6px;">Enter your friend's code and send them an invite.</p>
-                        <input type="text" id="watch2getherFriendCode" placeholder="Friend's code" style="margin-bottom:8px;text-transform:uppercase;">
+                        <p class="setting-hint">Enter your friend's code and send them an invite.</p>
+                        <input type="text" id="watch2getherFriendCode" placeholder="Friend's code">
                         <button class="btn-small" onclick="hostWatch2Gether()">Host</button>
                     </div>
                 </div>
