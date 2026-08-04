@@ -1379,6 +1379,111 @@ app.post('/users/guest/convert', strictLimiter, async (req, res) => {
     }
 });
 
+// ── ACCOUNT MERGING ──────────────────────────────────────────────────────────
+// Folds another account's activity (watch history, mylist, genre affinity) into the
+// currently-logged-in account, deduping on conflict, then deletes the source account.
+// Scoped to activity data only -- forum posts/reviews are JSON-authored content keyed by
+// username, not userUID, and rewriting authorship there is out of scope for this pass.
+function mergeUserActivityData(sourceUID, targetUID) {
+    return new Promise((resolve, reject) => {
+        activityDb.serialize(() => {
+            activityDb.run('BEGIN TRANSACTION');
+            activityDb.run(
+                `INSERT OR IGNORE INTO watch_history (userUID, movie_id, title, genre, year, rating, item_type, watched_at, continue_from, timeStamp_continue, finished)
+                 SELECT ?, movie_id, title, genre, year, rating, item_type, watched_at, continue_from, timeStamp_continue, finished
+                 FROM watch_history WHERE userUID = ?`,
+                [targetUID, sourceUID]
+            );
+            activityDb.run(
+                `INSERT OR IGNORE INTO user_list (userUID, item_id, item_type, added_at)
+                 SELECT ?, item_id, item_type, added_at FROM user_list WHERE userUID = ?`,
+                [targetUID, sourceUID]
+            );
+            activityDb.run(
+                `INSERT INTO genre_affinity (userUID, genre, score)
+                 SELECT ?, genre, score FROM genre_affinity WHERE userUID = ?
+                 ON CONFLICT(userUID, genre) DO UPDATE SET score = score + excluded.score`,
+                [targetUID, sourceUID]
+            );
+            activityDb.run(`DELETE FROM watch_history WHERE userUID = ?`, [sourceUID]);
+            activityDb.run(`DELETE FROM user_list WHERE userUID = ?`, [sourceUID]);
+            activityDb.run(`DELETE FROM genre_affinity WHERE userUID = ?`, [sourceUID]);
+            activityDb.run('COMMIT', (err) => err ? reject(err) : resolve());
+        });
+    });
+}
+
+// Merge a guest account's activity into the currently logged-in account. Unlike
+// /users/guest/convert (which upgrades a guest in place when you don't have a real account
+// yet), this is for when you already have a real account and want a guest session's history
+// folded into it instead.
+app.post('/users/merge-guest', requireAuth, async (req, res) => {
+    const targetUID = parseInt(req.user.userUID, 10);
+    if (!targetUID) return res.status(401).json({ error: 'Invalid token user' });
+
+    const guestUID = String(req.body?.guestUID || '');
+    if (!guestUID.startsWith('g_')) return res.status(400).json({ error: 'Valid guestUID required' });
+
+    usersDb.get('SELECT * FROM users WHERE accountUID = ? AND is_guest = 1', [guestUID], async (err, guestUser) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!guestUser) return res.status(404).json({ error: 'Guest account not found' });
+        if (guestUser.userUID === targetUID) return res.status(400).json({ error: 'That guest session is already this account' });
+
+        try {
+            await mergeUserActivityData(String(guestUser.userUID), String(targetUID));
+        } catch (mergeErr) {
+            console.error('[Merge Guest] activity merge failed', mergeErr.message);
+            return res.status(500).json({ error: 'Could not merge activity data' });
+        }
+
+        usersDb.run('DELETE FROM users WHERE userUID = ?', [guestUser.userUID], (delErr) => {
+            if (delErr) {
+                console.error('[Merge Guest] guest cleanup failed', delErr.message);
+                return res.status(500).json({ error: 'Merged data, but could not remove the old guest account' });
+            }
+            res.json({ success: true });
+        });
+    });
+});
+
+// Merge a second full account into the currently logged-in one. Requires the source
+// account's real password to prove you actually own it -- otherwise anyone could drain
+// another user's watch history/list into their own account just by knowing an email.
+app.post('/users/merge-account', requireAuth, strictLimiter, async (req, res) => {
+    const targetUID = parseInt(req.user.userUID, 10);
+    if (!targetUID) return res.status(401).json({ error: 'Invalid token user' });
+
+    const { sourceEmail, sourcePassword } = req.body || {};
+    if (!sourceEmail || !sourcePassword) {
+        return res.status(400).json({ error: 'The other account\'s email and password are required' });
+    }
+
+    const normalizedEmail = String(sourceEmail).trim().toLowerCase();
+    usersDb.get('SELECT * FROM users WHERE LOWER(userEmail) = ?', [normalizedEmail], async (err, sourceUser) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!sourceUser) return res.status(404).json({ error: 'No account found with that email' });
+        if (sourceUser.userUID === targetUID) return res.status(400).json({ error: "That's already your account" });
+
+        const passwordMatch = await bcrypt.compare(sourcePassword, sourceUser.userPassword);
+        if (!passwordMatch) return res.status(401).json({ error: 'Incorrect password for that account' });
+
+        try {
+            await mergeUserActivityData(String(sourceUser.userUID), String(targetUID));
+        } catch (mergeErr) {
+            console.error('[Merge Account] activity merge failed', mergeErr.message);
+            return res.status(500).json({ error: 'Could not merge activity data' });
+        }
+
+        usersDb.run('DELETE FROM users WHERE userUID = ?', [sourceUser.userUID], (delErr) => {
+            if (delErr) {
+                console.error('[Merge Account] source cleanup failed', delErr.message);
+                return res.status(500).json({ error: 'Merged data, but could not remove the old account' });
+            }
+            res.json({ success: true });
+        });
+    });
+});
+
 app.post('/users/login-code/request', strictLimiter, async (req, res) => {
     try {
         const { userEmail, accountUID } = req.body || {};

@@ -3173,6 +3173,78 @@ window.changePassword = async function () {
     }
 };
 
+window.mergeGuestIntoAccount = async function () {
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+        showLimitToast('⚠️ Sign in first, then merge a guest session into your account.');
+        return;
+    }
+    const guestUID = localStorage.getItem('guestUID');
+    if (!guestUID) {
+        showLimitToast('⚠️ No guest session found on this device.');
+        return;
+    }
+
+    try {
+        const res = await fetch('/users/merge-guest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ guestUID })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            showLimitToast(`⚠️ ${data.error || 'Could not merge guest activity.'}`);
+            return;
+        }
+        localStorage.removeItem('guestUID');
+        showLimitToast('✅ Guest activity merged into this account!');
+    } catch (err) {
+        console.error('Guest merge error:', err);
+        showLimitToast('⚠️ Could not reach server.');
+    }
+};
+
+window.mergeOtherAccount = async function () {
+    const emailInput = document.getElementById('mergeOtherEmail');
+    const passwordInput = document.getElementById('mergeOtherPassword');
+    const sourceEmail = (emailInput?.value || '').trim();
+    const sourcePassword = passwordInput?.value || '';
+
+    if (!sourceEmail || !sourcePassword) {
+        showLimitToast('⚠️ Enter the other account\'s email and password.');
+        return;
+    }
+
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+        showLimitToast('⚠️ Sign in to the account you want to keep first.');
+        return;
+    }
+
+    if (!confirm(`This will permanently delete the account for ${sourceEmail} after moving its watch history and list into this one. Continue?`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/users/merge-account', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ sourceEmail, sourcePassword })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            showLimitToast(`⚠️ ${data.error || 'Could not merge that account.'}`);
+            return;
+        }
+        if (emailInput) emailInput.value = '';
+        if (passwordInput) passwordInput.value = '';
+        showLimitToast('✅ Account merged and removed!');
+    } catch (err) {
+        console.error('Account merge error:', err);
+        showLimitToast('⚠️ Could not reach server.');
+    }
+};
+
 window.handlePFPUpload = function (event) {
     const file = event.target.files[0];
     if (!file) return;
