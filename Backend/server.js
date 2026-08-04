@@ -2068,6 +2068,26 @@ activityDb.serialize(() => {
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN video_paused INTEGER`, () => {});
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN video_time REAL`, () => {});
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN search_query TEXT`, () => {});
+    // Group sessions: up to 5 people total (host + up to 4 participants). The old single
+    // friend_uid column is left in place (unused going forward) rather than dropped -- SQLite
+    // can't cheaply drop a NOT NULL column, and nothing reads it anymore now that
+    // watch2gether_participants is the real source of truth for who's in a session.
+    activityDb.run(`CREATE TABLE IF NOT EXISTS watch2gether_participants (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        user_uid   TEXT    NOT NULL,
+        joined_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        UNIQUE(session_id, user_uid)
+    )`);
+    activityDb.run(`CREATE INDEX IF NOT EXISTS idx_w2g_participants_session ON watch2gether_participants(session_id)`);
+    activityDb.run(`CREATE TABLE IF NOT EXISTS friends (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_uid   TEXT    NOT NULL,
+        friend_uid TEXT    NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        UNIQUE(user_uid, friend_uid)
+    )`);
+    activityDb.run(`CREATE INDEX IF NOT EXISTS idx_friends_user ON friends(user_uid)`);
     activityDb.run(`CREATE TABLE IF NOT EXISTS notification_gen_state (
         userUID       TEXT PRIMARY KEY,
         last_generated INTEGER NOT NULL DEFAULT 0
@@ -2633,31 +2653,239 @@ app.get('/users/watch2gether-code', requireAuth, (req, res) => {
     });
 });
 
-app.post('/watch2gether/invite', requireAuth, async (req, res) => {
+// ── FRIENDS ──────────────────────────────────────────────────────────────────
+// "Online now" needs a real heartbeat -- users.last_seen was previously only ever touched at
+// login, which makes it "last logged in", not "last active". This keeps it fresh while browsing.
+const HEARTBEAT_ONLINE_WINDOW_SEC = 120;
+
+app.post('/users/heartbeat', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    usersDb.get('SELECT last_seen FROM users WHERE userUID = ?', [uidNum], (getErr, row) => {
+        if (getErr) return res.status(500).json({ error: 'Database error' });
+
+        const now = Math.floor(Date.now() / 1000);
+        const justCameOnline = !row?.last_seen || (now - row.last_seen) >= HEARTBEAT_ONLINE_WINDOW_SEC;
+
+        usersDb.run('UPDATE users SET last_seen = ? WHERE userUID = ?', [now, uidNum], (err) => {
+            if (err) return res.status(500).json({ error: 'Database error' });
+            res.json({ ok: true });
+
+            // Fire-and-forget -- don't hold the heartbeat response up on notification writes.
+            // Dedup key is bucketed by hour so one online session only pings friends once/hour,
+            // not on every 60s heartbeat tick.
+            if (justCameOnline) {
+                activityDb.all('SELECT friend_uid FROM friends WHERE user_uid = ?', [String(uidNum)], async (friendsErr, friendRows) => {
+                    if (friendsErr || !friendRows?.length) return;
+                    const username = req.user.username || 'A friend';
+                    const hourBucket = Math.floor(now / 3600);
+                    for (const fr of friendRows) {
+                        await notifInsert(
+                            fr.friend_uid,
+                            'friend_online',
+                            `friend-online:${uidNum}:${hourBucket}`,
+                            'Friend Online',
+                            `${username} just came online.`,
+                            null, null,
+                            { friendUID: uidNum, friendUsername: username }
+                        );
+                    }
+                });
+            }
+        });
+    });
+});
+
+app.get('/users/friends', requireAuth, (req, res) => {
+    const uidNum = String(parseInt(req.user.userUID, 10));
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    activityDb.all('SELECT friend_uid FROM friends WHERE user_uid = ?', [uidNum], (err, rows) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        const friendUIDs = (rows || []).map(r => parseInt(r.friend_uid, 10)).filter(Boolean);
+        if (!friendUIDs.length) return res.json({ friends: [] });
+
+        const placeholders = friendUIDs.map(() => '?').join(',');
+        usersDb.all(
+            `SELECT userUID, username, profile_pic, last_seen FROM users WHERE userUID IN (${placeholders})`,
+            friendUIDs,
+            (usersErr, users) => {
+                if (usersErr) return res.status(500).json({ error: 'Database error' });
+                const now = Math.floor(Date.now() / 1000);
+                const friends = (users || []).map(u => ({
+                    userUID: u.userUID,
+                    username: u.username || 'User',
+                    profilePic: u.profile_pic || null,
+                    lastSeen: u.last_seen || null,
+                    online: !!(u.last_seen && (now - u.last_seen) < HEARTBEAT_ONLINE_WINDOW_SEC)
+                }));
+                res.json({ friends });
+            }
+        );
+    });
+});
+
+app.post('/users/friends/invite', requireAuth, async (req, res) => {
     const uidNum = parseInt(req.user.userUID, 10);
     if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
 
     const friendCode = normalizeWatch2getherCode(req.body?.friendCode);
     if (!friendCode) return res.status(400).json({ error: 'Missing friend code' });
 
-    usersDb.get('SELECT userUID, username FROM users WHERE watch2gether_code = ?', [friendCode], async (err, friend) => {
+    usersDb.get('SELECT userUID, username FROM users WHERE watch2gether_code = ?', [friendCode], async (err, target) => {
         if (err) return res.status(500).json({ error: 'Database error' });
-        if (!friend) return res.status(404).json({ error: 'No user found with that code' });
-        if (friend.userUID === uidNum) return res.status(400).json({ error: "That's your own code" });
+        if (!target) return res.status(404).json({ error: 'No user found with that code' });
+        if (target.userUID === uidNum) return res.status(400).json({ error: "That's your own code" });
 
-        const hostUsername = req.user.username || 'Someone';
-        await notifInsert(
-            String(friend.userUID),
-            'watch2gether_invite',
-            `w2g:${uidNum}:${Date.now()}`,
-            'Watch2Gether Invite',
-            `${hostUsername} wants to watch together!`,
-            null,
-            null,
-            { hostUID: uidNum, hostUsername }
+        activityDb.get(
+            'SELECT 1 FROM friends WHERE user_uid = ? AND friend_uid = ?',
+            [String(uidNum), String(target.userUID)],
+            async (friendErr, existing) => {
+                if (friendErr) return res.status(500).json({ error: 'Database error' });
+                if (existing) return res.status(409).json({ error: 'Already friends' });
+
+                const requesterUsername = req.user.username || 'Someone';
+                await notifInsert(
+                    String(target.userUID),
+                    'friend_request',
+                    `friend-req:${uidNum}:${Date.now()}`,
+                    'Friend Request',
+                    `${requesterUsername} wants to add you as a friend.`,
+                    null, null,
+                    { requesterUID: uidNum, requesterUsername }
+                );
+                res.json({ ok: true, targetUsername: target.username });
+            }
         );
-        res.json({ ok: true, friendUsername: friend.username });
     });
+});
+
+app.post('/users/friends/respond', requireAuth, async (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    const notifId = parseInt(req.body?.notificationId, 10);
+    const accept = !!req.body?.accept;
+    if (!notifId) return res.status(400).json({ error: 'Missing notificationId' });
+
+    activityDb.get(
+        `SELECT * FROM notifications WHERE id = ? AND userUID = ? AND type = 'friend_request'`,
+        [notifId, String(uidNum)],
+        async (err, notif) => {
+            if (err) return res.status(500).json({ error: 'Database error' });
+            if (!notif) return res.status(404).json({ error: 'Request not found' });
+
+            activityDb.run('UPDATE notifications SET read = 1 WHERE id = ?', [notifId]);
+
+            let requesterUID = null;
+            try { requesterUID = JSON.parse(notif.data || '{}').requesterUID; } catch {}
+
+            if (accept && requesterUID) {
+                activityDb.serialize(() => {
+                    activityDb.run(
+                        'INSERT OR IGNORE INTO friends (user_uid, friend_uid) VALUES (?, ?)',
+                        [String(uidNum), String(requesterUID)]
+                    );
+                    activityDb.run(
+                        'INSERT OR IGNORE INTO friends (user_uid, friend_uid) VALUES (?, ?)',
+                        [String(requesterUID), String(uidNum)]
+                    );
+                });
+                const accepterUsername = req.user.username || 'Someone';
+                await notifInsert(
+                    String(requesterUID),
+                    'friend_accepted',
+                    `friend-accepted:${uidNum}:${Date.now()}`,
+                    'Friend Request Accepted',
+                    `${accepterUsername} is now your friend.`,
+                    null, null, null
+                );
+            }
+            res.json({ ok: true, accepted: accept });
+        }
+    );
+});
+
+// Reuses the host's most recent session if it still has room (host + up to 4 participants),
+// otherwise starts a fresh one -- so batch/serial invites from the same host land in one room.
+function w2gGetOrCreateHostSession(hostUID) {
+    return new Promise((resolve, reject) => {
+        activityDb.get(
+            `SELECT ws.id, COUNT(wp.id) as participant_count
+             FROM watch2gether_sessions ws
+             LEFT JOIN watch2gether_participants wp ON wp.session_id = ws.id
+             WHERE ws.host_uid = ?
+             GROUP BY ws.id
+             ORDER BY ws.id DESC
+             LIMIT 1`,
+            [hostUID],
+            (err, row) => {
+                if (err) return reject(err);
+                if (row && row.participant_count < 4) return resolve(row.id);
+                activityDb.run(
+                    `INSERT INTO watch2gether_sessions (host_uid, friend_uid) VALUES (?, ?)`,
+                    [hostUID, hostUID],
+                    function (insertErr) {
+                        if (insertErr) return reject(insertErr);
+                        resolve(this.lastID);
+                    }
+                );
+            }
+        );
+    });
+}
+
+app.post('/watch2gether/invite', requireAuth, async (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    const targets = new Set();
+    const friendUIDs = Array.isArray(req.body?.friendUIDs) ? req.body.friendUIDs : [];
+    friendUIDs.forEach(uid => { const n = parseInt(uid, 10); if (n) targets.add(n); });
+
+    const friendCode = normalizeWatch2getherCode(req.body?.friendCode);
+
+    try {
+        if (friendCode) {
+            const codeUser = await new Promise((resolve, reject) => {
+                usersDb.get('SELECT userUID, username FROM users WHERE watch2gether_code = ?', [friendCode], (err, row) => err ? reject(err) : resolve(row));
+            });
+            if (!codeUser) return res.status(404).json({ error: 'No user found with that code' });
+            targets.add(codeUser.userUID);
+        }
+
+        targets.delete(uidNum);
+        if (!targets.size) return res.status(400).json({ error: 'No valid recipients' });
+        if (targets.size > 4) return res.status(400).json({ error: 'You can invite up to 4 people at once' });
+
+        const sessionId = await w2gGetOrCreateHostSession(String(uidNum));
+        const hostUsername = req.user.username || 'Someone';
+        const invitedUsernames = [];
+
+        for (const targetUID of targets) {
+            const targetUser = await new Promise((resolve) => {
+                usersDb.get('SELECT userUID, username FROM users WHERE userUID = ?', [targetUID], (err, row) => resolve(row));
+            });
+            if (!targetUser) continue;
+            invitedUsernames.push(targetUser.username);
+            await notifInsert(
+                String(targetUID),
+                'watch2gether_invite',
+                `w2g:${sessionId}:${targetUID}:${Date.now()}`,
+                'Watch2Gether Invite',
+                `${hostUsername} wants to watch together!`,
+                null,
+                null,
+                { hostUID: uidNum, hostUsername, sessionId }
+            );
+        }
+
+        res.json({ ok: true, sessionId, invited: invitedUsernames });
+    } catch (err) {
+        console.error('[Watch2Gether] invite failed', err.message);
+        res.status(500).json({ error: 'Could not send invite(s)' });
+    }
 });
 
 app.post('/watch2gether/respond', requireAuth, async (req, res) => {
@@ -2677,50 +2905,70 @@ app.post('/watch2gether/respond', requireAuth, async (req, res) => {
 
             activityDb.run('UPDATE notifications SET read = 1 WHERE id = ?', [notifId]);
 
-            let hostUID = null;
-            try { hostUID = JSON.parse(notif.data || '{}').hostUID; } catch {}
+            let data = {};
+            try { data = JSON.parse(notif.data || '{}'); } catch {}
+            const { hostUID, sessionId } = data;
 
-            if (accept && hostUID) {
-                const accepterUsername = req.user.username || 'Your friend';
-
-                activityDb.run(
-                    `INSERT INTO watch2gether_sessions (host_uid, friend_uid) VALUES (?, ?)`,
-                    [String(hostUID), String(uidNum)],
-                    async function (sessionErr) {
-                        if (sessionErr) {
-                            console.error('[Watch2Gether] session create failed', sessionErr.message);
-                            return res.status(500).json({ error: 'Could not start session' });
-                        }
-                        const sessionId = this.lastID;
-
-                        // The host needs the sessionId to start broadcasting their state --
-                        // deliver it via their own notification.
-                        await notifInsert(
-                            String(hostUID),
-                            'watch2gether_accepted',
-                            `w2g-accepted:${uidNum}:${Date.now()}`,
-                            'Invite Accepted!',
-                            `${accepterUsername} accepted your Watch2Gether invite.`,
-                            null, null,
-                            { sessionId }
-                        );
-                        res.json({ ok: true, accepted: true, sessionId });
-                    }
-                );
-                return;
+            if (!accept || !hostUID || !sessionId) {
+                return res.json({ ok: true, accepted: accept });
             }
-            res.json({ ok: true, accepted: accept });
+
+            activityDb.get(
+                `SELECT COUNT(*) as c FROM watch2gether_participants WHERE session_id = ?`,
+                [sessionId],
+                async (countErr, countRow) => {
+                    if (countErr) return res.status(500).json({ error: 'Database error' });
+                    if ((countRow?.c || 0) >= 4) {
+                        return res.status(409).json({ error: 'That session is already full' });
+                    }
+
+                    activityDb.run(
+                        `INSERT OR IGNORE INTO watch2gether_participants (session_id, user_uid) VALUES (?, ?)`,
+                        [sessionId, String(uidNum)],
+                        async (insertErr) => {
+                            if (insertErr) {
+                                console.error('[Watch2Gether] join failed', insertErr.message);
+                                return res.status(500).json({ error: 'Could not join session' });
+                            }
+
+                            const accepterUsername = req.user.username || 'Your friend';
+                            await notifInsert(
+                                String(hostUID),
+                                'watch2gether_accepted',
+                                `w2g-accepted:${sessionId}:${uidNum}:${Date.now()}`,
+                                'Invite Accepted!',
+                                `${accepterUsername} joined your Watch2Gether session.`,
+                                null, null,
+                                { sessionId }
+                            );
+                            res.json({ ok: true, accepted: true, sessionId });
+                        }
+                    );
+                }
+            );
         }
     );
 });
 
 const WATCH2GETHER_CONTROL_WINDOW_SEC = 60;
 
-// Lazily expires a friend's temporary control window -- checked on every read/write instead of
-// a background timer, so "control reverts to host after 60s" just falls out of normal polling.
+// Checks whether uidNum is allowed in this session (host or a joined participant).
+function w2gIsMember(row, uidNum) {
+    return row.host_uid === uidNum || (row.participantUIDs && row.participantUIDs.includes(uidNum));
+}
+
+function w2gLoadParticipants(sessionId, callback) {
+    activityDb.all('SELECT user_uid FROM watch2gether_participants WHERE session_id = ?', [sessionId], (err, rows) => {
+        callback((rows || []).map(r => r.user_uid));
+    });
+}
+
+// Lazily expires a participant's temporary control window -- checked on every read/write instead
+// of a background timer, so "control reverts to host after 60s" just falls out of normal polling.
+// control_owner is either the literal string 'host' or a specific participant's UID string.
 function w2gExpireControlIfNeeded(row, callback) {
     const now = Math.floor(Date.now() / 1000);
-    if (row.control_owner === 'friend' && row.control_expires_at && now > row.control_expires_at) {
+    if (row.control_owner !== 'host' && row.control_expires_at && now > row.control_expires_at) {
         activityDb.run(
             `UPDATE watch2gether_sessions SET control_owner = 'host', control_expires_at = 0 WHERE id = ?`,
             [row.id],
@@ -2760,10 +3008,11 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
         if (err) return res.status(500).json({ error: 'Database error' });
         if (!row) return res.status(404).json({ error: 'Session not found' });
 
-        w2gExpireControlIfNeeded(row, (session) => {
+        w2gLoadParticipants(sessionId, (participantUIDs) => {
+        w2gExpireControlIfNeeded({ ...row, participantUIDs }, (session) => {
             const isHost = session.host_uid === uidNum;
-            const isFriend = session.friend_uid === uidNum;
-            const allowed = (isHost && session.control_owner === 'host') || (isFriend && session.control_owner === 'friend');
+            const isMember = isHost || participantUIDs.includes(uidNum);
+            const allowed = isMember && session.control_owner === (isHost ? 'host' : uidNum);
             if (!allowed) {
                 return res.status(403).json({ error: 'Not currently in control of this session', controlOwner: session.control_owner });
             }
@@ -2793,6 +3042,7 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
                 }
             );
         });
+        });
     });
 });
 
@@ -2807,24 +3057,43 @@ app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
         (err, row) => {
             if (err) return res.status(500).json({ error: 'Database error' });
             if (!row) return res.status(404).json({ error: 'Session not found' });
-            if (row.host_uid !== uidNum && row.friend_uid !== uidNum) {
-                return res.status(403).json({ error: 'Not part of this session' });
-            }
-            w2gExpireControlIfNeeded(row, (session) => {
-                res.json({
-                    path: session.path,
-                    scrollY: session.scroll_y,
-                    updatedAt: session.updated_at,
-                    createdAt: session.created_at,
-                    controlOwner: session.control_owner,
-                    controlExpiresAt: session.control_expires_at,
-                    isHost: session.host_uid === uidNum,
-                    clickSelector: session.last_click_selector || null,
-                    clickAt: session.last_click_at || 0,
-                    videoPaused: session.video_paused == null ? null : !!session.video_paused,
-                    videoTime: session.video_time == null ? null : session.video_time,
-                    searchQuery: session.search_query
-                });
+
+            w2gLoadParticipants(sessionId, (participantUIDs) => {
+                if (row.host_uid !== uidNum && !participantUIDs.includes(uidNum)) {
+                    return res.status(403).json({ error: 'Not part of this session' });
+                }
+
+                const participantUIDNums = participantUIDs.map(u => parseInt(u, 10)).filter(Boolean);
+                const finish = (participants) => {
+                    w2gExpireControlIfNeeded({ ...row, participantUIDs }, (session) => {
+                        res.json({
+                            path: session.path,
+                            scrollY: session.scroll_y,
+                            updatedAt: session.updated_at,
+                            createdAt: session.created_at,
+                            controlOwner: session.control_owner,
+                            controlExpiresAt: session.control_expires_at,
+                            isHost: session.host_uid === uidNum,
+                            clickSelector: session.last_click_selector || null,
+                            clickAt: session.last_click_at || 0,
+                            videoPaused: session.video_paused == null ? null : !!session.video_paused,
+                            videoTime: session.video_time == null ? null : session.video_time,
+                            searchQuery: session.search_query,
+                            participants
+                        });
+                    });
+                };
+
+                if (!participantUIDNums.length) return finish([]);
+                const placeholders = participantUIDNums.map(() => '?').join(',');
+                usersDb.all(
+                    `SELECT userUID, username, profile_pic FROM users WHERE userUID IN (${placeholders})`,
+                    participantUIDNums,
+                    (usersErr, users) => {
+                        if (usersErr) return finish([]);
+                        finish((users || []).map(u => ({ userUID: String(u.userUID), username: u.username || 'User', profilePic: u.profile_pic || null })));
+                    }
+                );
             });
         }
     );
@@ -2837,38 +3106,93 @@ app.post('/watch2gether/session/:id/request-control', requireAuth, async (req, r
 
     activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], async (err, row) => {
         if (err) return res.status(500).json({ error: 'Database error' });
-        if (!row || row.friend_uid !== uidNum) return res.status(403).json({ error: 'Not the friend on this session' });
+        if (!row) return res.status(404).json({ error: 'Session not found' });
 
-        const requesterUsername = req.user.username || 'Your friend';
-        await notifInsert(
-            row.host_uid,
-            'watch2gether_control_request',
-            `w2g-control:${sessionId}:${Date.now()}`,
-            'Interaction Request',
-            `${requesterUsername} wants to interact for 60 seconds.`,
-            null, null,
-            { sessionId }
-        );
-        res.json({ ok: true });
+        w2gLoadParticipants(sessionId, async (participantUIDs) => {
+            if (!participantUIDs.includes(uidNum)) return res.status(403).json({ error: 'Not a participant on this session' });
+
+            const requesterUsername = req.user.username || 'A participant';
+            await notifInsert(
+                row.host_uid,
+                'watch2gether_control_request',
+                `w2g-control:${sessionId}:${uidNum}:${Date.now()}`,
+                'Interaction Request',
+                `${requesterUsername} wants to interact for 60 seconds.`,
+                null, null,
+                { sessionId, requesterUID: uidNum, requesterUsername }
+            );
+            res.json({ ok: true });
+        });
     });
 });
 
 app.post('/watch2gether/session/:id/grant-control', requireAuth, (req, res) => {
     const uidNum = String(parseInt(req.user.userUID, 10));
     const sessionId = parseInt(req.params.id, 10);
-    if (!sessionId) return res.status(400).json({ error: 'Invalid session' });
+    const granteeUID = String(parseInt(req.body?.granteeUID, 10) || '');
+    if (!sessionId || !granteeUID) return res.status(400).json({ error: 'Invalid request' });
 
     activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
         if (err) return res.status(500).json({ error: 'Database error' });
         if (!row || row.host_uid !== uidNum) return res.status(403).json({ error: 'Not the host of this session' });
 
-        const expiresAt = Math.floor(Date.now() / 1000) + WATCH2GETHER_CONTROL_WINDOW_SEC;
+        w2gLoadParticipants(sessionId, (participantUIDs) => {
+            if (!participantUIDs.includes(granteeUID)) return res.status(400).json({ error: 'Not a participant on this session' });
+
+            const expiresAt = Math.floor(Date.now() / 1000) + WATCH2GETHER_CONTROL_WINDOW_SEC;
+            activityDb.run(
+                `UPDATE watch2gether_sessions SET control_owner = ?, control_expires_at = ? WHERE id = ?`,
+                [granteeUID, expiresAt, sessionId],
+                (updateErr) => {
+                    if (updateErr) return res.status(500).json({ error: 'Database error' });
+                    res.json({ ok: true, expiresAt, controlOwner: granteeUID });
+                }
+            );
+        });
+    });
+});
+
+app.post('/watch2gether/session/:id/kick', requireAuth, async (req, res) => {
+    const uidNum = String(parseInt(req.user.userUID, 10));
+    const sessionId = parseInt(req.params.id, 10);
+    const targetUID = String(parseInt(req.body?.targetUID, 10) || '');
+    if (!sessionId || !targetUID) return res.status(400).json({ error: 'Invalid request' });
+
+    activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!row || row.host_uid !== uidNum) return res.status(403).json({ error: 'Not the host of this session' });
+
         activityDb.run(
-            `UPDATE watch2gether_sessions SET control_owner = 'friend', control_expires_at = ? WHERE id = ?`,
-            [expiresAt, sessionId],
-            (updateErr) => {
-                if (updateErr) return res.status(500).json({ error: 'Database error' });
-                res.json({ ok: true, expiresAt });
+            `DELETE FROM watch2gether_participants WHERE session_id = ? AND user_uid = ?`,
+            [sessionId, targetUID],
+            async (delErr) => {
+                if (delErr) return res.status(500).json({ error: 'Database error' });
+
+                const finish = async () => {
+                    const hostUsername = req.user.username || 'The host';
+                    await notifInsert(
+                        targetUID,
+                        'watch2gether_kicked',
+                        `w2g-kicked:${sessionId}:${Date.now()}`,
+                        'Removed from Watch2Gether',
+                        `${hostUsername} removed you from the session.`,
+                        null, null,
+                        { sessionId }
+                    );
+                    res.json({ ok: true });
+                };
+
+                // If the person being kicked currently holds control, hand it straight back to
+                // the host instead of leaving control stuck on someone no longer in the session.
+                if (row.control_owner === targetUID) {
+                    activityDb.run(
+                        `UPDATE watch2gether_sessions SET control_owner = 'host', control_expires_at = 0 WHERE id = ?`,
+                        [sessionId],
+                        finish
+                    );
+                } else {
+                    finish();
+                }
             }
         );
     });
@@ -2888,7 +3212,7 @@ app.post('/notifications/mark-read', (req, res) => {
         // watch2gether_invite is actionable (Accept/Decline), not just informational -- it must
         // only ever be marked read via /watch2gether/respond, never swept up by "mark all read".
         activityDb.run(
-            `UPDATE notifications SET read = 1 WHERE userUID = ? AND type NOT IN ('watch2gether_invite', 'watch2gether_control_request')`,
+            `UPDATE notifications SET read = 1 WHERE userUID = ? AND type NOT IN ('watch2gether_invite', 'watch2gether_control_request', 'friend_request')`,
             [safeUID],
             (err) => {
                 if (err) return res.status(500).json({ error: 'db error' });

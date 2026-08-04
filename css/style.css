@@ -1277,6 +1277,11 @@ body {
     justify-content: center;
     flex-shrink: 0;
     font-size: 1rem;
+    color: #f96d00;
+}
+.notif-item-icon svg {
+    width: 18px;
+    height: 18px;
 }
 
 .notif-item-body {
@@ -1746,11 +1751,6 @@ body {
     color: #999;
     margin-bottom: 8px;
 }
-#watch2getherModal .settings-content {
-    padding: 24px 30px 30px;
-    overflow-y: auto;
-}
-
 .setting-item input[type="text"],
 .setting-item input[type="password"],
 .setting-item input[type="email"],
@@ -1790,12 +1790,123 @@ body {
     margin: 2px 0 6px;
 }
 
-/* Watch2Gether modal */
-#watch2getherModal .settings-section h3 {
-    margin-top: 18px;
+/* Watch2Gether modal -- its own visual identity, deliberately not settings-panel styling */
+#watch2getherModal .w2g-content {
+    background: radial-gradient(circle at 30% 0%, rgba(249, 109, 0, 0.10) 0%, transparent 55%), #141414;
+    width: 92%;
+    max-width: 480px;
+    max-height: 88vh;
+    padding: 26px 26px 24px;
+    border-radius: 16px;
+    border: 1px solid #2c2c2c;
+    position: relative;
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.9);
+    overflow-y: auto;
+    margin: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
 }
-#watch2getherModal .settings-section h3:first-child {
-    margin-top: 0;
+#watch2getherModal .close-settings {
+    position: absolute;
+    top: 18px;
+    right: 20px;
+    font-size: 26px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.w2g-hero {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding-right: 30px;
+}
+.w2g-hero-icon {
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #f96d00;
+}
+.w2g-hero-icon svg {
+    width: 100%;
+    height: 100%;
+}
+.w2g-hero-text h2 {
+    margin: 0;
+    font-size: 1.3rem;
+}
+.w2g-hero-sub {
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--text-secondary, #888);
+}
+
+.w2g-card {
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 14px 16px;
+}
+.w2g-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.w2g-card-icon {
+    display: flex;
+    color: #f96d00;
+    flex-shrink: 0;
+}
+.w2g-card-icon svg {
+    width: 18px;
+    height: 18px;
+}
+.w2g-card-head h3 {
+    margin: 0;
+    font-size: 0.95rem;
+    color: #fff;
+}
+.w2g-card input[type="text"] {
+    background: #1c1c1c;
+    border: 1px solid #3a3a3a;
+    padding: 10px 12px;
+    color: white;
+    border-radius: 8px;
+    width: 100%;
+    font-size: 0.85rem;
+    transition: border-color 0.15s;
+}
+.w2g-card input[type="text"]:focus {
+    outline: none;
+    border-color: #f96d00;
+}
+.w2g-card input[type="text"]::placeholder {
+    color: #666;
+}
+.w2g-inline-form {
+    display: flex;
+    gap: 8px;
+}
+.w2g-inline-form input {
+    flex: 1;
+    min-width: 0;
+}
+.w2g-inline-form .btn-small {
+    flex-shrink: 0;
+    width: auto;
+    padding: 0 16px;
 }
 #watch2getherOwnCode {
     text-align: center;
@@ -1806,12 +1917,388 @@ body {
     color: #f96d00 !important;
     cursor: text;
 }
-#watch2getherFriendCode {
+#watch2getherFriendCode,
+#watch2getherAddFriendCode {
     text-transform: uppercase;
     letter-spacing: 1px;
 }
-#watch2getherModal .btn-small {
+
+/* Currently-hosting live status card */
+.w2g-live-card {
+    background: rgba(249, 109, 0, 0.08);
+    border: 1px solid rgba(249, 109, 0, 0.35);
+    border-radius: 12px;
+    padding: 14px 16px;
+}
+.w2g-live-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.w2g-live-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #f96d00;
+    box-shadow: 0 0 0 rgba(249, 109, 0, 0.6);
+    animation: w2gPulse 1.8s infinite;
+    flex-shrink: 0;
+}
+@keyframes w2gPulse {
+    0% { box-shadow: 0 0 0 0 rgba(249, 109, 0, 0.55); }
+    70% { box-shadow: 0 0 0 8px rgba(249, 109, 0, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(249, 109, 0, 0); }
+}
+.w2g-live-title {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: #fff;
+}
+.w2g-participants {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.w2g-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    padding: 4px 10px 4px 4px;
+    font-size: 12px;
+    color: #eee;
+}
+.w2g-chip .w2g-avatar,
+.w2g-chip .w2g-avatar-fallback {
+    width: 20px;
+    height: 20px;
+    font-size: 10px;
+}
+.w2g-chip-name {
+    white-space: nowrap;
+}
+.w2g-chip-give {
+    background: rgba(249, 109, 0, 0.15);
+    border: 1px solid rgba(249, 109, 0, 0.4);
+    color: #f96d00;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    border-radius: 999px;
+    padding: 3px 8px;
+}
+.w2g-chip-give:hover {
+    background: rgba(249, 109, 0, 0.3);
+}
+.w2g-chip-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: #4caf50;
+    white-space: nowrap;
+}
+.w2g-chip-kick {
+    background: none;
+    border: none;
+    color: #999;
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+    padding: 0 0 0 2px;
+}
+.w2g-chip-kick:hover {
+    color: #ff3b3b;
+}
+.w2g-live-card .btn-small {
     width: 100%;
+}
+
+/* Friend row: greyed-out Invite button when they're already in the active session */
+.w2g-friend-row .btn-small:disabled {
+    opacity: 0.4;
+    cursor: default;
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #888;
+}
+
+/* Persistent host bar -- shows on every page while hosting, like the viewer's status bar */
+.w2g-hostbar {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 23000;
+    background: #141414;
+    border: 1px solid rgba(249, 109, 0, 0.35);
+    border-radius: 12px;
+    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.8);
+    width: 300px;
+    max-width: calc(100vw - 40px);
+    overflow: hidden;
+}
+.w2g-hostbar-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    cursor: pointer;
+    user-select: none;
+    background: rgba(249, 109, 0, 0.08);
+}
+.w2g-hostbar-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    flex: 1;
+}
+.w2g-hostbar-count {
+    font-size: 11px;
+    color: #f96d00;
+    background: rgba(249, 109, 0, 0.15);
+    border-radius: 999px;
+    padding: 1px 7px;
+}
+.w2g-hostbar-body {
+    display: none;
+    padding: 10px 12px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+.w2g-hostbar.expanded .w2g-hostbar-body {
+    display: block;
+}
+.w2g-hostbar-body .w2g-participants {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.w2g-hostbar-body .w2g-chip {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 5px 8px 5px 5px;
+}
+.w2g-hostbar-body .w2g-chip-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.w2g-hostbar-body .btn-small {
+    width: 100%;
+}
+
+.w2g-friends-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 220px;
+    overflow-y: auto;
+}
+.w2g-friend-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+}
+.w2g-avatar,
+.w2g-avatar-fallback {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.w2g-avatar {
+    object-fit: cover;
+    background: #222;
+}
+.w2g-avatar-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 700;
+    color: #f96d00;
+    background: rgba(249, 109, 0, 0.14);
+}
+.w2g-friend-info {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+}
+.w2g-friend-name {
+    font-size: 13px;
+    color: #ccc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.w2g-friend-name.online {
+    color: #6dcff6;
+    font-weight: 600;
+}
+.w2g-friend-status {
+    font-size: 11px;
+    color: var(--text-secondary, #888);
+}
+.w2g-friend-row.offline {
+    opacity: 0.6;
+}
+.w2g-friend-row .btn-small {
+    width: auto;
+    flex-shrink: 0;
+    padding: 0 14px;
+}
+
+/* Steam-style avatar corner status badge */
+.w2g-avatar-badge {
+    position: relative;
+    flex-shrink: 0;
+    display: flex;
+}
+.w2g-status-dot {
+    position: absolute;
+    bottom: -1px;
+    right: -1px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #666;
+    border: 2px solid #141414;
+}
+.w2g-status-dot.online {
+    background: #4caf50;
+}
+.w2g-group-header {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-secondary, #888);
+    margin: 12px 0 6px;
+    padding: 0 2px;
+}
+.w2g-group-header:first-child {
+    margin-top: 0;
+}
+
+/* Floating Friends overlay (Shift+Tab) -- Steam-style, freely draggable */
+#w2gFloatingFriends {
+    position: fixed;
+    top: 80px;
+    right: 24px;
+    left: auto;
+    width: 260px;
+    max-height: 420px;
+    background: #141414;
+    border: 1px solid #333;
+    border-radius: 12px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85);
+    z-index: 24000;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+}
+#w2gFloatingFriends.active {
+    display: flex;
+}
+.w2g-float-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: rgba(249, 109, 0, 0.1);
+    border-bottom: 1px solid #2a2a2a;
+    font-size: 13px;
+    font-weight: 700;
+    color: #fff;
+    cursor: grab;
+    user-select: none;
+}
+.w2g-float-header:active {
+    cursor: grabbing;
+}
+.w2g-float-close {
+    background: none;
+    border: none;
+    color: #999;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+.w2g-float-close:hover {
+    color: #fff;
+}
+.w2g-float-body {
+    padding: 10px 12px;
+    overflow-y: auto;
+}
+.w2g-float-body .w2g-friend-row .btn-small {
+    padding: 0 10px;
+    font-size: 11px;
+}
+
+/* Shift+? shortcuts helper */
+.w2g-shortcuts-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 25000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
+.w2g-shortcuts-overlay.active {
+    display: flex;
+}
+.w2g-shortcuts-box {
+    background: #141414;
+    border: 1px solid #333;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 360px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.9);
+}
+.w2g-shortcuts-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid #2a2a2a;
+    font-size: 14px;
+    font-weight: 700;
+    color: #fff;
+}
+.w2g-shortcuts-list {
+    padding: 10px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.w2g-shortcut-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #ccc;
+}
+.w2g-shortcut-keys kbd {
+    background: #222;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    color: #f96d00;
+    font-family: 'Courier New', monospace;
 }
 
 /* Beta Notice */

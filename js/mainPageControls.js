@@ -2715,29 +2715,435 @@ window.openWatch2GetherModal = async function () {
         }
     }
 
-    const activeSession = localStorage.getItem('w2gHostingSessionId');
-    const settingsGrid = modal.querySelector('.settings-grid');
-    let statusRow = document.getElementById('watch2getherHostingStatus');
-    if (activeSession) {
-        if (!statusRow && settingsGrid) {
-            statusRow = document.createElement('div');
-            statusRow.id = 'watch2getherHostingStatus';
-            statusRow.className = 'settings-section';
-            settingsGrid.appendChild(statusRow);
+    await _w2gRenderHostingStatus();
+    _w2gLoadFriends();
+};
+
+// Shared by the friends list and the live participants chips. `img.onerror` swaps in the
+// letter fallback so a corrupt/unreadable data URI never leaves a broken-image icon on screen.
+function _w2gAvatarHtml(profilePic, username, sizeClass) {
+    const cls = sizeClass || '';
+    const letter = notifEscapeHtml((username || '?')[0].toUpperCase());
+    if (!profilePic) {
+        return `<div class="w2g-avatar-fallback ${cls}">${letter}</div>`;
+    }
+    return `<img class="w2g-avatar ${cls}" src="${notifEscapeHtml(profilePic)}" alt=""
+             onerror="this.replaceWith(Object.assign(document.createElement('div'), { className: 'w2g-avatar-fallback ${cls}', textContent: '${letter}' }))">`;
+}
+
+// Shared by the modal's "Currently Hosting" card and the persistent host bar -- a participant
+// chip with a Kick button and a "Give" (control) button, usable even when nobody requested it.
+function _w2gParticipantChipHtml(sessionId, p, controlOwner) {
+    const hasControl = controlOwner === p.userUID;
+    const controlBtn = hasControl
+        ? `<span class="w2g-chip-label">In control</span>`
+        : `<button class="w2g-chip-give" title="Give ${notifEscapeHtml(p.username)} control" onclick="grantWatch2GetherControlDirect('${sessionId}','${p.userUID}')">Give</button>`;
+    return `
+        <span class="w2g-chip">
+            ${_w2gAvatarHtml(p.profilePic, p.username)}
+            <span class="w2g-chip-name">${notifEscapeHtml(p.username)}</span>
+            ${controlBtn}
+            <button class="w2g-chip-kick" title="Remove ${notifEscapeHtml(p.username)}" onclick="kickWatch2GetherParticipant('${sessionId}','${p.userUID}')">&times;</button>
+        </span>
+    `;
+}
+
+window.grantWatch2GetherControlDirect = async function (sessionId, granteeUID) {
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+    try {
+        const res = await fetch(`/watch2gether/session/${sessionId}/grant-control`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ granteeUID })
+        });
+        if (!res.ok) {
+            showLimitToast('⚠️ Could not grant control.');
+            return;
         }
-        if (statusRow) {
-            statusRow.innerHTML = `
-                <h3>Currently Hosting</h3>
-                <div class="setting-item">
-                    <p style="font-size:11px;color:var(--text-secondary,#888);margin:2px 0 6px;">Your friend is following along as you browse.</p>
-                    <button class="btn-small" onclick="stopWatch2GetherHosting(); closeWatch2GetherModal();">Stop Hosting</button>
-                </div>
-            `;
-        }
-    } else if (statusRow) {
-        statusRow.remove();
+        showLimitToast('They have control for 60 seconds.');
+        _w2gRenderHostingStatus();
+        _w2gRenderHostBar();
+    } catch (e) {
+        showLimitToast('⚠️ Could not reach server.');
     }
 };
+
+// Returns { sessionId, participants, controlOwner } for the session currently being hosted, or
+// null if not hosting -- shared by every UI surface (modal card, host bar, friends lists) that
+// needs to know who's already in the session.
+async function _w2gGetActiveSessionInfo() {
+    const sessionId = localStorage.getItem('w2gHostingSessionId');
+    const token = localStorage.getItem('authToken');
+    if (!sessionId || !token) return null;
+    try {
+        const res = await fetch(`/watch2gether/session/${sessionId}/state`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return { sessionId, participants: data.participants || [], controlOwner: data.controlOwner };
+    } catch (e) {
+        return null;
+    }
+}
+
+async function _w2gRenderHostingStatus() {
+    const statusRow = document.getElementById('watch2getherHostingStatus');
+    if (!statusRow) return;
+    if (!localStorage.getItem('w2gHostingSessionId') || !localStorage.getItem('authToken')) {
+        statusRow.innerHTML = '';
+        return;
+    }
+
+    const info = await _w2gGetActiveSessionInfo();
+    const participants = info?.participants || [];
+    const chips = participants.map(p => _w2gParticipantChipHtml(info.sessionId, p, info.controlOwner)).join('')
+        || `<span class="w2g-friend-status">Nobody has joined yet.</span>`;
+
+    statusRow.innerHTML = `
+        <div class="w2g-live-card">
+            <div class="w2g-live-head">
+                <span class="w2g-live-dot"></span>
+                <span class="w2g-live-title">Currently Hosting</span>
+            </div>
+            <div class="w2g-participants">${chips}</div>
+            <button class="btn-small" onclick="stopWatch2GetherHosting(); closeWatch2GetherModal();">Stop Hosting</button>
+        </div>
+    `;
+}
+
+window.kickWatch2GetherParticipant = async function (sessionId, targetUID) {
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+    try {
+        const res = await fetch(`/watch2gether/session/${sessionId}/kick`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ targetUID })
+        });
+        if (!res.ok) {
+            showLimitToast('⚠️ Could not remove them.');
+            return;
+        }
+        showLimitToast('Removed from the session.');
+        _w2gRenderHostingStatus();
+        _w2gRenderHostBar();
+    } catch (e) {
+        showLimitToast('⚠️ Could not reach server.');
+    }
+};
+
+// ── Persistent host bar -- like the viewer's "Watching along with your friend" status bar,
+// but for the host: shows while `w2gHostingSessionId` is set, on every page, not just the modal.
+let _w2gHostBarEl = null;
+
+function _w2gEnsureHostBar() {
+    if (_w2gHostBarEl) return _w2gHostBarEl;
+    const el = document.createElement('div');
+    el.id = 'w2gHostBar';
+    el.className = 'w2g-hostbar';
+    el.innerHTML = `
+        <div class="w2g-hostbar-head" onclick="document.getElementById('w2gHostBar').classList.toggle('expanded')">
+            <span class="w2g-live-dot"></span>
+            <span class="w2g-hostbar-title">Hosting Watch2Gether</span>
+            <span class="w2g-hostbar-count" id="w2gHostBarCount">0</span>
+        </div>
+        <div class="w2g-hostbar-body" id="w2gHostBarBody"></div>
+    `;
+    document.body.appendChild(el);
+    _w2gHostBarEl = el;
+    return el;
+}
+
+async function _w2gRenderHostBar() {
+    if (!localStorage.getItem('w2gHostingSessionId') || !localStorage.getItem('authToken')) {
+        if (_w2gHostBarEl) { _w2gHostBarEl.remove(); _w2gHostBarEl = null; }
+        return;
+    }
+    _w2gEnsureHostBar();
+    const info = await _w2gGetActiveSessionInfo();
+    if (!info) return;
+
+    const countEl = document.getElementById('w2gHostBarCount');
+    if (countEl) countEl.textContent = String(info.participants.length);
+
+    const body = document.getElementById('w2gHostBarBody');
+    if (!body) return;
+    const chips = info.participants.map(p => _w2gParticipantChipHtml(info.sessionId, p, info.controlOwner)).join('')
+        || `<span class="w2g-friend-status">Waiting for someone to join...</span>`;
+    body.innerHTML = `<div class="w2g-participants">${chips}</div><button class="btn-small" onclick="stopWatch2GetherHosting()">Stop Hosting</button>`;
+}
+
+// Steam-style: online/offline grouped with a header, status shown as a corner badge on the
+// avatar + a colored name rather than a full separate status line per row.
+function _w2gFriendRowHtml(f, inSessionUIDs) {
+    const inSession = !!inSessionUIDs && inSessionUIDs.has(String(f.userUID));
+    const statusLabel = f.online ? 'Online' : (f.lastSeen ? 'Last online ' + notifTimeAgo(f.lastSeen) : 'Offline');
+    return `
+        <div class="w2g-friend-row${f.online ? '' : ' offline'}">
+            <div class="w2g-avatar-badge">
+                ${_w2gAvatarHtml(f.profilePic, f.username)}
+                <span class="w2g-status-dot${f.online ? ' online' : ''}"></span>
+            </div>
+            <div class="w2g-friend-info">
+                <span class="w2g-friend-name${f.online ? ' online' : ''}">${notifEscapeHtml(f.username)}</span>
+                <span class="w2g-friend-status">${statusLabel}</span>
+            </div>
+            <button class="btn-small" ${inSession ? 'disabled' : ''} onclick="inviteFriendToWatch2Gether('${f.userUID}')">${inSession ? 'In Session' : 'Invite'}</button>
+        </div>
+    `;
+}
+
+async function _w2gLoadFriends() {
+    const list = document.getElementById('watch2getherFriendsList');
+    const token = localStorage.getItem('authToken');
+    if (!list || !token) return;
+    try {
+        const [friendsRes, sessionInfo] = await Promise.all([
+            fetch('/users/friends', { headers: { 'Authorization': `Bearer ${token}` } }),
+            _w2gGetActiveSessionInfo()
+        ]);
+        const data = friendsRes.ok ? await friendsRes.json() : { friends: [] };
+        const friends = data.friends || [];
+        const inSessionUIDs = new Set((sessionInfo?.participants || []).map(p => String(p.userUID)));
+        if (!friends.length) {
+            list.innerHTML = `<p class="setting-hint">No friends yet -- add one with their code above.</p>`;
+            return;
+        }
+        const online = friends.filter(f => f.online);
+        const offline = friends.filter(f => !f.online);
+        let html = '';
+        if (online.length) {
+            html += `<div class="w2g-group-header">Online Friends (${online.length})</div>`;
+            html += online.map(f => _w2gFriendRowHtml(f, inSessionUIDs)).join('');
+        }
+        if (offline.length) {
+            html += `<div class="w2g-group-header">Offline (${offline.length})</div>`;
+            html += offline.map(f => _w2gFriendRowHtml(f, inSessionUIDs)).join('');
+        }
+        list.innerHTML = html;
+    } catch (e) {
+        list.innerHTML = `<p class="setting-hint">Could not load friends.</p>`;
+    }
+}
+
+window.inviteFriendToWatch2Gether = async function (friendUID) {
+    await _w2gSendInvite({ friendUIDs: [friendUID] });
+};
+
+window.addWatch2GetherFriend = async function () {
+    const input = document.getElementById('watch2getherAddFriendCode');
+    const friendCode = (input?.value || '').trim();
+    if (!friendCode) {
+        showLimitToast('⚠️ Enter their code first.');
+        return;
+    }
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+        showLimitToast('⚠️ Sign in to use Watch2Gether!');
+        return;
+    }
+    try {
+        const res = await fetch('/users/friends/invite', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ friendCode })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            showLimitToast(`⚠️ ${data.error || 'Could not send friend request.'}`);
+            return;
+        }
+        showLimitToast(`✅ Friend request sent to ${data.targetUsername || 'them'}!`);
+        if (input) input.value = '';
+    } catch (e) {
+        showLimitToast('⚠️ Could not reach server.');
+    }
+};
+
+window.respondFriendRequest = async function (notificationId, accept) {
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+    try {
+        const res = await fetch('/users/friends/respond', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ notificationId, accept })
+        });
+        if (!res.ok) {
+            showLimitToast('⚠️ Could not respond to friend request.');
+            return;
+        }
+        showLimitToast(accept ? '✅ Friend added!' : 'Request declined.');
+        window.fetchNotifications?.();
+        _w2gLoadFriends();
+    } catch (e) {
+        showLimitToast('⚠️ Could not reach server.');
+    }
+};
+
+// Periodic presence ping so friends' "online now" status is actually meaningful.
+let _w2gHeartbeatStarted = false;
+function _w2gEnsureHeartbeat() {
+    if (_w2gHeartbeatStarted) return;
+    _w2gHeartbeatStarted = true;
+    const ping = () => {
+        const token = localStorage.getItem('authToken');
+        if (!token) return;
+        fetch('/users/heartbeat', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } }).catch(() => {});
+    };
+    ping();
+    setInterval(ping, 60 * 1000);
+}
+if (localStorage.getItem('authToken')) _w2gEnsureHeartbeat();
+
+// ── Floating Friends overlay (Shift+Tab) -- Steam-style, freely draggable ──────
+let _floatingFriendsEl = null;
+let _floatingFriendsDragState = null;
+let _floatingFriendsInterval = null;
+
+function _ensureFloatingFriendsPanel() {
+    if (_floatingFriendsEl) return _floatingFriendsEl;
+    const el = document.createElement('div');
+    el.id = 'w2gFloatingFriends';
+    el.innerHTML = `
+        <div class="w2g-float-header" id="w2gFloatHeader">
+            <span>Friends</span>
+            <button class="w2g-float-close" onclick="toggleFriendsOverlay(false)">&times;</button>
+        </div>
+        <div class="w2g-float-body" id="w2gFloatBody">
+            <p class="setting-hint">Loading...</p>
+        </div>
+    `;
+    document.body.appendChild(el);
+
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('w2gFloatingPos') || 'null'); } catch (e) {}
+    if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
+        el.style.left = saved.left + 'px';
+        el.style.top = saved.top + 'px';
+        el.style.right = 'auto';
+    }
+
+    const header = el.querySelector('#w2gFloatHeader');
+    header.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.w2g-float-close')) return;
+        const rect = el.getBoundingClientRect();
+        _floatingFriendsDragState = { offsetX: e.clientX - rect.left, offsetY: e.clientY - rect.top };
+        el.style.left = rect.left + 'px';
+        el.style.top = rect.top + 'px';
+        el.style.right = 'auto';
+        document.body.style.userSelect = 'none';
+    });
+    document.addEventListener('mousemove', (e) => {
+        if (!_floatingFriendsDragState) return;
+        const x = Math.min(Math.max(0, e.clientX - _floatingFriendsDragState.offsetX), window.innerWidth - el.offsetWidth);
+        const y = Math.min(Math.max(0, e.clientY - _floatingFriendsDragState.offsetY), window.innerHeight - el.offsetHeight);
+        el.style.left = x + 'px';
+        el.style.top = y + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+        if (!_floatingFriendsDragState) return;
+        _floatingFriendsDragState = null;
+        document.body.style.userSelect = '';
+        const rect = el.getBoundingClientRect();
+        localStorage.setItem('w2gFloatingPos', JSON.stringify({ left: rect.left, top: rect.top }));
+    });
+
+    _floatingFriendsEl = el;
+    return el;
+}
+
+async function _floatingFriendsRender() {
+    const body = document.getElementById('w2gFloatBody');
+    const token = localStorage.getItem('authToken');
+    if (!body || !token) return;
+    try {
+        const [friendsRes, sessionInfo] = await Promise.all([
+            fetch('/users/friends', { headers: { 'Authorization': `Bearer ${token}` } }),
+            _w2gGetActiveSessionInfo()
+        ]);
+        const data = friendsRes.ok ? await friendsRes.json() : { friends: [] };
+        const friends = data.friends || [];
+        const inSessionUIDs = new Set((sessionInfo?.participants || []).map(p => String(p.userUID)));
+        if (!friends.length) {
+            body.innerHTML = `<p class="setting-hint">No friends yet -- add one from the Watch2Gether menu.</p>`;
+            return;
+        }
+        const online = friends.filter(f => f.online);
+        const offline = friends.filter(f => !f.online);
+        let html = '';
+        if (online.length) {
+            html += `<div class="w2g-group-header">Online Friends (${online.length})</div>`;
+            html += online.map(f => _w2gFriendRowHtml(f, inSessionUIDs)).join('');
+        }
+        if (offline.length) {
+            html += `<div class="w2g-group-header">Offline (${offline.length})</div>`;
+            html += offline.map(f => _w2gFriendRowHtml(f, inSessionUIDs)).join('');
+        }
+        body.innerHTML = html;
+    } catch (e) {
+        body.innerHTML = `<p class="setting-hint">Could not load friends.</p>`;
+    }
+}
+
+window.toggleFriendsOverlay = function (force) {
+    if (!localStorage.getItem('authToken')) return;
+    const el = _ensureFloatingFriendsPanel();
+    const show = force !== undefined ? force : !el.classList.contains('active');
+    el.classList.toggle('active', show);
+    if (show) {
+        _floatingFriendsRender();
+        if (!_floatingFriendsInterval) _floatingFriendsInterval = setInterval(_floatingFriendsRender, 15000);
+    } else if (_floatingFriendsInterval) {
+        clearInterval(_floatingFriendsInterval);
+        _floatingFriendsInterval = null;
+    }
+};
+
+function _ensureShortcutsHelper() {
+    if (document.getElementById('w2gShortcutsHelper')) return;
+    const el = document.createElement('div');
+    el.id = 'w2gShortcutsHelper';
+    el.className = 'w2g-shortcuts-overlay';
+    el.innerHTML = `
+        <div class="w2g-shortcuts-box">
+            <div class="w2g-shortcuts-head">
+                <span>Keyboard Shortcuts</span>
+                <button class="w2g-float-close" onclick="toggleShortcutsHelper(false)">&times;</button>
+            </div>
+            <div class="w2g-shortcuts-list">
+                <div class="w2g-shortcut-row"><span class="w2g-shortcut-keys"><kbd>Shift</kbd> + <kbd>Tab</kbd></span><span>Toggle the Friends panel</span></div>
+                <div class="w2g-shortcut-row"><span class="w2g-shortcut-keys"><kbd>Shift</kbd> + <kbd>?</kbd></span><span>Show this help</span></div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(el);
+    el.addEventListener('click', (e) => { if (e.target === el) toggleShortcutsHelper(false); });
+}
+
+window.toggleShortcutsHelper = function (force) {
+    _ensureShortcutsHelper();
+    const el = document.getElementById('w2gShortcutsHelper');
+    const show = force !== undefined ? force : !el.classList.contains('active');
+    el.classList.toggle('active', show);
+};
+
+document.addEventListener('keydown', (e) => {
+    const tag = document.activeElement?.tagName;
+    const typing = tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable;
+    if (typing) return;
+
+    if (e.key === 'Tab' && e.shiftKey) {
+        e.preventDefault();
+        toggleFriendsOverlay();
+    } else if (e.key === '?' && e.shiftKey) {
+        e.preventDefault();
+        toggleShortcutsHelper();
+    } else if (e.key === 'Escape') {
+        toggleFriendsOverlay(false);
+        toggleShortcutsHelper(false);
+    }
+});
 
 window.closeWatch2GetherModal = function () {
     const modal = document.getElementById('watch2getherModal');
@@ -2751,6 +3157,12 @@ window.hostWatch2Gether = async function () {
         showLimitToast('⚠️ Enter your friend\'s code first.');
         return;
     }
+    await _w2gSendInvite({ friendCode }, () => { if (input) input.value = ''; });
+};
+
+// Shared by both the manual friend-code box and the Friends-list invite buttons.
+// payload is { friendCode } or { friendUIDs: [...] }.
+async function _w2gSendInvite(payload, onSuccess) {
     const token = localStorage.getItem('authToken');
     if (!token) {
         showLimitToast('⚠️ Sign in to use Watch2Gether!');
@@ -2760,15 +3172,16 @@ window.hostWatch2Gether = async function () {
         const res = await fetch('/watch2gether/invite', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({ friendCode })
+            body: JSON.stringify(payload)
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
             showLimitToast(`⚠️ ${data.error || 'Could not send invite.'}`);
             return;
         }
-        showLimitToast(`✅ Invite sent to ${data.friendUsername || 'your friend'}!`);
-        if (input) input.value = '';
+        const names = (data.invited || []).join(', ') || 'your friend';
+        showLimitToast(`✅ Invite sent to ${names}!`);
+        onSuccess?.(data);
         closeWatch2GetherModal();
         // Poll fast for a couple minutes waiting for the response -- the normal 3-minute
         // notification poll is way too slow to notice an accept in any reasonable time.
@@ -2777,7 +3190,7 @@ window.hostWatch2Gether = async function () {
     } catch (e) {
         showLimitToast('⚠️ Could not reach server.');
     }
-};
+}
 
 window.respondWatch2Gether = async function (notificationId, accept) {
     const userUID = localStorage.getItem('userUID');
@@ -2923,7 +3336,7 @@ async function _w2gPollForFollowOrControl() {
         if (!res.ok) return;
         const data = await res.json();
 
-        if (data.controlOwner === 'friend') {
+        if (data.controlOwner && data.controlOwner !== 'host') {
             _w2gFollowing = true;
             if (data.path !== _w2gLastAppliedPath) {
                 _w2gLastAppliedPath = data.path;
@@ -2972,6 +3385,7 @@ function _w2gEnsureLoopsRunning() {
     _w2gLoopsStarted = true;
     setInterval(_w2gReportState, 1500);
     setInterval(_w2gPollForFollowOrControl, 1000);
+    setInterval(_w2gRenderHostBar, 5000);
     window.addEventListener('scroll', () => {
         clearTimeout(_w2gScrollThrottle);
         _w2gScrollThrottle = setTimeout(_w2gReportState, 250);
@@ -2982,28 +3396,31 @@ window.startWatch2GetherHosting = function (sessionId, silent) {
     localStorage.setItem('w2gHostingSessionId', String(sessionId));
     _w2gReportState();
     _w2gEnsureLoopsRunning();
+    _w2gRenderHostBar();
     if (!silent) showLimitToast('📡 Now hosting Watch2Gether — your friend will see what you see.');
 };
 
 window.stopWatch2GetherHosting = function () {
     localStorage.removeItem('w2gHostingSessionId');
     _w2gFollowing = false;
+    _w2gRenderHostBar();
     showLimitToast('Stopped hosting Watch2Gether.');
 };
 
-window.grantWatch2GetherControl = async function (notificationId, sessionId) {
+window.grantWatch2GetherControl = async function (notificationId, sessionId, granteeUID) {
     const token = localStorage.getItem('authToken');
-    if (!token) return;
+    if (!token || !granteeUID) return;
     try {
         const res = await fetch(`/watch2gether/session/${sessionId}/grant-control`, {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${token}` }
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ granteeUID })
         });
         if (!res.ok) {
             showLimitToast('⚠️ Could not grant control.');
             return;
         }
-        showLimitToast('🙋 Your friend has control for 60 seconds.');
+        showLimitToast('🙋 They have control for 60 seconds.');
         const userUID = localStorage.getItem('userUID');
         if (userUID) {
             fetch('/notifications/mark-read', {
@@ -3013,6 +3430,8 @@ window.grantWatch2GetherControl = async function (notificationId, sessionId) {
             }).catch(() => {});
         }
         window.fetchNotifications?.();
+        _w2gRenderHostBar();
+        _w2gRenderHostingStatus();
     } catch (e) {
         showLimitToast('⚠️ Could not reach server.');
     }
@@ -3022,6 +3441,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!localStorage.getItem('w2gHostingSessionId')) return;
     _w2gReportState();
     _w2gEnsureLoopsRunning();
+    _w2gRenderHostBar();
 });
 
 function loadCurrentSettings() {
@@ -3336,7 +3756,10 @@ window.switchContentMode = function (mode) {
 
 window.__notifications = [];
 
-const NOTIF_ICONS = { continue_watching: '▶', new_episode: '⛩', download_ready: '⬇', watch2gether_invite: '🎬', watch2gether_accepted: '🎉', watch2gether_control_request: '🙋' };
+const NOTIF_ICON_WATCH2GETHER_INVITE = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg>`;
+const NOTIF_ICON_REMOVED = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636" /></svg>`;
+const NOTIF_ICON_FRIEND_REQUEST = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 0 0-3.7-3.7 48.678 48.678 0 0 0-7.324 0 4.006 4.006 0 0 0-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 0 0 3.7 3.7 48.656 48.656 0 0 0 7.324 0 4.006 4.006 0 0 0 3.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3-3 3" /></svg>`;
+const NOTIF_ICONS = { continue_watching: '▶', new_episode: '⛩', download_ready: '⬇', watch2gether_invite: NOTIF_ICON_WATCH2GETHER_INVITE, watch2gether_accepted: '🎉', watch2gether_control_request: '🙋', watch2gether_kicked: NOTIF_ICON_REMOVED, friend_request: NOTIF_ICON_FRIEND_REQUEST, friend_accepted: '🤝', friend_online: '🟢' };
 
 function notifEscapeHtml(text) {
     return String(text || '')
@@ -3419,8 +3842,23 @@ function renderNotificationList() {
                     <div class="notif-item-desc">${notifEscapeHtml(n.body)}</div>
                     <div class="notif-item-time">${notifTimeAgo(n.created_at)}</div>
                     <div style="display:flex;gap:8px;margin-top:6px;">
-                        <button class="btn-small" onclick="event.stopPropagation(); grantWatch2GetherControl(${n.id}, ${n.data.sessionId})">Accept</button>
+                        <button class="btn-small" onclick="event.stopPropagation(); grantWatch2GetherControl(${n.id}, ${n.data.sessionId}, '${n.data.requesterUID || ''}')">Accept</button>
                         <button class="btn-small" onclick="event.stopPropagation(); markNotificationRead(${n.id})">Decline</button>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        if (n.type === 'friend_request' && !n.read) {
+            return `<div class="notif-item unread">
+                <div class="notif-item-icon">${icon}</div>
+                <div class="notif-item-body">
+                    <div class="notif-item-title">${notifEscapeHtml(n.title)}</div>
+                    <div class="notif-item-desc">${notifEscapeHtml(n.body)}</div>
+                    <div class="notif-item-time">${notifTimeAgo(n.created_at)}</div>
+                    <div style="display:flex;gap:8px;margin-top:6px;">
+                        <button class="btn-small" onclick="event.stopPropagation(); respondFriendRequest(${n.id}, true)">Accept</button>
+                        <button class="btn-small" onclick="event.stopPropagation(); respondFriendRequest(${n.id}, false)">Decline</button>
                     </div>
                 </div>
             </div>`;

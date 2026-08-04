@@ -129,7 +129,7 @@
                     <hr>
                     <a href="#" id="signInLink" class="drop-link" onclick="openSignInModal()" data-i18n="nav_signin">Sign In</a>
                     <a href="#" id="signUpLink" class="drop-link" onclick="openSignupModal()" data-i18n="nav_signup">Create Account</a>
-                    <a href="#" class="drop-link" onclick="openWatch2GetherModal()">🎬 Watch2Gether</a>
+                    <a href="#" class="drop-link" onclick="openWatch2GetherModal()">Watch2Gether</a>
                     <a href="#" class="drop-link" onclick="openSettings()" data-i18n="nav_settings">Settings</a>
                     <a href="#" class="drop-link" onclick="logout()" data-i18n="nav_logout">Logout</a>
                 </div>
@@ -383,22 +383,46 @@
         </div>
     </div>
     <div id="watch2getherModal" class="settings-modal-overlay">
-        <div class="settings-content" style="max-width:420px;">
+        <div class="w2g-content">
             <span class="close-settings" onclick="closeWatch2GetherModal()">&times;</span>
-            <h2>Watch2Gether</h2>
-            <div class="settings-grid" style="grid-template-columns:1fr;">
-                <div class="settings-section">
-                    <h3>Your Code</h3>
-                    <div class="setting-item">
-                        <p class="setting-hint">Share this with a friend so they can invite you.</p>
-                        <input type="text" id="watch2getherOwnCode" readonly placeholder="Loading...">
-                    </div>
-                    <h3>Host a Session</h3>
-                    <div class="setting-item">
-                        <p class="setting-hint">Enter your friend's code and send them an invite.</p>
-                        <input type="text" id="watch2getherFriendCode" placeholder="Friend's code">
-                        <button class="btn-small" onclick="hostWatch2Gether()">Host</button>
-                    </div>
+            <div class="w2g-hero">
+                <div class="w2g-hero-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg></div>
+                <div class="w2g-hero-text">
+                    <h2>Watch2Gether</h2>
+                    <p class="w2g-hero-sub">Browse and watch in sync with up to 4 friends, live.</p>
+                </div>
+            </div>
+
+            <div id="watch2getherHostingStatus"></div>
+
+            <div class="w2g-card">
+                <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z" /></svg></span><h3>Your Code</h3></div>
+                <p class="setting-hint">Share this with a friend so they can invite you.</p>
+                <input type="text" id="watch2getherOwnCode" readonly placeholder="Loading...">
+            </div>
+
+            <div class="w2g-card">
+                <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12a7.5 7.5 0 0 0 15 0m-15 0a7.5 7.5 0 1 1 15 0m-15 0H3m16.5 0H21m-1.5 0H12m-8.457 3.077 1.41-.513m14.095-5.13 1.41-.513M5.106 17.785l1.15-.964m11.49-9.642 1.149-.964M7.501 19.795l.75-1.3m7.5-12.99.75-1.3m-6.063 16.658.26-1.477m2.605-14.772.26-1.477m0 17.726-.26-1.477M10.698 4.614l-.26-1.477M16.5 19.794l-.75-1.299M7.5 4.205 12 12m6.894 5.785-1.149-.964M6.256 7.178l-1.15-.964m15.352 8.864-1.41-.513M4.954 9.435l-1.41-.514M12.002 12l-3.75 6.495" /></svg></span><h3>Host a Session</h3></div>
+                <p class="setting-hint">Enter a friend's code and send them an invite.</p>
+                <div class="w2g-inline-form">
+                    <input type="text" id="watch2getherFriendCode" placeholder="Friend's code">
+                    <button class="btn-small" onclick="hostWatch2Gether()">Host</button>
+                </div>
+            </div>
+
+            <div class="w2g-card">
+                <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><h3>Add a Friend</h3></div>
+                <p class="setting-hint">Enter their code to send a friend request.</p>
+                <div class="w2g-inline-form">
+                    <input type="text" id="watch2getherAddFriendCode" placeholder="Friend's code">
+                    <button class="btn-small" onclick="addWatch2GetherFriend()">Add Friend</button>
+                </div>
+            </div>
+
+            <div class="w2g-card">
+                <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" /></svg></span><h3>Friends</h3></div>
+                <div id="watch2getherFriendsList" class="w2g-friends-list">
+                    <p class="setting-hint">Loading...</p>
                 </div>
             </div>
         </div>
