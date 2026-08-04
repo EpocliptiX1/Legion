@@ -1952,6 +1952,7 @@ activityDb.serialize(() => {
         last_click_at       INTEGER NOT NULL DEFAULT 0,
         video_paused        INTEGER,
         video_time          REAL,
+        search_query        TEXT,
         created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         updated_at          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     )`);
@@ -1961,6 +1962,7 @@ activityDb.serialize(() => {
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN last_click_at INTEGER NOT NULL DEFAULT 0`, () => {});
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN video_paused INTEGER`, () => {});
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN video_time REAL`, () => {});
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN search_query TEXT`, () => {});
     activityDb.run(`CREATE TABLE IF NOT EXISTS notification_gen_state (
         userUID       TEXT PRIMARY KEY,
         last_generated INTEGER NOT NULL DEFAULT 0
@@ -2644,6 +2646,11 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
     const videoPaused = hasVideoState ? (req.body.videoPaused ? 1 : 0) : null;
     const videoTime = hasVideoState ? Number(req.body.videoTime) || 0 : null;
 
+    // Optional -- mirrors the live search box (including empty string, to clear it), so use
+    // `!== undefined` rather than truthiness.
+    const hasSearchQuery = req.body?.searchQuery !== undefined;
+    const searchQuery = hasSearchQuery ? String(req.body.searchQuery).slice(0, 200) : null;
+
     activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
         if (err) return res.status(500).json({ error: 'Database error' });
         if (!row) return res.status(404).json({ error: 'Session not found' });
@@ -2665,6 +2672,10 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
             if (hasVideoState) {
                 setClauses.push('video_paused = ?', 'video_time = ?');
                 params.push(videoPaused, videoTime);
+            }
+            if (hasSearchQuery) {
+                setClauses.push('search_query = ?');
+                params.push(searchQuery);
             }
             params.push(sessionId);
 
@@ -2706,7 +2717,8 @@ app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
                     clickSelector: session.last_click_selector || null,
                     clickAt: session.last_click_at || 0,
                     videoPaused: session.video_paused == null ? null : !!session.video_paused,
-                    videoTime: session.video_time == null ? null : session.video_time
+                    videoTime: session.video_time == null ? null : session.video_time,
+                    searchQuery: session.search_query
                 });
             });
         }

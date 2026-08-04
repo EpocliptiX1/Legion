@@ -2889,6 +2889,10 @@ function _w2gReportState() {
         body.videoPaused = video.paused;
         body.videoTime = video.currentTime;
     }
+    const searchBox = document.getElementById('mainSearch');
+    if (searchBox && !_w2gApplyingRemoteSearch) {
+        body.searchQuery = searchBox.value;
+    }
 
     fetch(`/watch2gether/session/${sessionId}/state`, {
         method: 'POST',
@@ -2898,6 +2902,16 @@ function _w2gReportState() {
         if (res.status === 403) _w2gFollowing = true; // friend just took control -- stop pushing, start following
     }).catch(() => {});
 }
+
+let _w2gSearchThrottle = null;
+let _w2gApplyingRemoteSearch = false;
+let _w2gLastAppliedSearch = null;
+document.addEventListener('input', (e) => {
+    if (e.target?.id !== 'mainSearch' || _w2gApplyingRemoteSearch) return;
+    if (!localStorage.getItem('w2gHostingSessionId') || _w2gFollowing || !_w2gIsActiveTab()) return;
+    clearTimeout(_w2gSearchThrottle);
+    _w2gSearchThrottle = setTimeout(_w2gReportState, 300);
+});
 
 async function _w2gPollForFollowOrControl() {
     const sessionId = localStorage.getItem('w2gHostingSessionId');
@@ -2928,6 +2942,16 @@ async function _w2gPollForFollowOrControl() {
                 if (Math.abs(video.currentTime - (data.videoTime || 0)) > 1.5) video.currentTime = data.videoTime || 0;
                 if (data.videoPaused && !video.paused) video.pause();
                 if (!data.videoPaused && video.paused) video.play().catch(() => {});
+            }
+            if (typeof data.searchQuery === 'string' && data.searchQuery !== _w2gLastAppliedSearch) {
+                _w2gLastAppliedSearch = data.searchQuery;
+                const searchBox = document.getElementById('mainSearch');
+                if (searchBox) {
+                    _w2gApplyingRemoteSearch = true;
+                    searchBox.value = data.searchQuery;
+                    searchBox.dispatchEvent(new Event('input', { bubbles: true }));
+                    _w2gApplyingRemoteSearch = false;
+                }
             }
         } else if (_w2gFollowing) {
             // Control window expired -- hand back to normal host broadcasting.

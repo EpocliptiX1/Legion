@@ -14,6 +14,8 @@
     let pendingClickSelector = null;
     let lastReplayedClickAt = 0;
     let hostHasReported = false;
+    let lastAppliedSearch = null;
+    let searchThrottle = null;
 
     if (!sessionId) {
         statusText.textContent = 'Missing session — close this tab and try again.';
@@ -76,6 +78,11 @@
                     if (iHaveControl && e.target?.id === 'moviePlayerVideo') reportOwnState();
                 }, { capture: true });
             });
+            doc.addEventListener('input', (e) => {
+                if (!iHaveControl || e.target?.id !== 'mainSearch') return;
+                clearTimeout(searchThrottle);
+                searchThrottle = setTimeout(reportOwnState, 300);
+            });
             iframeListenersBound = true;
         } catch (e) {}
     }
@@ -99,6 +106,8 @@
                 body.videoPaused = video.paused;
                 body.videoTime = video.currentTime;
             }
+            const searchBox = frame.contentDocument.getElementById('mainSearch');
+            if (searchBox) body.searchQuery = searchBox.value;
         } catch (e) {}
 
         try {
@@ -205,6 +214,16 @@
                             if (Math.abs(video.currentTime - (data.videoTime || 0)) > 1.5) video.currentTime = data.videoTime || 0;
                             if (data.videoPaused && !video.paused) video.pause();
                             if (!data.videoPaused && video.paused) video.play().catch(() => {});
+                        }
+                    } catch (e) {}
+                }
+                if (typeof data.searchQuery === 'string' && data.searchQuery !== lastAppliedSearch) {
+                    lastAppliedSearch = data.searchQuery;
+                    try {
+                        const searchBox = frame.contentDocument.getElementById('mainSearch');
+                        if (searchBox) {
+                            searchBox.value = data.searchQuery;
+                            searchBox.dispatchEvent(new Event('input', { bubbles: true }));
                         }
                     } catch (e) {}
                 }
