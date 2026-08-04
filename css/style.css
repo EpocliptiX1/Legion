@@ -1725,6 +1725,10 @@ body {
     color: #999;
     margin-bottom: 8px;
 }
+#watch2getherModal .settings-content {
+    padding: 24px 30px 30px;
+    overflow-y: auto;
+}
 
 .setting-item input[type="text"],
 .setting-item input[type="password"],
