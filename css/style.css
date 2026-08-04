@@ -1705,6 +1705,14 @@ body {
     overflow-y: auto;
 }
 
+.settings-content > h2 {
+    color: #f96d00;
+}
+
+.settings-section h3 {
+    color: #f96d00;
+}
+
 .settings-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
