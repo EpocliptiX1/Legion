@@ -1718,6 +1718,18 @@ body {
     grid-template-columns: 1fr 1fr;
     gap: 30px;
     margin-top: 20px;
+    align-items: stretch;
+}
+
+/* Grid items stretch to the row's tallest height by default -- giving each column a visible
+   card boundary makes that equal height obvious instead of the shorter side just looking cut
+   off against the modal's plain background. */
+.settings-section {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 18px;
+    height: 100%;
 }
 
 .setting-item {
