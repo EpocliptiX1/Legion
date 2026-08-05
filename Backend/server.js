@@ -717,6 +717,32 @@ const animeCacheDb = new sqlite3.Database(ANIME_CACHE_DB_FILE, (err) => {
     else console.log('✅ Connected to anime cache database');
 });
 
+animeCacheDb.serialize(() => {
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS anime_info (
+            anilist_id INTEGER PRIMARY KEY,
+            mal_id INTEGER,
+            tmdb_id INTEGER,
+            title TEXT,
+            score REAL,
+            popularity INTEGER,
+            rank INTEGER,
+            studios TEXT,
+            genres TEXT,
+            season TEXT,
+            season_year INTEGER,
+            episodes INTEGER,
+            duration INTEGER,
+            source TEXT,
+            status TEXT,
+            description TEXT,
+            json TEXT,
+            cached_at INTEGER,
+            last_accessed INTEGER
+        )
+    `);
+});
+
 const MOVIE_CACHE_DB_FILE = path.join(__dirname, 'movieCache.db');
 const movieCacheDb = new sqlite3.Database(MOVIE_CACHE_DB_FILE, (err) => {
     if (err) console.error('Movie cache DB error:', err.message);
@@ -6491,6 +6517,12 @@ app.post("/api/anime/recommendations/cache", (req, res) => {
     );
 });
 
+const logToFile = (msg) => {
+    const timestamp = new Date().toISOString();
+    const logMsg = `[${timestamp}] ${msg}\n`;
+    fs.appendFileSync(path.join(__dirname, 'templogging.txt'), logMsg, 'utf8');
+};
+
 app.post("/api/cache-anime-info", async (req, res) => {
     try {
         const {
@@ -6506,7 +6538,7 @@ app.post("/api/cache-anime-info", async (req, res) => {
             });
         }
 
-        console.log(`[Anime Cache] Caching "${anime.title?.english || anime.title?.romaji}" (${anilistId})`);
+        logToFile(`[Anime Cache] Caching "${anime.title?.english || anime.title?.romaji}" (${anilistId})`);
 
         const now = Date.now();
 
@@ -6521,6 +6553,8 @@ app.post("/api/cache-anime-info", async (req, res) => {
 
         const rank =
             ratingRank?.rank ?? null;
+
+        logToFile(`[Anime Cache] Attempting INSERT for anilistId=${anilistId}, malId=${malId}, tmdbId=${tmdbId}`);
 
         animeCacheDb.run(`
             INSERT OR REPLACE INTO anime_info (
@@ -6567,14 +6601,14 @@ app.post("/api/cache-anime-info", async (req, res) => {
             now
         ], err => {
             if (err) {
-                console.error(err);
+                logToFile(`[Anime Cache] INSERT FAILED for anilistId=${anilistId}: ${err.message}`);
                 return res.status(500).json({
-                    error: "Database error."
+                    error: "Database error.",
+                    details: err.message
                 });
             }
 
-            console.log(
-`===== Anime Cached =====
+            logToFile(`===== Anime Cached =====
 Title: ${anime.title?.english || anime.title?.romaji}
 AniList: ${anilistId}
 MAL: ${malId}
