@@ -7402,10 +7402,10 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
             let localEpisodeNum = reqEpNum - episodesBeforeCurrentCandidate;
             let episode = candidateEpisodes.find(e => Number(e.number) === localEpisodeNum);
 
-            // Handle KAA's 0.5 special numbering: if no match and 0.5 exists, try 0.5 for episode 1
-            if (!episode && localEpisodeNum === 1 && candidateEpisodes.some(e => Number(e.number) === 0.5)) {
-                episode = candidateEpisodes.find(e => Number(e.number) === 0.5);
-                logKaaDebug('[KAA Resolve] adjusted episode: found 0.5 special, using for episode 1');
+            // Handle KAA's special numbering: if requesting ep1 and episode 0 exists (special), use ep0
+            if (!episode && localEpisodeNum === 1 && candidateEpisodes.some(e => Number(e.number) === 0)) {
+                episode = candidateEpisodes.find(e => Number(e.number) === 0);
+                logKaaDebug('[KAA Resolve] adjusted: episode 0 found, using for requested episode 1');
             }
 
             if (episode) {
