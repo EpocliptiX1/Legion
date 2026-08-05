@@ -111,4 +111,10 @@ window.addEventListener('DOMContentLoaded', function() {
         console.log('[vertical-height] Window resized, syncing heights');
         syncAllHeights();
     });
+
+    // TEMP: Sync heights every 1 second to test if matching mechanics work
+    setInterval(() => {
+        syncAllHeights();
+    }, 1000);
+    console.log('[vertical-height] TEMP: Enabled 1-second polling for testing');
 });
