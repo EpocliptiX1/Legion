@@ -809,12 +809,6 @@ document.addEventListener('DOMContentLoaded', function() {
                                                         <button id="btnDownloadDub2" class="audio-btn" style="margin:0;padding:6px 12px;">Download DUB (External Neko)</button>
                                                     </div>
                                                 </div>
-                                                <div id="movieDownloadWrap" style="display:none;margin-top:auto;padding-top:10px;">
-                                                    <div style="font-size:0.85rem;color:#ffb366;margin-bottom:6px;">Movie Download</div>
-                                                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                                                        <button id="btnDownloadMovie" class="audio-btn" style="margin:0;padding:6px 12px;">Download Movie</button>
-                                                    </div>
-                                                </div>
                                             </div>
                                         </div>
                     <div class="player-block-right">
@@ -982,10 +976,8 @@ document.addEventListener('DOMContentLoaded', function() {
         };
 
         const animeDownloadWrap = document.getElementById('animeDownloadWrap');
-        const movieDownloadWrap = document.getElementById('movieDownloadWrap');
         const syncDownloadVisibility = () => {
             if (animeDownloadWrap) animeDownloadWrap.style.display = 'block';
-            if (movieDownloadWrap) movieDownloadWrap.style.display = 'block';
         };
         syncDownloadVisibility();
 
@@ -1967,11 +1959,6 @@ document.addEventListener('DOMContentLoaded', function() {
         // Bindings
         const btnDownloadSub = document.getElementById('btnDownloadSub');
         const btnDownloadDub = document.getElementById('btnDownloadDub');
-        const btnDownloadMovie = document.getElementById('btnDownloadMovie');
-
-        // Movie downloads disabled — all public sources are either malware or obfuscated
-        // Anime downloads work fine via KickAA/Neko
-        // if (btnDownloadMovie) { ... }
 
         const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvNontonGoM']);
         const animeTVBtns = new Set(['srvMegaTV', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvNontonGo']);
