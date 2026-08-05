@@ -7697,9 +7697,16 @@ body.blur-active {
 
 .comment-composer-actions .btn-save {
     width: auto;
-    padding: 8px 22px;
-    font-size: 14px;
+    padding: 8px 18px;
     margin-top: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.comment-composer-actions .btn-save svg {
+    width: 18px;
+    height: 18px;
 }
 
 .comments-list {
