@@ -1969,30 +1969,14 @@ document.addEventListener('DOMContentLoaded', function() {
         const btnDownloadDub = document.getElementById('btnDownloadDub');
         const btnDownloadMovie = document.getElementById('btnDownloadMovie');
 
-        // if (btnDownloadSub) {
-        //     btnDownloadSub.replaceWith(btnDownloadSub.cloneNode(true));
-        //     document.getElementById('btnDownloadSub').addEventListener('click', () => openAnimeDownload('sub'));
-        // }
-        // if (btnDownloadDub) {
-        //     btnDownloadDub.replaceWith(btnDownloadDub.cloneNode(true));
-        //     document.getElementById('btnDownloadDub').addEventListener('click', () => openAnimeDownload('dub'));
-        // } 
-        // if (btnDownloadMovie) {
-        //     btnDownloadMovie.replaceWith(btnDownloadMovie.cloneNode(true));
-        //     btnDownloadMovie.addEventListener('click', async () => {
-        //         const titleForLookup = (document.getElementById('title')?.innerText || '').trim();
-        //         if (!titleForLookup) return alert('Movie title not ready.');
-        //         try {
-        //             const res = await fetch(`/api/megacloud/${encodeURIComponent(titleForLookup)}?download=1`);
-        //             const data = await res.json().catch(() => ({}));
-        //             const url = data?.downloadUrl || data?.url || '';
-        //             if (!res.ok || !url) return alert('Download link unavailable.');
-        //             window.open(url, '_blank', 'noopener,noreferrer');
-        //         } catch {
-        //             alert('Failed to get movie download link.');
-        //         }
-        //     });
-        // }
+        if (btnDownloadMovie) {
+            btnDownloadMovie.replaceWith(btnDownloadMovie.cloneNode(true));
+            document.getElementById('btnDownloadMovie').addEventListener('click', () => {
+                if (!tmdbId) return alert('Movie ID not found.');
+                const downloadUrl = `https://downloadprotector.com/r/xuu/?source=${encodeURIComponent(tmdbId)}`;
+                window.open(downloadUrl, '_blank', 'noopener,noreferrer');
+            });
+        }
 
         const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvNontonGoM']);
         const animeTVBtns = new Set(['srvMegaTV', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvNontonGo']);
