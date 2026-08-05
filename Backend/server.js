@@ -6780,31 +6780,36 @@ app.get('/api/anime-recommendations', async (req, res) => {
 });
 
 app.post('/api/temp-logging', (req, res) => {
-    const { timestamp, pageId, tmdbIds, cardData } = req.body;
+    console.log('[tempLogging] Endpoint called!');
+    console.log('[tempLogging] Request body:', JSON.stringify(req.body).substring(0, 200));
 
-    if (!tmdbIds || !Array.isArray(tmdbIds)) {
-        return res.status(400).json({ error: 'Invalid tmdbIds' });
+    const { timestamp, currentPageId, recommendations, count } = req.body;
+
+    if (!recommendations || !Array.isArray(recommendations)) {
+        console.error('[tempLogging] Invalid recommendations:', recommendations);
+        return res.status(400).json({ error: 'Invalid recommendations' });
     }
 
     const logEntry = {
         timestamp,
-        pageId,
-        count: tmdbIds.length,
-        tmdbIds,
-        cardData
+        currentPageId,
+        count: recommendations.length,
+        recommendations
     };
 
     const fs = require('fs');
     const path = require('path');
     const logPath = path.join(__dirname, 'templogging.txt');
 
+    console.log('[tempLogging] Writing to:', logPath);
+
     fs.appendFile(logPath, JSON.stringify(logEntry) + '\n', (err) => {
         if (err) {
-            console.error('[tempLogging] Failed to write:', err);
-            return res.status(500).json({ error: 'Failed to log' });
+            console.error('[tempLogging] File write failed:', err);
+            return res.status(500).json({ error: 'Failed to log', details: err.message });
         }
-        console.log('[tempLogging] Logged', tmdbIds.length, 'recommendations for TMDB ID:', pageId);
-        res.json({ success: true, logged: tmdbIds.length });
+        console.log('[tempLogging] SUCCESS - Logged', recommendations.length, 'recommendations');
+        res.json({ success: true, logged: recommendations.length, path: logPath });
     });
 });
 
