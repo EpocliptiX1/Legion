@@ -1211,7 +1211,7 @@ body {
 }
 
 .notif-bell-icon.notif-pulsing {
-    animation: notif-bell-pulse 5s infinite ease-in-out;
+    animation: notif-bell-pulse 5s infinite linear;
 }
 
 @keyframes notif-bell-pulse {
