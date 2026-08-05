@@ -134,7 +134,7 @@ function showKeyboardShortcuts() {
     helpModal.className = 'shortcuts-modal-overlay';
     helpModal.innerHTML = `
         <div class="shortcuts-content">
-            <span class="close-shortcuts" onclick="this.parentElement.parentElement.remove()">&times;</span>
+            <span class="close-shortcuts" onclick="this.parentElement.parentElement.remove()"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg></span>
             <h2>⌨️ Keyboard Shortcuts</h2>
             
             <div class="shortcuts-grid">
@@ -305,10 +305,17 @@ shortcutsStyles.textContent = `
     position: absolute;
     top: 20px;
     right: 20px;
-    font-size: 2rem;
     cursor: pointer;
     color: var(--text-muted, #888);
     transition: color 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.close-shortcuts svg {
+    width: 22px;
+    height: 22px;
 }
 
 .close-shortcuts:hover {

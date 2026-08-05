@@ -2399,7 +2399,7 @@ function ensureSignupModal() {
     modal.style.display = 'none';
     modal.innerHTML = `
         <div class="signup-box">
-            <div class="signup-close" onclick="closeSignupModal()">✕</div>
+            <div class="signup-close" onclick="closeSignupModal()"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg></div>
             <h2>Welcome to Legion Space</h2>
             <p class="signup-subtitle">Create your free account to start watching.</p>
             <form onsubmit="handleSignup(event)">
@@ -2510,7 +2510,7 @@ function ensureSignInModal() {
     modal.style.display = 'none';
     modal.innerHTML = `
         <div class="signup-box">
-            <div class="signup-close" onclick="closeSignInModal()">✕</div>
+            <div class="signup-close" onclick="closeSignInModal()"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg></div>
             <h2>Welcome Back</h2>
             <p class="signup-subtitle">Sign in with email/password or login code.</p>
             <form onsubmit="handleSignIn(event)">
@@ -3008,7 +3008,7 @@ function _ensureFloatingFriendsPanel() {
     el.innerHTML = `
         <div class="w2g-float-header" id="w2gFloatHeader">
             <span>Friends</span>
-            <button class="w2g-float-close" onclick="toggleFriendsOverlay(false)">&times;</button>
+            <button class="w2g-float-close" onclick="toggleFriendsOverlay(false)"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg></button>
         </div>
         <div class="w2g-float-body" id="w2gFloatBody">
             <p class="setting-hint">Loading...</p>
@@ -3109,7 +3109,7 @@ function _ensureShortcutsHelper() {
         <div class="w2g-shortcuts-box">
             <div class="w2g-shortcuts-head">
                 <span>Keyboard Shortcuts</span>
-                <button class="w2g-float-close" onclick="toggleShortcutsHelper(false)">&times;</button>
+                <button class="w2g-float-close" onclick="toggleShortcutsHelper(false)"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg></button>
             </div>
             <div class="w2g-shortcuts-list">
                 <div class="w2g-shortcut-row"><span class="w2g-shortcut-keys"><kbd>Shift</kbd> + <kbd>Tab</kbd></span><span>Toggle the Friends panel</span></div>

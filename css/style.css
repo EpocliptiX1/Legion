@@ -1604,10 +1604,6 @@ body {
     border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
-#settingsModal .close-settings:hover {
-    transform: rotate(90deg);
-}
-
 /* Review modal layout fixes */
 #reviewModal .settings-content {
     max-width: 860px;
@@ -1636,10 +1632,6 @@ body {
     background: rgba(0, 0, 0, 0.6);
     border: 1px solid rgba(255, 255, 255, 0.2);
     z-index: 5;
-}
-
-#reviewModal .close-settings:hover {
-    transform: rotate(90deg);
 }
 
 /* Modal Header */
@@ -1679,10 +1671,9 @@ body {
     top: 50%;
     right: 30px;
     transform: translateY(-50%);
-    font-size: 32px;
     cursor: pointer;
     color: #666;
-    transition: all 0.2s ease;
+    transition: color 0.2s ease, background 0.2s ease;
     width: 36px;
     height: 36px;
     display: flex;
@@ -1692,10 +1683,14 @@ body {
     line-height: 1;
 }
 
+.close-settings svg {
+    width: 18px;
+    height: 18px;
+}
+
 .close-settings:hover {
     color: #fff;
     background: rgba(255, 255, 255, 0.1);
-    transform: translateY(-50%) rotate(90deg);
 }
 
 /* Add More Button in Header */
@@ -1853,9 +1848,8 @@ body {
     position: absolute;
     top: 18px;
     right: 20px;
-    font-size: 26px;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    /* background: rgba(255, 255, 255, 0.06); */
+    /* border: 1px solid rgba(255, 255, 255, 0.12); */
     border-radius: 50%;
     width: 32px;
     height: 32px;
@@ -2139,7 +2133,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    max-height: 220px;
+    max-height: 297.328px;
     overflow-y: auto;
 }
 .w2g-friend-row {
@@ -2273,9 +2267,15 @@ body {
     background: none;
     border: none;
     color: #999;
-    font-size: 18px;
     line-height: 1;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.w2g-float-close svg {
+    width: 16px;
+    height: 16px;
 }
 .w2g-float-close:hover {
     color: #fff;
@@ -7094,9 +7094,16 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
     top: -40px;
     right: -10px;
     color: #fff;
-    font-size: 40px;
     cursor: pointer;
     z-index: 10001;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.close-modal svg {
+    width: 28px;
+    height: 28px;
 }
 
 .close-modal:hover {
@@ -7201,9 +7208,16 @@ body.blur-active {
     position: absolute;
     top: 15px;
     right: 20px;
-    font-size: 24px;
     color: #666;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.signup-close svg {
+    width: 20px;
+    height: 20px;
 }
 
 .signup-close:hover {
@@ -8845,7 +8859,11 @@ body.personal-list-page .grid-card {
         word-break: break-word;
         hyphens: auto;
     }
-
+    #watch2getherModal .w2g-content {
+        display: flex;
+        flex-direction: column;
+        max-width: 92%;
+    }
     .action-buttons{
         flex-direction: column;
     }
@@ -9126,11 +9144,7 @@ body.personal-list-page .grid-card {
     }
 }
 @media (max-width: 510px) {
-    #watch2getherModal .w2g-content {
-        display: flex;
-        flex-direction: column;
-        max-width: 92%;
-    }
+
     .actor-block-name{
         font-size: 0.9rem;
     }
