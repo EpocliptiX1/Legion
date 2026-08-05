@@ -2693,6 +2693,13 @@ window.closeSettings = function () {
     if (modal) modal.classList.remove('active');
 };
 
+// Click-outside-to-close for settings and Watch2Gether modals -- delegated on document since
+// these scripts load before the modal markup exists in the DOM.
+document.addEventListener('mousedown', (e) => {
+    if (e.target.id === 'settingsModal') window.closeSettings();
+    if (e.target.id === 'watch2getherModal') window.closeWatch2GetherModal();
+});
+
 // ── WATCH2GETHER (v1: friend-code invite + accept/decline, no sync yet) ────────
 window.openWatch2GetherModal = async function () {
     if (!localStorage.getItem('username')) {
