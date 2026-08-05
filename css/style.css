@@ -1599,9 +1599,9 @@ body {
     top: auto;
     right: auto;
     transform: none;
-    background: rgba(0, 0, 0, 0.5);
+    /* background: rgba(0, 0, 0, 0.5); */
     color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    /* border: 1px solid rgba(255, 255, 255, 0.15); */
 }
 
 /* Review modal layout fixes */
@@ -8537,6 +8537,11 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     height: 20px;
 }
 /* ── RESPONSIVE MEDIA QUERIES (1200px → 620px) ────────────────── */
+@media (max-width: 1262px) {
+    .navbar-page-links{
+        display: none;
+    }
+}
 @media (max-width: 1200px) {
     .movie-header{
         padding: 40px 20px !important;
