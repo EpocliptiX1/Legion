@@ -7641,24 +7641,29 @@ body.blur-active {
     left: 0;
     z-index: 200;
     display: grid;
-    grid-template-columns: repeat(10, 1fr);
-    gap: 2px;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 4px;
     background: #1a1a1a;
     border: 1px solid #333;
     border-radius: 8px;
-    padding: 8px;
+    padding: 10px;
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.6);
-    width: 260px;
+    width: 336px;
 }
 
 .comment-emoji-option {
     background: none;
     border: none;
     cursor: pointer;
-    font-size: 18px;
-    padding: 4px;
-    border-radius: 4px;
+    font-size: 24px;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 6px;
     line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .comment-emoji-option:hover {
