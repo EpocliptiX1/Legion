@@ -3886,54 +3886,6 @@ window.markNotificationRead = function (notificationId) {
     }).then(() => window.fetchNotifications?.()).catch(() => {});
 };
 
-function showNotificationPopup(count) {
-    const bubble = document.createElement('div');
-    bubble.className = 'notif-popup-bubble';
-    bubble.innerHTML = `
-        <div class="notif-popup-svg-wrapper">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" class="notif-popup-icon">
-                <g transform="translate(0, 24) scale(1, -1)">
-                    <path d="M2.25 12.76c0 1.6 1.123 2.994 2.707 3.227 1.068.157 2.148.279 3.238.364.466.037.893.281 1.153.671L12 21l2.652-3.978c.26-.39.687-.634 1.153-.67 1.09-.086 2.17-.208 3.238-.365 1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" />
-                </g>
-            </svg>
-            <span class="notif-popup-badge">+${count}</span>
-        </div>
-    `;
-
-    const trigger = document.querySelector('.notif-trigger');
-    if (trigger) {
-        trigger.appendChild(bubble);
-    } else {
-        document.body.appendChild(bubble);
-    }
-
-    const removePopup = () => {
-        if (bubble.parentElement) bubble.remove();
-    };
-
-    // Dismiss if user opens notifications
-    const dropdown = document.getElementById('notifDropdown');
-    if (dropdown) {
-        const dismissOnOpen = () => {
-            removePopup();
-            dropdown.removeEventListener('click', dismissOnOpen);
-        };
-        dropdown.addEventListener('click', dismissOnOpen);
-    }
-
-    // Auto-dismiss after 20 seconds
-    const timeout = setTimeout(removePopup, 20000);
-
-    // Clear timeout if already removed
-    const observer = new MutationObserver(() => {
-        if (!bubble.parentElement) {
-            clearTimeout(timeout);
-            observer.disconnect();
-        }
-    });
-    observer.observe(bubble.parentElement || document.body, { childList: true });
-}
-
 window.fetchNotifications = async function () {
     const userUID = localStorage.getItem('userUID');
     const token = localStorage.getItem('authToken');
@@ -3943,14 +3895,14 @@ window.fetchNotifications = async function () {
         const res = await fetch(`/notifications?userUID=${encodeURIComponent(userUID)}`);
         if (!res.ok) return;
         const data = await res.json();
-        const prevCount = window.__notifPrevUnread || 0;
         const currCount = data.unread || 0;
-        const newNotifs = currCount - prevCount;
-        window.__notifPrevUnread = currCount;
         window.__notifications = data.notifications || [];
         renderNotificationBadge(currCount);
         renderNotificationList();
-        if (newNotifs > 0) showNotificationPopup(newNotifs);
+        const bellIcon = document.querySelector('.notif-bell-icon');
+        if (bellIcon && currCount > 0) {
+            bellIcon.classList.add('notif-pulsing');
+        }
 
         // Auto-start hosting the instant we learn our invite was accepted -- previously this
         // required the host to notice the notification and click "Start Hosting" themselves,
@@ -3979,6 +3931,10 @@ window.toggleNotificationsMenu = function (event) {
     }
 
     dropdown.classList.toggle('active');
+    const bellIcon = document.querySelector('.notif-bell-icon');
+    if (bellIcon && dropdown.classList.contains('active')) {
+        bellIcon.classList.remove('notif-pulsing');
+    }
 
     if (dropdown.classList.contains('active')) {
         renderNotificationList();
