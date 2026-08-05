@@ -1820,6 +1820,8 @@ body {
     margin: auto;
     display: grid;
     grid-template-columns: 1fr 1fr;
+    grid-template-rows: repeat(3, auto);
+    grid-auto-flow: column;
     gap: 14px;
 }
 #watch2getherModal .w2g-card:nth-child(1),
