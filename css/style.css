@@ -1212,16 +1212,15 @@ body {
 
 .notif-bell-icon.notif-pulsing {
     animation: notif-bell-pulse 5s infinite;
+    transition: none;
 }
 
 @keyframes notif-bell-pulse {
     0%, 100% {
-        color: #fff;
-        filter: drop-shadow(0 0 2px rgba(249, 109, 0, 0));
+        color: #ccc;
     }
     50% {
         color: #f96d00;
-        filter: drop-shadow(0 0 8px rgba(249, 109, 0, 0.8));
     }
 }
 
