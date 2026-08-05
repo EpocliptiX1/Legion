@@ -1212,21 +1212,17 @@ body {
 
 .notif-bell-icon.notif-pulsing {
     animation: notif-bell-pulse 5s infinite ease-in-out;
-    transition: none;
 }
 
 @keyframes notif-bell-pulse {
-    0%, 100% {
+    0% {
         color: #ccc;
-    }
-    25% {
-        color: #e8a640;
     }
     50% {
         color: #f96d00;
     }
-    75% {
-        color: #e8a640;
+    100% {
+        color: #ccc;
     }
 }
 
