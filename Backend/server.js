@@ -7400,7 +7400,14 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
         // Check if requested episode falls in this candidate's range
         if (reqEpNum >= expectedStartEp && reqEpNum <= expectedEndEp) {
             let localEpisodeNum = reqEpNum - episodesBeforeCurrentCandidate;
-            const episode = candidateEpisodes.find(e => Number(e.number) === localEpisodeNum);
+            let episode = candidateEpisodes.find(e => Number(e.number) === localEpisodeNum);
+
+            // If requesting ep1 and ep0 exists, use ep0 instead (frontend skips ep0, so ep1 means the special)
+            // But if ep0 has no sources, don't fall back—fail and let next provider handle it
+            if (localEpisodeNum === 1 && !episode && candidateEpisodes.some(e => Number(e.number) === 0)) {
+                episode = candidateEpisodes.find(e => Number(e.number) === 0);
+                logKaaDebug('[KAA Resolve] frontend ep1 maps to KAA ep0 (special)');
+            }
 
             if (episode) {
                 selectedEntry = entry;
