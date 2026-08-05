@@ -1794,7 +1794,7 @@ body {
 #watch2getherModal .w2g-content {
     background: radial-gradient(circle at 30% 0%, rgba(249, 109, 0, 0.10) 0%, transparent 55%), #141414;
     width: 92%;
-    max-width: 480px;
+    max-width: 700px;
     max-height: 88vh;
     padding: 26px 26px 24px;
     border-radius: 16px;
@@ -1803,9 +1803,13 @@ body {
     box-shadow: 0 25px 60px rgba(0, 0, 0, 0.9);
     overflow-y: auto;
     margin: auto;
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 14px;
+}
+#watch2getherModal .w2g-card:nth-child(4) {
+    grid-column: 2;
+    grid-row: 1 / 4;
 }
 #watch2getherModal .close-settings {
     position: absolute;
@@ -9084,6 +9088,14 @@ body.personal-list-page .grid-card {
     }
 }
 @media (max-width: 510px) {
+    #watch2getherModal .w2g-content {
+        grid-template-columns: 1fr;
+        max-width: 92%;
+    }
+    #watch2getherModal .w2g-card:nth-child(4) {
+        grid-column: 1;
+        grid-row: auto;
+    }
     .actor-block-name{
         font-size: 0.9rem;
     }
