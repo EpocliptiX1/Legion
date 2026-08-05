@@ -3900,7 +3900,7 @@ function showNotificationPopup(count) {
 
     const trigger = document.querySelector('.notif-trigger');
     if (trigger) {
-        trigger.parentElement.insertBefore(bubble, trigger.nextSibling);
+        trigger.appendChild(bubble);
     } else {
         document.body.appendChild(bubble);
     }
