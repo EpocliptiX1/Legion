@@ -36,29 +36,11 @@
         cards.forEach((card, idx) => {
             const titleEl = card.querySelector('h4');
             const title = titleEl?.innerText?.trim() || '';
-            const onclickStr = card.onclick?.toString() || '';
-
-            // Try multiple regex patterns
-            let tmdbId = null;
-            const patterns = [
-                /id=(\d+)/,           // id=12345
-                /id:\s*(\d+)/,        // id: 12345
-                /`id=(\d+)/,          // `id=12345
-                /movieInfo\.html\?id=(\d+)/, // movieInfo.html?id=12345
-            ];
-
-            for (const pattern of patterns) {
-                const match = onclickStr.match(pattern);
-                if (match) {
-                    tmdbId = match[1];
-                    break;
-                }
-            }
+            const tmdbId = card.dataset.tmdbId || null;
 
             console.log('[tempLogging] Card', idx, ':', {
                 title,
-                tmdbId,
-                onclickFirst200: onclickStr.substring(0, 200)
+                tmdbId
             });
 
             // Only count if it has actual title and ID

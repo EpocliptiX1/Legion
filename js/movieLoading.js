@@ -778,6 +778,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                             const poster = item.poster_full_url || '/img/LOGO_Short.png';
                             const card = document.createElement('div');
                             card.className = 'mini-card';
+                            card.dataset.tmdbId = item.ID;
                             card.innerHTML = `
                                 <img src="${poster}" alt="${displayName}">
                                 <div class="mini-info">
