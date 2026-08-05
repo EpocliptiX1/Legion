@@ -2288,6 +2288,12 @@ document.addEventListener('DOMContentLoaded', function() {
                                 seasonSelect.dataset.playSeason = String(first._season_number || 1);
                                 episodeSelect.innerHTML = flatEpisodes.map(ep => `<option value="${ep.episode_number}">Episode ${ep.episode_number}</option>`).join('');
                                 episodeSelect.value = String(first.episode_number || 1);
+                                console.log('[Episodes] First episode loaded:', {
+                                    first_episode_number: first.episode_number,
+                                    first_episode_name: first.name,
+                                    total_episodes: flatEpisodes.length,
+                                    first_5_episodes: flatEpisodes.slice(0, 5).map(e => ({ num: e.episode_number, name: e.name }))
+                                });
 
                                 // LOAD USER WATCH HISTORY FOR WATCHED STATES
                                 window.__watchedStates = [];
