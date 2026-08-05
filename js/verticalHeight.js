@@ -52,7 +52,8 @@ function setVerticalHeight() {
     const margin = parseFloat(style.marginTop) + parseFloat(style.marginBottom);
     const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
     const total = height + margin + padding;
-    // Only set maxHeight, let content flow naturally up to that limit
+    // Set both height and maxHeight to the same value for proper layout
+    vertical.style.height = total + 'px';
     vertical.style.maxHeight = total + 'px';
     console.log('[vertical-height] setVerticalHeight APPLIED:', {
         mainInnerHeight: height,
@@ -85,6 +86,7 @@ function syncAllHeights() {
 window.addEventListener('DOMContentLoaded', function() {
     const vertical = document.querySelector('.vertical-recommend');
     if (vertical) {
+        vertical.style.height = '0px';
         vertical.style.maxHeight = '0px';
 
         if ('MutationObserver' in window) {
