@@ -6999,6 +6999,12 @@ function convertEpisodeNumberForCandidate({
     return null;
 }
 async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', episodeNumber, audioType, frontendTitle, season = 1 }) {
+    // Hardcoded: Re:Zero ep1 always fails KAA, use NEKO instead
+    if ((malId === 31240 || frontendTitle?.includes('Re:ZERO')) && episodeNumber === 1) {
+        logKaaDebug('[KAA Resolve] Re:Zero ep1 hardcoded to fail—using NEKO');
+        throw new Error('Re:Zero episode 1 not available on KAA');
+    }
+
    let titles = [];
     let cacheEntry = null;
 
