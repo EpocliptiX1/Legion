@@ -6999,13 +6999,24 @@ function convertEpisodeNumberForCandidate({
     return null;
 }
 async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', episodeNumber, audioType, frontendTitle, season = 1 }) {
-    // Hardcoded: TMDB 65942 (Re:Zero) ep1 always fails KAA, use NEKO instead
-    const epNum = Number(episodeNumber);
-    if (tmdbId === 65942 && epNum === 1) {
-        const err = new Error('Re:Zero episode 1 not available on KAA—falling back to NEKO');
-        err.status = 404;
-        logKaaDebug('[KAA Resolve] TMDB 65942 ep1 rejected for NEKO fallback');
-        throw err;
+    // TMDB 65942 (Re:Zero): frontend skips ep0, so decrement all episodes
+    let requestedEpisode = Number(episodeNumber);
+    if (tmdbId === 65942) {
+        // ep1 fails (special has no sources), reject for NEKO
+        if (requestedEpisode === 1) {
+            const err = new Error('Re:Zero episode 1 not available on KAA—falling back to NEKO');
+            err.status = 404;
+            logKaaDebug('[KAA Resolve] TMDB 65942 ep1 rejected for NEKO fallback');
+            throw err;
+        }
+        // ep2+ → request ep1+ from KAA (offset by 1)
+        if (requestedEpisode > 1) {
+            requestedEpisode = requestedEpisode - 1;
+            logKaaDebug('[KAA Resolve] TMDB 65942 episode offset', {
+                frontendEpisode: Number(episodeNumber),
+                kaaEpisode: requestedEpisode
+            });
+        }
     }
 
    let titles = [];
@@ -7297,7 +7308,7 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
     let anime = null;
     let info = null;
     let selectedEpisode = null;
-    const reqEpNum = Number(episodeNumber);
+    const reqEpNum = requestedEpisode;
 
     // Fetch top candidates in parallel (not all) to handle split-cour (e.g., S3 + S3P2)
     // Only fetch top 4 to avoid N+1 waterfall: 15 sequential calls → 4 parallel calls
