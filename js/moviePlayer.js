@@ -984,8 +984,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const animeDownloadWrap = document.getElementById('animeDownloadWrap');
         const movieDownloadWrap = document.getElementById('movieDownloadWrap');
         const syncDownloadVisibility = () => {
-            if (animeDownloadWrap) animeDownloadWrap.style.display = isAnime ? 'block' : 'none';
-            if (movieDownloadWrap) movieDownloadWrap.style.display = 'none'; // Disabled: movie sources are all malware/obfuscated
+            if (animeDownloadWrap) animeDownloadWrap.style.display = 'block';
+            if (movieDownloadWrap) movieDownloadWrap.style.display = 'block';
         };
         syncDownloadVisibility();
 
