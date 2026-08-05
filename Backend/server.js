@@ -7477,7 +7477,18 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
     // TMDB proxy already caches complete episode metadata (air_date, still_path, etc)
     // KAA episodes are only titles and cause NULLs when inserted with INSERT OR REPLACE
 
-    const payload = await kickass.fetchEpisodeSources(selectedEpisode.id);
+    let payload = await kickass.fetchEpisodeSources(selectedEpisode.id);
+
+    // Fallback: if ep0 (special) has no sources, try ep1 instead
+    if ((!payload?.sources || payload.sources.length === 0) && selectedEpisode.number === 0) {
+        const episode1 = info?.episodes?.find(e => Number(e.number) === 1);
+        if (episode1) {
+            logKaaDebug('[KAA Resolve] ep0 has no sources, falling back to ep1');
+            payload = await kickass.fetchEpisodeSources(episode1.id);
+            selectedEpisode = episode1;
+        }
+    }
+
     logKaaDebug('[KAA Resolve] episode sources payload', {
         requestedAudioType: audioType,
         animeMatch: anime?.title,
