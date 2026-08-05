@@ -1210,6 +1210,44 @@ body {
     display: none;
 }
 
+.notif-popup-bubble {
+    position: absolute;
+    top: 50px;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(249, 109, 0, 0.95);
+    border-radius: 20px;
+    padding: 10px 14px;
+    z-index: 5000;
+    animation: notif-pulse-in 0.3s ease-out;
+}
+
+.notif-popup-icon {
+    width: 20px;
+    height: 20px;
+    color: #fff;
+}
+
+.notif-popup-count {
+    color: #fff;
+    font-weight: 700;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+@keyframes notif-pulse-in {
+    from {
+        opacity: 0;
+        transform: scale(0.8) translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
 .notif-dropdown {
     position: absolute;
     top: 45px;
