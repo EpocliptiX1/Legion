@@ -52,8 +52,9 @@ function setVerticalHeight() {
     const margin = parseFloat(style.marginTop) + parseFloat(style.marginBottom);
     const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
     const total = height + margin + padding;
-    // Only set maxHeight, let the height: 0 initial state force recalculation
+    // Set maxHeight to calculated value, then height to 100% (constrained by maxHeight)
     vertical.style.maxHeight = total + 'px';
+    vertical.style.height = '100%';
     console.log('[vertical-height] setVerticalHeight APPLIED:', {
         mainInnerHeight: height,
         margin,
