@@ -1212,8 +1212,9 @@ body {
 
 .notif-popup-bubble {
     position: absolute;
-    top: 50px;
-    right: 0;
+    top: 48px;
+    left: 50%;
+    transform: translateX(-50%);
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1222,6 +1223,7 @@ body {
     padding: 10px 14px;
     z-index: 5000;
     animation: notif-pulse-in 0.3s ease-out;
+    white-space: nowrap;
 }
 
 .notif-popup-icon {
