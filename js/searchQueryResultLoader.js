@@ -1,5 +1,10 @@
 // Loads and renders search results for searchQueryResult.html using the new /api/tmdb/search endpoint
 
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     const resultsGrid = document.getElementById('fullResultsGrid');
     const queryDisplay = document.getElementById('queryDisplay');
@@ -26,16 +31,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 card.className = 'grid-card';
                 card.setAttribute('data-type', item.type);
                 card.innerHTML = `
-                    <img src="${item.poster || '/img/default_poster.png'}" alt="${item.title}">
+                    <img src="${item.poster || '/img/default_poster.png'}" alt="${escapeHtml(item.title)}">
                     <div class="card-hover-info">
                         <div class="info-text">
-                            <h4>${item.title}</h4>
-                            <span class="match-score">${item.year || ''} ${(item.type === 'tv' ? 'Series' : 'Movie')}</span>
+                            <h4>${escapeHtml(item.title)}</h4>
+                            <span class="match-score">${escapeHtml(item.year || '')} ${escapeHtml(item.type === 'tv' ? 'Series' : 'Movie')}</span>
                         </div>
                     </div>
                 `;
                 card.onclick = () => {
-                    window.location.href = `movieInfo.html?id=${item.id}&type=${item.type}`;
+                    window.location.href = `movieInfo.html?id=${escapeHtml(item.id)}&type=${escapeHtml(item.type)}`;
                 };
                 resultsGrid.appendChild(card);
             });
