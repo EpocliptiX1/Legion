@@ -85,7 +85,6 @@ function syncAllHeights() {
 window.addEventListener('DOMContentLoaded', function() {
     const vertical = document.querySelector('.vertical-recommend');
     if (vertical) {
-        vertical.style.height = '0px';
         vertical.style.maxHeight = '0px';
 
         if ('MutationObserver' in window) {
