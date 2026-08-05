@@ -295,12 +295,12 @@ async function openPlaylistModal(id) {
         ` : '';
 
         item.innerHTML = `
-            <img src="${poster}" alt="${title}" onclick="window.location.href='movieInfo.html?id=${m.movieId}'" style="cursor:pointer;">
+            <img src="${poster}" alt="${escapeHtml(title)}" onclick="window.location.href='movieInfo.html?id=${escapeHtml(m.movieId)}'" style="cursor:pointer;">
             <div class="playlist-modal-info">
-                <h4 onclick="window.location.href='movieInfo.html?id=${m.movieId}'" style="cursor:pointer;">${title}</h4>
-                <p class="playlist-modal-desc">${desc.length > 150 ? desc.substring(0, 150) + '...' : desc}</p>
+                <h4 onclick="window.location.href='movieInfo.html?id=${escapeHtml(m.movieId)}'" style="cursor:pointer;">${escapeHtml(title)}</h4>
+                <p class="playlist-modal-desc">${escapeHtml(desc.length > 150 ? desc.substring(0, 150) + '...' : desc)}</p>
                 <div class="playlist-modal-meta">
-                    <span class="rating-badge">⭐ ${rating}</span>
+                    <span class="rating-badge">⭐ ${escapeHtml(rating)}</span>
                 </div>
             </div>
             ${removeBtnHTML}
@@ -358,20 +358,20 @@ async function openPlaylistModal(id) {
                 const voters = c.voters || {};
                 const voted = userUID !== 0 && !!voters[String(userUID)];
                 const isOwner = userUID !== 0 && parseInt(c.userUID, 10) === userUID;
-                const deleteBtn = isOwner ? `<button class="comment-delete-btn" data-comment-id="${c.id}" title="Delete">×</button>` : '';
+                const deleteBtn = isOwner ? `<button class="comment-delete-btn" data-comment-id="${escapeHtml(c.id)}" title="Delete">×</button>` : '';
                 return `
                 <div class="comment-item">
                     <div class="comment-header">
-                        <span class="comment-user">${c.username || 'User'}</span>
+                        <span class="comment-user">${escapeHtml(c.username || 'User')}</span>
                         <span class="comment-date">${new Date(c.createdAt).toLocaleString()}</span>
                     </div>
-                    <div class="comment-text">${c.text}</div>
+                    <div class="comment-text">${escapeHtml(c.text)}</div>
                     <div class="comment-meta">
-                        <span class="comment-uid">UID: ${c.userUID ?? '—'}</span>
+                        <span class="comment-uid">UID: ${escapeHtml(c.userUID ?? '—')}</span>
                         ${deleteBtn}
                     </div>
                     <div class="comment-votes">
-                        <button class="comment-vote-btn" data-comment-id="${c.id}" ${userUID === 0 || voted ? 'disabled' : ''} title="${userUID === 0 ? 'Sign in to vote' : (voted ? 'Voted' : 'Upvote')}">▲</button>
+                        <button class="comment-vote-btn" data-comment-id="${escapeHtml(c.id)}" ${userUID === 0 || voted ? 'disabled' : ''} title="${userUID === 0 ? 'Sign in to vote' : (voted ? 'Voted' : 'Upvote')}">▲</button>
                         <span class="comment-vote-count">${c.upvotes || 0}</span>
                     </div>
                 </div>
@@ -489,14 +489,14 @@ async function renderMoviePicker(append = false) {
         const card = document.createElement('div');
         card.className = 'grid-card';
         card.innerHTML = `
-            <img src="${movie.poster_full_url}" onclick="window.location.href='movieInfo.html?id=${movie.ID}'">
+            <img src="${movie.poster_full_url}" onclick="window.location.href='movieInfo.html?id=${escapeHtml(movie.ID)}'">
             <div class="card-hover-info">
                 <div class="hover-btns">
-                    <button class="hover-add btn-add-to-playlist" data-movie-id="${movie.ID}" data-movie-title="${movie['Movie Name'].replace(/"/g, '&quot;')}" data-movie-genre="${(movie.Genre || '').replace(/"/g, '&quot;')}" ${alreadyAdded ? 'disabled' : ''}>${alreadyAdded ? 'Added' : 'Add to List'}</button>
+                    <button class="hover-add btn-add-to-playlist" data-movie-id="${escapeHtml(movie.ID)}" data-movie-title="${escapeHtml(movie['Movie Name']).replace(/"/g, '&quot;')}" data-movie-genre="${escapeHtml((movie.Genre || '')).replace(/"/g, '&quot;')}" ${alreadyAdded ? 'disabled' : ''}>${alreadyAdded ? 'Added' : 'Add to List'}</button>
                 </div>
                 <div class="info-text">
-                    <h4>${movie['Movie Name']}</h4>
-                    <span class="match-score">IMDb ${movie.Rating}</span>
+                    <h4>${escapeHtml(movie['Movie Name'])}</h4>
+                    <span class="match-score">IMDb ${escapeHtml(movie.Rating)}</span>
                 </div>
             </div>
         `;

@@ -1,5 +1,10 @@
 import { FFmpeg } from "/node_modules/@ffmpeg/ffmpeg/dist/esm/index.js";
 
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
 let totalSegments = 0;
 let completedSegments = 0;
 let downloadedBytes = 0;
@@ -48,8 +53,8 @@ function createDownloadTaskCard(meta = {}) {
         <div class="download-dock-card-row">
             <img class="download-dock-thumb" src="${thumb}" alt="">
             <div class="download-dock-meta">
-                <div class="download-dock-title">${title}</div>
-                <div class="download-dock-episode">${episodeLabel}</div>
+                <div class="download-dock-title">${escapeHtml(title)}</div>
+                <div class="download-dock-episode">${escapeHtml(episodeLabel)}</div>
                 <div class="download-dock-status" data-role="status">Queued...</div>
             </div>
             <button type="button" class="download-dock-collapse" data-role="collapse">_</button>
