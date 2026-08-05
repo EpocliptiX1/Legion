@@ -52,14 +52,16 @@ function setVerticalHeight() {
     const margin = parseFloat(style.marginTop) + parseFloat(style.marginBottom);
     const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
     const total = height + margin + padding;
-    vertical.style.height = total + 'px';
-    vertical.style.maxHeight = total + 'px';
+    const capped = Math.min(total, 750);
+    vertical.style.height = capped + 'px';
+    vertical.style.maxHeight = capped + 'px';
     console.log('[vertical-height] setVerticalHeight APPLIED:', {
         mainInnerHeight: height,
         margin,
         padding,
         total,
-        applied: total + 'px',
+        capped,
+        applied: capped + 'px',
         verticalCurrentHeight: vertical.offsetHeight
     });
 }
