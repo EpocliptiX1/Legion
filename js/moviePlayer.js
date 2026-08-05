@@ -985,7 +985,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const movieDownloadWrap = document.getElementById('movieDownloadWrap');
         const syncDownloadVisibility = () => {
             if (animeDownloadWrap) animeDownloadWrap.style.display = isAnime ? 'block' : 'none';
-            if (movieDownloadWrap) movieDownloadWrap.style.display = (!isAnime && !isSeries) ? 'block' : 'none';
+            if (movieDownloadWrap) movieDownloadWrap.style.display = 'none'; // Disabled: movie sources are all malware/obfuscated
         };
         syncDownloadVisibility();
 
@@ -1969,14 +1969,9 @@ document.addEventListener('DOMContentLoaded', function() {
         const btnDownloadDub = document.getElementById('btnDownloadDub');
         const btnDownloadMovie = document.getElementById('btnDownloadMovie');
 
-        if (btnDownloadMovie) {
-            btnDownloadMovie.replaceWith(btnDownloadMovie.cloneNode(true));
-            document.getElementById('btnDownloadMovie').addEventListener('click', () => {
-                if (!tmdbId) return alert('Movie ID not found.');
-                const downloadUrl = `https://downloadprotector.com/r/xuu/?source=${encodeURIComponent(tmdbId)}`;
-                window.open(downloadUrl, '_blank', 'noopener,noreferrer');
-            });
-        }
+        // Movie downloads disabled — all public sources are either malware or obfuscated
+        // Anime downloads work fine via KickAA/Neko
+        // if (btnDownloadMovie) { ... }
 
         const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvNontonGoM']);
         const animeTVBtns = new Set(['srvMegaTV', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvNontonGo']);
