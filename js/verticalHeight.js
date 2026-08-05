@@ -52,9 +52,10 @@ function setVerticalHeight() {
     const margin = parseFloat(style.marginTop) + parseFloat(style.marginBottom);
     const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
     const total = height + margin + padding;
-    const capped = Math.min(total, 900);
-    vertical.style.height = capped + 'px';
-    vertical.style.maxHeight = capped + 'px';
+    // Use 95% of header height (accounts for padding/spacing)
+    const dynamicHeight = Math.round(total * 0.95);
+    vertical.style.height = dynamicHeight + 'px';
+    vertical.style.maxHeight = dynamicHeight + 'px';
     console.log('[vertical-height] setVerticalHeight APPLIED:', {
         mainInnerHeight: height,
         margin,
