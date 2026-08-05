@@ -6,6 +6,11 @@
    - Recently Added
    ========================================= */
 
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
 // Watch history manager
 const WatchHistory = {
     getHistory() {
@@ -274,12 +279,12 @@ const WatchHistoryUI = {
         }
         
         container.innerHTML = items.map(item => `
-            <div class="movie-card" onclick="openMovieById('${item.movieId}')">
-                <img src="${item.poster || '/img/LOGO_Short.png'}" alt="${item.movieTitle}">
+            <div class="movie-card" onclick="openMovieById('${escapeHtml(item.movieId)}')">
+                <img src="${item.poster || '/img/LOGO_Short.png'}" alt="${escapeHtml(item.movieTitle)}">
                 <div class="continue-watching-bar">
                     <div class="continue-watching-progress" style="width: ${item.watchedPercentage}%"></div>
                 </div>
-                <h4>${item.movieTitle}</h4>
+                <h4>${escapeHtml(item.movieTitle)}</h4>
                 <p class="watch-progress">${Math.round(item.watchedPercentage)}% watched</p>
             </div>
         `).join('');
@@ -297,10 +302,10 @@ const WatchHistoryUI = {
         }
         
         container.innerHTML = items.map(item => `
-            <div class="movie-card" onclick="openMovieById('${item.movieId}')">
-                <img src="${item.poster || '/img/LOGO_Short.png'}" alt="${item.movieTitle}">
+            <div class="movie-card" onclick="openMovieById('${escapeHtml(item.movieId)}')">
+                <img src="${item.poster || '/img/LOGO_Short.png'}" alt="${escapeHtml(item.movieTitle)}">
                 ${item.watchedPercentage >= 95 ? '<div class="watched-indicator">✓ Watched</div>' : ''}
-                <h4>${item.movieTitle}</h4>
+                <h4>${escapeHtml(item.movieTitle)}</h4>
                 <p class="year">${new Date(item.lastWatched).toLocaleDateString()}</p>
             </div>
         `).join('');
@@ -323,10 +328,10 @@ const WatchHistoryUI = {
         }
         
         container.innerHTML = movies.map(movie => `
-            <div class="movie-card" onclick="openMovieById('${movie.ID}')">
-                <img src="${movie.Poster || '/img/LOGO_Short.png'}" alt="${movie['Movie Name']}">
-                <h4>${movie['Movie Name']}</h4>
-                <p class="year">${movie.Year || 'N/A'} • ⭐ ${movie.Rating || 'N/A'}</p>
+            <div class="movie-card" onclick="openMovieById('${escapeHtml(movie.ID)}')">
+                <img src="${movie.Poster || '/img/LOGO_Short.png'}" alt="${escapeHtml(movie['Movie Name'])}">
+                <h4>${escapeHtml(movie['Movie Name'])}</h4>
+                <p class="year">${escapeHtml(movie.Year || 'N/A')} • ⭐ ${escapeHtml(movie.Rating || 'N/A')}</p>
             </div>
         `).join('');
     }

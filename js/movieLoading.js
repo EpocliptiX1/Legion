@@ -1,7 +1,13 @@
 /* Handles Movie Details Page population, Recommendations, and Global Trailer Fetching
 */
 console.log('[movieLoading.js] script loaded');
-let currentPlaylist = []; 
+
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
+let currentPlaylist = [];
 let activeTrailerIdx = -1; 
  
 const isAnimeModeEnabled = () => window.__animeMode === true || localStorage.getItem('animeMode') === 'true';
@@ -623,7 +629,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                         ? `background-image: url('https://image.tmdb.org/t/p/w185${actor.profile_path}'); background-size: cover; background-position: center;`
                         : `background-color: #333;`;
 
-                    li.innerHTML = `<div class="actor-block-pic" style="${bgStyle}"></div><span class="actor-block-name">${actor.name}</span>`;
+                    li.innerHTML = `<div class="actor-block-pic" style="${bgStyle}"></div><span class="actor-block-name">${escapeHtml(actor.name)}</span>`;
                     li.addEventListener('click', function() {
                         // Scroll to castPicker section
                         const castPickerSection = document.getElementById('castPicker');
@@ -653,7 +659,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                         uniqueActors.push(item);
                     }
                 }
-                actorSelect.innerHTML = uniqueActors.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+                actorSelect.innerHTML = uniqueActors.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('');
             }
             // Set hidden fields for reviews
             const revMovie = document.getElementById('revMovie');
@@ -1147,7 +1153,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                     const bgStyle = actor.profile_path 
                         ? `background-image: url('https://image.tmdb.org/t/p/w185${actor.profile_path}'); background-size: cover; background-position: center;`
                         : `background-color: #333;`;
-                    li.innerHTML = `<div class="actor-block-pic" style="${bgStyle}"></div><span class="actor-block-name">${actor.name}</span>`;
+                    li.innerHTML = `<div class="actor-block-pic" style="${bgStyle}"></div><span class="actor-block-name">${escapeHtml(actor.name)}</span>`;
                     li.addEventListener('click', function() {
                         const castPickerSection = document.getElementById('castPicker');
                         if (castPickerSection) castPickerSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1467,7 +1473,7 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
 
     if (actorSelect && dropDownCast.length > 0) {
         // 2. Populate the dropdown with ALL 50+ cast members
-        actorSelect.innerHTML = dropDownCast.map(name => `<option value="${name}">${name}</option>`).join('');
+        actorSelect.innerHTML = dropDownCast.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
         
         const fetchActorRow = async (name) => {
             const actTitle = document.getElementById('actorTitle');
