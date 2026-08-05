@@ -1693,6 +1693,62 @@ window.quoteCommentSelection = function (textareaId) {
     el.setSelectionRange(start, start + quoted.length);
 };
 
+const COMMENT_EMOJI_LIST = [
+    '😀', '😂', '🤣', '😊', '😍', '🤩', '😎', '🤔', '😭', '😡',
+    '👍', '👎', '👏', '🙏', '🔥', '💯', '❤️', '💀', '🤡', '😴',
+    '😱', '🥲', '😅', '🙄', '😏', '🤯', '🥳', '😤', '👀', '💩',
+    '🎉', '✨', '⭐', '💔', '😢', '🤝', '👌', '🫡', '😬', '🤨'
+];
+
+let commentEmojiPickerEl = null;
+
+window.toggleCommentEmojiPicker = function (targetTextareaId, anchorBtn) {
+    if (commentEmojiPickerEl) {
+        const wasForSameBtn = commentEmojiPickerEl.dataset.anchor === targetTextareaId;
+        commentEmojiPickerEl.remove();
+        commentEmojiPickerEl = null;
+        if (wasForSameBtn) return;
+    }
+
+    const picker = document.createElement('div');
+    picker.className = 'comment-emoji-picker';
+    picker.dataset.anchor = targetTextareaId;
+    picker.innerHTML = COMMENT_EMOJI_LIST.map(e =>
+        `<button type="button" class="comment-emoji-option" onclick="insertCommentEmoji('${targetTextareaId}', '${e}')">${e}</button>`
+    ).join('');
+
+    anchorBtn.closest('.comment-emoji-wrap').appendChild(picker);
+    commentEmojiPickerEl = picker;
+
+    setTimeout(() => {
+        document.addEventListener('pointerdown', closeCommentEmojiPickerOnOutsideClick, { capture: true });
+    }, 0);
+};
+
+function closeCommentEmojiPickerOnOutsideClick(e) {
+    if (commentEmojiPickerEl && !commentEmojiPickerEl.contains(e.target) && !e.target.closest('.comment-emoji-wrap')) {
+        commentEmojiPickerEl.remove();
+        commentEmojiPickerEl = null;
+        document.removeEventListener('pointerdown', closeCommentEmojiPickerOnOutsideClick, { capture: true });
+    }
+}
+
+window.insertCommentEmoji = function (textareaId, emoji) {
+    const el = document.getElementById(textareaId);
+    if (el) {
+        const start = el.selectionStart;
+        const end = el.selectionEnd;
+        const value = el.value;
+        el.value = value.slice(0, start) + emoji + value.slice(end);
+        el.focus();
+        el.setSelectionRange(start + emoji.length, start + emoji.length);
+    }
+    if (commentEmojiPickerEl) {
+        commentEmojiPickerEl.remove();
+        commentEmojiPickerEl = null;
+    }
+};
+
 function commentAuthHeaders(json) {
     const token = localStorage.getItem('authToken');
     const headers = {};

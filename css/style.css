@@ -7630,6 +7630,41 @@ body.blur-active {
     cursor: default;
 }
 
+.comment-emoji-wrap {
+    position: relative;
+    display: inline-flex;
+}
+
+.comment-emoji-picker {
+    position: absolute;
+    top: 34px;
+    left: 0;
+    z-index: 200;
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    gap: 2px;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 8px;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.6);
+    width: 260px;
+}
+
+.comment-emoji-option {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 18px;
+    padding: 4px;
+    border-radius: 4px;
+    line-height: 1;
+}
+
+.comment-emoji-option:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
 .comment-composer textarea {
     background: #222;
     color: #fff;
@@ -7658,6 +7693,13 @@ body.blur-active {
     justify-content: flex-end;
     gap: 12px;
     margin-top: 10px;
+}
+
+.comment-composer-actions .btn-save {
+    width: auto;
+    padding: 8px 22px;
+    font-size: 14px;
+    margin-top: 0;
 }
 
 .comments-list {
