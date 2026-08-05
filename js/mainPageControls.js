@@ -3995,7 +3995,7 @@ function scheduleNextNotificationPoll() {
     const pendingInviteUntil = Number(localStorage.getItem('w2gPendingInviteUntil')) || 0;
     const isHosting = !!localStorage.getItem('w2gHostingSessionId');
     const fastWindow = isHosting || Date.now() < pendingInviteUntil;
-    const delay = fastWindow ? 2500 : 3 * 60 * 1000;
+    const delay = fastWindow ? 2500 : 10 * 1000; // 10 seconds for live notifications
 
     setTimeout(async () => {
         await window.fetchNotifications();
