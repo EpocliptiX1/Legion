@@ -2287,13 +2287,9 @@ document.addEventListener('DOMContentLoaded', function() {
                                 const first = flatEpisodes[0];
                                 seasonSelect.dataset.playSeason = String(first._season_number || 1);
                                 episodeSelect.innerHTML = flatEpisodes.map(ep => `<option value="${ep.episode_number}">Episode ${ep.episode_number}</option>`).join('');
-                                episodeSelect.value = String(first.episode_number || 1);
-                                console.log('[Episodes] First episode loaded:', {
-                                    first_episode_number: first.episode_number,
-                                    first_episode_name: first.name,
-                                    total_episodes: flatEpisodes.length,
-                                    first_5_episodes: flatEpisodes.slice(0, 5).map(e => ({ num: e.episode_number, name: e.name }))
-                                });
+                                // Skip episode 0 (specials/prelude) and use episode 1 as default
+                                const defaultEp = flatEpisodes.find(ep => ep.episode_number === 1) || first;
+                                episodeSelect.value = String(defaultEp.episode_number || 1);
 
                                 // LOAD USER WATCH HISTORY FOR WATCHED STATES
                                 window.__watchedStates = [];
