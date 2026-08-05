@@ -1820,18 +1820,34 @@ body {
     margin: auto;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: repeat(3, auto);
-    grid-auto-flow: column;
+    grid-template-areas:
+        "hero hero"
+        "status status"
+        "left friends"
+        "left friends"
+        "left friends";
     gap: 14px;
 }
-#watch2getherModal .w2g-card:nth-child(1),
-#watch2getherModal .w2g-card:nth-child(2),
-#watch2getherModal .w2g-card:nth-child(3) {
-    grid-column: 1;
+#watch2getherModal .w2g-hero {
+    grid-area: hero;
 }
-#watch2getherModal .w2g-card:nth-child(4) {
-    grid-column: 2;
-    grid-row: 1 / 4;
+#watch2getherModal #watch2getherHostingStatus {
+    grid-area: status;
+}
+#watch2getherModal .w2g-card {
+    grid-area: left;
+}
+#watch2getherModal .w2g-card:nth-of-type(3) {
+    grid-row: 3;
+}
+#watch2getherModal .w2g-card:nth-of-type(4) {
+    grid-row: 4;
+}
+#watch2getherModal .w2g-card:nth-of-type(5) {
+    grid-row: 5;
+}
+#watch2getherModal .w2g-card-friends {
+    grid-area: friends;
 }
 #watch2getherModal .close-settings {
     position: absolute;
@@ -9111,12 +9127,9 @@ body.personal-list-page .grid-card {
 }
 @media (max-width: 510px) {
     #watch2getherModal .w2g-content {
-        grid-template-columns: 1fr;
+        display: flex;
+        flex-direction: column;
         max-width: 92%;
-    }
-    #watch2getherModal .w2g-card:nth-child(4) {
-        grid-column: 1;
-        grid-row: auto;
     }
     .actor-block-name{
         font-size: 0.9rem;
