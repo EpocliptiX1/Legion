@@ -1,7 +1,13 @@
 function setVerticalRowHeight() {
     const verticalRow = document.querySelector('.vertical-recommend-row');
     const mainInner = document.querySelector('.movie-header-main-inner');
-    if (!verticalRow || !mainInner) return;
+    if (!verticalRow || !mainInner) {
+        console.log('[vertical-height] setVerticalRowHeight: Missing elements', {
+            verticalRow: !!verticalRow,
+            mainInner: !!mainInner
+        });
+        return;
+    }
 
     const isDesktop = window.innerWidth > 1024;
     if (isDesktop) {
@@ -13,17 +19,31 @@ function setVerticalRowHeight() {
         const capped = Math.min(total, 900);
         verticalRow.style.height = capped + 'px';
         verticalRow.style.maxHeight = '900px';
-        console.log('[vertical-height] .vertical-recommend-row height:', capped);
+        console.log('[vertical-height] setVerticalRowHeight APPLIED:', {
+            mainInnerHeight: height,
+            margin,
+            padding,
+            total,
+            capped,
+            applied: capped + 'px'
+        });
     } else {
         verticalRow.style.height = '';
         verticalRow.style.maxHeight = '900px';
+        console.log('[vertical-height] setVerticalRowHeight: Mobile mode');
     }
 }
 
 function setVerticalHeight() {
     const vertical = document.querySelector('.vertical-recommend');
     const mainInner = document.querySelector('.movie-header-main-inner');
-    if (!vertical || !mainInner) return;
+    if (!vertical || !mainInner) {
+        console.log('[vertical-height] setVerticalHeight: Missing elements', {
+            vertical: !!vertical,
+            mainInner: !!mainInner
+        });
+        return;
+    }
 
     const style = window.getComputedStyle(mainInner);
     const height = mainInner.offsetHeight;
@@ -32,7 +52,14 @@ function setVerticalHeight() {
     const total = height + margin + padding;
     vertical.style.height = total + 'px';
     vertical.style.maxHeight = total + 'px';
-    console.log('[vertical-height] .vertical-recommend height:', total);
+    console.log('[vertical-height] setVerticalHeight APPLIED:', {
+        mainInnerHeight: height,
+        margin,
+        padding,
+        total,
+        applied: total + 'px',
+        verticalCurrentHeight: vertical.offsetHeight
+    });
 }
 
 function setDynamicEpisodeSectionHeight() {
