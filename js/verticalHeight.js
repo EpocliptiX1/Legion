@@ -57,6 +57,18 @@ window.addEventListener('DOMContentLoaded', function() {
     if (vertical) {
         vertical.style.height = '0px';
         vertical.style.maxHeight = '0px';
+
+        if ('MutationObserver' in window) {
+            const mutationObserver = new MutationObserver(() => {
+                console.log('[vertical-height] MutationObserver triggered on .vertical-recommend');
+                setTimeout(syncAllHeights, 100);
+            });
+            mutationObserver.observe(vertical, {
+                childList: true,
+                subtree: true,
+                characterData: true
+            });
+        }
     }
 
     syncAllHeights();
