@@ -1,48 +1,50 @@
-// Logs TMDB IDs of recommendations when vertical-recommend-row is populated
+// Logs TMDB IDs and titles of mini-cards in horizontal-scroll-row when they load
 (function() {
-    const maxWaitTime = 30000; // 30 seconds max
-    const checkInterval = 500; // Check every 500ms
+    const maxWaitTime = 30000;
+    const checkInterval = 500;
     let elapsedTime = 0;
 
-    const waitForRecommendations = setInterval(async () => {
+    const waitForCards = setInterval(async () => {
         elapsedTime += checkInterval;
 
-        const verticalRow = document.querySelector('.vertical-recommend-row');
-        if (!verticalRow) {
+        const scrollRow = document.querySelector('.horizontal-scroll-row');
+        if (!scrollRow) {
             if (elapsedTime > maxWaitTime) {
-                console.log('[tempLogging] Timeout: .vertical-recommend-row not found');
-                clearInterval(waitForRecommendations);
+                console.log('[tempLogging] Timeout: .horizontal-scroll-row not found');
+                clearInterval(waitForCards);
             }
             return;
         }
 
-        const cards = verticalRow.querySelectorAll('.mini-card');
+        const cards = scrollRow.querySelectorAll('.mini-card');
         if (!cards || cards.length === 0) {
             if (elapsedTime > maxWaitTime) {
-                console.log('[tempLogging] Timeout: No mini-cards found');
-                clearInterval(waitForRecommendations);
+                console.log('[tempLogging] Timeout: No mini-cards found in scroll row');
+                clearInterval(waitForCards);
             }
             return;
         }
 
-        clearInterval(waitForRecommendations);
+        clearInterval(waitForCards);
 
-        const tmdbIds = [];
-        const cardData = [];
-
-        cards.forEach((card, idx) => {
-            const href = card.onclick?.toString() || '';
-            const match = href.match(/id=(\d+)/);
+        const recommendations = [];
+        cards.forEach((card) => {
+            const title = card.querySelector('h4')?.innerText || 'Unknown';
+            const onclickStr = card.onclick?.toString() || '';
+            const match = onclickStr.match(/id=(\d+)/);
             const tmdbId = match ? match[1] : null;
 
             if (tmdbId) {
-                tmdbIds.push(tmdbId);
-                const title = card.querySelector('h4')?.innerText || 'Unknown';
-                cardData.push({ tmdbId, title, index: idx });
+                recommendations.push({ tmdbId, title });
             }
         });
 
-        console.log('[tempLogging] Found recommendations:', cardData);
+        if (recommendations.length === 0) {
+            console.log('[tempLogging] No valid TMDB IDs found');
+            return;
+        }
+
+        console.log('[tempLogging] Logged recommendations:', recommendations);
 
         try {
             const res = await fetch('/api/temp-logging', {
@@ -50,16 +52,16 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     timestamp: new Date().toISOString(),
-                    pageId: new URLSearchParams(window.location.search).get('id'),
-                    tmdbIds,
-                    cardData
+                    currentPageId: new URLSearchParams(window.location.search).get('id'),
+                    recommendations
                 })
             });
 
             if (res.ok) {
-                console.log('[tempLogging] Logged to server:', tmdbIds.length, 'recommendations');
+                const data = await res.json();
+                console.log('[tempLogging] Saved to file:', data);
             } else {
-                console.warn('[tempLogging] Server returned:', res.status);
+                console.warn('[tempLogging] Server error:', res.status);
             }
         } catch (err) {
             console.error('[tempLogging] Failed to log:', err.message);
