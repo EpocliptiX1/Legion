@@ -358,6 +358,13 @@ window.openMovie = function(movie, type) {
 
     </header>
     </div>
+        <div class="recommend-section" id="castPicker">
+        <div class="row-header-flex">
+            <h2 class="row-title" id="actorTitle">More from the Cast</h2>
+            <select id="actorSelect" class="styled-select"></select>
+        </div>
+        <div class="movie-row" id="actorRow"></div>
+    </div>
     <section class="container reviews-section" id="commentsSection">
         <div class="row-header comments-header">
             <h2 class="row-title comments-title">
@@ -419,13 +426,7 @@ window.openMovie = function(movie, type) {
         <div class="movie-row" id="studioRow"></div>
     </div>
 
-    <div class="recommend-section" id="castPicker">
-        <div class="row-header-flex">
-            <h2 class="row-title" id="actorTitle">More from the Cast</h2>
-            <select id="actorSelect" class="styled-select"></select>
-        </div>
-        <div class="movie-row" id="actorRow"></div>
-    </div>
+
 
     <div class="recommend-section">
         <h2 class="row-title" id="eraTitle">From the Same Era</h2>
@@ -724,8 +725,9 @@ window.openMovie = function(movie, type) {
         </div>
     <script src="/js/movieLoading.js"></script>
     <script src="/js/moviePlayer.js"></script>
-    <script type="module" src="/js/downloadEpisode.js"></script>    
+    <script type="module" src="/js/downloadEpisode.js"></script>
     <script src="/js/animeEnrich.js"></script>
+    <script src="/js/tempLogging.js"></script>
     <script src="/js/customPlaylist.js"></script>
     <script src="/js/apiStatusPanel.js"></script>
     <script src="/js/animePage.js"></script>

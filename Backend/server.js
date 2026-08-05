@@ -6764,7 +6764,7 @@ app.get('/api/anime-recommendations', async (req, res) => {
                 'Movie Name': rec.title?.english || rec.title?.romaji || rec.title?.native || 'Unknown',
                 Rating: rec.averageScore != null ? (rec.averageScore / 10) : 'N/A',
                 Votes: edge?.node?.rating || 0,
-                Year: ''
+                Year: rec.seasonYear || (rec.startDate?.year) || ''
             });
         }
 
@@ -6778,6 +6778,36 @@ app.get('/api/anime-recommendations', async (req, res) => {
         return res.status(500).json({ error: 'Failed to fetch anime recommendations' });
     }
 });
+
+app.post('/api/temp-logging', (req, res) => {
+    const { timestamp, pageId, tmdbIds, cardData } = req.body;
+
+    if (!tmdbIds || !Array.isArray(tmdbIds)) {
+        return res.status(400).json({ error: 'Invalid tmdbIds' });
+    }
+
+    const logEntry = {
+        timestamp,
+        pageId,
+        count: tmdbIds.length,
+        tmdbIds,
+        cardData
+    };
+
+    const fs = require('fs');
+    const path = require('path');
+    const logPath = path.join(__dirname, 'templogging.txt');
+
+    fs.appendFile(logPath, JSON.stringify(logEntry) + '\n', (err) => {
+        if (err) {
+            console.error('[tempLogging] Failed to write:', err);
+            return res.status(500).json({ error: 'Failed to log' });
+        }
+        console.log('[tempLogging] Logged', tmdbIds.length, 'recommendations for TMDB ID:', pageId);
+        res.json({ success: true, logged: tmdbIds.length });
+    });
+});
+
 function getAnimeCacheTitlesByMalId(malId) {
     return new Promise((resolve, reject) => {
         animeCacheDb.get(
