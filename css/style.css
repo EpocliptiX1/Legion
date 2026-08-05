@@ -7519,6 +7519,18 @@ body.blur-active {
     gap: 12px;
 }
 
+.comments-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.comments-title svg {
+    width: 22px;
+    height: 22px;
+    color: #f96d00;
+}
+
 .comments-count {
     color: #888;
     font-weight: 400;
@@ -7533,6 +7545,11 @@ body.blur-active {
     color: #888;
 }
 
+.comments-sort svg {
+    width: 16px;
+    height: 16px;
+}
+
 .comments-sort select {
     background: #161616;
     color: #fff;
@@ -7543,11 +7560,74 @@ body.blur-active {
 }
 
 .comment-composer {
+    display: flex;
+    gap: 12px;
+    margin: 16px 0 24px;
+}
+
+.comment-composer-avatar {
+    flex-shrink: 0;
+}
+
+.comment-composer-body {
+    flex: 1;
     background: #161616;
     border: 1px solid #333;
     border-radius: 12px;
-    padding: 16px;
-    margin: 16px 0 24px;
+    padding: 14px 16px;
+}
+
+.comment-signin-hint {
+    display: block;
+    color: #888;
+    font-size: 0.85rem;
+    margin-bottom: 10px;
+}
+
+.comment-signin-hint a {
+    color: #f96d00;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.comment-signin-hint a:hover {
+    text-decoration: underline;
+}
+
+.comment-fmt-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.comment-fmt-btn {
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+}
+
+.comment-fmt-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
+.comment-fmt-btn:hover:not(:disabled) {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.comment-fmt-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
 }
 
 .comment-composer textarea {
@@ -7557,6 +7637,7 @@ body.blur-active {
     padding: 10px;
     border-radius: 6px;
     width: 100%;
+    min-height: 70px;
     resize: vertical;
     font-family: inherit;
 }
@@ -7566,18 +7647,17 @@ body.blur-active {
     outline: none;
 }
 
+.comment-composer textarea:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .comment-composer-actions {
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 12px;
     margin-top: 10px;
-}
-
-.comment-signin-hint {
-    color: #888;
-    font-size: 0.85rem;
-    margin-right: auto;
 }
 
 .comments-list {
@@ -7660,6 +7740,14 @@ body.blur-active {
 .comment-spoiler.revealed {
     background: transparent;
     color: inherit;
+}
+
+.comment-quote {
+    margin: 6px 0;
+    padding: 4px 12px;
+    border-left: 3px solid #f96d00;
+    color: #aaa;
+    background: rgba(255, 255, 255, 0.03);
 }
 
 .comment-actions {

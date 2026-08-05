@@ -1652,12 +1652,46 @@ function getCommentsMovieId() {
     return (new URLSearchParams(window.location.search)).get('id') || '';
 }
 
-// ||text|| becomes a click-to-reveal spoiler. Escaped first, then the spoiler markup is
-// applied on the already-safe string, so a spoiler can't be used to smuggle raw HTML.
+// Lightweight markdown: **bold**, *italic*, ~~strike~~, "> quoted line", ||spoiler||.
+// Escaped first, then markup is applied on the already-safe string, so none of these can be
+// used to smuggle raw HTML.
 function renderCommentText(text) {
-    const safe = escapeHtml(text);
-    return safe.replace(/\|\|([\s\S]+?)\|\|/g, '<span class="comment-spoiler" onclick="this.classList.toggle(\'revealed\')">$1</span>');
+    let safe = escapeHtml(text);
+    safe = safe.replace(/^&gt; ?(.*)$/gm, '<blockquote class="comment-quote">$1</blockquote>');
+    safe = safe.replace(/\*\*([^\n]+?)\*\*/g, '<strong>$1</strong>');
+    safe = safe.replace(/(?<!\*)\*([^\n*]+?)\*(?!\*)/g, '<em>$1</em>');
+    safe = safe.replace(/~~([^\n]+?)~~/g, '<s>$1</s>');
+    safe = safe.replace(/\|\|([\s\S]+?)\|\|/g, '<span class="comment-spoiler" onclick="this.classList.toggle(\'revealed\')">$1</span>');
+    return safe;
 }
+
+// Wraps the current textarea selection in `marker` on both sides (or inserts marker||marker
+// with the cursor in between if nothing is selected), matching how the formatting toolbar
+// buttons work in the reference UI.
+window.wrapCommentSelection = function (textareaId, marker) {
+    const el = document.getElementById(textareaId);
+    if (!el) return;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const value = el.value;
+    const selected = value.slice(start, end);
+    el.value = value.slice(0, start) + marker + selected + marker + value.slice(end);
+    el.focus();
+    el.setSelectionRange(start + marker.length, start + marker.length + selected.length);
+};
+
+window.quoteCommentSelection = function (textareaId) {
+    const el = document.getElementById(textareaId);
+    if (!el) return;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const value = el.value;
+    const selected = value.slice(start, end) || 'Quote';
+    const quoted = selected.split('\n').map(line => `> ${line}`).join('\n');
+    el.value = value.slice(0, start) + quoted + value.slice(end);
+    el.focus();
+    el.setSelectionRange(start, start + quoted.length);
+};
 
 function commentAuthHeaders(json) {
     const token = localStorage.getItem('authToken');
@@ -1745,13 +1779,21 @@ window.loadComments = async function () {
 document.addEventListener('DOMContentLoaded', () => {
     loadComments();
     const token = localStorage.getItem('authToken');
-    const hint = document.getElementById('commentSigninHint');
-    const btn = document.getElementById('commentSubmitBtn');
-    const input = document.getElementById('commentInputMain');
+    const avatarEl = document.getElementById('commentComposerAvatar');
+    if (avatarEl) {
+        const pfp = localStorage.getItem('userPFP');
+        const username = localStorage.getItem('username') || '?';
+        avatarEl.innerHTML = commentAvatarHTML(pfp, username);
+    }
     if (!token) {
+        const hint = document.getElementById('commentSigninHint');
+        const btn = document.getElementById('commentSubmitBtn');
+        const input = document.getElementById('commentInputMain');
+        const fmtBtns = document.querySelectorAll('.comment-fmt-btn');
         if (hint) hint.style.display = '';
         if (btn) btn.disabled = true;
         if (input) input.disabled = true;
+        fmtBtns.forEach(b => b.disabled = true);
     }
 });
 
@@ -1768,15 +1810,15 @@ window.postTopLevelComment = async function () {
         });
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            showToast(data.error || 'Could not post comment.', true);
+            showLimitToast(data.error || 'Could not post comment.');
             return;
         }
         input.value = '';
-        showToast('Comment posted!');
+        showLimitToast('Comment posted!');
         loadComments();
     } catch (err) {
         console.error(err);
-        showToast('Server connection failed.', true);
+        showLimitToast('Server connection failed.');
     }
 };
 
@@ -1798,19 +1840,19 @@ window.postReplyComment = async function (parentId) {
         });
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            showToast(data.error || 'Could not post reply.', true);
+            showLimitToast(data.error || 'Could not post reply.');
             return;
         }
         input.value = '';
         document.getElementById(`replyComposer-${parentId}`).style.display = 'none';
-        showToast('Reply posted!');
+        showLimitToast('Reply posted!');
         // Force a fresh fetch of replies (bypassing the lazy-load cache) so the new one shows.
         const wrap = document.getElementById(`repliesWrap-${parentId}`);
         if (wrap) wrap.dataset.loaded = '';
         await toggleReplies(parentId, true);
     } catch (err) {
         console.error(err);
-        showToast('Server connection failed.', true);
+        showLimitToast('Server connection failed.');
     }
 };
 
@@ -1843,7 +1885,7 @@ window.toggleReplies = async function (commentId, forceOpen) {
 
 window.voteOnComment = async function (commentId, vote) {
     const token = localStorage.getItem('authToken');
-    if (!token) { showToast('Sign in to vote.', true); return; }
+    if (!token) { showLimitToast('Sign in to vote.'); return; }
 
     try {
         const res = await fetch(`/movie-comments/${commentId}/vote`, {
@@ -1869,13 +1911,13 @@ window.deleteComment = async function (commentId) {
         });
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            showToast(data.error || 'Could not delete comment.', true);
+            showLimitToast(data.error || 'Could not delete comment.');
             return;
         }
         document.getElementById(`comment-${commentId}`)?.remove();
-        showToast('Comment deleted.');
+        showLimitToast('Comment deleted.');
     } catch (err) {
         console.error(err);
-        showToast('Server connection failed.', true);
+        showLimitToast('Server connection failed.');
     }
 };
