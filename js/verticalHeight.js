@@ -1,3 +1,5 @@
+console.log('[vertical-height] Script loaded!');
+
 function setVerticalRowHeight() {
     const verticalRow = document.querySelector('.vertical-recommend-row');
     const mainInner = document.querySelector('.movie-header-main-inner');
