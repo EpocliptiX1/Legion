@@ -6517,12 +6517,6 @@ app.post("/api/anime/recommendations/cache", (req, res) => {
     );
 });
 
-const logToFile = (msg) => {
-    const timestamp = new Date().toISOString();
-    const logMsg = `[${timestamp}] ${msg}\n`;
-    fs.appendFileSync(path.join(__dirname, 'templogging.txt'), logMsg, 'utf8');
-};
-
 app.post("/api/cache-anime-info", async (req, res) => {
     try {
         const {
@@ -6538,7 +6532,7 @@ app.post("/api/cache-anime-info", async (req, res) => {
             });
         }
 
-        logToFile(`[Anime Cache] Caching "${anime.title?.english || anime.title?.romaji}" (${anilistId})`);
+        console.log(`[Anime Cache] Caching "${anime.title?.english || anime.title?.romaji}" (${anilistId})`);
 
         const now = Date.now();
 
@@ -6554,7 +6548,7 @@ app.post("/api/cache-anime-info", async (req, res) => {
         const rank =
             ratingRank?.rank ?? null;
 
-        logToFile(`[Anime Cache] Attempting INSERT for anilistId=${anilistId}, malId=${malId}, tmdbId=${tmdbId}`);
+        console.log(`[Anime Cache] Attempting INSERT for anilistId=${anilistId}, malId=${malId}, tmdbId=${tmdbId}`);
 
         animeCacheDb.run(`
             INSERT OR REPLACE INTO anime_info (
@@ -6601,14 +6595,14 @@ app.post("/api/cache-anime-info", async (req, res) => {
             now
         ], err => {
             if (err) {
-                logToFile(`[Anime Cache] INSERT FAILED for anilistId=${anilistId}: ${err.message}`);
+                console.error(`[Anime Cache] INSERT FAILED for anilistId=${anilistId}:`, err);
                 return res.status(500).json({
                     error: "Database error.",
                     details: err.message
                 });
             }
 
-            logToFile(`===== Anime Cached =====
+            console.log(`===== Anime Cached =====
 Title: ${anime.title?.english || anime.title?.romaji}
 AniList: ${anilistId}
 MAL: ${malId}
@@ -7405,8 +7399,14 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
 
         // Check if requested episode falls in this candidate's range
         if (reqEpNum >= expectedStartEp && reqEpNum <= expectedEndEp) {
-            const localEpisodeNum = reqEpNum - episodesBeforeCurrentCandidate;
-            const episode = candidateEpisodes.find(e => Number(e.number) === localEpisodeNum);
+            let localEpisodeNum = reqEpNum - episodesBeforeCurrentCandidate;
+            let episode = candidateEpisodes.find(e => Number(e.number) === localEpisodeNum);
+
+            // Handle KAA's 0.5 special numbering: if no match and 0.5 exists, try 0.5 for episode 1
+            if (!episode && localEpisodeNum === 1 && candidateEpisodes.some(e => Number(e.number) === 0.5)) {
+                episode = candidateEpisodes.find(e => Number(e.number) === 0.5);
+                logKaaDebug('[KAA Resolve] adjusted episode: found 0.5 special, using for episode 1');
+            }
 
             if (episode) {
                 selectedEntry = entry;
