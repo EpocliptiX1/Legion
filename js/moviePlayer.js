@@ -1,5 +1,10 @@
 
 document.addEventListener('DOMContentLoaded', function() {
+    function escapeHtml(text) {
+        if (!text) return '';
+        return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+    }
+
     const watchNowBtn = document.getElementById('watchNowBtn');
     if (!watchNowBtn) return;
 
@@ -58,7 +63,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 ? (rawType.name || rawType.id || 'skip')
                 : (rawType || item.raw?.type?.name || 'skip');
             const type = String(typeName).replace(/_/g, ' ');
-            return `<span style="display:inline-block;margin-right:10px;">${formatTimestamp(getKaaSegmentStart(item))} ${type}</span>`;
+            return `<span style="display:inline-block;margin-right:10px;">${formatTimestamp(getKaaSegmentStart(item))} ${escapeHtml(type)}</span>`;
         }).join('');
         wrap.innerHTML = `<strong>Skip metadata:</strong> ${items}${currentKaaSkipSegments.length > 4 ? '…' : ''}`;
         wrap.style.display = 'block';
