@@ -1604,36 +1604,6 @@ body {
     /* border: 1px solid rgba(255, 255, 255, 0.15); */
 }
 
-/* Review modal layout fixes */
-#reviewModal .settings-content {
-    max-width: 860px;
-    width: 92%;
-    padding: 26px 30px 30px;
-    overflow-y: auto;
-    background: #0b0b0b;
-}
-
-#reviewModal .review-modal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    margin-bottom: 12px;
-}
-
-#reviewModal .review-modal-header h2 {
-    margin: 0;
-}
-
-#reviewModal .close-settings {
-    position: static;
-    transform: none;
-    color: #fff;
-    background: rgba(0, 0, 0, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    z-index: 5;
-}
-
 /* Modal Header */
 .modal-header {
     display: flex;
@@ -7540,156 +7510,252 @@ body.blur-active {
     border-bottom: none !important;
 }
 
-/* --- REVIEWS --- */
-.reviews-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 25px;
-    padding: 20px 0;
-    margin-top: 20px;
-}
-
-.review-card {
-    background-color: #161616;
-    border: 1px solid #333;
-    border-radius: 12px;
-    padding: 20px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-    transition: transform 0.2s ease, border-color 0.2s ease;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-}
-
-.review-card:hover {
-    transform: translateY(-5px);
-    border-color: #666;
-    box-shadow: 0 8px 15px rgba(0, 0, 0, 0.5);
-}
-
-.review-header {
+/* --- COMMENTS (movie page, threaded) --- */
+.comments-header {
     display: flex;
     align-items: center;
-    gap: 15px;
-    border-bottom: 1px solid #2a2a2a;
-    padding-bottom: 15px;
-    margin-bottom: 15px;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
 }
 
-.review-pfp {
-    border: 2px solid #444;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+.comments-count {
+    color: #888;
+    font-weight: 400;
+    font-size: 0.85em;
+}
+
+.comments-sort {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    color: #888;
+}
+
+.comments-sort select {
+    background: #161616;
+    color: #fff;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+}
+
+.comment-composer {
+    background: #161616;
+    border: 1px solid #333;
+    border-radius: 12px;
+    padding: 16px;
+    margin: 16px 0 24px;
+}
+
+.comment-composer textarea {
+    background: #222;
+    color: #fff;
+    border: 1px solid #444;
+    padding: 10px;
+    border-radius: 6px;
+    width: 100%;
+    resize: vertical;
+    font-family: inherit;
+}
+
+.comment-composer textarea:focus {
+    border-color: #f96d00;
+    outline: none;
+}
+
+.comment-composer-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 10px;
+}
+
+.comment-signin-hint {
+    color: #888;
+    font-size: 0.85rem;
+    margin-right: auto;
+}
+
+.comments-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.comment-row {
+    display: flex;
+    gap: 12px;
+    padding: 16px 0;
+    border-bottom: 1px solid #222;
+}
+
+.comment-row.comment-reply {
+    padding: 12px 0;
+    border-bottom: none;
+}
+
+.comment-avatar {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background-size: cover;
+    background-position: center;
+    background-color: #333;
     flex-shrink: 0;
 }
 
-.review-info h4 {
-    margin: 0;
-    color: #ffffff;
-    font-size: 1.1rem;
-    font-weight: 600;
-}
-
-.review-info .stars {
-    display: block;
-    margin-top: 4px;
-    font-size: 0.9rem;
-    filter: drop-shadow(0 0 2px rgba(255, 215, 0, 0.5));
-}
-
-.review-body p {
-    color: #cccccc;
-    font-size: 0.95rem;
-    line-height: 1.5;
-    font-style: italic;
-    margin: 0 0 15px 0;
-}
-
-.review-body small {
-    display: inline-block;
-    background: #222;
-    padding: 4px 8px;
-    border-radius: 4px;
-    color: #888 !important;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border: 1px solid #333;
-}
-
-.review-body a {
-    color: #f96d00;
-    text-decoration: none;
-    font-weight: 700;
-}
-
-.review-body a:hover {
-    color: #ff7b1a;
-    text-decoration: underline;
-}
-
-.review-card.add-card {
-    border: 2px dashed #444;
-    background-color: rgba(255, 255, 255, 0.05);
+.comment-avatar-fallback {
+    display: flex;
     align-items: center;
     justify-content: center;
+    color: #ccc;
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+
+.comment-body-wrap {
+    flex: 1;
+    min-width: 0;
+}
+
+.comment-meta-line {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+
+.comment-username {
+    color: #f96d00;
+    font-weight: 700;
+    font-size: 0.92rem;
+}
+
+.comment-time {
+    color: #666;
+    font-size: 0.78rem;
+}
+
+.comment-text {
+    color: #ddd;
+    font-size: 0.92rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.comment-spoiler {
+    background: #333;
+    color: transparent;
+    border-radius: 4px;
     cursor: pointer;
-    min-height: 200px;
-    transition: all 0.2s ease;
+    padding: 0 2px;
+    transition: color 0.15s ease, background 0.15s ease;
 }
 
-.review-card.add-card:hover {
-    background-color: rgba(255, 255, 255, 0.1);
-    border-color: #f96d00;
-    transform: translateY(-5px);
+.comment-spoiler.revealed {
+    background: transparent;
+    color: inherit;
 }
 
-.add-card .plus-icon {
-    font-size: 3rem;
+.comment-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.comment-vote-btn {
+    background: none;
+    border: none;
     color: #888;
-    margin-bottom: 10px;
-}
-
-.add-card h3 {
-    color: #fff;
-    font-size: 1.2rem;
-    margin: 0;
-}
-
-#revStars {
-    background: #222;
-    color: white;
-    border: 1px solid #444;
-    padding: 10px;
-    border-radius: 4px;
-    font-size: 14px;
     cursor: pointer;
-    transition: border-color 0.3s ease;
-    outline: none;
-}
-
-#revStars:focus {
-    border-color: #f96d00;
-}
-
-#revStars option {
-    background: #111;
-    color: white;
-    padding: 10px;
-}
-
-#revText {
-    background: #222;
-    color: white;
-    border: 1px solid #444;
-    padding: 10px;
+    font-size: 11px;
+    padding: 2px 6px;
     border-radius: 4px;
-    width: 100%;
-    resize: none;
 }
 
-#revText:focus {
-    border-color: #f96d00;
-    outline: none;
+.comment-vote-btn:hover {
+    color: #f96d00;
+    background: rgba(249, 109, 0, 0.1);
+}
+
+.comment-score {
+    color: #aaa;
+    font-size: 0.8rem;
+    font-weight: 600;
+    min-width: 16px;
+    text-align: center;
+}
+
+.comment-reply-btn,
+.comment-delete-btn-text {
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    margin-left: 4px;
+    border-radius: 4px;
+}
+
+.comment-reply-btn:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.comment-delete-btn-text:hover {
+    color: #ff4444;
+    background: rgba(255, 68, 68, 0.1);
+}
+
+.comment-reply-composer {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.comment-reply-composer textarea {
+    background: #222;
+    color: #fff;
+    border: 1px solid #444;
+    padding: 8px;
+    border-radius: 6px;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 0.88rem;
+}
+
+.comment-reply-composer .btn-small {
+    align-self: flex-end;
+}
+
+.comment-show-replies-btn {
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-top: 10px;
+    padding: 4px 0;
+}
+
+.comment-show-replies-btn:hover {
+    color: #f96d00;
+}
+
+.comment-replies-wrap {
+    margin-top: 4px;
+    padding-left: 16px;
+    border-left: 2px solid #262626;
 }
 
 /* Search Results Page */
@@ -9214,12 +9280,8 @@ body.personal-list-page .grid-card {
         padding-right: 10px;
         padding-bottom: 0;
     }
-    .reviews-grid{
+    .comments-list{
         padding: 0;
-        grid-template-columns:none;
-    }
-    .add-card{
-        width: 97%;
     }
     .movie-plot{
         font-size: 1rem;

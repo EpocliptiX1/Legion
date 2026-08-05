@@ -661,11 +661,6 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                 }
                 actorSelect.innerHTML = uniqueActors.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('');
             }
-            // Set hidden fields for reviews
-            const revMovie = document.getElementById('revMovie');
-            if (revMovie) { revMovie.value = movie.name; revMovie.readOnly = true; }
-            const revMovieId = document.getElementById('revMovieId');
-            if (revMovieId) revMovieId.value = movieId;
             setupTrailerButton(movie.name, movieYear);
 
             // Track this TV/anime page visit with full metadata
@@ -1173,15 +1168,6 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                 actorSelect.innerHTML = movieCast.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
             }
             
-            // PREFILL REVIEW FIELDS (link reviews to this movie)
-            var revMovieEl_movie = document.getElementById('revMovie');
-            if (revMovieEl_movie) {
-                revMovieEl_movie.value = movie['Movie Name'] || '';
-                revMovieEl_movie.readOnly = true;
-            }
-            var revMovieIdEl_movie = document.getElementById('revMovieId');
-            if (revMovieIdEl_movie) revMovieIdEl_movie.value = movieId;
-            
             setupTrailerButton(movie['Movie Name'], movieYear);
 
             // Track this movie page visit in activity.db
@@ -1659,104 +1645,237 @@ document.addEventListener('click', (e) => {
 });
 
 
-async function loadReviews() {
-    const container = document.getElementById('reviewsGrid');
-    if (!container) return;
+// Threaded per-movie comments (replaces the old JSON-file star-rating reviews).
+// One level of nesting: top-level comments, with replies lazy-loaded on click.
 
-    try {
-        const urlParams = new URLSearchParams(window.location.search);
-        const pageMovieId = urlParams.get('id');
-        const fetchUrl = pageMovieId ? `/reviews?movieId=${encodeURIComponent(pageMovieId)}` : '/reviews';
-        const res = await fetch(fetchUrl);
-        let reviews = await res.json();
-
-        // Client-side safeguard: filter out legacy reviews that lack movieId
-        if (pageMovieId) {
-            reviews = reviews.filter(r => r.movieId && String(r.movieId) === String(pageMovieId));
-        }
-
-        const addCardHTML = `
-            <div class="review-card add-card" onclick="openReviewModal()">
-                <div class="plus-icon">+</div>
-                <h3>Write a Review</h3>
-            </div>
-        `;
-
-        const reviewsHTML = reviews.map(r => {
-            const movieLabel = r.movieTitle || r.movie || 'Unknown';
-            const movieHTML = r.movieId ? `<a href="movieInfo.html?id=${r.movieId}">${movieLabel}</a>` : movieLabel;
-            return `
-            <div class="review-card">
-                <div class="review-header">
-                    <div class="review-pfp" 
-                         style="width:40px; height:40px; border-radius:50%; background-color:#444; background-size:cover; background-position:center; ${r.pfp ? `background-image: url('${r.pfp}')` : ''}">
-                    </div>
-                    <div class="review-info">
-                        <h4>${r.user}</h4>
-                        <span class="stars">${"⭐".repeat(r.stars)}</span>
-                    </div>
-                </div>
-                <div class="review-body">
-                    <p>"${r.text}"</p>
-                    <small>Watching: ${movieHTML}</small>
-                </div>
-            </div>
-        `}).join('');
-
-        container.innerHTML = addCardHTML + reviewsHTML;
-        
-    } catch (err) {
-        console.error("Failed to load reviews:", err);
-    }
+function getCommentsMovieId() {
+    return (new URLSearchParams(window.location.search)).get('id') || '';
 }
 
-document.addEventListener('DOMContentLoaded', loadReviews);
-window.openReviewModal = () => document.getElementById('reviewModal').classList.add('active');
-window.closeReviewModal = () => document.getElementById('reviewModal').classList.remove('active');
+// ||text|| becomes a click-to-reveal spoiler. Escaped first, then the spoiler markup is
+// applied on the already-safe string, so a spoiler can't be used to smuggle raw HTML.
+function renderCommentText(text) {
+    const safe = escapeHtml(text);
+    return safe.replace(/\|\|([\s\S]+?)\|\|/g, '<span class="comment-spoiler" onclick="this.classList.toggle(\'revealed\')">$1</span>');
+}
 
-window.submitReview = async function() {
-    const user = localStorage.getItem('username') || "Guest";
-    const userPFP = localStorage.getItem('userPFP');
-    
-    const textVal = document.getElementById('revText').value;
-    const movieTitleVal = document.getElementById('revMovie') ? document.getElementById('revMovie').value : '';
-    const movieIdVal = document.getElementById('revMovieId') ? document.getElementById('revMovieId').value : (new URLSearchParams(window.location.search)).get('id') || null;
+function commentAuthHeaders(json) {
+    const token = localStorage.getItem('authToken');
+    const headers = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    if (json) headers['Content-Type'] = 'application/json';
+    return headers;
+}
 
-    if (!movieTitleVal || !textVal) {
-        showToast("Please fill out all fields!", true);
+function commentAvatarHTML(profilePic, username) {
+    if (profilePic) {
+        return `<div class="comment-avatar" style="background-image:url('${profilePic}')"></div>`;
+    }
+    const letter = (username || '?').trim().charAt(0).toUpperCase();
+    return `<div class="comment-avatar comment-avatar-fallback">${escapeHtml(letter)}</div>`;
+}
+
+function renderOneComment(c, isReply) {
+    const myUID = localStorage.getItem('userUID');
+    const isOwner = myUID && String(c.user_uid) === String(myUID);
+    const timeAgo = typeof notifTimeAgo === 'function' ? notifTimeAgo(c.created_at) : new Date(c.created_at * 1000).toLocaleDateString();
+    const score = (c.upvotes || 0) - (c.downvotes || 0);
+
+    return `
+        <div class="comment-row${isReply ? ' comment-reply' : ''}" id="comment-${c.id}" data-comment-id="${c.id}">
+            ${commentAvatarHTML(c.profile_pic, c.username)}
+            <div class="comment-body-wrap">
+                <div class="comment-meta-line">
+                    <span class="comment-username">${escapeHtml(c.username)}</span>
+                    <span class="comment-time">${timeAgo}</span>
+                </div>
+                <div class="comment-text">${renderCommentText(c.text)}</div>
+                <div class="comment-actions">
+                    <button class="comment-vote-btn" onclick="voteOnComment(${c.id}, 'up')" title="Upvote">▲</button>
+                    <span class="comment-score">${score}</span>
+                    <button class="comment-vote-btn" onclick="voteOnComment(${c.id}, 'down')" title="Downvote">▼</button>
+                    ${!isReply ? `<button class="comment-reply-btn" onclick="toggleReplyComposer(${c.id})">Reply</button>` : ''}
+                    ${isOwner ? `<button class="comment-delete-btn-text" onclick="deleteComment(${c.id})">Delete</button>` : ''}
+                </div>
+                ${!isReply ? `
+                    <div class="comment-reply-composer" id="replyComposer-${c.id}" style="display:none;">
+                        <textarea id="replyInput-${c.id}" placeholder="Write a reply..." rows="2"></textarea>
+                        <button class="btn-small" onclick="postReplyComment(${c.id})">Reply</button>
+                    </div>
+                    ${c.reply_count > 0 ? `
+                        <button class="comment-show-replies-btn" id="showReplies-${c.id}" onclick="toggleReplies(${c.id})">
+                            <i></i><span>${c.reply_count} ${c.reply_count === 1 ? 'reply' : 'replies'}</span>
+                        </button>
+                        <div class="comment-replies-wrap" id="repliesWrap-${c.id}" style="display:none;"></div>
+                    ` : ''}
+                ` : ''}
+            </div>
+        </div>
+    `;
+}
+
+window.loadComments = async function () {
+    const container = document.getElementById('commentsList');
+    const countEl = document.getElementById('commentsCount');
+    if (!container) return;
+
+    const movieId = getCommentsMovieId();
+    if (!movieId) { container.innerHTML = ''; return; }
+
+    const sort = document.getElementById('commentsSortSelect')?.value || 'newest';
+
+    try {
+        const res = await fetch(`/movie-comments?movieId=${encodeURIComponent(movieId)}&sort=${encodeURIComponent(sort)}`);
+        const comments = await res.json();
+
+        if (countEl) countEl.textContent = `(${comments.length})`;
+
+        if (!Array.isArray(comments) || !comments.length) {
+            container.innerHTML = `<p class="setting-hint">No comments yet. Be the first to share your thoughts!</p>`;
+            return;
+        }
+
+        container.innerHTML = comments.map(c => renderOneComment(c, false)).join('');
+    } catch (err) {
+        console.error('Failed to load comments:', err);
+        container.innerHTML = `<p class="setting-hint">Could not load comments.</p>`;
+    }
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadComments();
+    const token = localStorage.getItem('authToken');
+    const hint = document.getElementById('commentSigninHint');
+    const btn = document.getElementById('commentSubmitBtn');
+    const input = document.getElementById('commentInputMain');
+    if (!token) {
+        if (hint) hint.style.display = '';
+        if (btn) btn.disabled = true;
+        if (input) input.disabled = true;
+    }
+});
+
+window.postTopLevelComment = async function () {
+    const input = document.getElementById('commentInputMain');
+    const text = (input?.value || '').trim();
+    if (!text) return;
+
+    try {
+        const res = await fetch('/movie-comments', {
+            method: 'POST',
+            headers: commentAuthHeaders(true),
+            body: JSON.stringify({ movieId: getCommentsMovieId(), text })
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            showToast(data.error || 'Could not post comment.', true);
+            return;
+        }
+        input.value = '';
+        showToast('Comment posted!');
+        loadComments();
+    } catch (err) {
+        console.error(err);
+        showToast('Server connection failed.', true);
+    }
+};
+
+window.toggleReplyComposer = function (commentId) {
+    const el = document.getElementById(`replyComposer-${commentId}`);
+    if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+};
+
+window.postReplyComment = async function (parentId) {
+    const input = document.getElementById(`replyInput-${parentId}`);
+    const text = (input?.value || '').trim();
+    if (!text) return;
+
+    try {
+        const res = await fetch('/movie-comments', {
+            method: 'POST',
+            headers: commentAuthHeaders(true),
+            body: JSON.stringify({ movieId: getCommentsMovieId(), text, parentId })
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            showToast(data.error || 'Could not post reply.', true);
+            return;
+        }
+        input.value = '';
+        document.getElementById(`replyComposer-${parentId}`).style.display = 'none';
+        showToast('Reply posted!');
+        // Force a fresh fetch of replies (bypassing the lazy-load cache) so the new one shows.
+        const wrap = document.getElementById(`repliesWrap-${parentId}`);
+        if (wrap) wrap.dataset.loaded = '';
+        await toggleReplies(parentId, true);
+    } catch (err) {
+        console.error(err);
+        showToast('Server connection failed.', true);
+    }
+};
+
+window.toggleReplies = async function (commentId, forceOpen) {
+    const wrap = document.getElementById(`repliesWrap-${commentId}`);
+    const btn = document.getElementById(`showReplies-${commentId}`);
+    if (!wrap) return;
+
+    if (!forceOpen && wrap.style.display !== 'none' && wrap.dataset.loaded) {
+        wrap.style.display = 'none';
+        if (btn) btn.classList.remove('open');
         return;
     }
 
-    const data = {
-        user: user,
-        pfp: userPFP,
-        movieTitle: movieTitleVal,
-        movieId: movieIdVal,
-        stars: parseInt(document.getElementById('revStars').value, 10) || 0,
-        text: textVal
-    };
+    wrap.style.display = '';
+    if (btn) btn.classList.add('open');
+
+    if (wrap.dataset.loaded) return;
 
     try {
-        const res = await fetch('/reviews', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-
-        if (res.ok) {
-            if (typeof closeReviewModal === 'function') closeReviewModal();
-            else {
-                 document.getElementById('reviewModal').classList.remove('active');
-            }
-
-            showToast("Review Posted Successfully!");
-            
-            if(window.loadReviews) window.loadReviews(); 
-        } else {
-            showToast("Error posting review.", true);
-        }
+        const res = await fetch(`/movie-comments/${commentId}/replies`);
+        const replies = await res.json();
+        wrap.innerHTML = (replies || []).map(r => renderOneComment(r, true)).join('');
+        wrap.dataset.loaded = '1';
     } catch (err) {
         console.error(err);
-        showToast("Server connection failed.", true);
+        wrap.innerHTML = `<p class="setting-hint">Could not load replies.</p>`;
+    }
+};
+
+window.voteOnComment = async function (commentId, vote) {
+    const token = localStorage.getItem('authToken');
+    if (!token) { showToast('Sign in to vote.', true); return; }
+
+    try {
+        const res = await fetch(`/movie-comments/${commentId}/vote`, {
+            method: 'POST',
+            headers: commentAuthHeaders(true),
+            body: JSON.stringify({ vote })
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const row = document.getElementById(`comment-${commentId}`);
+        const scoreEl = row?.querySelector('.comment-score');
+        if (scoreEl) scoreEl.textContent = (data.upvotes || 0) - (data.downvotes || 0);
+    } catch (err) {
+        console.error(err);
+    }
+};
+
+window.deleteComment = async function (commentId) {
+    try {
+        const res = await fetch(`/movie-comments/${commentId}`, {
+            method: 'DELETE',
+            headers: commentAuthHeaders(false)
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            showToast(data.error || 'Could not delete comment.', true);
+            return;
+        }
+        document.getElementById(`comment-${commentId}`)?.remove();
+        showToast('Comment deleted.');
+    } catch (err) {
+        console.error(err);
+        showToast('Server connection failed.', true);
     }
 };

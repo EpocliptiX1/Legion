@@ -2092,6 +2092,33 @@ activityDb.serialize(() => {
         userUID       TEXT PRIMARY KEY,
         last_generated INTEGER NOT NULL DEFAULT 0
     )`);
+    // Per-movie threaded comments, replacing the old JSON-file star-rating reviews.
+    // One level of nesting only (top-level comment -> replies), matching how Anikoto's
+    // comment UI lazy-loads replies on click rather than rendering a full deep tree upfront.
+    // profile_pic is deliberately NOT stored here -- profile pictures are base64 data URIs that
+    // can run into the hundreds of KB, and denormalizing that onto every single comment row
+    // would bloat the table badly. It's batch-looked-up from `users` at read time instead
+    // (same pattern the friends/participants endpoints already use).
+    activityDb.run(`CREATE TABLE IF NOT EXISTS movie_comments (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        movie_id    TEXT    NOT NULL,
+        parent_id   INTEGER,
+        user_uid    TEXT    NOT NULL,
+        username    TEXT    NOT NULL,
+        text        TEXT    NOT NULL,
+        upvotes     INTEGER NOT NULL DEFAULT 0,
+        downvotes   INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        edited_at   INTEGER
+    )`);
+    activityDb.run(`CREATE INDEX IF NOT EXISTS idx_movie_comments_movie ON movie_comments(movie_id, parent_id)`);
+    activityDb.run(`CREATE INDEX IF NOT EXISTS idx_movie_comments_parent ON movie_comments(parent_id)`);
+    activityDb.run(`CREATE TABLE IF NOT EXISTS movie_comment_votes (
+        comment_id INTEGER NOT NULL,
+        user_uid   TEXT    NOT NULL,
+        vote       TEXT    NOT NULL,
+        UNIQUE(comment_id, user_uid)
+    )`);
 
     // Repair legacy/broken watch_history schemas that used strftime(chr(...)) in default value.
     // SQLite doesn't have chr(), so inserts fail at runtime with "unknown function: chr()".
@@ -3589,51 +3616,145 @@ app.post('/movies/get-list', (req, res) => {
 
 // =========================================
 // =========================================
-//  8. REVIEW ROUTES (JSON File)
+//  8. MOVIE COMMENTS (SQLite, threaded, replaces old JSON star-rating reviews)
 // =========================================
 
-app.get('/reviews', (req, res) => {
-    try {
-        console.log('GET /reviews query:', req.query);
-        const data = fs.readFileSync(reviewsPath, 'utf8');
-        let reviews = JSON.parse(data) || [];
-        const movieId = req.query.movieId;
-        console.log('Filtering by movieId:', movieId);
-        if (movieId) {
-            reviews = reviews.filter(r => r.movieId && String(r.movieId) === String(movieId));
+// Batch-attaches each row's profile_pic from `users` (a separate DB file, so no real JOIN is
+// possible) without duplicating the potentially large base64 image onto every row.
+function attachProfilePics(rows, callback) {
+    if (!rows.length) return callback(rows);
+    const uids = [...new Set(rows.map(r => r.user_uid))];
+    const placeholders = uids.map(() => '?').join(',');
+    usersDb.all(`SELECT userUID, profile_pic FROM users WHERE userUID IN (${placeholders})`, uids, (err, picRows) => {
+        const picByUid = {};
+        (picRows || []).forEach(p => { picByUid[String(p.userUID)] = p.profile_pic || null; });
+        rows.forEach(r => { r.profile_pic = picByUid[String(r.user_uid)] || null; });
+        callback(rows);
+    });
+}
+
+// Top-level comments for a movie, with reply counts. Sort: top (score desc), newest, oldest.
+app.get('/movie-comments', (req, res) => {
+    const movieId = String(req.query.movieId || '').trim();
+    if (!movieId) return res.status(400).json({ error: 'movieId required' });
+
+    const sort = req.query.sort === 'oldest' ? 'c.created_at ASC'
+        : req.query.sort === 'top' ? '(c.upvotes - c.downvotes) DESC, c.created_at DESC'
+        : 'c.created_at DESC';
+
+    activityDb.all(
+        `SELECT c.*, (SELECT COUNT(*) FROM movie_comments r WHERE r.parent_id = c.id) AS reply_count
+         FROM movie_comments c
+         WHERE c.movie_id = ? AND c.parent_id IS NULL
+         ORDER BY ${sort}`,
+        [movieId],
+        (err, rows) => {
+            if (err) return res.status(500).json({ error: 'Could not load comments' });
+            attachProfilePics(rows || [], (withPics) => res.json(withPics));
         }
-        res.json(reviews);
-    } catch (err) {
-        console.error("Error reading reviews:", err);
-        res.status(500).json({ error: "Could not read reviews" });
-    }
+    );
 });
 
-// Post a new review
-app.post('/reviews', (req, res) => {
-    try {
-        const data = fs.readFileSync(reviewsPath, 'utf8');
-        const reviews = JSON.parse(data);
+// Replies to a specific comment, lazy-loaded on click (matches how the reference UI works).
+app.get('/movie-comments/:id/replies', (req, res) => {
+    activityDb.all(
+        `SELECT * FROM movie_comments WHERE parent_id = ? ORDER BY created_at ASC`,
+        [req.params.id],
+        (err, rows) => {
+            if (err) return res.status(500).json({ error: 'Could not load replies' });
+            attachProfilePics(rows || [], (withPics) => res.json(withPics));
+        }
+    );
+});
 
-        // Normalize incoming payload and ensure fields
-        const newReview = {
-            user: req.body.user || 'Guest',
-            pfp: req.body.pfp || null,
-            movieTitle: req.body.movieTitle || req.body.movie || null,
-            movieId: req.body.movieId || null,
-            stars: parseInt(req.body.stars, 10) || 0,
-            text: req.body.text || '',
-            createdAt: new Date().toISOString()
-        };
-        
-        reviews.unshift(newReview); 
-        
-        fs.writeFileSync(reviewsPath, JSON.stringify(reviews, null, 2));
-        res.status(200).json({ message: "Review saved!" });
-    } catch (err) {
-        console.error("Error saving review:", err);
-        res.status(500).json({ error: "Could not save review" });
-    }
+app.post('/movie-comments', requireAuth, (req, res) => {
+    const uid = String(req.user.userUID || '');
+    if (!uid || uid === '0') return res.status(403).json({ error: 'Sign in to comment' });
+
+    const movieId = String(req.body.movieId || '').trim();
+    const text = String(req.body.text || '').trim();
+    const parentId = req.body.parentId ? parseInt(req.body.parentId, 10) : null;
+    if (!movieId || !text) return res.status(400).json({ error: 'movieId and text required' });
+    if (text.length > 3000) return res.status(400).json({ error: 'Comment too long' });
+
+    const insertComment = () => {
+        activityDb.run(
+            `INSERT INTO movie_comments (movie_id, parent_id, user_uid, username, text)
+             VALUES (?, ?, ?, ?, ?)`,
+            [movieId, parentId, uid, req.user.username || 'User', text],
+            function (err) {
+                if (err) return res.status(500).json({ error: 'Could not post comment' });
+                activityDb.get(`SELECT * FROM movie_comments WHERE id = ?`, [this.lastID], (getErr, row) => {
+                    if (getErr || !row) return res.status(500).json({ error: 'Comment saved but could not be loaded' });
+                    attachProfilePics([row], (withPics) => res.json(withPics[0]));
+                });
+            }
+        );
+    };
+
+    if (!parentId) return insertComment();
+    activityDb.get(`SELECT id FROM movie_comments WHERE id = ?`, [parentId], (parentErr, parentRow) => {
+        if (parentErr || !parentRow) return res.status(404).json({ error: 'Parent comment not found' });
+        insertComment();
+    });
+});
+
+app.post('/movie-comments/:id/vote', requireAuth, (req, res) => {
+    const uid = String(req.user.userUID || '');
+    if (!uid || uid === '0') return res.status(403).json({ error: 'Sign in to vote' });
+
+    const vote = req.body.vote;
+    if (vote !== 'up' && vote !== 'down') return res.status(400).json({ error: 'Invalid vote' });
+
+    const commentId = req.params.id;
+    activityDb.get(
+        `SELECT vote FROM movie_comment_votes WHERE comment_id = ? AND user_uid = ?`,
+        [commentId, uid],
+        (voteErr, existing) => {
+            if (voteErr) return res.status(500).json({ error: 'Could not vote' });
+            if (existing && existing.vote === vote) return res.status(409).json({ error: 'Already voted' });
+
+            const applyVote = (column, delta) => {
+                activityDb.run(`UPDATE movie_comments SET ${column} = ${column} + ? WHERE id = ?`, [delta, commentId]);
+            };
+
+            const commit = () => {
+                activityDb.run(
+                    `INSERT INTO movie_comment_votes (comment_id, user_uid, vote) VALUES (?, ?, ?)
+                     ON CONFLICT(comment_id, user_uid) DO UPDATE SET vote = excluded.vote`,
+                    [commentId, uid, vote],
+                    (insertErr) => {
+                        if (insertErr) return res.status(500).json({ error: 'Could not vote' });
+                        activityDb.get(`SELECT upvotes, downvotes FROM movie_comments WHERE id = ?`, [commentId], (finalErr, row) => {
+                            if (finalErr || !row) return res.status(500).json({ error: 'Vote saved but could not be loaded' });
+                            res.json(row);
+                        });
+                    }
+                );
+            };
+
+            if (existing) {
+                applyVote(existing.vote === 'up' ? 'upvotes' : 'downvotes', -1);
+            }
+            applyVote(vote === 'up' ? 'upvotes' : 'downvotes', 1);
+            commit();
+        }
+    );
+});
+
+app.delete('/movie-comments/:id', requireAuth, (req, res) => {
+    const uid = String(req.user.userUID || '');
+    if (!uid || uid === '0') return res.status(403).json({ error: 'Sign in to delete comment' });
+
+    activityDb.get(`SELECT user_uid FROM movie_comments WHERE id = ?`, [req.params.id], (err, row) => {
+        if (err || !row) return res.status(404).json({ error: 'Comment not found' });
+        if (String(row.user_uid) !== uid) return res.status(403).json({ error: 'You do not own this comment' });
+
+        activityDb.run(`DELETE FROM movie_comments WHERE id = ? OR parent_id = ?`, [req.params.id, req.params.id], (delErr) => {
+            if (delErr) return res.status(500).json({ error: 'Could not delete comment' });
+            res.json({ message: 'Comment deleted' });
+        });
+    });
 });
 
 // =========================================

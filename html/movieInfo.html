@@ -358,12 +358,28 @@ window.openMovie = function(movie, type) {
 
     </header>
     </div>
-    <section class="container reviews-section">
-        <div class="row-header">
-            <h2 class="row-title">Community Reviews</h2>
-        </div>
-        <div id="reviewsGrid" class="reviews-grid">
+    <section class="container reviews-section" id="commentsSection">
+        <div class="row-header comments-header">
+            <h2 class="row-title">Comments <span id="commentsCount" class="comments-count"></span></h2>
+            <div class="comments-sort">
+                <label for="commentsSortSelect">Sort by</label>
+                <select id="commentsSortSelect" onchange="loadComments()">
+                    <option value="newest">Newest</option>
+                    <option value="top">Top</option>
+                    <option value="oldest">Oldest</option>
+                </select>
             </div>
+        </div>
+        <div class="comment-composer" id="commentComposer">
+            <textarea id="commentInputMain" placeholder="Share your thoughts... (use ||text|| to hide spoilers)" rows="3"></textarea>
+            <div class="comment-composer-actions">
+                <span class="comment-signin-hint" id="commentSigninHint" style="display:none;">Sign in to comment.</span>
+                <button class="btn-save" id="commentSubmitBtn" onclick="postTopLevelComment()">Post Comment</button>
+            </div>
+        </div>
+        <div id="commentsList" class="comments-list">
+            <p class="setting-hint">Loading comments...</p>
+        </div>
     </section>
     <!-- genre recommendations moved above as vertical slider -->
     <div class="recommend-section">
@@ -389,35 +405,6 @@ window.openMovie = function(movie, type) {
         <div class="movie-row" id="timelineRow"></div>
     </div>
        
-
-    <div id="reviewModal" class="settings-modal-overlay">
-        <div class="settings-content">
-            <div class="review-modal-header">
-                <h2>Write a Review</h2>
-                <span class="close-settings" onclick="closeReviewModal()"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg></span>
-            </div>
-            <div class="setting-item">
-                <label>Movie Title</label>
-                <input type="text" id="revMovie" placeholder="Which movie?" readonly>
-                <input type="hidden" id="revMovieId" value="">
-            </div>
-            <div class="setting-item">
-                <label>Rating</label>
-                <select id="revStars">
-                    <option value="5">⭐⭐⭐⭐⭐ (Excellent)</option>
-                    <option value="4">⭐⭐⭐⭐ (Great)</option>
-                    <option value="3">⭐⭐⭐ (Average)</option>
-                    <option value="2">⭐⭐ (Bad)</option>
-                    <option value="1">⭐ (Terrible)</option>
-                </select>
-            </div>
-            <div class="setting-item">
-                <label>Your Thoughts</label>
-                <textarea id="revText" placeholder="Write something..." rows="4" style="background:#222; color:white; border:1px solid #444; border-radius:4px; padding:10px;"></textarea>
-            </div>
-            <button class="btn-save" onclick="submitReview()">Post Review</button>
-        </div>
-    </div>  
 
     <div id="addToPlaylistModal" class="settings-modal-overlay">
         <div class="settings-content playlist-picker-modal">
