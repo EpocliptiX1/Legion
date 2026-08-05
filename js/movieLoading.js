@@ -1657,6 +1657,7 @@ function getCommentsMovieId() {
 // used to smuggle raw HTML.
 function renderCommentText(text) {
     let safe = escapeHtml(text);
+    safe = safe.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="comment-image" style="max-width: 100%; max-height: 300px; border-radius: 6px; margin: 8px 0;" />');
     safe = safe.replace(/^&gt; ?(.*)$/gm, '<blockquote class="comment-quote">$1</blockquote>');
     safe = safe.replace(/\*\*([^\n]+?)\*\*/g, '<strong>$1</strong>');
     safe = safe.replace(/(?<!\*)\*([^\n*]+?)\*(?!\*)/g, '<em>$1</em>');
@@ -1749,6 +1750,178 @@ window.insertCommentEmoji = function (textareaId, emoji) {
     }
 };
 
+const KIPLY_API_KEY = 'tqWRM3nomvLhbMbDVedLJR4GT8uNtmP7Cb5UIQZKwyILU7nwKyS166SKRXgNOqga';
+let commentGifPickerEl = null;
+let gifPickerSearchTimer = null;
+
+window.toggleCommentGifPicker = async function (textareaId, anchorBtn) {
+    console.log('[toggleCommentGifPicker] called', {textareaId, anchorBtn});
+    try {
+        if (commentGifPickerEl) {
+            const wasForSameBtn = commentGifPickerEl.dataset.anchor === textareaId;
+            commentGifPickerEl.remove();
+            commentGifPickerEl = null;
+            if (wasForSameBtn) return;
+        }
+
+        const picker = document.createElement('div');
+        picker.className = 'comment-gif-picker';
+        picker.dataset.anchor = textareaId;
+        picker.innerHTML = `
+            <div class="gif-picker-content">
+                <input type="text" class="gif-search-input" placeholder="Search GIFs..." />
+                <div class="gif-grid" id="gifGrid"></div>
+            </div>
+        `;
+
+        const wrap = anchorBtn.closest('.comment-gif-wrap');
+        console.log('[toggleCommentGifPicker] wrap:', wrap);
+        if (!wrap) {
+            console.error('[toggleCommentGifPicker] Could not find .comment-gif-wrap');
+            return;
+        }
+        wrap.appendChild(picker);
+        commentGifPickerEl = picker;
+
+        const searchInput = picker.querySelector('.gif-search-input');
+        const gifGrid = picker.querySelector('#gifGrid');
+
+        let currentQuery = '';
+        let currentOffset = 0;
+        let isLoading = false;
+        let hasMore = true;
+
+        const attachGifClickHandlers = () => {
+            gifGrid.querySelectorAll('.gif-option:not([data-listener-attached])').forEach(btn => {
+                btn.dataset.listenerAttached = 'true';
+                btn.addEventListener('click', () => {
+                    const gifUrl = btn.dataset.gifUrl;
+                    console.log('[gifGrid click] Inserting GIF:', gifUrl);
+                    window.insertCommentGif(textareaId, gifUrl);
+                });
+            });
+        };
+
+        const loadGifs = async (query = '', append = false) => {
+            if (isLoading || !hasMore) return;
+            isLoading = true;
+
+            console.log('[loadGifs] Loading with query:', query, 'offset:', currentOffset, 'append:', append);
+            try {
+                if (!append) {
+                    gifGrid.innerHTML = '<p style="padding: 10px; text-align: center; color: #999;">Loading GIFs...</p>';
+                }
+
+                const endpoint = query
+                    ? `https://api.klipy.com/v2/search?q=${encodeURIComponent(query)}&limit=50&offset=${currentOffset}&key=${KIPLY_API_KEY}`
+                    : `https://api.klipy.com/v2/featured?limit=50&offset=${currentOffset}&key=${KIPLY_API_KEY}`;
+
+                console.log('[loadGifs] Fetching from:', endpoint);
+                const res = await fetch(endpoint);
+                console.log('[loadGifs] Response status:', res.status);
+                if (!res.ok) {
+                    if (!append) gifGrid.innerHTML = '<p style="padding: 10px; text-align: center; color: #999;">Failed to load GIFs (status ' + res.status + ')</p>';
+                    isLoading = false;
+                    return;
+                }
+
+                const data = await res.json();
+                console.log('[loadGifs] Response data:', data);
+                const gifs = data.results || data.gifs || [];
+
+                if (!gifs.length) {
+                    if (!append) gifGrid.innerHTML = '<p style="padding: 10px; text-align: center; color: #999;">No GIFs found</p>';
+                    hasMore = false;
+                    isLoading = false;
+                    return;
+                }
+
+                const gifsHtml = gifs.map((gif, idx) => {
+                    const url = gif.media?.[0]?.gif || gif.gif || gif.url || gif.media_url || '';
+                    const thumbUrl = gif.media?.[0]?.preview || gif.preview || gif.preview_url || url || '';
+                    const safeUrl = url.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+                    return `<button type="button" class="gif-option" data-gif-url="${safeUrl}" title="Insert GIF" style="cursor: pointer;"><img src="${thumbUrl}" alt="GIF" style="width: 100%; height: 100%; object-fit: cover;" /></button>`;
+                }).join('');
+
+                if (append) {
+                    gifGrid.innerHTML += gifsHtml;
+                } else {
+                    gifGrid.innerHTML = gifsHtml;
+                }
+
+                currentOffset += gifs.length;
+                if (gifs.length < 50) hasMore = false;
+
+                attachGifClickHandlers();
+            } catch (err) {
+                console.error('[loadGifs] Error:', err);
+                if (!append) gifGrid.innerHTML = '<p style="padding: 10px; text-align: center; color: #999;">Error loading GIFs: ' + err.message + '</p>';
+            } finally {
+                isLoading = false;
+            }
+        };
+
+        // Scroll listener for infinite loading
+        gifGrid.addEventListener('scroll', () => {
+            const { scrollTop, scrollHeight, clientHeight } = gifGrid;
+            if (scrollHeight - scrollTop - clientHeight < 100 && hasMore && !isLoading) {
+                loadGifs(currentQuery, true);
+            }
+        });
+
+        searchInput.addEventListener('input', (e) => {
+            clearTimeout(gifPickerSearchTimer);
+            gifPickerSearchTimer = setTimeout(() => {
+                currentQuery = e.target.value;
+                currentOffset = 0;
+                hasMore = true;
+                loadGifs(currentQuery);
+            }, 300);
+        });
+
+        await loadGifs();
+
+        setTimeout(() => {
+            document.addEventListener('pointerdown', closeCommentGifPickerOnOutsideClick, { capture: true });
+        }, 0);
+    } catch (err) {
+        console.error('[toggleCommentGifPicker] Outer error:', err);
+    }
+};
+
+function closeCommentGifPickerOnOutsideClick(e) {
+    if (commentGifPickerEl && !commentGifPickerEl.contains(e.target) && !e.target.closest('.comment-gif-wrap')) {
+        commentGifPickerEl.remove();
+        commentGifPickerEl = null;
+        document.removeEventListener('pointerdown', closeCommentGifPickerOnOutsideClick, { capture: true });
+    }
+}
+
+window.insertCommentGif = function (textareaId, gifUrl) {
+    const el = document.getElementById(textareaId);
+    if (el && gifUrl) {
+        const gifCount = (el.value.match(/!\[GIF\]/g) || []).length;
+        const isReply = textareaId.startsWith('replyInput-');
+        const maxGifs = isReply ? 1 : 2;
+        if (gifCount >= maxGifs) {
+            const msg = isReply ? 'You can only add 1 GIF per reply' : 'You can only add up to 2 GIFs per comment';
+            showLimitToast(msg);
+            return;
+        }
+        const start = el.selectionStart;
+        const end = el.selectionEnd;
+        const value = el.value;
+        const gifMarkdown = `\n![GIF](${gifUrl})`;
+        el.value = value.slice(0, start) + gifMarkdown + value.slice(end);
+        el.focus();
+        el.setSelectionRange(start + gifMarkdown.length, start + gifMarkdown.length);
+    }
+    if (commentGifPickerEl) {
+        commentGifPickerEl.remove();
+        commentGifPickerEl = null;
+    }
+};
+
 function commentAuthHeaders(json) {
     const token = localStorage.getItem('authToken');
     const headers = {};
@@ -1789,6 +1962,20 @@ function renderOneComment(c, isReply) {
                 </div>
                 ${!isReply ? `
                     <div class="comment-reply-composer" id="replyComposer-${c.id}" style="display:none;">
+                        <div class="comment-fmt-bar" style="gap: 4px; margin-bottom: 6px;">
+                            <div class="comment-emoji-wrap">
+                                <button type="button" class="comment-fmt-btn" onclick="toggleCommentEmojiPicker('replyInput-${c.id}', this)" title="Emoji">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.182 15.182a4.5 4.5 0 0 1-6.364 0M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM9.75 9.75c0 .414-.168.75-.375.75S9 10.164 9 9.75 9.168 9 9.375 9s.375.336.375.75Zm-.375 0h.008v.015h-.008V9.75Zm5.625 0c0 .414-.168.75-.375.75s-.375-.336-.375-.75.168-.75.375-.75.375.336.375.75Zm-.375 0h.008v.015h-.008V9.75Z" /></svg>
+                                </button>
+                            </div>
+                            <div class="comment-gif-wrap">
+                                <button type="button" class="comment-fmt-btn" onclick="toggleCommentGifPicker('replyInput-${c.id}', this)" title="GIF">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+                                      <path stroke-linecap="round" stroke-linejoin="round" d="M12.75 8.25v7.5m6-7.5h-3V12m0 0v3.75m0-3.75H18M9.75 9.348c-1.03-1.464-2.698-1.464-3.728 0-1.03 1.465-1.03 3.84 0 5.304 1.03 1.464 2.699 1.464 3.728 0V12h-1.5M4.5 19.5h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
                         <textarea id="replyInput-${c.id}" placeholder="Write a reply..." rows="2"></textarea>
                         <button class="btn-small" onclick="postReplyComment(${c.id})">Reply</button>
                     </div>
@@ -1902,10 +2089,7 @@ window.postReplyComment = async function (parentId) {
         input.value = '';
         document.getElementById(`replyComposer-${parentId}`).style.display = 'none';
         showLimitToast('Reply posted!');
-        // Force a fresh fetch of replies (bypassing the lazy-load cache) so the new one shows.
-        const wrap = document.getElementById(`repliesWrap-${parentId}`);
-        if (wrap) wrap.dataset.loaded = '';
-        await toggleReplies(parentId, true);
+        loadComments();
     } catch (err) {
         console.error(err);
         showLimitToast('Server connection failed.');
