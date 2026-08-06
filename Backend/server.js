@@ -8273,9 +8273,15 @@ app.get('/api/anime-comments', async (req, res) => {
     });
 
     try {
-        if (rawTitle) {
+        // Always try to join an already-running import for this key, even if THIS request
+        // has no title to start a fresh one with - otherwise a title-less request (e.g. a
+        // second near-simultaneous call, or one that raced #title's population on the page)
+        // skips waiting entirely and reads back whatever's committed mid-scrape, which can be
+        // just a handful of rows instead of the full comment set.
+        if (rawTitle || animeCommentJobsInFlight.has(`${malId}:${episodeNumber}`)) {
             try {
                 await runAnimeCommentImportJob(malId, episodeNumber, async () => {
+                    if (!rawTitle) return null; // joining an existing job - resolveIds won't run for it anyway
                     const resolved = await resolveAnikotoEpisode(rawTitle, season, episodeNumber);
                     if (!resolved.anikotoEpisodeId || !resolved.internalAnimeId) return null;
                     return { anikotoAnimeId: resolved.internalAnimeId, anikotoEpisodeId: resolved.anikotoEpisodeId };
