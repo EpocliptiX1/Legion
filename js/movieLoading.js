@@ -507,6 +507,8 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
 
             if (cacheSaveRes.ok) {
                 console.log("[Anime] Anime cached successfully.");
+            } else {
+                console.error("[Anime] Failed to cache anime:", cacheSaveRes.status, cacheSaveRes.statusText);
             }
         }
 
@@ -1993,6 +1995,14 @@ function renderOneComment(c, isReply) {
 }
 
 window.loadComments = async function () {
+    // Anime pages show imported Anikoto comments instead once malId/episode are known
+    // (set by moviePlayer.js after Watch Now is clicked - see anime-episode-changed listener
+    // below). Until then, fall through to the normal movie/TV comment system so the section
+    // isn't empty while the page loads.
+    if (window.__currentAnimeMalId) {
+        return loadAnimeComments();
+    }
+
     const container = document.getElementById('commentsList');
     const countEl = document.getElementById('commentsCount');
     if (!container) return;
@@ -2019,6 +2029,85 @@ window.loadComments = async function () {
         container.innerHTML = `<p class="setting-hint">Could not load comments.</p>`;
     }
 };
+
+// --- Anime comments (imported from Anikoto, read-only - no accounts/write-back there) ---
+
+function renderAnikotoComment(c, isReply) {
+    return `
+        <div class="comment-row${isReply ? ' comment-reply' : ''}" data-comment-id="anikoto-${c.id}">
+            ${commentAvatarHTML(c.avatar_url, c.username)}
+            <div class="comment-body-wrap">
+                <div class="comment-meta-line">
+                    <span class="comment-username">${escapeHtml(c.username || 'Anikoto User')}</span>
+                    <span class="comment-time">${escapeHtml(c.posted_time_text || '')}</span>
+                </div>
+                <div class="comment-text">${escapeHtml(c.text || '')}</div>
+                ${!isReply && Array.isArray(c.replies) && c.replies.length ? `
+                    <div class="comment-replies-wrap">
+                        ${c.replies.map(r => renderAnikotoComment(r, true)).join('')}
+                    </div>
+                ` : ''}
+            </div>
+        </div>
+    `;
+}
+
+function setAnimeCommentsReadOnlyNotice() {
+    const composer = document.getElementById('commentComposer');
+    if (composer && !composer.dataset.anikotoNoticeApplied) {
+        composer.dataset.anikotoNoticeApplied = '1';
+        composer.style.display = 'none';
+        const notice = document.createElement('p');
+        notice.className = 'setting-hint';
+        notice.id = 'anikotoCommentsNotice';
+        notice.textContent = 'These comments are imported from Anikoto for this episode.';
+        composer.insertAdjacentElement('afterend', notice);
+    }
+}
+
+window.loadAnimeComments = async function () {
+    const container = document.getElementById('commentsList');
+    const countEl = document.getElementById('commentsCount');
+    if (!container) return;
+
+    const malId = window.__currentAnimeMalId;
+    const episode = window.__currentAnimeEpisode || 1;
+    const season = window.__currentAnimeSeason || 1;
+    const title = document.getElementById('title')?.textContent.trim() || '';
+    if (!malId) return;
+
+    setAnimeCommentsReadOnlyNotice();
+    container.innerHTML = `<p class="setting-hint">Loading comments...</p>`;
+
+    try {
+        const params = new URLSearchParams({ malId, episode, season, title });
+        const res = await fetch(`/api/anime-comments?${params.toString()}`);
+        const data = await res.json();
+        const comments = Array.isArray(data.comments) ? data.comments : [];
+
+        if (countEl) {
+            const total = comments.reduce((sum, c) => sum + 1 + (c.replies?.length || 0), 0);
+            countEl.textContent = `(${total})`;
+        }
+
+        if (!comments.length) {
+            container.innerHTML = `<p class="setting-hint">No comments found for this episode on Anikoto.</p>`;
+            return;
+        }
+
+        container.innerHTML = comments.map(c => renderAnikotoComment(c, false)).join('');
+    } catch (err) {
+        console.error('Failed to load anime comments:', err);
+        container.innerHTML = `<p class="setting-hint">Could not load comments.</p>`;
+    }
+};
+
+window.addEventListener('anime-episode-changed', (e) => {
+    window.__currentAnimeMalId = e.detail.malId;
+    window.__currentAnimeSeason = e.detail.season;
+    window.__currentAnimeEpisode = e.detail.episode;
+    loadAnimeComments();
+});
 
 document.addEventListener('DOMContentLoaded', () => {
     loadComments();

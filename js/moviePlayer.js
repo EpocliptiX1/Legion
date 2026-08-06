@@ -810,6 +810,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                                     </div>
                                                 </div>
                                             </div>
+                                            <div class="player-section-divider player-section-divider-Downloads "></div>
                                         </div>
                     <div class="player-block-right">
                         <div class="player-label" id="labelMovies" style="cursor:pointer;" title="Click for info">Movies: <span style="font-size:0.75rem;opacity:0.5;font-weight:400;">ⓘ</span></div>
@@ -1717,6 +1718,17 @@ document.addEventListener('DOMContentLoaded', function() {
             // Update the UI Episode number box
             const epNumDisplay = document.getElementById('episodeNum');
             if(epNumDisplay) epNumDisplay.textContent = e;
+
+            // Let other scripts (comments section) know which anime episode is now active.
+            // malId only resolves after Watch Now is clicked, same as the rest of playback.
+            if (isAnime && malId) {
+                window.__currentAnimeMalId = malId;
+                window.__currentAnimeSeason = parseInt(s, 10) || 1;
+                window.__currentAnimeEpisode = parseInt(e, 10) || 1;
+                window.dispatchEvent(new CustomEvent('anime-episode-changed', {
+                    detail: { malId, season: window.__currentAnimeSeason, episode: window.__currentAnimeEpisode, title: animeTitle || document.getElementById('title')?.textContent.trim() || '' }
+                }));
+            }
 
             // Update Active Highlight on the visual List
             document.querySelectorAll('.episode-list-item').forEach(item => {

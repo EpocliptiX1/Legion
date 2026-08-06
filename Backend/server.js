@@ -8016,30 +8016,234 @@ async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, ani
 }
 
 // Fetch stored comments for display, threaded (top-level + nested replies).
-app.get('/api/anime-comments/:malId/:episodeNumber', (req, res) => {
-    const malId = Number(req.params.malId);
-    const episodeNumber = Number(req.params.episodeNumber);
+// Resolves an Anikoto anime+episode from a title/season/episode - shared by the Neko
+// stream pipeline and the comments endpoint below, so comment scraping doesn't depend
+// on the user ever picking the Neko video server (KAA is the default anime server).
+// Extracted verbatim from what was previously inlined in /api/anime-neko-log.
+async function resolveAnikotoEpisode(rawTitle, season, episode) {
+    // For Season 0 (Specials), ignore season filtering and search by title only
+    // Anikoto usually doesn't have separate season 0 pages; specials are on main series page
+    const searchSeason = season === 0 ? null : season;
+    logNekoDebug(`[Neko] 0. Resolving watch URL for: "${rawTitle}"${searchSeason ? ` (Season ${searchSeason})` : ' (Specials - ignoring season filter)'}`);
+    const animeWatchUrl = await resolveExactWatchUrl(rawTitle, searchSeason);
+    logNekoDebug('[Neko] Resolved watch URL', animeWatchUrl);
 
-    animeCacheDb.all(
-        `SELECT * FROM anime_comments WHERE mal_id = ? AND episode_number = ? ORDER BY created_at ASC`,
-        [malId, episodeNumber],
-        (err, rows) => {
-            if (err) return res.status(500).json({ error: err.message });
+    const baseHeaders = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': animeWatchUrl
+    };
 
-            const byId = new Map();
-            const topLevel = [];
-            (rows || []).forEach(r => { r.replies = []; byId.set(r.id, r); });
-            (rows || []).forEach(r => {
-                if (r.parent_id && byId.has(r.parent_id)) {
-                    byId.get(r.parent_id).replies.push(r);
-                } else if (!r.parent_id) {
-                    topLevel.push(r);
+    const pageRes = await axios.get(animeWatchUrl, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
+    const $page = cheerio.load(pageRes.data);
+
+    const internalAnimeId = $page('#watch-main').attr('data-id');
+    if (!internalAnimeId) {
+        throw new Error('Could not dynamically extract internal data-id from the resolved watch page.');
+    }
+    logNekoDebug('[Neko] Watch page internal id', { animeWatchUrl, internalAnimeId });
+
+    // 1. Fetch episode list using resolved internal ID
+    logNekoDebug(`[Neko] 1. Fetching episode list for ID: ${internalAnimeId}`);
+    const epListRes = await axios.get(`https://anikoto.cz/ajax/episode/list/${internalAnimeId}?vrf=`, { headers: baseHeaders });
+
+    const htmlData = epListRes.data.result || epListRes.data.html || epListRes.data;
+    const $ep = cheerio.load(htmlData);
+    const episodeCandidates = [];
+    $ep('a[data-ids]').each((i, el) => {
+        episodeCandidates.push({
+            index: i + 1,
+            num: $ep(el).attr('data-num'),
+            slug: $ep(el).attr('data-slug'),
+            ids: $ep(el).attr('data-ids'),
+            mal: $ep(el).attr('data-mal'),
+            timestamp: $ep(el).attr('data-timestamp'),
+            text: $ep(el).text().trim()
+        });
+    });
+    logNekoDebug(`[Neko] Found ${episodeCandidates.length} total episodes in current part`);
+    // Try to find the requested episode
+    let epElement = $ep(`a[data-num="${episode}"]`).first();
+    if (!epElement.length) epElement = $ep(`a[data-slug="${episode}"]`).first();
+
+    // If episode not found and number is higher than available, search for Part 2
+    const maxEpisodeNum = Math.max(...episodeCandidates.map(e => parseInt(e.num, 10) || 0));
+    const requestedEpNum = parseInt(episode, 10) || 0;
+
+    if (!epElement.length && requestedEpNum > maxEpisodeNum && requestedEpNum > 16) {
+        logNekoDebug(`[Neko] Episode ${episode} not in current part (max: ${maxEpisodeNum}), searching for continuation parts...`);
+
+        try {
+            // Track cumulative episodes as we search through parts
+            let cumulativeEpisodes = maxEpisodeNum; // Start with Part 1's episodes
+
+            // Search for Part 2, Part 3, Part 4, etc. until we find the right one
+            for (let partNum = 2; partNum <= 5; partNum++) {
+                // Anikoto stores multi-part seasons as "{title}: Final Season, Part {number}"
+                const searchQuery = `${rawTitle} Final Season Part ${partNum}`;
+                logNekoDebug(`[Neko] Searching: "${searchQuery}"`);
+
+                const partSearchRes = await axios.get(
+                    `https://anikoto.cz/ajax/anime/search?keyword=${encodeURIComponent(searchQuery)}`,
+                    { headers: baseHeaders }
+                );
+
+                const partHtmlData = partSearchRes.data?.result?.html || partSearchRes.data?.html || '';
+                const $partSearch = cheerio.load(partHtmlData);
+                const partResults = [];
+
+                $partSearch('a[href*="/watch/"]').each((i, el) => {
+                    const href = $partSearch(el).attr('href') || '';
+                    const text = $partSearch(el).text().trim();
+                    if (!href.includes('/ep-') && (text.includes(`Part ${partNum}`) || text.includes(`part-${partNum}`))) {
+                        partResults.push({ url: href.startsWith('http') ? href : `https://anikoto.cz${href}`, text });
+                    }
+                });
+
+                logNekoDebug(`[Neko] Found ${partResults.length} Part ${partNum} results`);
+
+                // Try each result for this part
+                for (const partResult of partResults) {
+                    try {
+                        logNekoDebug(`[Neko] Trying: ${partResult.text}`);
+                        const pageRes = await axios.get(partResult.url, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
+                        const $page = cheerio.load(pageRes.data);
+                        const partId = $page('#watch-main').attr('data-id');
+
+                        if (partId) {
+                            logNekoDebug(`[Neko] Part ${partNum} found! Internal ID: ${partId}`);
+                            const epListRes = await axios.get(`https://anikoto.cz/ajax/episode/list/${partId}?vrf=`, { headers: baseHeaders });
+                            const htmlData = epListRes.data.result || epListRes.data.html || epListRes.data;
+                            const $epList = cheerio.load(htmlData);
+
+                            // Check how many episodes this part has
+                            const partEpisodes = [];
+                            $epList('a[data-num]').each((i, el) => {
+                                partEpisodes.push(parseInt($epList(el).attr('data-num'), 10) || 0);
+                            });
+                            const maxPartEpNum = Math.max(...partEpisodes, 0);
+
+                            // Local episode = requested - episodes from all PREVIOUS parts
+                            const localEpisodeNum = requestedEpNum - cumulativeEpisodes;
+                            logNekoDebug(`[Neko] Part ${partNum}: cumulative=${cumulativeEpisodes}, max=${maxPartEpNum}. Looking for global ep${requestedEpNum} = local ep${localEpisodeNum}`);
+
+                            epElement = $epList(`a[data-num="${localEpisodeNum}"]`).first();
+                            if (!epElement.length) epElement = $epList(`a[data-slug="${localEpisodeNum}"]`).first();
+
+                            if (epElement.length) {
+                                logNekoDebug(`[Neko] ✓ Found episode ${requestedEpNum} (local ep${localEpisodeNum}) in Part ${partNum}!`);
+                                break;
+                            } else {
+                                // Update cumulative for next part
+                                cumulativeEpisodes += maxPartEpNum;
+                                logNekoDebug(`[Neko] Episode not found in Part ${partNum}. Updated cumulative to ${cumulativeEpisodes}`);
+                            }
+                        }
+                    } catch (err) {
+                        logNekoDebug(`[Neko] Part ${partNum} attempt failed: ${err.message}`);
+                    }
                 }
-            });
 
-            res.json({ comments: topLevel });
+                if (epElement.length) break;
+            }
+        } catch (err) {
+            logNekoDebug(`[Neko] Part search error: ${err.message}`);
         }
-    );
+    }
+
+    // Last resort: use first episode
+    if (!epElement.length) {
+        if (season === 0) {
+            logNekoDebug(`[Neko] ⚠️  Special episode ${episode} not found on any part`);
+            const err = new Error(`Special episode ${episode} is not available on NekoStream. These episodes may not be hosted on streaming platforms yet.`);
+            err.status = 404;
+            throw err;
+        }
+        epElement = $ep('a[data-ids]').first();
+    }
+
+    const serverToken = epElement.attr('data-ids');
+    const mal = epElement.attr('data-mal');
+    const epSlug = epElement.attr('data-slug');
+    const timestamp = epElement.attr('data-timestamp');
+    const anikotoEpisodeId = epElement.attr('data-id');
+    logNekoDebug('[Neko] Selected episode', {
+        requestedEpisode: episode,
+        requestedSeason: season,
+        selected: {
+            num: epElement.attr('data-num'),
+            slug: epSlug,
+            episodeId: anikotoEpisodeId,
+            text: epElement.text().trim()
+        }
+    });
+
+    if (!serverToken) throw new Error(`Could not find data-ids token for episode ${episode}.`);
+
+    return { internalAnimeId, anikotoEpisodeId, serverToken, mal, epSlug, timestamp, animeWatchUrl, baseHeaders };
+}
+
+// Self-sufficient comments endpoint - doesn't depend on the user ever hitting the Neko
+// stream pipeline (KAA is the default anime server, so that pipeline may never run).
+// Cache-aside: serves from anime_comments if fresh, otherwise resolves the Anikoto
+// anime+episode itself and scrapes before responding.
+app.get('/api/anime-comments', async (req, res) => {
+    const malId = Number(req.query.malId);
+    const episodeNumber = Number(req.query.episode || req.query.episodeNumber);
+    const rawTitle = req.query.title || '';
+    const season = parseInt(req.query.season || '1', 10);
+
+    if (!malId || !episodeNumber) {
+        return res.status(400).json({ error: 'malId and episode are required' });
+    }
+
+    const respondFromCache = () => new Promise((resolve, reject) => {
+        animeCacheDb.all(
+            `SELECT * FROM anime_comments WHERE mal_id = ? AND episode_number = ? ORDER BY created_at ASC`,
+            [malId, episodeNumber],
+            (err, rows) => {
+                if (err) return reject(err);
+                const byId = new Map();
+                const topLevel = [];
+                (rows || []).forEach(r => { r.replies = []; byId.set(r.id, r); });
+                (rows || []).forEach(r => {
+                    if (r.parent_id && byId.has(r.parent_id)) {
+                        byId.get(r.parent_id).replies.push(r);
+                    } else if (!r.parent_id) {
+                        topLevel.push(r);
+                    }
+                });
+                resolve(topLevel);
+            }
+        );
+    });
+
+    try {
+        const alreadyFresh = await hasRecentAnimeComments(malId, episodeNumber);
+
+        if (!alreadyFresh && rawTitle) {
+            try {
+                const resolved = await resolveAnikotoEpisode(rawTitle, season, episodeNumber);
+                if (resolved.mal && resolved.anikotoEpisodeId && resolved.internalAnimeId) {
+                    await importAnikotoComments({
+                        malId: Number(resolved.mal) || malId,
+                        episodeNumber,
+                        anikotoAnimeId: resolved.internalAnimeId,
+                        anikotoEpisodeId: resolved.anikotoEpisodeId
+                    });
+                }
+            } catch (resolveErr) {
+                logTempDebug('[OnDemand] Resolve/import failed, serving whatever is cached', {
+                    malId, episodeNumber, error: resolveErr.message || String(resolveErr)
+                });
+            }
+        }
+
+        const comments = await respondFromCache();
+        res.json({ comments });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.get('/api/anime-neko-log', async (req, res) => {
@@ -8070,169 +8274,14 @@ app.get('/api/anime-neko-log', async (req, res) => {
                 });
             }
         }
-        // 0. Search Anikoto and resolve watch URL
-        // For Season 0 (Specials), ignore season filtering and search by title only
-        // Anikoto usually doesn't have separate season 0 pages; specials are on main series page
-        const searchSeason = season === 0 ? null : season;
-        logNekoDebug(`[Neko] 0. Resolving watch URL for: "${rawTitle}"${searchSeason ? ` (Season ${searchSeason})` : ' (Specials - ignoring season filter)'}`);
-        const animeWatchUrl = await resolveExactWatchUrl(rawTitle, searchSeason);
-        logNekoDebug('[Neko] Resolved watch URL', animeWatchUrl);
 
-        const baseHeaders = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': animeWatchUrl
-        };
-
-        const pageRes = await axios.get(animeWatchUrl, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
-        const $page = cheerio.load(pageRes.data);
-
-        const internalAnimeId = $page('#watch-main').attr('data-id');
-        if (!internalAnimeId) {
-            throw new Error('Could not dynamically extract internal data-id from the resolved watch page.');
-        }
-        logNekoDebug('[Neko] Watch page internal id', { animeWatchUrl, internalAnimeId });
-
-        // 1. Fetch episode list using resolved internal ID
-        logNekoDebug(`[Neko] 1. Fetching episode list for ID: ${internalAnimeId}`);
-        const epListRes = await axios.get(`https://anikoto.cz/ajax/episode/list/${internalAnimeId}?vrf=`, { headers: baseHeaders });
-
-        const htmlData = epListRes.data.result || epListRes.data.html || epListRes.data;
-        const $ep = cheerio.load(htmlData);
-        const episodeCandidates = [];
-        $ep('a[data-ids]').each((i, el) => {
-            episodeCandidates.push({
-                index: i + 1,
-                num: $ep(el).attr('data-num'),
-                slug: $ep(el).attr('data-slug'),
-                ids: $ep(el).attr('data-ids'),
-                mal: $ep(el).attr('data-mal'),
-                timestamp: $ep(el).attr('data-timestamp'),
-                text: $ep(el).text().trim()
-            });
-        });
-        logNekoDebug(`[Neko] Found ${episodeCandidates.length} total episodes in current part`);
-        // Try to find the requested episode
-        let epElement = $ep(`a[data-num="${episode}"]`).first();
-        if (!epElement.length) epElement = $ep(`a[data-slug="${episode}"]`).first();
-
-        // If episode not found and number is higher than available, search for Part 2
-        const maxEpisodeNum = Math.max(...episodeCandidates.map(e => parseInt(e.num, 10) || 0));
-        const requestedEpNum = parseInt(episode, 10) || 0;
-
-        if (!epElement.length && requestedEpNum > maxEpisodeNum && requestedEpNum > 16) {
-            logNekoDebug(`[Neko] Episode ${episode} not in current part (max: ${maxEpisodeNum}), searching for continuation parts...`);
-
-            try {
-                // Track cumulative episodes as we search through parts
-                let cumulativeEpisodes = maxEpisodeNum; // Start with Part 1's episodes
-
-                // Search for Part 2, Part 3, Part 4, etc. until we find the right one
-                for (let partNum = 2; partNum <= 5; partNum++) {
-                    // Anikoto stores multi-part seasons as "{title}: Final Season, Part {number}"
-                    const searchQuery = `${rawTitle} Final Season Part ${partNum}`;
-                    logNekoDebug(`[Neko] Searching: "${searchQuery}"`);
-
-                    const partSearchRes = await axios.get(
-                        `https://anikoto.cz/ajax/anime/search?keyword=${encodeURIComponent(searchQuery)}`,
-                        { headers: baseHeaders }
-                    );
-
-                    const partHtmlData = partSearchRes.data?.result?.html || partSearchRes.data?.html || '';
-                    const $partSearch = cheerio.load(partHtmlData);
-                    const partResults = [];
-
-                    $partSearch('a[href*="/watch/"]').each((i, el) => {
-                        const href = $partSearch(el).attr('href') || '';
-                        const text = $partSearch(el).text().trim();
-                        if (!href.includes('/ep-') && (text.includes(`Part ${partNum}`) || text.includes(`part-${partNum}`))) {
-                            partResults.push({ url: href.startsWith('http') ? href : `https://anikoto.cz${href}`, text });
-                        }
-                    });
-
-                    logNekoDebug(`[Neko] Found ${partResults.length} Part ${partNum} results`);
-
-                    // Try each result for this part
-                    for (const partResult of partResults) {
-                        try {
-                            logNekoDebug(`[Neko] Trying: ${partResult.text}`);
-                            const pageRes = await axios.get(partResult.url, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
-                            const $page = cheerio.load(pageRes.data);
-                            const partId = $page('#watch-main').attr('data-id');
-
-                            if (partId) {
-                                logNekoDebug(`[Neko] Part ${partNum} found! Internal ID: ${partId}`);
-                                const epListRes = await axios.get(`https://anikoto.cz/ajax/episode/list/${partId}?vrf=`, { headers: baseHeaders });
-                                const htmlData = epListRes.data.result || epListRes.data.html || epListRes.data;
-                                const $epList = cheerio.load(htmlData);
-
-                                // Check how many episodes this part has
-                                const partEpisodes = [];
-                                $epList('a[data-num]').each((i, el) => {
-                                    partEpisodes.push(parseInt($epList(el).attr('data-num'), 10) || 0);
-                                });
-                                const maxPartEpNum = Math.max(...partEpisodes, 0);
-
-                                // Local episode = requested - episodes from all PREVIOUS parts
-                                const localEpisodeNum = requestedEpNum - cumulativeEpisodes;
-                                logNekoDebug(`[Neko] Part ${partNum}: cumulative=${cumulativeEpisodes}, max=${maxPartEpNum}. Looking for global ep${requestedEpNum} = local ep${localEpisodeNum}`);
-
-                                epElement = $epList(`a[data-num="${localEpisodeNum}"]`).first();
-                                if (!epElement.length) epElement = $epList(`a[data-slug="${localEpisodeNum}"]`).first();
-
-                                if (epElement.length) {
-                                    logNekoDebug(`[Neko] ✓ Found episode ${requestedEpNum} (local ep${localEpisodeNum}) in Part ${partNum}!`);
-                                    break;
-                                } else {
-                                    // Update cumulative for next part
-                                    cumulativeEpisodes += maxPartEpNum;
-                                    logNekoDebug(`[Neko] Episode not found in Part ${partNum}. Updated cumulative to ${cumulativeEpisodes}`);
-                                }
-                            }
-                        } catch (err) {
-                            logNekoDebug(`[Neko] Part ${partNum} attempt failed: ${err.message}`);
-                        }
-                    }
-
-                    if (epElement.length) break;
-                }
-            } catch (err) {
-                logNekoDebug(`[Neko] Part search error: ${err.message}`);
-            }
-        }
-
-        // Last resort: use first episode
-        if (!epElement.length) {
-            if (season === 0) {
-                logNekoDebug(`[Neko] ⚠️  Special episode ${episode} not found on any part`);
-                return res.status(404).json({
-                    ok: false,
-                    error: `Special episode ${episode} is not available on NekoStream. These episodes may not be hosted on streaming platforms yet.`
-                });
-            }
-            epElement = $ep('a[data-ids]').first();
-        }
-
-        const serverToken = epElement.attr('data-ids');
-        const mal = epElement.attr('data-mal');
-        const epSlug = epElement.attr('data-slug');
-        const timestamp = epElement.attr('data-timestamp');
-        const anikotoEpisodeId = epElement.attr('data-id');
-        logNekoDebug('[Neko] Selected episode', {
-            requestedEpisode: episode,
-            requestedSeason: season,
-            selected: {
-                num: epElement.attr('data-num'),
-                slug: epSlug,
-                episodeId: anikotoEpisodeId,
-                text: epElement.text().trim()
-            }
-        });
-
-        if (!serverToken) throw new Error(`Could not find data-ids token for episode ${episode}.`);
+        const { internalAnimeId, anikotoEpisodeId, serverToken, mal, epSlug, timestamp, baseHeaders } =
+            await resolveAnikotoEpisode(rawTitle, season, episode);
 
         // Fire-and-forget: pull Anikoto's comment section for this episode into our own
-        // anime_comments table. Never blocks/breaks playback if it fails.
+        // anime_comments table. Never blocks/breaks playback if it fails. (This is a bonus
+        // warm path - the dedicated /api/anime-comments endpoint is the reliable trigger
+        // since KAA, not Neko, is the default anime server and this route may never run.)
         if (mal && anikotoEpisodeId && internalAnimeId) {
             importAnikotoComments({
                 malId: Number(mal),
@@ -8348,7 +8397,7 @@ app.get('/api/anime-neko-log', async (req, res) => {
 
     } catch (err) {
         console.error('\n[Neko Pipeline] Error:', err.message);
-        return res.status(500).json({ ok: false, error: err.message });
+        return res.status(err.status || 500).json({ ok: false, error: err.message });
     }
 });
 app.get('/api/anime-kaa-servers', async (req, res) => {
