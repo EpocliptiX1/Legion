@@ -7053,26 +7053,38 @@ function convertEpisodeNumberForCandidate({
 
     return null;
 }
-async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', episodeNumber, audioType, frontendTitle, season = 1 }) {
-    // TMDB 65942 (Re:Zero): frontend skips ep0, so decrement all episodes
-    let requestedEpisode = Number(episodeNumber);
-    if (tmdbId === 65942) {
-        // ep1 fails (special has no sources), reject for NEKO
-        if (requestedEpisode === 1) {
-            const err = new Error('Re:Zero episode 1 not available on KAA—falling back to NEKO');
-            err.status = 404;
-            logKaaDebug('[KAA Resolve] TMDB 65942 ep1 rejected for NEKO fallback');
-            throw err;
-        }
-        // ep2+ → request ep1+ from KAA (offset by 1)
-        if (requestedEpisode > 1) {
-            requestedEpisode = requestedEpisode - 1;
-            logKaaDebug('[KAA Resolve] TMDB 65942 episode offset', {
-                frontendEpisode: Number(episodeNumber),
-                kaaEpisode: requestedEpisode
-            });
-        }
+
+// KAA sometimes renumbers/re-slugs an episode after the episode-list endpoint already
+// handed it out (observed: a listed "ep-0" episode's own detail API responds with
+// {redirectUri: "/show-slug/ep-0.5-hash"} instead of source data - KAA moved it to "0.5"
+// without updating the listing). The consumet library's fetchEpisodeSources doesn't follow
+// that redirect - it just sees no `servers` field and silently returns empty sources. Check
+// for the redirect ourselves first and substitute the corrected episode id when present.
+async function resolveKaaEpisodeRedirect(episodeId) {
+    try {
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
+            'Referer': `${kickass.baseUrl}/`
+        };
+        const res = await axios.get(`${kickass.baseUrl}/api/show/${episodeId}`, { headers, timeout: 10000 });
+        const redirectUri = res.data?.redirectUri;
+        if (!redirectUri) return episodeId;
+
+        const newSlug = String(redirectUri).split('/').filter(Boolean).pop();
+        if (!newSlug) return episodeId;
+
+        const parts = episodeId.split('/episode/');
+        const newEpisodeId = parts.length === 2 ? `${parts[0]}/episode/${newSlug}` : episodeId;
+        logKaaDebug('[KAA Resolve] episode id redirected by KAA', { original: episodeId, redirectUri, newEpisodeId });
+        return newEpisodeId;
+    } catch (err) {
+        logKaaDebug('[KAA Resolve] redirect check failed, using original id', { episodeId, error: err.message });
+        return episodeId;
     }
+}
+
+async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', episodeNumber, audioType, frontendTitle, season = 1 }) {
+    let requestedEpisode = Number(episodeNumber);
 
    let titles = [];
     let cacheEntry = null;
@@ -7477,11 +7489,15 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
             let localEpisodeNum = reqEpNum - episodesBeforeCurrentCandidate;
             let episode = candidateEpisodes.find(e => Number(e.number) === localEpisodeNum);
 
-            // If requesting ep1 and ep0 exists, use ep0 instead (frontend skips ep0, so ep1 means the special)
-            // But if ep0 has no sources, don't fall back—fail and let next provider handle it
-            if (localEpisodeNum === 1 && !episode && candidateEpisodes.some(e => Number(e.number) === 0)) {
+            // Frontend skips ep0 in its episode list, so frontend ep1 always means KAA's ep0
+            // (the true first episode - KAA also separately lists it again as ep1, a
+            // duplicate/differently-cut version). Always prefer ep0 over that duplicate when
+            // both exist. Whether ep0 actually has sources varies over time on KAA's end; if
+            // it's genuinely empty, the normal no-sources handling further down the pipeline
+            // falls back to the next provider same as it would for any other anime.
+            if (localEpisodeNum === 1 && candidateEpisodes.some(e => Number(e.number) === 0)) {
                 episode = candidateEpisodes.find(e => Number(e.number) === 0);
-                logKaaDebug('[KAA Resolve] frontend ep1 maps to KAA ep0 (special)');
+                logKaaDebug('[KAA Resolve] frontend ep1 maps to KAA ep0 (true first episode)');
             }
 
             if (episode) {
@@ -7553,7 +7569,8 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
     // TMDB proxy already caches complete episode metadata (air_date, still_path, etc)
     // KAA episodes are only titles and cause NULLs when inserted with INSERT OR REPLACE
 
-    const payload = await kickass.fetchEpisodeSources(selectedEpisode.id);
+    const resolvedEpisodeId = await resolveKaaEpisodeRedirect(selectedEpisode.id);
+    const payload = await kickass.fetchEpisodeSources(resolvedEpisodeId);
     logKaaDebug('[KAA Resolve] episode sources payload', {
         requestedAudioType: audioType,
         animeMatch: anime?.title,
