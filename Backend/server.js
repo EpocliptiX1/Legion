@@ -891,7 +891,62 @@ animeCacheDb.serialize(() => {
             UNIQUE(tmdb_id, season, episode, audio_type, provider)
         );
     `);
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS anime_comments (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            mal_id              INTEGER NOT NULL,
+            episode_number      INTEGER NOT NULL,
+            source              TEXT    NOT NULL DEFAULT 'anikoto',
+            source_comment_id   TEXT,
+            parent_source_id    TEXT,
+            parent_id           INTEGER,
+            anikoto_anime_id    TEXT,
+            anikoto_episode_id  TEXT,
+            user_uid            TEXT,
+            username            TEXT    NOT NULL,
+            avatar_url          TEXT,
+            text                TEXT    NOT NULL,
+            raw_text            TEXT,
+            upvotes             INTEGER NOT NULL DEFAULT 0,
+            downvotes           INTEGER NOT NULL DEFAULT 0,
+            reply_count         INTEGER NOT NULL DEFAULT 0,
+            posted_time_text    TEXT,
+            created_at          INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            edited_at           INTEGER,
+            UNIQUE(source, source_comment_id)
+        );
+    `);
+    animeCacheDb.run(`CREATE INDEX IF NOT EXISTS idx_anime_comments_lookup ON anime_comments(mal_id, episode_number, parent_id)`);
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS anime_comment_votes (
+            comment_id INTEGER NOT NULL,
+            user_uid   TEXT    NOT NULL,
+            vote       TEXT    NOT NULL,
+            UNIQUE(comment_id, user_uid)
+        );
+    `);
 });
+
+// Dedicated logger for anime comment scraping - writes to templogging.txt instead of
+// spamming the console (server.js already logs a ton via logKaaDebug/logNekoDebug).
+const TEMP_LOG_FILE = path.join(__dirname, 'templogging.txt');
+function logTempDebug(...parts) {
+    const stamp = new Date().toISOString();
+    const text = parts.map(part => {
+        if (typeof part === 'string') return part;
+        try {
+            return JSON.stringify(part, null, 2);
+        } catch (e) {
+            return String(part);
+        }
+    }).join(' ');
+    const line = `[${stamp}] [AnimeComments] ${text}`;
+    try {
+        fs.appendFileSync(TEMP_LOG_FILE, line + '\n');
+    } catch (err) {
+        console.warn('[AnimeComments] failed to append log file:', err.message);
+    }
+}
 
 const TMDB_SEARCH_LOG_FILE = path.join(__dirname, 'tmdb_search_log.txt');
 const TMDB_FALLBACK_LOG_FILE = path.join(__dirname, 'tmdb_fallback_search_log.txt');
@@ -7741,6 +7796,252 @@ async function resolveExactWatchUrl(title, targetSeason = '1') {
     return `https://anikoto.cz/watch/${fallbackSlug}`;
   }
 }
+
+// ==========================================
+// ANIKOTO COMMENT SCRAPING
+// ==========================================
+// Anikoto's comment widget is server-rendered JSON+HTML returned from a plain AJAX
+// endpoint (confirmed via curl - no JS execution required, matches the pattern already
+// used for episode/server list scraping above). Comments lazy-load on scroll in the
+// browser purely for UX; the underlying data is a normal paginated HTTP response.
+
+const ANIKOTO_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'X-Requested-With': 'XMLHttpRequest',
+    'Referer': 'https://anikoto.cz/'
+};
+
+// Parses a single page of the comment widget HTML fragment into structured comment objects.
+function parseAnikotoCommentHtml(html, parentSourceId = null) {
+    const $ = cheerio.load(html);
+    const comments = [];
+
+    $('.cw_l-line').each((i, el) => {
+        const $el = $(el);
+        const sourceCommentId = $el.attr('data-comment-id') || $el.attr('id')?.replace('cm-', '') || null;
+        if (!sourceCommentId) return;
+
+        // data-cm-raw-b64 is the clean plain-text body (no @mention prefix, no stray
+        // whitespace from the rendered HTML) - prefer it over scraping .cm-body's text.
+        const rawB64 = $el.find('.cm-body').first().attr('data-cm-raw-b64') || '';
+        let rawText = '';
+        try {
+            rawText = rawB64 ? Buffer.from(rawB64, 'base64').toString('utf-8') : '';
+        } catch (e) {
+            rawText = '';
+        }
+        const mentionUsername = $el.find('.cm-body .tag-name').first().text().trim().replace(/^@/, '') || null;
+        const renderedText = $el.find('.cm-body').first().clone().children('.tag-name').remove().end().text().trim();
+        const finalText = rawText || renderedText;
+
+        const replyMatch = $el.find('.replies span').first().text().trim().match(/(\d+)/);
+        const replyCount = replyMatch ? parseInt(replyMatch[1], 10) : 0;
+
+        comments.push({
+            sourceCommentId: String(sourceCommentId),
+            parentSourceId: parentSourceId ? String(parentSourceId) : ($el.attr('data-parent-id') || null),
+            userId: $el.attr('data-user-id') || null,
+            username: $el.find('.user-name').first().clone().children().remove().end().text().trim() || 'Anikoto User',
+            avatarUrl: $el.find('.user-avatar-img').first().attr('src') || '',
+            mentionUsername,
+            text: finalText,
+            rawText: finalText,
+            postedTimeText: $el.find('.time').first().text().trim(),
+            replyCount
+        });
+    });
+
+    return comments;
+}
+
+// Fetches one page of top-level (or "all episode") comments for a given Anikoto anime+episode.
+async function fetchAnikotoCommentPage(anikotoAnimeId, anikotoEpisodeId, page = 1) {
+    const url = `https://anikoto.cz/ajax/comment/widget/${anikotoAnimeId}?episodeId=${anikotoEpisodeId}&sort=newest&type=episode${page > 1 ? `&page=${page}` : ''}`;
+    const res = await axios.get(url, { headers: ANIKOTO_HEADERS });
+    const data = res.data || {};
+    if (!data.status) {
+        return { comments: [], nextPage: null };
+    }
+    return {
+        comments: parseAnikotoCommentHtml(data.html || ''),
+        nextPage: data.nextPage || null
+    };
+}
+
+// Fetches replies for a single comment (one level deep - matches Anikoto's own UI, which
+// doesn't nest replies-of-replies either).
+async function fetchAnikotoReplies(sourceCommentId) {
+    try {
+        const url = `https://anikoto.cz/ajax/comment/replies/${sourceCommentId}`;
+        const res = await axios.get(url, { headers: ANIKOTO_HEADERS });
+        const data = res.data || {};
+        if (!data.status) return [];
+        return parseAnikotoCommentHtml(data.html || '', sourceCommentId);
+    } catch (err) {
+        logTempDebug('[Replies] fetch failed', { sourceCommentId, error: err.message || String(err) });
+        return [];
+    }
+}
+
+function upsertAnimeComment(row) {
+    return new Promise((resolve, reject) => {
+        animeCacheDb.run(
+            `INSERT INTO anime_comments
+                (mal_id, episode_number, source, source_comment_id, parent_source_id,
+                 anikoto_anime_id, anikoto_episode_id, user_uid, username, avatar_url,
+                 text, raw_text, upvotes, reply_count, posted_time_text, created_at)
+             VALUES (?, ?, 'anikoto', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, strftime('%s','now'))
+             ON CONFLICT(source, source_comment_id) DO UPDATE SET
+                text = excluded.text,
+                raw_text = excluded.raw_text,
+                reply_count = excluded.reply_count`,
+            [
+                row.malId, row.episodeNumber, row.sourceCommentId, row.parentSourceId,
+                row.anikotoAnimeId, row.anikotoEpisodeId, row.userId, row.username, row.avatarUrl,
+                row.text, row.rawText, row.replyCount, row.postedTimeText
+            ],
+            function (err) {
+                if (err) return reject(err);
+                resolve(this.lastID);
+            }
+        );
+    });
+}
+
+// Backfills parent_id (our own auto-increment FK) now that both parent and child rows exist.
+function linkAnimeCommentParent(malId, episodeNumber, sourceCommentId, parentSourceId) {
+    return new Promise((resolve) => {
+        if (!parentSourceId) return resolve();
+        animeCacheDb.get(
+            `SELECT id FROM anime_comments WHERE source = 'anikoto' AND source_comment_id = ? AND mal_id = ? AND episode_number = ?`,
+            [parentSourceId, malId, episodeNumber],
+            (err, parentRow) => {
+                if (err || !parentRow) return resolve();
+                animeCacheDb.run(
+                    `UPDATE anime_comments SET parent_id = ? WHERE source = 'anikoto' AND source_comment_id = ? AND mal_id = ? AND episode_number = ?`,
+                    [parentRow.id, sourceCommentId, malId, episodeNumber],
+                    () => resolve()
+                );
+            }
+        );
+    });
+}
+
+// Skip re-scraping if we already imported comments for this mal_id+episode recently.
+function hasRecentAnimeComments(malId, episodeNumber, maxAgeSeconds = 3600) {
+    return new Promise((resolve) => {
+        animeCacheDb.get(
+            `SELECT MAX(created_at) as latest FROM anime_comments WHERE mal_id = ? AND episode_number = ? AND source = 'anikoto'`,
+            [malId, episodeNumber],
+            (err, row) => {
+                if (err || !row || !row.latest) return resolve(false);
+                const ageSeconds = Math.floor(Date.now() / 1000) - row.latest;
+                resolve(ageSeconds < maxAgeSeconds);
+            }
+        );
+    });
+}
+
+// Full import: paginates through top-level comments, then fetches replies for any comment
+// that has them, storing everything into anime_comments. Fire-and-forget from the caller.
+async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, anikotoEpisodeId }) {
+    const alreadyFresh = await hasRecentAnimeComments(malId, episodeNumber);
+    if (alreadyFresh) {
+        logTempDebug('[Import] Skipped - already have recent comments', { malId, episodeNumber });
+        return;
+    }
+
+    logTempDebug('[Import] Starting', { malId, episodeNumber, anikotoAnimeId, anikotoEpisodeId });
+
+    let page = 1;
+    let totalTopLevel = 0;
+    let totalReplies = 0;
+    const topLevelWithReplies = [];
+
+    while (page) {
+        const { comments, nextPage } = await fetchAnikotoCommentPage(anikotoAnimeId, anikotoEpisodeId, page);
+        logTempDebug(`[Import] Page ${page} - ${comments.length} comments`, { nextPage });
+
+        for (const c of comments) {
+            try {
+                await upsertAnimeComment({
+                    malId, episodeNumber,
+                    anikotoAnimeId, anikotoEpisodeId,
+                    sourceCommentId: c.sourceCommentId,
+                    parentSourceId: null,
+                    userId: c.userId,
+                    username: c.username,
+                    avatarUrl: c.avatarUrl,
+                    text: c.text,
+                    rawText: c.rawText,
+                    replyCount: c.replyCount,
+                    postedTimeText: c.postedTimeText
+                });
+                totalTopLevel++;
+                if (c.replyCount > 0) topLevelWithReplies.push(c.sourceCommentId);
+            } catch (err) {
+                logTempDebug('[Import] Failed to upsert comment', { id: c.sourceCommentId, error: err.message || String(err) });
+            }
+        }
+
+        page = nextPage;
+    }
+
+    for (const parentSourceId of topLevelWithReplies) {
+        const replies = await fetchAnikotoReplies(parentSourceId);
+        for (const r of replies) {
+            try {
+                await upsertAnimeComment({
+                    malId, episodeNumber,
+                    anikotoAnimeId, anikotoEpisodeId,
+                    sourceCommentId: r.sourceCommentId,
+                    parentSourceId: r.parentSourceId || parentSourceId,
+                    userId: r.userId,
+                    username: r.username,
+                    avatarUrl: r.avatarUrl,
+                    text: r.text,
+                    rawText: r.rawText,
+                    replyCount: r.replyCount,
+                    postedTimeText: r.postedTimeText
+                });
+                await linkAnimeCommentParent(malId, episodeNumber, r.sourceCommentId, r.parentSourceId || parentSourceId);
+                totalReplies++;
+            } catch (err) {
+                logTempDebug('[Import] Failed to upsert reply', { id: r.sourceCommentId, error: err.message || String(err) });
+            }
+        }
+    }
+
+    logTempDebug('[Import] Done', { malId, episodeNumber, totalTopLevel, totalReplies });
+}
+
+// Fetch stored comments for display, threaded (top-level + nested replies).
+app.get('/api/anime-comments/:malId/:episodeNumber', (req, res) => {
+    const malId = Number(req.params.malId);
+    const episodeNumber = Number(req.params.episodeNumber);
+
+    animeCacheDb.all(
+        `SELECT * FROM anime_comments WHERE mal_id = ? AND episode_number = ? ORDER BY created_at ASC`,
+        [malId, episodeNumber],
+        (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+
+            const byId = new Map();
+            const topLevel = [];
+            (rows || []).forEach(r => { r.replies = []; byId.set(r.id, r); });
+            (rows || []).forEach(r => {
+                if (r.parent_id && byId.has(r.parent_id)) {
+                    byId.get(r.parent_id).replies.push(r);
+                } else if (!r.parent_id) {
+                    topLevel.push(r);
+                }
+            });
+
+            res.json({ comments: topLevel });
+        }
+    );
+});
+
 app.get('/api/anime-neko-log', async (req, res) => {
     const malId = req.query.malId || null;
     const tmdbId = req.query.tmdbId || null;
@@ -7916,17 +8217,32 @@ app.get('/api/anime-neko-log', async (req, res) => {
         const mal = epElement.attr('data-mal');
         const epSlug = epElement.attr('data-slug');
         const timestamp = epElement.attr('data-timestamp');
+        const anikotoEpisodeId = epElement.attr('data-id');
         logNekoDebug('[Neko] Selected episode', {
             requestedEpisode: episode,
             requestedSeason: season,
             selected: {
                 num: epElement.attr('data-num'),
                 slug: epSlug,
+                episodeId: anikotoEpisodeId,
                 text: epElement.text().trim()
             }
         });
 
         if (!serverToken) throw new Error(`Could not find data-ids token for episode ${episode}.`);
+
+        // Fire-and-forget: pull Anikoto's comment section for this episode into our own
+        // anime_comments table. Never blocks/breaks playback if it fails.
+        if (mal && anikotoEpisodeId && internalAnimeId) {
+            importAnikotoComments({
+                malId: Number(mal),
+                episodeNumber: parseInt(episode, 10) || 0,
+                anikotoAnimeId: internalAnimeId,
+                anikotoEpisodeId
+            }).catch(err => {
+                logTempDebug('[Import] Unhandled error', { error: err.message || String(err) });
+            });
+        }
 
         // --- DOWNLOAD LINK SECTION: Multi-provider extraction for Sub/Dub 1 & 2 ---
         let subLinks = [];
