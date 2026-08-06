@@ -7897,6 +7897,19 @@ async function fetchAnikotoCommentPage(anikotoAnimeId, anikotoEpisodeId, page = 
     };
 }
 
+// Runs fn(item) over items with at most `limit` in flight at once, instead of either doing
+// them fully sequentially (slow) or all at once (risks hammering the target site).
+async function mapWithConcurrency(items, limit, fn) {
+    let idx = 0;
+    async function worker() {
+        while (idx < items.length) {
+            const current = idx++;
+            await fn(items[current], current);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
 // Fetches replies for a single comment (one level deep - matches Anikoto's own UI, which
 // doesn't nest replies-of-replies either).
 async function fetchAnikotoReplies(sourceCommentId) {
@@ -8133,7 +8146,11 @@ async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, ani
         page = nextPage;
     }
 
-    for (const parentSourceId of topLevelWithReplies) {
+    // This was the actual bottleneck (one Anikoto request per parent comment with replies,
+    // fully sequential - on a comment section with ~25 such parents that alone was 5-6+
+    // seconds of the ~7s total load, dwarfing the ~1-2s spent paginating top-level comments).
+    // 8 in flight at once cuts it to roughly a third of that without hammering Anikoto.
+    await mapWithConcurrency(topLevelWithReplies, 8, async (parentSourceId) => {
         const replies = await fetchAnikotoReplies(parentSourceId);
         for (const r of replies) {
             try {
@@ -8156,7 +8173,7 @@ async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, ani
                 logTempDebug('[Import] Failed to upsert reply', { id: r.sourceCommentId, error: err.message || String(err) });
             }
         }
-    }
+    });
 
     logTempDebug('[Import] Done', { malId, episodeNumber, totalTopLevel, totalReplies });
 }
