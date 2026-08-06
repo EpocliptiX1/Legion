@@ -7942,8 +7942,45 @@ function hasRecentAnimeComments(malId, episodeNumber, maxAgeSeconds = 3600) {
     });
 }
 
+// Single-flight lock for comment imports, keyed by mal_id+episode. Without this, several
+// near-simultaneous requests for the same episode (moviePlayer.js's updateSource() fires
+// anime-episode-changed from 8+ call sites, easily multiple times within milliseconds on one
+// page load) all pass the DB freshness check before any of them finish writing, and each one
+// independently re-scrapes Anikoto. Concurrent callers now await the same in-progress job
+// instead of duplicating the work.
+const animeCommentJobsInFlight = new Map();
+
+function runAnimeCommentImportJob(malId, episodeNumber, resolveIds) {
+    const key = `${malId}:${episodeNumber}`;
+    if (animeCommentJobsInFlight.has(key)) {
+        logTempDebug('[Import] Joining in-flight job', { malId, episodeNumber });
+        return animeCommentJobsInFlight.get(key);
+    }
+
+    const job = (async () => {
+        const alreadyFresh = await hasRecentAnimeComments(malId, episodeNumber);
+        if (alreadyFresh) {
+            logTempDebug('[Import] Skipped - already have recent comments', { malId, episodeNumber });
+            return;
+        }
+        const ids = await resolveIds();
+        if (!ids || !ids.anikotoAnimeId || !ids.anikotoEpisodeId) return;
+        await importAnikotoComments({
+            malId, episodeNumber,
+            anikotoAnimeId: ids.anikotoAnimeId,
+            anikotoEpisodeId: ids.anikotoEpisodeId
+        });
+    })();
+
+    animeCommentJobsInFlight.set(key, job);
+    job.finally(() => animeCommentJobsInFlight.delete(key));
+    return job;
+}
+
 // Full import: paginates through top-level comments, then fetches replies for any comment
-// that has them, storing everything into anime_comments. Fire-and-forget from the caller.
+// that has them, storing everything into anime_comments. Call through
+// runAnimeCommentImportJob() above rather than directly - it's not safe for concurrent calls
+// on its own (see comment there).
 async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, anikotoEpisodeId }) {
     const alreadyFresh = await hasRecentAnimeComments(malId, episodeNumber);
     if (alreadyFresh) {
@@ -8219,19 +8256,13 @@ app.get('/api/anime-comments', async (req, res) => {
     });
 
     try {
-        const alreadyFresh = await hasRecentAnimeComments(malId, episodeNumber);
-
-        if (!alreadyFresh && rawTitle) {
+        if (rawTitle) {
             try {
-                const resolved = await resolveAnikotoEpisode(rawTitle, season, episodeNumber);
-                if (resolved.mal && resolved.anikotoEpisodeId && resolved.internalAnimeId) {
-                    await importAnikotoComments({
-                        malId: Number(resolved.mal) || malId,
-                        episodeNumber,
-                        anikotoAnimeId: resolved.internalAnimeId,
-                        anikotoEpisodeId: resolved.anikotoEpisodeId
-                    });
-                }
+                await runAnimeCommentImportJob(malId, episodeNumber, async () => {
+                    const resolved = await resolveAnikotoEpisode(rawTitle, season, episodeNumber);
+                    if (!resolved.anikotoEpisodeId || !resolved.internalAnimeId) return null;
+                    return { anikotoAnimeId: resolved.internalAnimeId, anikotoEpisodeId: resolved.anikotoEpisodeId };
+                });
             } catch (resolveErr) {
                 logTempDebug('[OnDemand] Resolve/import failed, serving whatever is cached', {
                     malId, episodeNumber, error: resolveErr.message || String(resolveErr)
@@ -8282,13 +8313,15 @@ app.get('/api/anime-neko-log', async (req, res) => {
         // anime_comments table. Never blocks/breaks playback if it fails. (This is a bonus
         // warm path - the dedicated /api/anime-comments endpoint is the reliable trigger
         // since KAA, not Neko, is the default anime server and this route may never run.)
-        if (mal && anikotoEpisodeId && internalAnimeId) {
-            importAnikotoComments({
-                malId: Number(mal),
-                episodeNumber: parseInt(episode, 10) || 0,
+        // Prefer the frontend-supplied malId (same key /api/anime-comments reads/writes
+        // under) over Anikoto's own scraped data-mal, so both paths can't disagree on the
+        // storage key for the same anime and silently miss each other's cache.
+        const commentsMalId = Number(malId) || Number(mal) || null;
+        if (commentsMalId && anikotoEpisodeId && internalAnimeId) {
+            runAnimeCommentImportJob(commentsMalId, parseInt(episode, 10) || 0, async () => ({
                 anikotoAnimeId: internalAnimeId,
                 anikotoEpisodeId
-            }).catch(err => {
+            })).catch(err => {
                 logTempDebug('[Import] Unhandled error', { error: err.message || String(err) });
             });
         }
