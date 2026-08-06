@@ -8103,6 +8103,22 @@ function runAnimeCommentImportJob(malId, episodeNumber, resolveIds) {
 // that has them, storing everything into anime_comments. Call through
 // runAnimeCommentImportJob() above rather than directly - it's not safe for concurrent calls
 // on its own (see comment there).
+// Tracks each distinct commenter seen during a scrape (across both top-level comments and
+// replies) so ensureAnikotoCommentUserAccounts() below can create/update their users.db
+// account once, after the whole import finishes, instead of per-comment.
+function trackCommenter(commenterInfo, userId, username, avatarUrl, postedTimeText, nowSeconds) {
+    if (!userId) return;
+    const at = parseAnikotoPostedTime(postedTimeText, nowSeconds);
+    const existing = commenterInfo.get(userId);
+    if (existing) {
+        existing.firstAt = Math.min(existing.firstAt, at);
+        existing.lastAt = Math.max(existing.lastAt, at);
+        if (!existing.avatarUrl && avatarUrl) existing.avatarUrl = avatarUrl;
+    } else {
+        commenterInfo.set(userId, { username, avatarUrl, firstAt: at, lastAt: at });
+    }
+}
+
 async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, anikotoEpisodeId }) {
     const alreadyFresh = await hasRecentAnimeComments(malId, episodeNumber);
     if (alreadyFresh) {
@@ -8112,6 +8128,8 @@ async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, ani
 
     logTempDebug('[Import] Starting', { malId, episodeNumber, anikotoAnimeId, anikotoEpisodeId });
 
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const commenterInfo = new Map();
     let page = 1;
     let totalTopLevel = 0;
     let totalReplies = 0;
@@ -8137,6 +8155,7 @@ async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, ani
                     postedTimeText: c.postedTimeText
                 });
                 totalTopLevel++;
+                trackCommenter(commenterInfo, c.userId, c.username, c.avatarUrl, c.postedTimeText, nowSeconds);
                 if (c.replyCount > 0) topLevelWithReplies.push(c.sourceCommentId);
             } catch (err) {
                 logTempDebug('[Import] Failed to upsert comment', { id: c.sourceCommentId, error: err.message || String(err) });
@@ -8169,6 +8188,7 @@ async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, ani
                 });
                 await linkAnimeCommentParent(malId, episodeNumber, r.sourceCommentId, r.parentSourceId || parentSourceId);
                 totalReplies++;
+                trackCommenter(commenterInfo, r.userId, r.username, r.avatarUrl, r.postedTimeText, nowSeconds);
             } catch (err) {
                 logTempDebug('[Import] Failed to upsert reply', { id: r.sourceCommentId, error: err.message || String(err) });
             }
@@ -8176,6 +8196,111 @@ async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, ani
     });
 
     logTempDebug('[Import] Done', { malId, episodeNumber, totalTopLevel, totalReplies });
+
+    // Fire-and-forget: never awaited, so bcrypt hashing (slow, one per new commenter) never
+    // adds latency to the comment response. See ensureAnikotoCommentUserAccounts() for details.
+    ensureAnikotoCommentUserAccounts(commenterInfo).catch(err => {
+        logTempDebug('[AnikotoUsers] Unhandled error', { error: err.message || String(err) });
+    });
+}
+
+// Same field values as a real signup (see the users table schema and generateLoginCode/
+// generateWatch2getherCode/LOGIN_CODE_TTL_SECONDS/BCRYPT_SALT_ROUNDS above), but the account
+// is unreachable - password is random and only ever written to ANIKOTO_USER_INFO_LOG_PATH
+// (gitignored), never handed out. Ahead of building public profile pages for commenters.
+const ANIKOTO_USER_INFO_LOG_PATH = path.join(__dirname, 'AnikotoCommentUserInfo.txt');
+
+function randomAlnumForEmail(len) {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let out = '';
+    for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+    return out;
+}
+
+function randomAnikotoPassword(len = 10) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let out = '';
+    for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+    return out;
+}
+
+function randomIntInclusive(min, max) {
+    return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function usersDbGet(sql, params) {
+    return new Promise((resolve, reject) => usersDb.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
+}
+
+function usersDbRun(sql, params) {
+    return new Promise((resolve, reject) => usersDb.run(sql, params, function (err) { err ? reject(err) : resolve(this); }));
+}
+
+// Creates a real users.db account for every commenter in `commenterInfo` we haven't seen
+// before (skips existing ones, just refreshing last_seen if this scrape found more recent
+// activity from them). Runs with limited concurrency since bcrypt is CPU-bound - 100 new
+// commenters hashed fully sequentially would take several seconds on its own.
+async function ensureAnikotoCommentUserAccounts(commenterInfo) {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const logLines = [];
+    let created = 0;
+
+    await mapWithConcurrency([...commenterInfo.entries()], 5, async ([userIdStr, info]) => {
+        const userUID = parseInt(userIdStr, 10);
+        if (!Number.isFinite(userUID)) return;
+
+        try {
+            const existing = await usersDbGet(`SELECT userUID, last_seen FROM users WHERE userUID = ?`, [userUID]);
+            const candidateLastSeen = Math.min(nowSeconds, info.lastAt + randomIntInclusive(1, 20) * 86400);
+
+            if (existing) {
+                if (candidateLastSeen > (existing.last_seen || 0)) {
+                    await usersDbRun(`UPDATE users SET last_seen = ? WHERE userUID = ?`, [candidateLastSeen, userUID]);
+                }
+                return;
+            }
+
+            const username = (info.username || `AnikotoUser${userUID}`).slice(0, 64);
+            const plainPassword = randomAnikotoPassword(10);
+            const hashedPassword = await bcrypt.hash(plainPassword, BCRYPT_SALT_ROUNDS);
+            const userEmail = `${randomAlnumForEmail(10)}${userUID}@gmail.com`;
+            const accountUID = String(userUID);
+            const createdAt = info.firstAt - randomIntInclusive(1, 20) * 86400;
+            const loginCode = generateLoginCode();
+            const loginCodeExpiresAt = nowSeconds + LOGIN_CODE_TTL_SECONDS;
+            const watch2getherCode = generateWatch2getherCode();
+
+            await usersDbRun(`
+                INSERT INTO users (
+                    userUID, accountUID, username, userEmail, userTier, userLanguage,
+                    searchCount, viewCount, allUIDs, userPassword, is_guest,
+                    login_code, login_code_expires_at, created_at, last_seen,
+                    profile_pic, watch2gether_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+                userUID, accountUID, username, userEmail, 'Free', 'en',
+                0, 0, JSON.stringify([accountUID]), hashedPassword, 0,
+                loginCode, loginCodeExpiresAt, createdAt, candidateLastSeen,
+                info.avatarUrl || null, watch2getherCode
+            ]);
+
+            logLines.push(`${username} | ${userUID} | ${userEmail} | ${plainPassword}`);
+            created++;
+        } catch (err) {
+            logTempDebug('[AnikotoUsers] Failed for commenter', { userUID, error: err.message || String(err) });
+        }
+    });
+
+    if (logLines.length) {
+        fs.appendFileSync(
+            ANIKOTO_USER_INFO_LOG_PATH,
+            [`# Generated ${new Date().toISOString()}`, ...logLines].join('\n') + '\n\n',
+            'utf8'
+        );
+    }
+    if (created > 0) {
+        logTempDebug('[AnikotoUsers] Created new accounts', { created, totalSeen: commenterInfo.size });
+    }
 }
 
 // Fetch stored comments for display, threaded (top-level + nested replies).
