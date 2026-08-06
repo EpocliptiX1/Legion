@@ -2033,6 +2033,19 @@ window.loadComments = async function () {
 // --- Anime comments: Anikoto imports (source:'anikoto') threaded together with our own
 // users' comments (source:'user') in the same anime_comments table/tree. ---
 
+// notifTimeAgo has no upper bound ("65d ago"), which reads badly for older comments once
+// sorting actually reflects real post dates. Past a week, switch to a plain d/m/y date -
+// kept local here rather than changing notifTimeAgo itself, which the notification bell
+// also uses.
+function formatAnimeCommentTime(unixSeconds) {
+    const days = (Date.now() - unixSeconds * 1000) / 86400000;
+    if (days < 7 && typeof notifTimeAgo === 'function') return notifTimeAgo(unixSeconds);
+    const d = new Date(unixSeconds * 1000);
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    return `${dd}/${mm}/${d.getFullYear()}`;
+}
+
 function renderAnikotoComment(c, isReply) {
     const myUID = localStorage.getItem('userUID');
     const isOwner = c.source === 'user' && myUID && String(c.user_uid) === String(myUID);
@@ -2041,9 +2054,7 @@ function renderAnikotoComment(c, isReply) {
     // formats depending on age, which looked broken sitting side by side. created_at is now
     // parsed from that text at scrape time (see parseAnikotoPostedTime on the backend), so
     // always deriving the label from it here gives one consistent format for every comment.
-    const timeLabel = typeof notifTimeAgo === 'function'
-        ? notifTimeAgo(c.created_at)
-        : new Date(c.created_at * 1000).toLocaleDateString();
+    const timeLabel = formatAnimeCommentTime(c.created_at);
 
     return `
         <div class="comment-row${isReply ? ' comment-reply' : ''}" id="comment-anime-${c.id}" data-comment-id="${c.id}">
