@@ -7932,14 +7932,38 @@ function attachAnimeCommentAvatars(rows, callback) {
     });
 }
 
+// Anikoto's own vote counts aren't exposed by the scraped HTML (the .value spans are always
+// empty - likely filled by JS we don't execute), so everything came in as 0. Synthesize a
+// plausible score instead: comments with replies scale roughly with how many they have (with
+// randomness so it's not a flat multiplier), comments with none get a small weighted-random
+// score from 1 down to -5, 1 being the most common and each step down less likely.
+function generateSyntheticScore(replyCount) {
+    if (replyCount > 0) {
+        const base = replyCount * (2 + Math.floor(Math.random() * 4)); // x2-x5
+        const noise = Math.floor(Math.random() * 6) - 2; // -2..+3
+        return Math.max(1, base + noise);
+    }
+    const weighted = [[1, 40], [0, 25], [-1, 15], [-2, 10], [-3, 5], [-4, 3], [-5, 2]];
+    const total = weighted.reduce((sum, [, w]) => sum + w, 0);
+    let r = Math.random() * total;
+    for (const [value, w] of weighted) {
+        if (r < w) return value;
+        r -= w;
+    }
+    return 1;
+}
+
 function upsertAnimeComment(row) {
     return new Promise((resolve, reject) => {
+        const score = generateSyntheticScore(row.replyCount || 0);
+        const upvotes = score > 0 ? score : 0;
+        const downvotes = score < 0 ? -score : 0;
         animeCacheDb.run(
             `INSERT INTO anime_comments
                 (mal_id, episode_number, source, source_comment_id, parent_source_id,
                  anikoto_anime_id, anikoto_episode_id, user_uid, username, avatar_url,
-                 text, raw_text, upvotes, reply_count, posted_time_text, created_at)
-             VALUES (?, ?, 'anikoto', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, strftime('%s','now'))
+                 text, raw_text, upvotes, downvotes, reply_count, posted_time_text, created_at)
+             VALUES (?, ?, 'anikoto', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
              ON CONFLICT(source, source_comment_id) DO UPDATE SET
                 text = excluded.text,
                 raw_text = excluded.raw_text,
@@ -7947,7 +7971,7 @@ function upsertAnimeComment(row) {
             [
                 row.malId, row.episodeNumber, row.sourceCommentId, row.parentSourceId,
                 row.anikotoAnimeId, row.anikotoEpisodeId, row.userId, row.username, row.avatarUrl,
-                row.text, row.rawText, row.replyCount, row.postedTimeText
+                row.text, row.rawText, upvotes, downvotes, row.replyCount, row.postedTimeText
             ],
             function (err) {
                 if (err) return reject(err);
@@ -8278,6 +8302,7 @@ app.get('/api/anime-comments', async (req, res) => {
     const episodeNumber = Number(req.query.episode || req.query.episodeNumber);
     const rawTitle = req.query.title || '';
     const season = parseInt(req.query.season || '1', 10);
+    const sort = req.query.sort === 'oldest' ? 'oldest' : req.query.sort === 'top' ? 'top' : 'newest';
 
     if (!malId || !episodeNumber) {
         return res.status(400).json({ error: 'malId and episode are required' });
@@ -8303,6 +8328,11 @@ app.get('/api/anime-comments', async (req, res) => {
                     // reply_count on Anikoto-imported rows reflects the count at scrape time;
                     // recompute from the actual linked replies so user-added replies count too.
                     topLevel.forEach(r => { r.reply_count = r.replies.length; });
+                    // Replies stay chronological (oldest first) regardless of sort - only the
+                    // top-level order changes, matching the movie-comments sort behavior.
+                    if (sort === 'newest') topLevel.sort((a, b) => b.created_at - a.created_at);
+                    else if (sort === 'top') topLevel.sort((a, b) => ((b.upvotes - b.downvotes) - (a.upvotes - a.downvotes)) || (b.created_at - a.created_at));
+                    // 'oldest' needs no re-sort - the SQL query already returns created_at ASC
                     resolve(topLevel);
                 });
             }

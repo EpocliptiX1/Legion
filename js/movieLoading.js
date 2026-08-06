@@ -2082,12 +2082,13 @@ window.loadAnimeComments = async function () {
     const episode = window.__currentAnimeEpisode || 1;
     const season = window.__currentAnimeSeason || 1;
     const title = document.getElementById('title')?.textContent.trim() || '';
+    const sort = document.getElementById('commentsSortSelect')?.value || 'newest';
     if (!malId) return;
 
     container.innerHTML = `<p class="setting-hint">Loading comments...</p>`;
 
     try {
-        const params = new URLSearchParams({ malId, episode, season, title });
+        const params = new URLSearchParams({ malId, episode, season, title, sort });
         const res = await fetch(`/api/anime-comments?${params.toString()}`);
         const data = await res.json();
         const comments = Array.isArray(data.comments) ? data.comments : [];
