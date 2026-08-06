@@ -2037,9 +2037,13 @@ function renderAnikotoComment(c, isReply) {
     const myUID = localStorage.getItem('userUID');
     const isOwner = c.source === 'user' && myUID && String(c.user_uid) === String(myUID);
     const score = (c.upvotes || 0) - (c.downvotes || 0);
-    const timeLabel = c.source === 'user'
-        ? (typeof notifTimeAgo === 'function' ? notifTimeAgo(c.created_at) : new Date(c.created_at * 1000).toLocaleDateString())
-        : (c.posted_time_text || '');
+    // Anikoto's own posted_time_text mixes relative ("16 hours ago") and absolute ("on 7/6/26")
+    // formats depending on age, which looked broken sitting side by side. created_at is now
+    // parsed from that text at scrape time (see parseAnikotoPostedTime on the backend), so
+    // always deriving the label from it here gives one consistent format for every comment.
+    const timeLabel = typeof notifTimeAgo === 'function'
+        ? notifTimeAgo(c.created_at)
+        : new Date(c.created_at * 1000).toLocaleDateString();
 
     return `
         <div class="comment-row${isReply ? ' comment-reply' : ''}" id="comment-anime-${c.id}" data-comment-id="${c.id}">

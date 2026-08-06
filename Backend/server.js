@@ -7953,17 +7953,53 @@ function generateSyntheticScore(replyCount) {
     return 1;
 }
 
+// Anikoto shows recent comments as relative text ("16 hours, 49 minutes ago") and older ones
+// as an absolute date ("on 7/6/26"), which is why sorting/display looked broken: every row
+// was stored with created_at = our scrape time, so a comment actually posted weeks ago (an
+// "on M/D/YY" row) could land right next to one posted minutes ago (a "N ago" row) - both got
+// nearly the same created_at since they were scraped in the same batch, and the display text
+// was just whatever inconsistent format Anikoto happened to render. Parse their text into a
+// real timestamp instead, so both sorting and display (via notifTimeAgo, same as user
+// comments) reflect the actual original posting time.
+const ANIKOTO_TIME_UNIT_SECONDS = {
+    second: 1, minute: 60, hour: 3600, day: 86400, week: 604800, month: 2592000, year: 31536000
+};
+function parseAnikotoPostedTime(text, scrapedAtSeconds) {
+    if (!text) return scrapedAtSeconds;
+    const clean = String(text).replace(/—\s*Edited comment/i, '').trim();
+
+    const dateMatch = clean.match(/^on\s+(\d{1,2})\/(\d{1,2})\/(\d{2,4})/i);
+    if (dateMatch) {
+        let [, m, d, y] = dateMatch;
+        y = y.length === 2 ? 2000 + Number(y) : Number(y);
+        const ts = Math.floor(Date.UTC(y, Number(m) - 1, Number(d), 12, 0, 0) / 1000);
+        return Number.isFinite(ts) ? ts : scrapedAtSeconds;
+    }
+
+    const re = /(\d+)\s*(second|minute|hour|day|week|month|year)s?/gi;
+    let totalSeconds = 0;
+    let matched = false;
+    let m;
+    while ((m = re.exec(clean))) {
+        matched = true;
+        totalSeconds += Number(m[1]) * (ANIKOTO_TIME_UNIT_SECONDS[m[2].toLowerCase()] || 0);
+    }
+    return matched ? scrapedAtSeconds - totalSeconds : scrapedAtSeconds;
+}
+
 function upsertAnimeComment(row) {
     return new Promise((resolve, reject) => {
         const score = generateSyntheticScore(row.replyCount || 0);
         const upvotes = score > 0 ? score : 0;
         const downvotes = score < 0 ? -score : 0;
+        const now = Math.floor(Date.now() / 1000);
+        const createdAt = parseAnikotoPostedTime(row.postedTimeText, now);
         animeCacheDb.run(
             `INSERT INTO anime_comments
                 (mal_id, episode_number, source, source_comment_id, parent_source_id,
                  anikoto_anime_id, anikoto_episode_id, user_uid, username, avatar_url,
                  text, raw_text, upvotes, downvotes, reply_count, posted_time_text, created_at)
-             VALUES (?, ?, 'anikoto', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+             VALUES (?, ?, 'anikoto', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source, source_comment_id) DO UPDATE SET
                 text = excluded.text,
                 raw_text = excluded.raw_text,
@@ -7971,7 +8007,7 @@ function upsertAnimeComment(row) {
             [
                 row.malId, row.episodeNumber, row.sourceCommentId, row.parentSourceId,
                 row.anikotoAnimeId, row.anikotoEpisodeId, row.userId, row.username, row.avatarUrl,
-                row.text, row.rawText, upvotes, downvotes, row.replyCount, row.postedTimeText
+                row.text, row.rawText, upvotes, downvotes, row.replyCount, row.postedTimeText, createdAt
             ],
             function (err) {
                 if (err) return reject(err);
