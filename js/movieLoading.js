@@ -2125,7 +2125,14 @@ window.loadAnimeComments = async function (forceReload) {
     const key = `${malId}:${season}:${episode}:${sort}`;
     if (!forceReload && window.__lastLoadedAnimeCommentsKey === key) return;
 
-    container.innerHTML = `<p class="setting-hint">Loading comments...</p>`;
+    // Keep whatever's already showing (old comments, or the static placeholder) visible but
+    // dimmed/blurred under a spinner overlay instead of wiping to bare "Loading comments..."
+    // text - a ~2s fetch flashing the section to empty and back read as broken.
+    const overlay = document.createElement('div');
+    overlay.className = 'comments-loading-overlay';
+    overlay.innerHTML = `<span class="comments-loading-ring"></span><span class="comments-loading-text">Loading comments...</span>`;
+    container.appendChild(overlay);
+    requestAnimationFrame(() => overlay.classList.add('show'));
 
     try {
         const params = new URLSearchParams({ malId, episode, season, title, sort });
@@ -2140,6 +2147,8 @@ window.loadAnimeComments = async function (forceReload) {
 
         window.__lastLoadedAnimeCommentsKey = key;
 
+        // Replacing innerHTML here removes the overlay along with the old content - no
+        // separate "hide overlay" step needed.
         if (!comments.length) {
             container.innerHTML = `<p class="setting-hint">No comments yet. Be the first to share your thoughts!</p>`;
             return;

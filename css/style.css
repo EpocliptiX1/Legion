@@ -4845,7 +4845,9 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
     border-radius: 50%;
     flex-shrink: 0;
 }
-
+.player-section-divider-Downloads{
+    display: none;
+}
 .cast-grid p {
     font-weight: 600;
     color: #f96d00;
@@ -7781,11 +7783,51 @@ body.blur-active {
     width: 18px;
     height: 18px;
 }
-
+.btn-save{
+    box-shadow:none;
+}
 .comments-list {
     display: flex;
     flex-direction: column;
     gap: 4px;
+    position: relative;
+    min-height: 48px;
+}
+
+.comments-loading-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: rgba(10, 10, 10, 0.55);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    border-radius: 8px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+    z-index: 3;
+}
+
+.comments-loading-overlay.show {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.comments-loading-overlay .comments-loading-ring {
+    width: 1.4rem;
+    height: 1.4rem;
+    border: 3px solid rgba(255, 255, 255, 0.2);
+    border-top-color: var(--accent-primary, #f96d00);
+    border-radius: 50%;
+    animation: loading-rotate 0.8s linear infinite;
+}
+
+.comments-loading-overlay .comments-loading-text {
+    color: #ddd;
+    font-size: 0.9rem;
 }
 
 .comment-row {
@@ -9136,6 +9178,16 @@ body.personal-list-page .grid-card {
 }
 
 @media (max-width: 730px) {
+    .player-block-left{
+        flex-direction: column !important;
+    }
+    .player-block-meta{
+        align-items: start;
+        margin-bottom: 14px;
+    }
+    .player-section-divider-Downloads{
+        display: block;
+    }
     .movie-title {
         word-break: break-word;
         hyphens: auto;
