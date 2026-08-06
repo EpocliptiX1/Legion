@@ -2102,7 +2102,7 @@ function renderAnikotoComment(c, isReply) {
     `;
 }
 
-window.loadAnimeComments = async function () {
+window.loadAnimeComments = async function (forceReload) {
     const container = document.getElementById('commentsList');
     const countEl = document.getElementById('commentsCount');
     if (!container) return;
@@ -2113,6 +2113,17 @@ window.loadAnimeComments = async function () {
     const title = document.getElementById('title')?.textContent.trim() || '';
     const sort = document.getElementById('commentsSortSelect')?.value || 'newest';
     if (!malId) return;
+
+    // Comments already load once malId is known at page load, well before Watch Now. But
+    // updateSource() fires anime-episode-changed unconditionally on every server/episode/season
+    // change - including when Watch Now resolves the *same* episode we already loaded (no
+    // continue-watching history, so it lands on ep1 same as the page-load default). Without
+    // this, that redundant call still wiped an already-correct comment list to a loading
+    // spinner and re-fetched it, which read as "resets and comes back" even though nothing
+    // had actually changed. Only skip on an exact repeat - a genuinely different episode
+    // (continue-watching landed elsewhere) or a sort change still reloads normally.
+    const key = `${malId}:${season}:${episode}:${sort}`;
+    if (!forceReload && window.__lastLoadedAnimeCommentsKey === key) return;
 
     container.innerHTML = `<p class="setting-hint">Loading comments...</p>`;
 
@@ -2126,6 +2137,8 @@ window.loadAnimeComments = async function () {
             const total = comments.reduce((sum, c) => sum + 1 + (c.replies?.length || 0), 0);
             countEl.textContent = `(${total})`;
         }
+
+        window.__lastLoadedAnimeCommentsKey = key;
 
         if (!comments.length) {
             container.innerHTML = `<p class="setting-hint">No comments yet. Be the first to share your thoughts!</p>`;
@@ -2161,7 +2174,7 @@ window.postAnimeTopLevelComment = async function () {
         }
         input.value = '';
         showLimitToast('Comment posted!');
-        loadAnimeComments();
+        loadAnimeComments(true); // force - same key, but new content was just added
     } catch (err) {
         console.error(err);
         showLimitToast('Server connection failed.');
@@ -2191,7 +2204,7 @@ window.postAnimeReplyComment = async function (parentId) {
         }
         input.value = '';
         showLimitToast('Reply posted!');
-        loadAnimeComments();
+        loadAnimeComments(true); // force - same key, but new content was just added
     } catch (err) {
         console.error(err);
         showLimitToast('Server connection failed.');
