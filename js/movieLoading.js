@@ -2030,18 +2030,39 @@ window.loadComments = async function () {
     }
 };
 
-// --- Anime comments (imported from Anikoto, read-only - no accounts/write-back there) ---
+// --- Anime comments: Anikoto imports (source:'anikoto') threaded together with our own
+// users' comments (source:'user') in the same anime_comments table/tree. ---
 
 function renderAnikotoComment(c, isReply) {
+    const myUID = localStorage.getItem('userUID');
+    const isOwner = c.source === 'user' && myUID && String(c.user_uid) === String(myUID);
+    const score = (c.upvotes || 0) - (c.downvotes || 0);
+    const timeLabel = c.source === 'user'
+        ? (typeof notifTimeAgo === 'function' ? notifTimeAgo(c.created_at) : new Date(c.created_at * 1000).toLocaleDateString())
+        : (c.posted_time_text || '');
+
     return `
-        <div class="comment-row${isReply ? ' comment-reply' : ''}" data-comment-id="anikoto-${c.id}">
+        <div class="comment-row${isReply ? ' comment-reply' : ''}" id="comment-anime-${c.id}" data-comment-id="${c.id}">
             ${commentAvatarHTML(c.avatar_url, c.username)}
             <div class="comment-body-wrap">
                 <div class="comment-meta-line">
                     <span class="comment-username">${escapeHtml(c.username || 'Anikoto User')}</span>
-                    <span class="comment-time">${escapeHtml(c.posted_time_text || '')}</span>
+                    <span class="comment-time">${escapeHtml(timeLabel)}</span>
                 </div>
-                <div class="comment-text">${escapeHtml(c.text || '')}</div>
+                <div class="comment-text">${renderCommentText(c.text || '')}</div>
+                <div class="comment-actions">
+                    <button class="comment-vote-btn" onclick="voteOnAnimeComment(${c.id}, 'up')" title="Upvote">▲</button>
+                    <span class="comment-score">${score}</span>
+                    <button class="comment-vote-btn" onclick="voteOnAnimeComment(${c.id}, 'down')" title="Downvote">▼</button>
+                    ${!isReply ? `<button class="comment-reply-btn" onclick="toggleReplyComposer('anime-${c.id}')">Reply</button>` : ''}
+                    ${isOwner ? `<button class="comment-delete-btn-text" onclick="deleteAnimeComment(${c.id})">Delete</button>` : ''}
+                </div>
+                ${!isReply ? `
+                    <div class="comment-reply-composer" id="replyComposer-anime-${c.id}" style="display:none;">
+                        <textarea id="replyInput-anime-${c.id}" placeholder="Write a reply..." rows="2"></textarea>
+                        <button class="btn-small" onclick="postAnimeReplyComment(${c.id})">Reply</button>
+                    </div>
+                ` : ''}
                 ${!isReply && Array.isArray(c.replies) && c.replies.length ? `
                     <div class="comment-replies-wrap">
                         ${c.replies.map(r => renderAnikotoComment(r, true)).join('')}
@@ -2050,19 +2071,6 @@ function renderAnikotoComment(c, isReply) {
             </div>
         </div>
     `;
-}
-
-function setAnimeCommentsReadOnlyNotice() {
-    const composer = document.getElementById('commentComposer');
-    if (composer && !composer.dataset.anikotoNoticeApplied) {
-        composer.dataset.anikotoNoticeApplied = '1';
-        composer.style.display = 'none';
-        const notice = document.createElement('p');
-        notice.className = 'setting-hint';
-        notice.id = 'anikotoCommentsNotice';
-        notice.textContent = 'These comments are imported from Anikoto for this episode.';
-        composer.insertAdjacentElement('afterend', notice);
-    }
 }
 
 window.loadAnimeComments = async function () {
@@ -2076,7 +2084,6 @@ window.loadAnimeComments = async function () {
     const title = document.getElementById('title')?.textContent.trim() || '';
     if (!malId) return;
 
-    setAnimeCommentsReadOnlyNotice();
     container.innerHTML = `<p class="setting-hint">Loading comments...</p>`;
 
     try {
@@ -2091,7 +2098,7 @@ window.loadAnimeComments = async function () {
         }
 
         if (!comments.length) {
-            container.innerHTML = `<p class="setting-hint">No comments found for this episode on Anikoto.</p>`;
+            container.innerHTML = `<p class="setting-hint">No comments yet. Be the first to share your thoughts!</p>`;
             return;
         }
 
@@ -2099,6 +2106,104 @@ window.loadAnimeComments = async function () {
     } catch (err) {
         console.error('Failed to load anime comments:', err);
         container.innerHTML = `<p class="setting-hint">Could not load comments.</p>`;
+    }
+};
+
+window.postAnimeTopLevelComment = async function () {
+    const input = document.getElementById('commentInputMain');
+    const text = (input?.value || '').trim();
+    if (!text || !window.__currentAnimeMalId) return;
+
+    try {
+        const res = await fetch('/anime-comments', {
+            method: 'POST',
+            headers: commentAuthHeaders(true),
+            body: JSON.stringify({
+                malId: window.__currentAnimeMalId,
+                episodeNumber: window.__currentAnimeEpisode || 1,
+                text
+            })
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            showLimitToast(data.error || 'Could not post comment.');
+            return;
+        }
+        input.value = '';
+        showLimitToast('Comment posted!');
+        loadAnimeComments();
+    } catch (err) {
+        console.error(err);
+        showLimitToast('Server connection failed.');
+    }
+};
+
+window.postAnimeReplyComment = async function (parentId) {
+    const input = document.getElementById(`replyInput-anime-${parentId}`);
+    const text = (input?.value || '').trim();
+    if (!text || !window.__currentAnimeMalId) return;
+
+    try {
+        const res = await fetch('/anime-comments', {
+            method: 'POST',
+            headers: commentAuthHeaders(true),
+            body: JSON.stringify({
+                malId: window.__currentAnimeMalId,
+                episodeNumber: window.__currentAnimeEpisode || 1,
+                text,
+                parentId
+            })
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            showLimitToast(data.error || 'Could not post reply.');
+            return;
+        }
+        input.value = '';
+        showLimitToast('Reply posted!');
+        loadAnimeComments();
+    } catch (err) {
+        console.error(err);
+        showLimitToast('Server connection failed.');
+    }
+};
+
+window.voteOnAnimeComment = async function (commentId, vote) {
+    const token = localStorage.getItem('authToken');
+    if (!token) { showLimitToast('Sign in to vote.'); return; }
+
+    try {
+        const res = await fetch(`/anime-comments/${commentId}/vote`, {
+            method: 'POST',
+            headers: commentAuthHeaders(true),
+            body: JSON.stringify({ vote })
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const row = document.getElementById(`comment-anime-${commentId}`);
+        const scoreEl = row?.querySelector('.comment-score');
+        if (scoreEl) scoreEl.textContent = (data.upvotes || 0) - (data.downvotes || 0);
+    } catch (err) {
+        console.error(err);
+    }
+};
+
+window.deleteAnimeComment = async function (commentId) {
+    try {
+        const res = await fetch(`/anime-comments/${commentId}`, {
+            method: 'DELETE',
+            headers: commentAuthHeaders(false)
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            showLimitToast(data.error || 'Could not delete comment.');
+            return;
+        }
+        document.getElementById(`comment-anime-${commentId}`)?.remove();
+        showLimitToast('Comment deleted.');
+    } catch (err) {
+        console.error(err);
+        showLimitToast('Server connection failed.');
     }
 };
 
@@ -2131,6 +2236,8 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 window.postTopLevelComment = async function () {
+    if (window.__currentAnimeMalId) return postAnimeTopLevelComment();
+
     const input = document.getElementById('commentInputMain');
     const text = (input?.value || '').trim();
     if (!text) return;

@@ -7849,7 +7849,19 @@ function parseAnikotoCommentHtml(html, parentSourceId = null) {
         }
         const mentionUsername = $el.find('.cm-body .tag-name').first().text().trim().replace(/^@/, '') || null;
         const renderedText = $el.find('.cm-body').first().clone().children('.tag-name').remove().end().text().trim();
-        const finalText = rawText || renderedText;
+        let finalText = rawText || renderedText;
+
+        // Anikoto embeds GIFs as <img class="cm-embed-gif"> inside .cm-body rather than
+        // markdown, but the raw-b64 text already contains the bare URL where it was typed.
+        // Swap it for our own ![GIF](url) syntax so the existing movie-comment renderer
+        // (which already understands that syntax) displays it the same way for both systems.
+        $el.find('.cm-body .cm-gif-wrap img.cm-embed-gif').each((gi, img) => {
+            const gifUrl = $(img).attr('src');
+            if (!gifUrl) return;
+            finalText = finalText.includes(gifUrl)
+                ? finalText.split(gifUrl).join(`![GIF](${gifUrl})`)
+                : (finalText ? `${finalText}\n![GIF](${gifUrl})` : `![GIF](${gifUrl})`);
+        });
 
         const replyMatch = $el.find('.replies span').first().text().trim().match(/(\d+)/);
         const replyCount = replyMatch ? parseInt(replyMatch[1], 10) : 0;
@@ -7898,6 +7910,26 @@ async function fetchAnikotoReplies(sourceCommentId) {
         logTempDebug('[Replies] fetch failed', { sourceCommentId, error: err.message || String(err) });
         return [];
     }
+}
+
+// For source='user' rows, overlay the real current profile pic from users.db onto
+// avatar_url (Anikoto-imported rows already have their own scraped avatar_url and are
+// left untouched). Mirrors attachProfilePics() used by the movie comment system.
+function attachAnimeCommentAvatars(rows, callback) {
+    const userRows = rows.filter(r => r.source === 'user' && r.user_uid);
+    if (!userRows.length) return callback(rows);
+    const uids = [...new Set(userRows.map(r => r.user_uid))];
+    const placeholders = uids.map(() => '?').join(',');
+    usersDb.all(`SELECT userUID, profile_pic FROM users WHERE userUID IN (${placeholders})`, uids, (err, picRows) => {
+        const picByUid = {};
+        (picRows || []).forEach(p => { picByUid[String(p.userUID)] = p.profile_pic || null; });
+        rows.forEach(r => {
+            if (r.source === 'user' && picByUid[String(r.user_uid)]) {
+                r.avatar_url = picByUid[String(r.user_uid)];
+            }
+        });
+        callback(rows);
+    });
 }
 
 function upsertAnimeComment(row) {
@@ -8257,17 +8289,22 @@ app.get('/api/anime-comments', async (req, res) => {
             [malId, episodeNumber],
             (err, rows) => {
                 if (err) return reject(err);
-                const byId = new Map();
-                const topLevel = [];
-                (rows || []).forEach(r => { r.replies = []; byId.set(r.id, r); });
-                (rows || []).forEach(r => {
-                    if (r.parent_id && byId.has(r.parent_id)) {
-                        byId.get(r.parent_id).replies.push(r);
-                    } else if (!r.parent_id) {
-                        topLevel.push(r);
-                    }
+                attachAnimeCommentAvatars(rows || [], (withAvatars) => {
+                    const byId = new Map();
+                    const topLevel = [];
+                    withAvatars.forEach(r => { r.replies = []; byId.set(r.id, r); });
+                    withAvatars.forEach(r => {
+                        if (r.parent_id && byId.has(r.parent_id)) {
+                            byId.get(r.parent_id).replies.push(r);
+                        } else if (!r.parent_id) {
+                            topLevel.push(r);
+                        }
+                    });
+                    // reply_count on Anikoto-imported rows reflects the count at scrape time;
+                    // recompute from the actual linked replies so user-added replies count too.
+                    topLevel.forEach(r => { r.reply_count = r.replies.length; });
+                    resolve(topLevel);
                 });
-                resolve(topLevel);
             }
         );
     });
@@ -8298,6 +8335,100 @@ app.get('/api/anime-comments', async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// User-authored comments/replies on anime episodes, stored in the same anime_comments table
+// as the Anikoto-imported ones (source='user' vs 'anikoto'), so both thread together under
+// one parent_id tree. Mirrors the /movie-comments write endpoints.
+app.post('/anime-comments', requireAuth, (req, res) => {
+    const uid = String(req.user.userUID || '');
+    if (!uid || uid === '0') return res.status(403).json({ error: 'Sign in to comment' });
+
+    const malId = Number(req.body.malId);
+    const episodeNumber = Number(req.body.episodeNumber);
+    const text = String(req.body.text || '').trim();
+    const parentId = req.body.parentId ? parseInt(req.body.parentId, 10) : null;
+    if (!malId || !episodeNumber || !text) return res.status(400).json({ error: 'malId, episodeNumber and text required' });
+    if (text.length > 3000) return res.status(400).json({ error: 'Comment too long' });
+
+    const insertComment = () => {
+        animeCacheDb.run(
+            `INSERT INTO anime_comments (mal_id, episode_number, source, parent_id, user_uid, username, text, raw_text)
+             VALUES (?, ?, 'user', ?, ?, ?, ?, ?)`,
+            [malId, episodeNumber, parentId, uid, req.user.username || 'User', text, text],
+            function (err) {
+                if (err) return res.status(500).json({ error: 'Could not post comment' });
+                animeCacheDb.get(`SELECT * FROM anime_comments WHERE id = ?`, [this.lastID], (getErr, row) => {
+                    if (getErr || !row) return res.status(500).json({ error: 'Comment saved but could not be loaded' });
+                    attachAnimeCommentAvatars([row], (withAvatars) => res.json(withAvatars[0]));
+                });
+            }
+        );
+    };
+
+    if (!parentId) return insertComment();
+    animeCacheDb.get(`SELECT id FROM anime_comments WHERE id = ? AND mal_id = ? AND episode_number = ?`, [parentId, malId, episodeNumber], (parentErr, parentRow) => {
+        if (parentErr || !parentRow) return res.status(404).json({ error: 'Parent comment not found' });
+        insertComment();
+    });
+});
+
+app.post('/anime-comments/:id/vote', requireAuth, (req, res) => {
+    const uid = String(req.user.userUID || '');
+    if (!uid || uid === '0') return res.status(403).json({ error: 'Sign in to vote' });
+
+    const vote = req.body.vote;
+    if (vote !== 'up' && vote !== 'down') return res.status(400).json({ error: 'Invalid vote' });
+
+    const commentId = req.params.id;
+    animeCacheDb.get(
+        `SELECT vote FROM anime_comment_votes WHERE comment_id = ? AND user_uid = ?`,
+        [commentId, uid],
+        (voteErr, existing) => {
+            if (voteErr) return res.status(500).json({ error: 'Could not vote' });
+            if (existing && existing.vote === vote) return res.status(409).json({ error: 'Already voted' });
+
+            const applyVote = (column, delta) => {
+                animeCacheDb.run(`UPDATE anime_comments SET ${column} = ${column} + ? WHERE id = ?`, [delta, commentId]);
+            };
+
+            const commit = () => {
+                animeCacheDb.run(
+                    `INSERT INTO anime_comment_votes (comment_id, user_uid, vote) VALUES (?, ?, ?)
+                     ON CONFLICT(comment_id, user_uid) DO UPDATE SET vote = excluded.vote`,
+                    [commentId, uid, vote],
+                    (insertErr) => {
+                        if (insertErr) return res.status(500).json({ error: 'Could not vote' });
+                        animeCacheDb.get(`SELECT upvotes, downvotes FROM anime_comments WHERE id = ?`, [commentId], (finalErr, row) => {
+                            if (finalErr || !row) return res.status(500).json({ error: 'Vote saved but could not be loaded' });
+                            res.json(row);
+                        });
+                    }
+                );
+            };
+
+            if (existing) {
+                applyVote(existing.vote === 'up' ? 'upvotes' : 'downvotes', -1);
+            }
+            applyVote(vote === 'up' ? 'upvotes' : 'downvotes', 1);
+            commit();
+        }
+    );
+});
+
+app.delete('/anime-comments/:id', requireAuth, (req, res) => {
+    const uid = String(req.user.userUID || '');
+    if (!uid || uid === '0') return res.status(403).json({ error: 'Sign in to delete comment' });
+
+    animeCacheDb.get(`SELECT user_uid, source FROM anime_comments WHERE id = ?`, [req.params.id], (err, row) => {
+        if (err || !row) return res.status(404).json({ error: 'Comment not found' });
+        if (row.source !== 'user' || String(row.user_uid) !== uid) return res.status(403).json({ error: 'You do not own this comment' });
+
+        animeCacheDb.run(`DELETE FROM anime_comments WHERE id = ? OR parent_id = ?`, [req.params.id, req.params.id], (delErr) => {
+            if (delErr) return res.status(500).json({ error: 'Could not delete comment' });
+            res.json({ message: 'Comment deleted' });
+        });
+    });
 });
 
 app.get('/api/anime-neko-log', async (req, res) => {
