@@ -7790,18 +7790,24 @@ body.blur-active {
     display: flex;
     flex-direction: column;
     gap: 4px;
+}
+
+/* Wraps composer + list together so the loading overlay below can cover both as one piece
+   instead of just the list - covers whatever area they take up at any screen size since it's
+   sized off this relative parent, not fixed pixels. */
+.comments-body {
     position: relative;
-    min-height: 48px;
 }
 
 .comments-loading-overlay {
     position: absolute;
     inset: 0;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 10px;
-    background: rgba(10, 10, 10, 0.55);
+    gap: clamp(8px, 2vw, 14px);
+    background: rgba(20, 20, 20, 0.7);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
     border-radius: 8px;
@@ -7817,8 +7823,8 @@ body.blur-active {
 }
 
 .comments-loading-overlay .comments-loading-ring {
-    width: 1.4rem;
-    height: 1.4rem;
+    width: clamp(1.5rem, 4vw, 2.75rem);
+    height: clamp(1.5rem, 4vw, 2.75rem);
     border: 3px solid rgba(255, 255, 255, 0.2);
     border-top-color: var(--accent-primary, #f96d00);
     border-radius: 50%;
@@ -7827,7 +7833,7 @@ body.blur-active {
 
 .comments-loading-overlay .comments-loading-text {
     color: #ddd;
-    font-size: 0.9rem;
+    font-size: clamp(0.8rem, 1.6vw, 1rem);
 }
 
 .comment-row {
