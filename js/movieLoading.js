@@ -423,6 +423,20 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
         console.log(`[Anime] TMDB ${tmdbId} → MAL ${malId} → AniList ${anilistId}`);
         console.log(`[Anime] Checking cache...`);
 
+        // Comments used to only load once Watch Now was clicked AND the Neko server picked
+        // (moviePlayer.js's anime-episode-changed event, which is the only thing that ever
+        // set window.__currentAnimeMalId). malId is already known here, at normal page load,
+        // so fire the comments load now instead of waiting on either of those. Defaults to
+        // episode 1 - if the player later resolves a different episode (e.g. resuming a
+        // continue-watching position), the anime-episode-changed listener already reloads
+        // comments for the real one, so this is just a better starting point, not final state.
+        if (malId && !window.__currentAnimeMalId) {
+            window.__currentAnimeMalId = malId;
+            window.__currentAnimeSeason = window.__currentAnimeSeason || 1;
+            window.__currentAnimeEpisode = window.__currentAnimeEpisode || 1;
+            if (typeof loadAnimeComments === 'function') loadAnimeComments();
+        }
+
         let anime;
 
         // 1. Check cache

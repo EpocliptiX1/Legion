@@ -8329,6 +8329,36 @@ async function resolveAnikotoEpisode(rawTitle, season, episode) {
     return { internalAnimeId, anikotoEpisodeId, serverToken, mal, epSlug, timestamp, animeWatchUrl, baseHeaders };
 }
 
+// Memoizes resolveAnikotoEpisode() by title+season+episode. Comments now resolve this at page
+// load (before Watch Now is even clicked), and the Neko stream pipeline resolves the exact
+// same thing independently if the user later picks that server - without this, that's 2-3
+// redundant Anikoto requests (search, watch page, episode list) done twice for no reason.
+// Whichever caller runs first populates the cache for the other. Only successful resolutions
+// are cached; a failure isn't remembered, so a later retry isn't permanently blocked by it.
+const anikotoEpisodeResolveCache = new Map(); // key -> { result, resolvedAt }
+const anikotoEpisodeResolveInFlight = new Map(); // key -> Promise
+const ANIKOTO_RESOLVE_CACHE_TTL_MS = 30 * 60 * 1000;
+
+function resolveAnikotoEpisodeCached(rawTitle, season, episode) {
+    const key = `${String(rawTitle).toLowerCase().trim()}::${season}::${episode}`;
+    const cached = anikotoEpisodeResolveCache.get(key);
+    if (cached && (Date.now() - cached.resolvedAt) < ANIKOTO_RESOLVE_CACHE_TTL_MS) {
+        logTempDebug('[AnikotoResolve] Reusing cached resolution', { key });
+        return Promise.resolve(cached.result);
+    }
+    if (anikotoEpisodeResolveInFlight.has(key)) {
+        return anikotoEpisodeResolveInFlight.get(key);
+    }
+    const p = resolveAnikotoEpisode(rawTitle, season, episode)
+        .then(result => {
+            anikotoEpisodeResolveCache.set(key, { result, resolvedAt: Date.now() });
+            return result;
+        })
+        .finally(() => anikotoEpisodeResolveInFlight.delete(key));
+    anikotoEpisodeResolveInFlight.set(key, p);
+    return p;
+}
+
 // Self-sufficient comments endpoint - doesn't depend on the user ever hitting the Neko
 // stream pipeline (KAA is the default anime server, so that pipeline may never run).
 // Cache-aside: serves from anime_comments if fresh, otherwise resolves the Anikoto
@@ -8385,7 +8415,7 @@ app.get('/api/anime-comments', async (req, res) => {
             try {
                 await runAnimeCommentImportJob(malId, episodeNumber, async () => {
                     if (!rawTitle) return null; // joining an existing job - resolveIds won't run for it anyway
-                    const resolved = await resolveAnikotoEpisode(rawTitle, season, episodeNumber);
+                    const resolved = await resolveAnikotoEpisodeCached(rawTitle, season, episodeNumber);
                     if (!resolved.anikotoEpisodeId || !resolved.internalAnimeId) return null;
                     return { anikotoAnimeId: resolved.internalAnimeId, anikotoEpisodeId: resolved.anikotoEpisodeId };
                 });
@@ -8527,7 +8557,7 @@ app.get('/api/anime-neko-log', async (req, res) => {
         }
 
         const { internalAnimeId, anikotoEpisodeId, serverToken, mal, epSlug, timestamp, baseHeaders } =
-            await resolveAnikotoEpisode(rawTitle, season, episode);
+            await resolveAnikotoEpisodeCached(rawTitle, season, episode);
 
         // Fire-and-forget: pull Anikoto's comment section for this episode into our own
         // anime_comments table. Never blocks/breaks playback if it fails. (This is a bonus
