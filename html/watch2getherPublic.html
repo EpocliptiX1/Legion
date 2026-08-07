@@ -524,7 +524,7 @@
                 </div>
             </div>
 
-            <div class="w2g-card w2g-card-friends">
+            <div class="w2g-card w2g-card-addfriend-top">
                 <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><h3>Add a Friend</h3></div>
                 <p class="setting-hint">Enter a friend's code to add them to your friends list.</p>
                 <div class="w2g-inline-form">
@@ -544,7 +544,9 @@
 
     <script>
     let allSessions = [];
+    let currentFilter = 'all';
     let scheduledSessions = JSON.parse(localStorage.getItem('w2gScheduled') || '{}');
+    let notifySubscriptions = JSON.parse(localStorage.getItem('w2gNotifySubs') || '{}');
     const statusEl = document.getElementById('status');
     const listEl = document.getElementById('sessionList');
     const token = localStorage.getItem('authToken');
@@ -585,12 +587,12 @@
         localStorage.setItem('w2gScheduled', JSON.stringify(scheduledSessions));
         loadSessions(); // Refresh to show in Waiting
 
-        // Notification 10 seconds before
-        const notifyDelay = delayMs - 10000;
+        // Notification 1 minute before
+        const notifyDelay = delayMs - 60000;
         if (notifyDelay > 0) {
             setTimeout(() => {
                 if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-                    new Notification('Watch2Gether', { body: 'Your scheduled stream starts in 10 seconds!' });
+                    new Notification('Watch2Gether', { body: 'Your scheduled stream starts in 1 minute!' });
                 }
             }, notifyDelay);
         }
@@ -629,16 +631,20 @@
         setTimeout(() => loadSessions(), 500); // Refresh list immediately
     };
 
+    function applyCurrentFilter() {
+        if (currentFilter === 'all') {
+            renderSessions(allSessions);
+        } else {
+            const filtered = allSessions.filter(s => getStatusType(s) === currentFilter);
+            renderSessions(filtered);
+        }
+    }
+
     function filterSessions(filter, btn) {
         document.querySelectorAll('.w2g-tab').forEach(t => t.classList.remove('active'));
         btn.classList.add('active');
-
-        if (filter === 'all') {
-            renderSessions(allSessions);
-        } else {
-            const filtered = allSessions.filter(s => getStatusType(s) === filter);
-            renderSessions(filtered);
-        }
+        currentFilter = filter;
+        applyCurrentFilter();
     }
 
     function timeAgo(unixSeconds) {
@@ -660,21 +666,31 @@
         }
 
         listEl.innerHTML = sessions.map(s => {
-            const title = s.mediaTitle || 'Browsing Legion Space';
-            const hasMedia = s.mediaTitle && s.mediaTitle !== 'Browsing Legion Space';
-            const poster = s.posterUrl || '/img/LOGO_Short.png';
-            const isPlaceholder = !s.posterUrl;
             const statusType = getStatusType(s);
             const isEnded = statusType === 'ended';
             const isLive = statusType === 'live';
-            const statusText = isEnded ? 'Ended' : 'Live now';
+            const isWaiting = statusType === 'waiting';
+            const isScheduled = !!s.isScheduled;
+
+            const title = (isScheduled && isWaiting)
+                ? `Scheduled for ${new Date(s.scheduleTime).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                : (s.mediaTitle || 'Browsing Legion Space');
+            const hasMedia = s.mediaTitle && s.mediaTitle !== 'Browsing Legion Space';
+            const poster = s.posterUrl || '/img/LOGO_Short.png';
+            const isPlaceholder = !s.posterUrl;
+            const statusText = isEnded ? 'Ended' : (isWaiting ? 'Not started' : 'Live now');
             const hostInitial = (s.hostUsername || '?')[0].toUpperCase();
             const displayTime = s.endedAt || s.updatedAt;
+            const isSubscribed = !!notifySubscriptions[s.sessionId];
+
+            const actionButton = (isScheduled && isWaiting)
+                ? `<button class="join-btn" onclick="notifyWhenStarted('${s.sessionId}', ${s.scheduleTime}, this)" ${isSubscribed ? 'disabled' : ''}>${isSubscribed ? '🔔 Notifying...' : '🔔 Notify Me'}</button>`
+                : `<button class="join-btn" onclick="joinSession(${s.sessionId}, this)" ${isEnded ? 'disabled' : ''}>Join Session</button>`;
 
             return `
                 <div class="session-card">
                     <div class="session-card-top ${isPlaceholder ? 'placeholder-state' : ''}">
-                        ${!isPlaceholder ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">` : `<div class="placeholder-text">Host is choosing...</div>`}
+                        ${!isPlaceholder ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">` : `<div class="placeholder-text">${isWaiting ? 'Not started' : 'Host is choosing...'}</div>`}
                         <div class="session-card-overlay">
                             ${isLive ? '<div class="live-indicator"></div>' : ''}
                         </div>
@@ -691,7 +707,7 @@
                             <div class="session-host-avatar">${escapeHtml(hostInitial)}</div>
                             <span class="session-host-username">${escapeHtml(s.hostUsername)}</span>
                         </div>
-                        <button class="join-btn" onclick="joinSession(${s.sessionId}, this)" ${isEnded ? 'disabled' : ''}>Join Session</button>
+                        ${actionButton}
                     </div>
                 </div>
             `;
@@ -736,11 +752,50 @@
             }
 
             statusEl.innerHTML = '';
-            renderSessions(allSessions);
+            applyCurrentFilter();
         } catch (err) {
             statusEl.textContent = 'Connection error.';
             statusEl.className = 'error';
         }
+    }
+
+    // Lets a viewer opt into a reminder for a scheduled session that hasn't started yet.
+    // Notification fires 1 minute before scheduleTime; checked on the same 10s poll as loadSessions
+    // rather than a raw setTimeout, so it survives independent of how long the tab has been open.
+    window.notifyWhenStarted = function(sessionId, scheduleTime, btn) {
+        const subscribe = () => {
+            notifySubscriptions[sessionId] = { scheduleTime, notified: false };
+            localStorage.setItem('w2gNotifySubs', JSON.stringify(notifySubscriptions));
+            btn.disabled = true;
+            btn.textContent = '🔔 Notifying...';
+            alert("You'll receive a notification 1 minute before this session starts!");
+        };
+
+        if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+            Notification.requestPermission().then(subscribe);
+        } else {
+            subscribe();
+        }
+    };
+
+    function checkNotifySubscriptions() {
+        const now = Date.now();
+        let changed = false;
+        for (const id in notifySubscriptions) {
+            const sub = notifySubscriptions[id];
+            if (!sub.notified && now >= sub.scheduleTime - 60000) {
+                if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                    new Notification('Watch2Gether', { body: 'A session you follow starts in 1 minute!' });
+                }
+                sub.notified = true;
+                changed = true;
+            }
+            if (now >= sub.scheduleTime) {
+                delete notifySubscriptions[id];
+                changed = true;
+            }
+        }
+        if (changed) localStorage.setItem('w2gNotifySubs', JSON.stringify(notifySubscriptions));
     }
 
     window.joinSession = async function (sessionId, btn) {
@@ -772,7 +827,8 @@
     statusEl.textContent = 'Loading sessions...';
     statusEl.className = 'loading';
     loadSessions();
-    setInterval(loadSessions, 10000);
+    checkNotifySubscriptions();
+    setInterval(() => { loadSessions(); checkNotifySubscriptions(); }, 10000);
 
     setTimeout(() => {
         if (typeof dismissPageLoadingOverlay === 'function') {

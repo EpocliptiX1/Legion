@@ -1885,6 +1885,17 @@ body {
     max-height: 250px;
     overflow-y: auto;
 }
+/* Add a Friend, when placed above the Friends list (watch2getherPublic.html), takes the
+   top slot of the "right" column and pushes Friends into the remaining rows so the two
+   cards don't land in the same grid cell and render on top of each other. */
+#watch2getherModal .w2g-card-addfriend-top {
+    grid-area: right;
+    grid-row: 3;
+}
+#watch2getherModal .w2g-card-addfriend-top + .w2g-card-friends {
+    grid-row: 4 / span 2;
+    max-height: 220px;
+}
 #watch2getherModal .close-settings {
     position: absolute;
     top: 16px;
