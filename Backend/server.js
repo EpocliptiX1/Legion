@@ -2165,6 +2165,22 @@ activityDb.serialize(() => {
         UNIQUE(session_id, user_uid)
     )`);
     activityDb.run(`CREATE INDEX IF NOT EXISTS idx_w2g_participants_session ON watch2gether_participants(session_id)`);
+    // Archive ended sessions for historical viewing (ended filter on public page)
+    activityDb.run(`CREATE TABLE IF NOT EXISTS watch2gether_session_archive (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        host_uid TEXT NOT NULL,
+        host_username TEXT,
+        path TEXT,
+        participant_count INTEGER DEFAULT 0,
+        media_title TEXT,
+        poster_path TEXT,
+        ended_at INTEGER NOT NULL,
+        duration_seconds INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        is_public INTEGER DEFAULT 0
+    )`);
+    activityDb.run(`CREATE INDEX IF NOT EXISTS idx_w2g_archive_ended ON watch2gether_session_archive(ended_at DESC)`);
     activityDb.run(`CREATE TABLE IF NOT EXISTS friends (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         user_uid   TEXT    NOT NULL,
@@ -3152,42 +3168,140 @@ async function w2gResolveSessionMedia(path) {
 // go stale once nobody's touched them in a while (same staleness window the state polling
 // already relies on elsewhere), so long-abandoned ones don't linger in the list forever.
 const WATCH2GETHER_PUBLIC_SESSION_STALE_SEC = 5 * 60;
-app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
-    const cutoff = Math.floor(Date.now() / 1000) - WATCH2GETHER_PUBLIC_SESSION_STALE_SEC;
+
+// Archive sessions that are about to become stale (> 5 min old but < 6 min old)
+// This ensures ended sessions persist in the archive for the "Ended" filter
+function w2gArchiveStalePublicSessions(callback) {
+    const now = Math.floor(Date.now() / 1000);
+    const staleThreshold = now - WATCH2GETHER_PUBLIC_SESSION_STALE_SEC;
+
+    // Find sessions that haven't been updated in > 5 minutes and archive them
     activityDb.all(
         `SELECT ws.id, ws.host_uid, ws.path, ws.updated_at, COUNT(wp.id) as participant_count
          FROM watch2gether_sessions ws
          LEFT JOIN watch2gether_participants wp ON wp.session_id = ws.id
-         WHERE ws.is_public = 1 AND ws.updated_at >= ?
-         GROUP BY ws.id
-         HAVING participant_count < 4
-         ORDER BY ws.updated_at DESC`,
-        [cutoff],
+         WHERE ws.is_public = 1 AND ws.updated_at < ?
+         GROUP BY ws.id`,
+        [staleThreshold],
         async (err, rows) => {
-            if (err) {
-                console.error('[Watch2Gether] public-sessions failed', err.message);
-                return res.status(500).json({ error: 'Database error' });
+            if (err || !rows || rows.length === 0) {
+                return callback();
             }
-            const sessions = [];
-            for (const row of rows || []) {
+
+            for (const row of rows) {
                 const host = await new Promise((resolve) => {
                     usersDb.get('SELECT username FROM users WHERE userUID = ?', [row.host_uid], (e, u) => resolve(u));
                 });
                 const media = await w2gResolveSessionMedia(row.path);
-                sessions.push({
-                    sessionId: row.id,
-                    hostUID: row.host_uid,
-                    hostUsername: host?.username || 'Someone',
-                    participantCount: row.participant_count,
-                    path: row.path,
-                    mediaTitle: media.title,
-                    posterUrl: media.posterUrl,
-                    updatedAt: row.updated_at
-                });
+
+                // Archive this session
+                activityDb.run(
+                    `INSERT INTO watch2gether_session_archive
+                     (session_id, host_uid, host_username, path, participant_count, media_title, poster_path, ended_at, duration_seconds, is_public)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        row.id,
+                        row.host_uid,
+                        host?.username || 'Someone',
+                        row.path,
+                        row.participant_count,
+                        media.title,
+                        media.posterPath || null,
+                        now,
+                        now - row.updated_at,
+                        1
+                    ],
+                    (insertErr) => {
+                        if (!insertErr) {
+                            // Delete from active sessions once archived
+                            activityDb.run(`DELETE FROM watch2gether_sessions WHERE id = ?`, [row.id]);
+                        }
+                    }
+                );
             }
-            res.json({ sessions });
+            callback();
         }
     );
+}
+
+app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
+    // Archive stale sessions first
+    w2gArchiveStalePublicSessions(async () => {
+        const cutoff = Math.floor(Date.now() / 1000) - WATCH2GETHER_PUBLIC_SESSION_STALE_SEC;
+        const archiveCutoff = Math.floor(Date.now() / 1000) - 3600; // Include archived sessions from last hour
+
+        // Get live sessions
+        activityDb.all(
+            `SELECT ws.id, ws.host_uid, ws.path, ws.updated_at, COUNT(wp.id) as participant_count
+             FROM watch2gether_sessions ws
+             LEFT JOIN watch2gether_participants wp ON wp.session_id = ws.id
+             WHERE ws.is_public = 1 AND ws.updated_at >= ?
+             GROUP BY ws.id
+             HAVING participant_count < 4
+             ORDER BY ws.updated_at DESC`,
+            [cutoff],
+            async (err, liveRows) => {
+                if (err) {
+                    console.error('[Watch2Gether] public-sessions live failed', err.message);
+                    return res.status(500).json({ error: 'Database error' });
+                }
+
+                // Get archived sessions
+                activityDb.all(
+                    `SELECT id, session_id, host_uid, host_username, path, participant_count, media_title, poster_path, ended_at
+                     FROM watch2gether_session_archive
+                     WHERE is_public = 1 AND ended_at >= ?
+                     ORDER BY ended_at DESC
+                     LIMIT 50`,
+                    [archiveCutoff],
+                    async (archErr, archRows) => {
+                        if (archErr) {
+                            console.error('[Watch2Gether] public-sessions archive failed', archErr.message);
+                            return res.status(500).json({ error: 'Database error' });
+                        }
+
+                        const sessions = [];
+
+                        // Process live sessions
+                        for (const row of liveRows || []) {
+                            const host = await new Promise((resolve) => {
+                                usersDb.get('SELECT username FROM users WHERE userUID = ?', [row.host_uid], (e, u) => resolve(u));
+                            });
+                            const media = await w2gResolveSessionMedia(row.path);
+                            sessions.push({
+                                sessionId: row.id,
+                                hostUID: row.host_uid,
+                                hostUsername: host?.username || 'Someone',
+                                participantCount: row.participant_count,
+                                path: row.path,
+                                mediaTitle: media.title,
+                                posterUrl: media.posterUrl,
+                                updatedAt: row.updated_at,
+                                isArchived: false
+                            });
+                        }
+
+                        // Process archived sessions
+                        for (const row of archRows || []) {
+                            sessions.push({
+                                sessionId: row.session_id,
+                                hostUID: row.host_uid,
+                                hostUsername: row.host_username,
+                                participantCount: row.participant_count,
+                                path: row.path,
+                                mediaTitle: row.media_title,
+                                posterUrl: row.poster_path ? `${TMDB_IMAGE_BASE}${row.poster_path}` : null,
+                                endedAt: row.ended_at,
+                                isArchived: true
+                            });
+                        }
+
+                        res.json({ sessions });
+                    }
+                );
+            }
+        );
+    });
 });
 
 // Joins a public session directly - no invite, no friend code, no friendship required. Same

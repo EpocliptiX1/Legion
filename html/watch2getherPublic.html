@@ -609,6 +609,8 @@
     };
 
     function getStatusType(session) {
+        if (session.isArchived) return 'ended';
+
         if (session.isScheduled) {
             if (session.scheduleTime > Date.now()) return 'waiting';
             return 'live';
@@ -667,6 +669,7 @@
             const isLive = statusType === 'live';
             const statusText = isEnded ? 'Ended' : 'Live now';
             const hostInitial = (s.hostUsername || '?')[0].toUpperCase();
+            const displayTime = s.endedAt || s.updatedAt;
 
             return `
                 <div class="session-card">
@@ -681,7 +684,7 @@
                         <h3 class="session-card-title">${escapeHtml(title)}</h3>
                         <div class="session-card-meta">
                             ${hasMedia ? `<span>Subbed</span><span>•</span>` : ''}
-                            <span>${timeAgo(s.updatedAt)}</span>
+                            <span>${timeAgo(displayTime)}</span>
                         </div>
                         <div class="session-status">${statusText}</div>
                         <div class="session-host-info">
