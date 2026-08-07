@@ -3323,6 +3323,12 @@ document.addEventListener('click', (e) => {
 });
 
 function _w2gReportState() {
+    // This same page (indexMain.html etc.) also gets loaded inside iframes we don't control the
+    // meaning of -- the browse-page live preview, and the private-session viewer's mirror frame.
+    // Both share this browser's localStorage, so w2gHostingSessionId is visible there too. Without
+    // this guard, a host who so much as glances at their own session card gets their real reported
+    // path clobbered by whatever page happens to be sitting in the preview iframe.
+    if (window.self !== window.top) return;
     const sessionId = localStorage.getItem('w2gHostingSessionId');
     const token = localStorage.getItem('authToken');
     if (!sessionId || !token || _w2gFollowing || !_w2gIsActiveTab()) return;
@@ -3362,6 +3368,9 @@ document.addEventListener('input', (e) => {
 });
 
 async function _w2gPollForFollowOrControl() {
+    // Same reasoning as _w2gReportState -- never let an embedded copy of this page (live
+    // preview iframe, viewer mirror frame) act as if it were the real hosting/following tab.
+    if (window.self !== window.top) return;
     const sessionId = localStorage.getItem('w2gHostingSessionId');
     const token = localStorage.getItem('authToken');
     if (!sessionId || !token || !_w2gIsActiveTab()) return;
@@ -3416,6 +3425,7 @@ async function _w2gPollForFollowOrControl() {
 // exactly one report and then never updated again until the host happened to load a new page.
 let _w2gLoopsStarted = false;
 function _w2gEnsureLoopsRunning() {
+    if (window.self !== window.top) return; // never spin these up inside an embedded copy of this page
     if (_w2gLoopsStarted) return;
     _w2gLoopsStarted = true;
     setInterval(_w2gReportState, 1500);
