@@ -8,9 +8,32 @@ function escapeHtml(text) {
 }
 
 let currentPlaylist = [];
-let activeTrailerIdx = -1; 
- 
+let activeTrailerIdx = -1;
+
 const isAnimeModeEnabled = () => window.__animeMode === true || localStorage.getItem('animeMode') === 'true';
+
+// Network Information API (Chromium only - no Safari/iOS support, so this is a progressive
+// enhancement, not something the page depends on). Checked once at load rather than live,
+// since re-checking mid-session would mean images already on screen change size under you.
+function isSlowConnection() {
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!conn) return false;
+    if (conn.saveData) return true;
+    if (conn.effectiveType && ['slow-2g', '2g', '3g'].includes(conn.effectiveType)) return true;
+    if (typeof conn.downlink === 'number' && conn.downlink < 1.5) return true;
+    return false;
+}
+window.__isSlowConnection = isSlowConnection();
+console.log('[movieLoading.js] Slow connection detected:', window.__isSlowConnection);
+
+// Picks a smaller TMDB image size when the connection looks slow. The main #posterImg stays
+// fixed at its normal size everywhere it's set (not routed through this) - only secondary
+// images (backdrop, cast thumbnails, recommendation row posters) get dialed down.
+function tmdbImgUrl(imgPath, normalSize, slowSize) {
+    if (!imgPath) return '/img/LOGO_Short.png';
+    const size = window.__isSlowConnection ? slowSize : normalSize;
+    return `https://image.tmdb.org/t/p/${size}${imgPath}`;
+}
 
 async function fetchAniListTimelineRow(movieYear) {
     const startYear = Number(movieYear) - 5;
@@ -430,11 +453,14 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
         // episode 1 - if the player later resolves a different episode (e.g. resuming a
         // continue-watching position), the anime-episode-changed listener already reloads
         // comments for the real one, so this is just a better starting point, not final state.
+        // On a slow/shaky connection, don't compete with the critical TMDB/AniList fetches
+        // above for bandwidth - just record the state and let comments load lazily once Watch
+        // Now fires anime-episode-changed instead (same as before this whole eager-load existed).
         if (malId && !window.__currentAnimeMalId) {
             window.__currentAnimeMalId = malId;
             window.__currentAnimeSeason = window.__currentAnimeSeason || 1;
             window.__currentAnimeEpisode = window.__currentAnimeEpisode || 1;
-            if (typeof loadAnimeComments === 'function') loadAnimeComments();
+            if (!window.__isSlowConnection && typeof loadAnimeComments === 'function') loadAnimeComments();
         }
 
         let anime;
@@ -612,7 +638,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             const posterUrl = movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : '/img/LOGO_Short.png';
             movieYear = movie.first_air_date ? parseInt(movie.first_air_date.split('-')[0]) : null;
             if(document.getElementById('posterImg')) document.getElementById('posterImg').src = posterUrl;
-            if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${posterUrl}')`;
+            if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${tmdbImgUrl(movie.poster_path, 'w500', 'w300')}')`; // heavily blurred anyway (30px), low-res is invisible here
             setText('title', movie.name || movie.original_name || 'Unknown');
             setText('rating', movie.vote_average ? movie.vote_average.toFixed(1) : '--');
             setText('runtime', movie.episode_run_time?.[0] ? `${movie.episode_run_time[0]} min` : 'N/A');
@@ -642,7 +668,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                     li.dataset.actorName = actor.name;
                     // Check if they have a profile image, else use a gray background
                     const bgStyle = actor.profile_path 
-                        ? `background-image: url('https://image.tmdb.org/t/p/w185${actor.profile_path}'); background-size: cover; background-position: center;`
+                        ? `background-image: url('${tmdbImgUrl(actor.profile_path, 'w185', 'w92')}'); background-size: cover; background-position: center;`
                         : `background-color: #333;`;
 
                     li.innerHTML = `<div class="actor-block-pic" style="${bgStyle}"></div><span class="actor-block-name">${escapeHtml(actor.name)}</span>`;
@@ -742,7 +768,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                         if (item.id === movie.id) return;
                         const displayName = item.name || item.title || 'Unknown';
                         const year = (item.first_air_date || '').split('-')[0] || 'N/A';
-                        const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                        const poster = tmdbImgUrl(item.poster_path, 'w342', 'w154');
                         const card = document.createElement('div');
                         card.className = 'mini-card';
                         card.innerHTML = `
@@ -888,7 +914,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                         tvResults.forEach(item => {
                             const displayName = item.name || item.title || 'Unknown';
                             const year = (item.first_air_date || '').split('-')[0] || 'N/A';
-                            const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                            const poster = tmdbImgUrl(item.poster_path, 'w342', 'w154');
                             const card = document.createElement('div');
                             card.className = 'mini-card';
                             card.innerHTML = `
@@ -938,7 +964,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                                 results.forEach(item => {
                                     const displayName = item.name || item.title || 'Unknown';
                                     const year = (item.first_air_date || '').split('-')[0] || 'N/A';
-                                    const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                                    const poster = tmdbImgUrl(item.poster_path, 'w342', 'w154');
                                     const card = document.createElement('div');
                                     card.className = 'mini-card';
                                     card.innerHTML = `
@@ -984,7 +1010,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                                     if (item.id === movie.id) return;
                                     const displayName = item.name || item.title || 'Unknown';
                                     const year = (item.first_air_date || '').split('-')[0] || 'N/A';
-                                    const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                                    const poster = tmdbImgUrl(item.poster_path, 'w342', 'w154');
                                     const card = document.createElement('div');
                                     card.className = 'mini-card';
                                     card.innerHTML = `
@@ -1027,7 +1053,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                         if (item.id === movie.id) return;
                         const displayName = item.name || item.title || 'Unknown';
                         const year = (item.first_air_date || '').split('-')[0] || 'N/A';
-                        const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                        const poster = tmdbImgUrl(item.poster_path, 'w342', 'w154');
                         const card = document.createElement('div');
                         card.className = 'mini-card';
                         card.innerHTML = `
@@ -1109,7 +1135,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             // 1. Set Background and Poster
             const posterUrl = movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : '/img/LOGO_Short.png';
             if(document.getElementById('posterImg')) document.getElementById('posterImg').src = posterUrl;
-            if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${posterUrl}')`;
+            if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${tmdbImgUrl(movie.poster_path, 'w500', 'w300')}')`; // heavily blurred anyway (30px), low-res is invisible here
             
             // 2. Safely extract variables from TMDB
             const revenue = movie.revenue || 0;
@@ -1163,7 +1189,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                     li.dataset.actorId = actor.id;
                     li.dataset.actorName = actor.name;
                     const bgStyle = actor.profile_path 
-                        ? `background-image: url('https://image.tmdb.org/t/p/w185${actor.profile_path}'); background-size: cover; background-position: center;`
+                        ? `background-image: url('${tmdbImgUrl(actor.profile_path, 'w185', 'w92')}'); background-size: cover; background-position: center;`
                         : `background-color: #333;`;
                     li.innerHTML = `<div class="actor-block-pic" style="${bgStyle}"></div><span class="actor-block-name">${escapeHtml(actor.name)}</span>`;
                     li.addEventListener('click', function() {
@@ -1268,7 +1294,7 @@ async function initTVRecommendations(tvId) {
                 const displayName = item.title || item.name || "Unknown";
                 const displayDate = item.release_date || item.first_air_date || "";
                 const year = displayDate ? displayDate.split('-')[0] : "N/A";
-                const poster = item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png';
+                const poster = tmdbImgUrl(item.poster_path, 'w342', 'w154');
                 const card = document.createElement('div');
                 card.className = 'carousel-card';
                 card.innerHTML = `
@@ -1324,7 +1350,7 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
         const year = dateStr.split('-')[0] || '';
         return {
             ID: m.id,
-            poster_full_url: m.poster_path ? `${window.TMDB_IMAGE_BASE || 'https://image.tmdb.org/t/p/w500'}${m.poster_path}` : '/img/LOGO_Short.png',
+            poster_full_url: m.poster_path ? tmdbImgUrl(m.poster_path, 'w500', 'w300') : '/img/LOGO_Short.png',
             'Movie Name': title,
             Rating: m.vote_average || 'N/A',
             Votes: m.vote_count || 0,
