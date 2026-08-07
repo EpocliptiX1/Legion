@@ -601,6 +601,16 @@
         loadSessions();
         setInterval(loadSessions, 10000);
         refreshNoteEl.textContent = 'Refreshes automatically every 10 seconds. Last updated just now.';
+
+        // Dismiss loading overlay after a short delay to ensure smooth transition
+        setTimeout(() => {
+            if (typeof dismissPageLoadingOverlay === 'function') {
+                dismissPageLoadingOverlay();
+            } else {
+                const overlay = document.getElementById('pageLoadingOverlay');
+                if (overlay) overlay.style.display = 'none';
+            }
+        }, 500);
     })();
     </script>
 </body>
