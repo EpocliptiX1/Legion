@@ -531,8 +531,10 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             console.log(`[Anime] AniList returned "${anime.title?.english || anime.title?.romaji}"`);
             console.log(`[Anime] Saving anime info to cache...`);
 
-            // Cache the newly fetched data
-            const cacheSaveRes = await fetch("/api/cache-anime-info", {
+            // Cache the newly fetched data - fire-and-forget, `anime` below is already in hand
+            // from the AniList response above regardless of whether this save succeeds, so
+            // there's nothing gained by waiting on it before rendering the details grid.
+            fetch("/api/cache-anime-info", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json"
@@ -543,13 +545,13 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                     tmdbId,
                     anime
                 })
-            });
-
-            if (cacheSaveRes.ok) {
-                console.log("[Anime] Anime cached successfully.");
-            } else {
-                console.error("[Anime] Failed to cache anime:", cacheSaveRes.status, cacheSaveRes.statusText);
-            }
+            }).then(cacheSaveRes => {
+                if (cacheSaveRes.ok) {
+                    console.log("[Anime] Anime cached successfully.");
+                } else {
+                    console.error("[Anime] Failed to cache anime:", cacheSaveRes.status, cacheSaveRes.statusText);
+                }
+            }).catch(err => console.error("[Anime] Cache save failed:", err));
         }
 
         // 3. Update the UI DOM
@@ -655,7 +657,12 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             setText('actors', stars.length ? stars.join(', ') : 'N/A');
 
             // If this title maps to MAL, upgrade details-grid with richer anime metadata.
-            await applyAnimeMalDetailsIfAvailable(movie, movieId);
+            // NOT awaited: on a cache miss this chains 3-4 sequential fetches (our backend
+            // twice, then the external AniList GraphQL API), which was blocking everything
+            // below - actor thumbnails, recommendation rows - from even starting until it
+            // finished. On slow/high-latency wifi that alone easily accounted for several
+            // seconds of "nothing visible happening" before the rest of the page rendered.
+            applyAnimeMalDetailsIfAvailable(movie, movieId).catch(err => console.error('[Anime] Enrichment failed:', err));
             
             // 🔥 TV ACTOR BLOCKS WITH IMAGES 🔥 (LIMITED TO 5 FOR SPACE)
             const actorList = document.getElementById('actorList');
@@ -715,6 +722,13 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
 
             // --- TV Carousels ---
             // 1. GenreRow (Similar Genre)
+            // Wrapped in an IIFE and NOT awaited: for anime titles this can poll
+            // /api/anime-recommendations up to 20 times at 500ms apart (waitForAnimeRecommendations
+            // below) waiting for the backend's cache to finish building - a full 10 seconds in the
+            // worst case. That was blocking the director row, era row, and the main TV
+            // recommendations carousel below from rendering at all until it finished, which was
+            // almost certainly the actual "10000ms of nothing happening" - not image sizes.
+            (async () => {
             const genreRow = document.getElementById('genreRow');
             if (genreRow && movie.genres?.length) {
                 genreRow.innerHTML = '<p style="color:#888;">Loading...</p>';
@@ -861,6 +875,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             } else {
                 // (Overlay hiding handled globally after 2s)
             }
+            })().catch(err => console.error('[GenreRow] Failed to populate:', err));
 
             // 2. Director/Creator Row (The Ultimate Anime Fallback)
             const directorRow = document.getElementById('directorRow');
