@@ -690,7 +690,7 @@
             return `
                 <div class="session-card">
                     <div class="session-card-top ${isPlaceholder ? 'placeholder-state' : ''}">
-                        ${!isPlaceholder ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">` : `<div class="placeholder-text">${isWaiting ? 'Not started' : 'Host is choosing...'}</div>`}
+                        ${!isPlaceholder ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">` : `<div class="placeholder-text">${isEnded ? 'Stream ended' : (isWaiting ? 'Not started' : 'Host is choosing...')}</div>`}
                         <div class="session-card-overlay">
                             ${isLive ? '<div class="live-indicator"></div>' : ''}
                         </div>
