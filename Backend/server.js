@@ -3169,7 +3169,7 @@ async function w2gResolveSessionMedia(path) {
 // already relies on elsewhere), so long-abandoned ones don't linger in the list forever.
 const WATCH2GETHER_PUBLIC_SESSION_STALE_SEC = 5 * 60;
 
-// Archive sessions that are about to become stale (> 5 min old but < 6 min old)
+// Archive sessions that are about to become stale (> 5 min old)
 // This ensures ended sessions persist in the archive for the "Ended" filter
 function w2gArchiveStalePublicSessions(callback) {
     const now = Math.floor(Date.now() / 1000);
@@ -3187,6 +3187,9 @@ function w2gArchiveStalePublicSessions(callback) {
             if (err || !rows || rows.length === 0) {
                 return callback();
             }
+
+            let completed = 0;
+            const total = rows.length;
 
             for (const row of rows) {
                 const host = await new Promise((resolve) => {
@@ -3214,12 +3217,17 @@ function w2gArchiveStalePublicSessions(callback) {
                     (insertErr) => {
                         if (!insertErr) {
                             // Delete from active sessions once archived
-                            activityDb.run(`DELETE FROM watch2gether_sessions WHERE id = ?`, [row.id]);
+                            activityDb.run(`DELETE FROM watch2gether_sessions WHERE id = ?`, [row.id], () => {
+                                completed++;
+                                if (completed === total) callback();
+                            });
+                        } else {
+                            completed++;
+                            if (completed === total) callback();
                         }
                     }
                 );
             }
-            callback();
         }
     );
 }
