@@ -3098,6 +3098,56 @@ app.post('/watch2gether/host-public', requireAuth, async (req, res) => {
     }
 });
 
+// Pulls the TMDB id + type out of a session's tracked path, e.g.
+// "/html/movieInfo.html?id=302051&type=tv" - the same shape movieLoading.js's own type
+// detection uses (tv/series/anime all mean the TMDB /tv/ endpoint), so this stays consistent
+// with how the rest of the site resolves the same ids.
+function w2gParseMediaFromPath(path) {
+    if (!path) return null;
+    const idMatch = String(path).match(/[?&]id=(\d+)/);
+    if (!idMatch) return null;
+    const typeMatch = String(path).match(/[?&]type=([a-z]+)/i);
+    const rawType = (typeMatch ? typeMatch[1] : 'movie').toLowerCase();
+    const type = (rawType === 'tv' || rawType === 'series' || rawType === 'anime') ? 'tv' : 'movie';
+    return { tmdbId: parseInt(idMatch[1], 10), type };
+}
+
+// poster_cache is keyed by title elsewhere (posterCacheGetMany), but the table also has its own
+// tmdb_id/type columns - queried directly here since a session only gives us the id, not a title.
+function w2gPosterCacheGetByTmdbId(tmdbId, type) {
+    return new Promise((resolve) => {
+        posterCacheDb.get(
+            `SELECT name, poster_path FROM poster_cache WHERE tmdb_id = ? AND type = ? ORDER BY ts DESC LIMIT 1`,
+            [tmdbId, type],
+            (err, row) => resolve(err ? null : row)
+        );
+    });
+}
+
+// Cache hit avoids a network call entirely; a miss (nobody's browsed this title through the
+// normal poster-loading flow yet) falls back to a single live TMDB lookup.
+async function w2gResolveSessionMedia(path) {
+    const parsed = w2gParseMediaFromPath(path);
+    if (!parsed || !parsed.tmdbId) return { title: null, posterUrl: null };
+
+    const cached = await w2gPosterCacheGetByTmdbId(parsed.tmdbId, parsed.type);
+    if (cached?.poster_path) {
+        return { title: cached.name || null, posterUrl: `${TMDB_IMAGE_BASE}${cached.poster_path}` };
+    }
+
+    try {
+        const endpoint = parsed.type === 'tv' ? 'tv' : 'movie';
+        const tmdbRes = await axios.get(`${TMDB_BASE_URL}/${endpoint}/${parsed.tmdbId}?api_key=${TMDB_API_KEY}`);
+        const data = tmdbRes.data || {};
+        return {
+            title: data.title || data.name || null,
+            posterUrl: data.poster_path ? `${TMDB_IMAGE_BASE}${data.poster_path}` : null
+        };
+    } catch (err) {
+        return { title: null, posterUrl: null };
+    }
+}
+
 // "Who's streaming right now" - every public session with room left, newest first. Sessions
 // go stale once nobody's touched them in a while (same staleness window the state polling
 // already relies on elsewhere), so long-abandoned ones don't linger in the list forever.
@@ -3123,12 +3173,15 @@ app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
                 const host = await new Promise((resolve) => {
                     usersDb.get('SELECT username FROM users WHERE userUID = ?', [row.host_uid], (e, u) => resolve(u));
                 });
+                const media = await w2gResolveSessionMedia(row.path);
                 sessions.push({
                     sessionId: row.id,
                     hostUID: row.host_uid,
                     hostUsername: host?.username || 'Someone',
                     participantCount: row.participant_count,
                     path: row.path,
+                    mediaTitle: media.title,
+                    posterUrl: media.posterUrl,
                     updatedAt: row.updated_at
                 });
             }

@@ -44,22 +44,36 @@
         background: #161616;
         border: 1px solid #262626;
         border-radius: 10px;
-        padding: 16px 18px;
+        padding: 14px 18px;
         margin-bottom: 12px;
+    }
+    .session-poster {
+        width: 56px;
+        height: 84px;
+        object-fit: cover;
+        border-radius: 6px;
+        background: #222;
+        flex-shrink: 0;
+    }
+    .session-info {
+        min-width: 0;
+        flex: 1;
     }
     .session-info h3 {
         margin: 0 0 4px;
         font-size: 1.05rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .session-info .host-line {
+        color: #aaa;
+        font-size: 0.85rem;
+        margin-bottom: 2px;
     }
     .session-info .meta {
         color: #888;
-        font-size: 0.85rem;
-    }
-    .session-info .path {
-        color: #666;
-        font-size: 0.78rem;
-        margin-top: 2px;
-        word-break: break-all;
+        font-size: 0.8rem;
     }
     .join-btn {
         background: #f96d00;
@@ -148,16 +162,21 @@
                 return;
             }
 
-            listEl.innerHTML = sessions.map(s => `
+            listEl.innerHTML = sessions.map(s => {
+                const title = s.mediaTitle || 'Browsing Legion Space';
+                const poster = s.posterUrl || '/img/LOGO_Short.png';
+                return `
                 <div class="session-card">
+                    <img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">
                     <div class="session-info">
-                        <h3>${escapeHtml(s.hostUsername)}</h3>
+                        <h3>${escapeHtml(title)}</h3>
+                        <div class="host-line">Hosted by ${escapeHtml(s.hostUsername)}</div>
                         <div class="meta">${s.participantCount}/4 joined &middot; updated ${timeAgo(s.updatedAt)}</div>
-                        ${s.path ? `<div class="path">${escapeHtml(s.path)}</div>` : ''}
                     </div>
                     <button class="join-btn" onclick="joinSession(${s.sessionId}, this)">Join</button>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         } catch (err) {
             statusEl.textContent = 'Could not reach server.';
         }
