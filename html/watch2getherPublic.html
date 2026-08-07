@@ -496,10 +496,17 @@
             <div class="w2g-card">
                 <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" /></svg></span><h3>Host Public Session</h3></div>
                 <p class="setting-hint">Broadcast to all Legion Space users. Up to 4 people can join.</p>
-                <button class="btn-small" onclick="hostPublicWatch2Gether()">Host Public Session</button>
+                <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                    <button class="btn-small" style="flex: 1;" onclick="hostPublicWatch2Gether()">Start Now</button>
+                    <button class="btn-small" style="flex: 1;" onclick="toggleScheduleUI()">Schedule</button>
+                </div>
+                <div id="scheduleUI" style="display: none; gap: 8px;">
+                    <input type="datetime-local" id="scheduleTime" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #444; background: #1c1c1c; color: #fff; margin-bottom: 8px;">
+                    <button class="btn-small" style="width: 100%;" onclick="schedulePublicSession()">Schedule Session</button>
+                </div>
             </div>
 
-            <div class="w2g-card">
+            <div class="w2g-card w2g-card-friends">
                 <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><h3>Add a Friend</h3></div>
                 <p class="setting-hint">Enter a friend's code to add them to your friends list.</p>
                 <div class="w2g-inline-form">
@@ -519,16 +526,75 @@
 
     <script>
     let allSessions = [];
+    let scheduledSessions = JSON.parse(localStorage.getItem('w2gScheduled') || '{}');
     const statusEl = document.getElementById('status');
     const listEl = document.getElementById('sessionList');
     const token = localStorage.getItem('authToken');
 
+    window.toggleScheduleUI = function() {
+        const ui = document.getElementById('scheduleUI');
+        ui.style.display = ui.style.display === 'none' ? 'flex' : 'none';
+        if (ui.style.display === 'flex') {
+            const now = new Date();
+            now.setMinutes(now.getMinutes() + 5);
+            document.getElementById('scheduleTime').value = now.toISOString().slice(0, 16);
+        }
+    };
+
+    window.schedulePublicSession = function() {
+        const timeInput = document.getElementById('scheduleTime').value;
+        if (!timeInput) {
+            alert('Please select a time');
+            return;
+        }
+        const scheduleTime = new Date(timeInput).getTime();
+        const sessionId = 'scheduled_' + Date.now();
+        scheduledSessions[sessionId] = { scheduleTime, created: Date.now() };
+        localStorage.setItem('w2gScheduled', JSON.stringify(scheduledSessions));
+
+        // Set notification 10 seconds before
+        const notifyTime = scheduleTime - 10000;
+        const waitTime = notifyTime - Date.now();
+
+        if (waitTime > 0) {
+            setTimeout(() => {
+                if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                    new Notification('Watch2Gether', { body: 'Your scheduled stream starts in 10 seconds!' });
+                }
+            }, waitTime);
+        }
+
+        // Auto-start at scheduled time
+        setTimeout(() => {
+            hostPublicWatch2Gether();
+            delete scheduledSessions[sessionId];
+            localStorage.setItem('w2gScheduled', JSON.stringify(scheduledSessions));
+        }, scheduleTime - Date.now());
+
+        alert('Session scheduled! You will be notified 10 seconds before.');
+        document.getElementById('scheduleUI').style.display = 'none';
+        closeWatch2GetherModal();
+    };
+
     function getStatusType(session) {
         const now = Math.floor(Date.now() / 1000);
-        const cutoff = now - (5 * 60); // 5 minute staleness window
+        const cutoff = now - (30); // 30 second window for "ended"
         if (session.updatedAt < cutoff) return 'ended';
-        return 'live'; // For simplicity, assume streaming sessions are "live" or "waiting"
+
+        // Check if it's a scheduled session in waiting state
+        for (let id in scheduledSessions) {
+            const sched = scheduledSessions[id];
+            if (sched.scheduleTime > Date.now()) return 'waiting';
+        }
+        return 'live';
     }
+
+    // Hook into stop hosting to refresh immediately
+    const origStopHosting = window.stopWatch2GetherHosting;
+    window.stopWatch2GetherHosting = function() {
+        if (origStopHosting) origStopHosting();
+        setTimeout(() => loadSessions(), 500); // Refresh list immediately
+    };
 
     function filterSessions(filter, btn) {
         document.querySelectorAll('.w2g-tab').forEach(t => t.classList.remove('active'));
