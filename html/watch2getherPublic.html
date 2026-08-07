@@ -1,220 +1,607 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Watch2Gether - Public Sessions</title>
-<style>
-    /* Temporary/quick page - inline styles on purpose, just proving the public-session
-       flow works end to end before this gets folded into the real site styling. */
-    body {
-        margin: 0;
-        background: #0d0d0d;
-        color: #eee;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        padding: 32px 20px 60px;
-    }
-    .wrap {
-        max-width: 720px;
-        margin: 0 auto;
-    }
-    a.back-link {
-        color: #999;
-        text-decoration: none;
-        font-size: 0.9rem;
-    }
-    a.back-link:hover { color: #f96d00; }
-    h1 {
-        margin: 16px 0 4px;
-        font-size: 1.8rem;
-    }
-    p.sub {
-        color: #999;
-        margin: 0 0 24px;
-    }
-    #status {
-        color: #999;
-        padding: 20px 0;
-    }
-    .session-card {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        background: #161616;
-        border: 1px solid #262626;
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin-bottom: 12px;
-    }
-    .session-poster {
-        width: 56px;
-        height: 84px;
-        object-fit: cover;
-        border-radius: 6px;
-        background: #222;
-        flex-shrink: 0;
-    }
-    .session-info {
-        min-width: 0;
-        flex: 1;
-    }
-    .session-info h3 {
-        margin: 0 0 4px;
-        font-size: 1.05rem;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-    .session-info .host-line {
-        color: #aaa;
-        font-size: 0.85rem;
-        margin-bottom: 2px;
-    }
-    .session-info .meta {
-        color: #888;
-        font-size: 0.8rem;
-    }
-    .join-btn {
-        background: #f96d00;
-        color: #fff;
-        border: none;
-        border-radius: 6px;
-        padding: 10px 18px;
-        font-weight: 600;
-        cursor: pointer;
-        white-space: nowrap;
-        flex-shrink: 0;
-    }
-    .join-btn:hover { background: #ff7d16; }
-    .join-btn:disabled {
-        background: #333;
-        color: #777;
-        cursor: not-allowed;
-    }
-    .empty-state {
-        text-align: center;
-        color: #888;
-        padding: 48px 0;
-    }
-    .signin-hint {
-        text-align: center;
-        color: #888;
-        padding: 48px 0;
-    }
-    .signin-hint a { color: #f96d00; }
-    .refresh-note {
-        color: #555;
-        font-size: 0.8rem;
-        margin-top: 24px;
-        text-align: center;
-    }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Watch2Gether - Public Sessions | Legion Space</title>
+
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/theme-enhancements.css">
+    <script src="/js/theme.js"></script>
+    <script src="/js/i18n.js"></script>
+    <script src="/js/translator.js"></script>
+    <script src="/js/tmdb.js"></script>
+    <script src="/js/netflixFeatures.js"></script>
+    <script src="/js/keyboardShortcuts.js"></script>
+    <script src="/js/mainPageControls.js"></script>
 </head>
-<body>
-<div class="wrap">
-    <a href="/html/indexMain.html" class="back-link">&larr; Back to site</a>
-    <h1>Who's Streaming</h1>
-    <p class="sub">Public Watch2Gether sessions anyone can join right now.</p>
+<body class="watch2gether-page">
 
-    <div id="status"></div>
-    <div id="sessionList"></div>
-    <p class="refresh-note" id="refreshNote"></p>
-</div>
+    <!-- ── PAGE LOADING OVERLAY ────────────────────────────── -->
+    <div id="pageLoadingOverlay" class="loading-overlay page-load-overlay">
+        <div class="loading-spinner">
+            <div class="loading-ring"></div>
+        </div>
+        <div class="page-load-label">Legion Space is loading</div>
+    </div>
 
-<script>
-(function () {
-    const statusEl = document.getElementById('status');
-    const listEl = document.getElementById('sessionList');
-    const refreshNoteEl = document.getElementById('refreshNote');
-    const token = localStorage.getItem('authToken');
+    <!-- ── LEFT SIDEBAR NAVIGATION ─────────────────────────── -->
+    <div class="left-sidebar bottom-sidebar" id="leftSidebar">
+        <div class="sidebar-logo-wrap">
+            <a href="/html/indexMain.html" class="logo-link">
+                <img src="/img/LOGO_Short.png" alt="Logo" class="logo-img sidebar-logo-img">
+            </a>
+        </div>
+        <ul class="sidebar-nav-list">
+            <li><a href="/html/indexMain.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+                <span>Home</span>
+            </a></li>
+            <li><a href="/html/indexBrowse.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>
+                <span>Browse</span>
+            </a></li>
+            <li><a href="/html/allMovies.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+                <span>Movies</span>
+            </a></li>
+            <li><a href="/html/personalList.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+                <span>My List</span>
+            </a></li>
+            <li><a href="/html/customPlaylists.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+                <span>Playlists</span>
+            </a></li>
+            <li><a href="/html/forum.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+                <span>Forum</span>
+            </a></li>
+            <li><a href="/html/calendar.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/></svg>
+                <span>Calendar</span>
+            </a></li>
+            <li><a href="/html/watch2getherPublic.html" class="sidebar-nav-link">
+                <svg class="sidebar-nav-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"></path></svg>
+                <span>Watch2Gether</span>
+            </a></li>
+        </ul>
+        <div class="sidebar-mode-wrap" id="modeToggleWrap" title="Switch between Movies and Anime">
+            <label class="mode-toggle-switch">
+                <input type="checkbox" id="animeModeCheck" onchange="window.__toggleAnimeMode && window.__toggleAnimeMode()">
+                <span class="mode-toggle-slider"></span>
+            </label>
+            <span class="mode-toggle-label sidebar-mode-label">⛩ Anime</span>
+        </div>
+    </div>
 
-    if (!token) {
-        statusEl.innerHTML = '';
-        listEl.innerHTML = '<div class="signin-hint">You need to <a href="/html/indexMain.html">sign in</a> to see or join public sessions.</div>';
-        return;
-    }
-
-    function timeAgo(unixSeconds) {
-        const diff = Date.now() - (unixSeconds * 1000);
-        const m = Math.floor(diff / 60000);
-        if (m < 1) return 'just now';
-        if (m < 60) return `${m}m ago`;
-        return `${Math.floor(m / 60)}h ago`;
-    }
-
-    async function loadSessions() {
-        try {
-            const res = await fetch('/watch2gether/public-sessions', {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (!res.ok) {
-                statusEl.textContent = 'Could not load public sessions.';
-                return;
-            }
-            const data = await res.json();
-            const sessions = data.sessions || [];
-
-            statusEl.innerHTML = '';
-
-            if (!sessions.length) {
-                listEl.innerHTML = '<div class="empty-state">Nobody is publicly streaming right now.<br>Start your own from the Watch2Gether menu.</div>';
-                return;
-            }
-
-            listEl.innerHTML = sessions.map(s => {
-                const title = s.mediaTitle || 'Browsing Legion Space';
-                const poster = s.posterUrl || '/img/LOGO_Short.png';
-                return `
-                <div class="session-card">
-                    <img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">
-                    <div class="session-info">
-                        <h3>${escapeHtml(title)}</h3>
-                        <div class="host-line">Hosted by ${escapeHtml(s.hostUsername)}</div>
-                        <div class="meta">${s.participantCount}/4 joined &middot; updated ${timeAgo(s.updatedAt)}</div>
-                    </div>
-                    <button class="join-btn" onclick="joinSession(${s.sessionId}, this)">Join</button>
+    <!-- ── TOP NAVBAR ─────────────────────────────────────── -->
+    <nav class="navbar">
+        <div class="nav-tools" style="width:100%">
+            <ul class="navbar-page-links">
+                <li><a href="/html/indexMain.html">Home</a></li>
+                <li><a href="/html/indexBrowse.html">Browse</a></li>
+                <li><a href="/html/allMovies.html">Movies</a></li>
+                <li><a href="/html/personalList.html">My List</a></li>
+                <li><a href="/html/customPlaylists.html">Playlists</a></li>
+                <li><a href="/html/forum.html">Forum</a></li>
+                <li><a href="/html/calendar.html">Calendar</a></li>
+                <li><a href="/html/watch2getherPublic.html">Watch2Gether</a></li>
+            </ul>
+            <div class="search-wrapper">
+                <div class="search-box">
+                    <input type="search" id="mainSearch" name="site-search" placeholder="Titles..." autocomplete="off" autocorrect="off" data-lpignore="true" data-form-type="other">
+                    <button id="voiceSearchBtn" title="Voice Search" style="background: none; border: none; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); cursor: pointer; padding: 0;">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 15c1.66 0 3-1.34 3-3V6c0-1.66-1.34-3-3-3s-3 1.34-3 3v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-2.08c3.39-.49 6-3.39 6-6.92h-2z" fill="#888"/>
+                        </svg>
+                    </button>
                 </div>
-            `;
-            }).join('');
-        } catch (err) {
-            statusEl.textContent = 'Could not reach server.';
-        }
-    }
+                <div class="search-results-menu" id="searchResults"></div>
+            </div>
 
-    function escapeHtml(text) {
-        return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    window.joinSession = async function (sessionId, btn) {
-        btn.disabled = true;
-        btn.textContent = 'Joining...';
-        try {
-            const res = await fetch(`/watch2gether/join-public/${sessionId}`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                statusEl.textContent = data.error || 'Could not join that session.';
-                btn.disabled = false;
-                btn.textContent = 'Join';
-                return;
-            }
-            window.open(`/html/watch2getherViewer.html?session=${data.sessionId}`, '_blank');
-            btn.textContent = 'Joined';
-        } catch (err) {
-            statusEl.textContent = 'Could not reach server.';
-            btn.disabled = false;
-            btn.textContent = 'Join';
-        }
+            <div class="notif-trigger" onclick="toggleNotificationsMenu(event)">
+                <svg class="notif-bell-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+                <span class="notif-badge hidden" id="notifBadge">0</span>
+                <div class="notif-dropdown" id="notifDropdown">
+                    <div class="dropdown-header">
+                        <p class="tier-badge">Notifications</p>
+                    </div>
+                    <div class="notif-list" id="notifList">
+                        <p class="notif-empty">No notifications yet</p>
+                    </div>
+                </div>
+            </div>
+            <div class="account-trigger" onclick="toggleAccountMenu()">
+                <div class="grey-profile-pic"></div>
+                <span id="navUsername">Guest</span>
+                <div class="account-dropdown" id="accountDropdown">
+                    <div class="dropdown-header">
+                        <p id="dropTier" class="tier-badge">Free Tier</p>
+                    </div>
+                    <div class="dropdown-stats">
+                        <div class="stat-line">
+                            <span>Views:</span>
+                            <span id="statView">0</span>
+                        </div>
+                    </div>
+                    <hr>
+                    <a href="#" class="drop-link" onclick="openWatch2GetherModal()">Start Session</a>
+                    <a href="#" class="drop-link" onclick="openSettings()">Settings</a>
+                    <a href="#" class="drop-link" onclick="logout()">Logout</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+<script id="navActiveScriptInserted">
+(function() {
+    const currentPath = window.location.pathname.split('/').pop().toLowerCase();
+    const pageMap = {
+        'watch2gatherpublic.html': '/html/watch2getherPublic.html',
     };
+    const activeHref = pageMap[currentPath] || '/html/watch2getherPublic.html';
 
-    statusEl.textContent = 'Loading...';
-    loadSessions();
-    setInterval(loadSessions, 10000);
-    refreshNoteEl.textContent = 'Refreshes automatically every 10 seconds.';
+    document.querySelectorAll('.sidebar-nav-link, .navbar-page-links a').forEach(link => {
+        const href = link.getAttribute('href');
+        if (!href) return;
+        const normalizedHref = href.split('#')[0].split('?')[0];
+        if (normalizedHref === activeHref) {
+            if (link.classList.contains('sidebar-nav-link')) {
+                link.classList.add('sidebar-active');
+            }
+            if (link.closest('.navbar-page-links')) {
+                link.classList.add('navbar-link-active');
+            }
+        }
+    });
 })();
 </script>
+
+    <!-- ── MAIN CONTENT ───────────────────────────────────── -->
+    <main class="container w2g-main-content" id="w2gMain">
+        <style>
+            .w2g-main-content {
+                padding-top: 32px;
+                padding-bottom: 60px;
+            }
+
+            .w2g-section-header {
+                margin-bottom: 40px;
+            }
+
+            .w2g-section-header h1 {
+                font-size: 2.2rem;
+                margin: 0 0 8px 0;
+                color: #fff;
+            }
+
+            .w2g-section-header p {
+                color: #999;
+                font-size: 0.95rem;
+                margin: 0;
+            }
+
+            .w2g-hero {
+                background: linear-gradient(135deg, rgba(249, 109, 0, 0.15) 0%, rgba(249, 109, 0, 0.05) 100%);
+                border: 1px solid rgba(249, 109, 0, 0.3);
+                border-radius: 12px;
+                padding: 40px;
+                margin-bottom: 40px;
+                text-align: center;
+            }
+
+            .w2g-hero h2 {
+                font-size: 1.6rem;
+                margin: 0 0 12px 0;
+                color: #fff;
+            }
+
+            .w2g-hero p {
+                color: #aaa;
+                margin: 0 0 24px 0;
+                font-size: 0.95rem;
+                line-height: 1.5;
+            }
+
+            .w2g-hero-buttons {
+                display: flex;
+                gap: 12px;
+                justify-content: center;
+                flex-wrap: wrap;
+            }
+
+            .w2g-btn-primary {
+                background: #f96d00;
+                color: #fff;
+                border: none;
+                padding: 12px 28px;
+                border-radius: 8px;
+                font-size: 0.95rem;
+                font-weight: 600;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                transition: all 0.2s;
+            }
+
+            .w2g-btn-primary:hover {
+                background: #ff7d16;
+                transform: translateY(-2px);
+            }
+
+            .w2g-btn-secondary {
+                background: rgba(255, 255, 255, 0.08);
+                color: #fff;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                padding: 12px 28px;
+                border-radius: 8px;
+                font-size: 0.95rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s;
+            }
+
+            .w2g-btn-secondary:hover {
+                background: rgba(255, 255, 255, 0.12);
+                border-color: #f96d00;
+                color: #f96d00;
+            }
+
+            #status {
+                margin-bottom: 24px;
+                font-size: 0.95rem;
+            }
+
+            #status.error {
+                color: #ff6b6b;
+            }
+
+            #status.loading {
+                color: #f96d00;
+            }
+
+            #sessionList {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+                gap: 24px;
+                margin-bottom: 40px;
+            }
+
+            .session-card {
+                background: #141414;
+                border: 1px solid #262626;
+                border-radius: 12px;
+                overflow: hidden;
+                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                display: flex;
+                flex-direction: column;
+                height: 100%;
+            }
+
+            .session-card:hover {
+                border-color: #f96d00;
+                transform: translateY(-4px);
+                box-shadow: 0 12px 24px rgba(249, 109, 0, 0.2);
+            }
+
+            .session-card-top {
+                position: relative;
+                height: 180px;
+                background: #0d0d0d;
+                overflow: hidden;
+            }
+
+            .session-poster {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                transition: transform 0.3s;
+            }
+
+            .session-card:hover .session-poster {
+                transform: scale(1.05);
+            }
+
+            .session-card-overlay {
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.6) 100%);
+            }
+
+            .session-card-badge {
+                position: absolute;
+                top: 12px;
+                right: 12px;
+                background: #f96d00;
+                color: #fff;
+                padding: 6px 12px;
+                border-radius: 20px;
+                font-size: 0.75rem;
+                font-weight: 700;
+                text-transform: uppercase;
+            }
+
+            .session-card-content {
+                padding: 20px;
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+            }
+
+            .session-card-title {
+                font-size: 1.15rem;
+                font-weight: 700;
+                margin: 0 0 8px 0;
+                color: #fff;
+                line-height: 1.3;
+                word-break: break-word;
+            }
+
+            .session-host {
+                color: #999;
+                font-size: 0.85rem;
+                margin-bottom: 12px;
+            }
+
+            .session-host-name {
+                color: #f96d00;
+                font-weight: 600;
+            }
+
+            .session-meta {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                color: #888;
+                font-size: 0.8rem;
+                margin-bottom: 16px;
+                flex-wrap: wrap;
+            }
+
+            .session-meta-item {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+
+            .session-meta-item svg {
+                width: 14px;
+                height: 14px;
+            }
+
+            .join-btn {
+                background: #f96d00;
+                color: #fff;
+                border: none;
+                padding: 10px 16px;
+                border-radius: 6px;
+                font-size: 0.9rem;
+                font-weight: 600;
+                cursor: pointer;
+                width: 100%;
+                transition: all 0.2s;
+            }
+
+            .join-btn:hover {
+                background: #ff7d16;
+            }
+
+            .join-btn:disabled {
+                background: #333;
+                color: #777;
+                cursor: not-allowed;
+            }
+
+            .empty-state {
+                text-align: center;
+                color: #888;
+                padding: 60px 20px;
+                background: rgba(255,255,255,0.02);
+                border-radius: 12px;
+                border: 1px solid rgba(255,255,255,0.05);
+            }
+
+            .empty-state h3 {
+                font-size: 1.3rem;
+                margin: 0 0 8px 0;
+            }
+
+            .empty-state p {
+                margin: 0 0 20px 0;
+                font-size: 0.95rem;
+            }
+
+            .signin-hint {
+                text-align: center;
+                color: #888;
+                padding: 60px 20px;
+            }
+
+            .signin-hint a {
+                color: #f96d00;
+                text-decoration: none;
+                font-weight: 600;
+            }
+
+            .signin-hint a:hover {
+                text-decoration: underline;
+            }
+
+            .refresh-note {
+                color: #666;
+                font-size: 0.8rem;
+                text-align: center;
+                padding: 20px 0;
+            }
+
+            @media (max-width: 768px) {
+                #sessionList {
+                    grid-template-columns: 1fr;
+                }
+
+                .w2g-hero {
+                    padding: 24px;
+                }
+
+                .w2g-section-header h1 {
+                    font-size: 1.6rem;
+                }
+
+                .w2g-hero-buttons {
+                    flex-direction: column;
+                }
+
+                .w2g-btn-primary,
+                .w2g-btn-secondary {
+                    width: 100%;
+                    justify-content: center;
+                }
+            }
+        </style>
+
+        <div class="w2g-section-header">
+            <h1>Watch2Gether</h1>
+            <p>Join public streaming sessions or host your own to watch together in real-time.</p>
+        </div>
+
+        <div class="w2g-hero">
+            <h2>🎬 Ready to watch together?</h2>
+            <p>Start a public session and invite friends or watch with other Legion Space members.</p>
+            <div class="w2g-hero-buttons">
+                <button class="w2g-btn-primary" onclick="openWatch2GetherModal()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                    Host a Session
+                </button>
+                <button class="w2g-btn-secondary" onclick="document.getElementById('sessionList').scrollIntoView({behavior: 'smooth'})">
+                    Browse Sessions
+                </button>
+            </div>
+        </div>
+
+        <div id="status"></div>
+        <div id="sessionList"></div>
+        <p class="refresh-note" id="refreshNote"></p>
+    </main>
+
+    <script>
+    (function () {
+        const statusEl = document.getElementById('status');
+        const listEl = document.getElementById('sessionList');
+        const refreshNoteEl = document.getElementById('refreshNote');
+        const token = localStorage.getItem('authToken');
+
+        if (!token) {
+            statusEl.innerHTML = '';
+            listEl.innerHTML = '<div class="signin-hint"><strong>You need to sign in</strong><br><a href="/html/indexMain.html">Sign in to join or host public sessions</a></div>';
+            return;
+        }
+
+        function timeAgo(unixSeconds) {
+            const diff = Date.now() - (unixSeconds * 1000);
+            const m = Math.floor(diff / 60000);
+            if (m < 1) return 'just now';
+            if (m < 60) return `${m}m ago`;
+            return `${Math.floor(m / 60)}h ago`;
+        }
+
+        async function loadSessions() {
+            try {
+                const res = await fetch('/watch2gether/public-sessions', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!res.ok) {
+                    statusEl.textContent = 'Could not load sessions.';
+                    statusEl.className = 'error';
+                    return;
+                }
+                const data = await res.json();
+                const sessions = data.sessions || [];
+
+                statusEl.innerHTML = '';
+
+                if (!sessions.length) {
+                    listEl.innerHTML = `<div class="empty-state" style="grid-column: 1/-1;">
+                        <h3>🎯 No active sessions</h3>
+                        <p>Start your own public session to watch together!</p>
+                        <button class="w2g-btn-primary" onclick="openWatch2GetherModal()">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                            Host a Session
+                        </button>
+                    </div>`;
+                    return;
+                }
+
+                listEl.innerHTML = sessions.map(s => {
+                    const title = s.mediaTitle || 'Browsing Legion Space';
+                    const poster = s.posterUrl || '/img/LOGO_Short.png';
+                    const participantPct = Math.round((s.participantCount / 4) * 100);
+                    return `
+                    <div class="session-card">
+                        <div class="session-card-top">
+                            <img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">
+                            <div class="session-card-overlay"></div>
+                            <div class="session-card-badge">${s.participantCount}/4</div>
+                        </div>
+                        <div class="session-card-content">
+                            <h3 class="session-card-title">${escapeHtml(title)}</h3>
+                            <div class="session-host">Hosted by <span class="session-host-name">${escapeHtml(s.hostUsername)}</span></div>
+                            <div class="session-meta">
+                                <div class="session-meta-item">
+                                    <svg fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+                                    Updated ${timeAgo(s.updatedAt)}
+                                </div>
+                            </div>
+                            <button class="join-btn" onclick="joinSession(${s.sessionId}, this)">Join Session</button>
+                        </div>
+                    </div>
+                `;
+                }).join('');
+            } catch (err) {
+                statusEl.textContent = 'Connection error. Please try again.';
+                statusEl.className = 'error';
+            }
+        }
+
+        function escapeHtml(text) {
+            return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        window.joinSession = async function (sessionId, btn) {
+            btn.disabled = true;
+            btn.textContent = 'Joining...';
+            try {
+                const res = await fetch(`/watch2gether/join-public/${sessionId}`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    statusEl.textContent = data.error || 'Could not join that session.';
+                    statusEl.className = 'error';
+                    btn.disabled = false;
+                    btn.textContent = 'Join Session';
+                    return;
+                }
+                window.open(`/html/watch2getherViewer.html?session=${data.sessionId}`, '_blank');
+                btn.textContent = 'Opened';
+            } catch (err) {
+                statusEl.textContent = 'Connection error.';
+                statusEl.className = 'error';
+                btn.disabled = false;
+                btn.textContent = 'Join Session';
+            }
+        };
+
+        statusEl.textContent = 'Loading sessions...';
+        statusEl.className = 'loading';
+        loadSessions();
+        setInterval(loadSessions, 10000);
+        refreshNoteEl.textContent = 'Refreshes automatically every 10 seconds. Last updated just now.';
+    })();
+    </script>
 </body>
 </html>

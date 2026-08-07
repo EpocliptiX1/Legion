@@ -1465,20 +1465,25 @@ body {
 }
 
 .btn-small {
-    background: #222;
+    background: #f96d00;
     color: #fff;
-    border: 1px solid #444;
-    padding: 8px 15px;
-    border-radius: 4px;
+    border: none;
+    padding: 9px 18px;
+    border-radius: 7px;
     cursor: pointer;
     font-size: 13px;
-    margin-top: 5px;
-    transition: 0.2s;
+    font-weight: 600;
+    margin-top: 0;
+    transition: all 0.2s;
 }
 
 .btn-small:hover {
-    background: #333;
-    border-color: #f96d00;
+    background: #ff7d16;
+    transform: translateY(-1px);
+}
+
+.btn-small:active {
+    transform: translateY(0);
 }
 
 .btn-unavailable {
@@ -1772,15 +1777,16 @@ body {
 
 /* Watch2Gether modal -- its own visual identity, deliberately not settings-panel styling */
 #watch2getherModal .w2g-content {
-    background: radial-gradient(circle at 30% 0%, rgba(249, 109, 0, 0.10) 0%, transparent 55%), #141414;
+    background: linear-gradient(135deg, #1a1a1a 0%, #141414 50%, #0f0f0f 100%), radial-gradient(circle at 30% 0%, rgba(249, 109, 0, 0.12) 0%, transparent 55%);
+    background-color: #141414;
     width: 92%;
-    max-width: 700px;
+    max-width: 750px;
     max-height: 88vh;
-    padding: 26px 26px 24px;
-    border-radius: 16px;
-    border: 1px solid #2c2c2c;
+    padding: 32px 28px 28px;
+    border-radius: 18px;
+    border: 1px solid rgba(249, 109, 0, 0.2);
     position: relative;
-    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.95), inset 0 1px 0 rgba(255, 255, 255, 0.05);
     overflow-y: auto;
     margin: auto;
     display: grid;
@@ -1792,7 +1798,7 @@ body {
         "left friends"
         "left friends"
         "left friends";
-    gap: 14px;
+    gap: 16px;
 }
 #watch2getherModal .w2g-hero {
     grid-area: hero;
@@ -1823,90 +1829,127 @@ body {
 }
 #watch2getherModal .w2g-card-friends {
     grid-area: friends;
+    max-height: 320px;
+    overflow-y: auto;
+}
+#watch2getherModal .w2g-card-friends .w2g-friends-list {
+    max-height: 250px;
+    overflow-y: auto;
 }
 #watch2getherModal .close-settings {
     position: absolute;
-    top: 18px;
-    right: 20px;
-    /* background: rgba(255, 255, 255, 0.06); */
-    /* border: 1px solid rgba(255, 255, 255, 0.12); */
+    top: 16px;
+    right: 16px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 50%;
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     display: flex;
     align-items: center;
     justify-content: center;
     line-height: 1;
+    cursor: pointer;
+    transition: all 0.2s;
+    color: #999;
+}
+#watch2getherModal .close-settings:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(249, 109, 0, 0.3);
+    color: #f96d00;
 }
 
 .w2g-hero {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 18px;
+    padding: 20px;
+    background: linear-gradient(135deg, rgba(249, 109, 0, 0.08) 0%, rgba(249, 109, 0, 0.03) 100%);
+    border: 1px solid rgba(249, 109, 0, 0.25);
+    border-radius: 14px;
     padding-right: 30px;
 }
 .w2g-hero-icon {
-    width: 40px;
-    height: 40px;
+    width: 50px;
+    height: 50px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     color: #f96d00;
+    background: rgba(249, 109, 0, 0.12);
+    border: 1px solid rgba(249, 109, 0, 0.25);
+    border-radius: 10px;
 }
 .w2g-hero-icon svg {
-    width: 100%;
-    height: 100%;
+    width: 28px;
+    height: 28px;
 }
 .w2g-hero-text h2 {
-    margin: 0;
-    font-size: 1.3rem;
+    margin: 0 0 4px 0;
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #fff;
 }
 .w2g-hero-sub {
-    margin: 2px 0 0;
-    font-size: 12px;
-    color: var(--text-secondary, #888);
+    margin: 0;
+    font-size: 0.85rem;
+    color: #aaa;
+    line-height: 1.4;
 }
 
 .w2g-card {
-    background: rgba(255, 255, 255, 0.035);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 12px;
-    padding: 14px 16px;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.045) 0%, rgba(255, 255, 255, 0.02) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 14px;
+    padding: 18px;
+    transition: all 0.2s ease;
+}
+.w2g-card:hover {
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.03) 100%);
+    border-color: rgba(249, 109, 0, 0.3);
 }
 .w2g-card-head {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
+    gap: 10px;
+    margin-bottom: 10px;
 }
 .w2g-card-icon {
     display: flex;
     color: #f96d00;
     flex-shrink: 0;
+    width: 24px;
+    height: 24px;
 }
 .w2g-card-icon svg {
-    width: 18px;
-    height: 18px;
+    width: 100%;
+    height: 100%;
 }
 .w2g-card-head h3 {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: 1rem;
+    font-weight: 700;
     color: #fff;
 }
 .w2g-card input[type="text"] {
-    background: #1c1c1c;
-    border: 1px solid #3a3a3a;
-    padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 11px 14px;
     color: white;
-    border-radius: 8px;
+    border-radius: 9px;
     width: 100%;
-    font-size: 0.85rem;
-    transition: border-color 0.15s;
+    font-size: 0.88rem;
+    transition: all 0.2s;
+}
+.w2g-card input[type="text"]:hover {
+    border-color: rgba(255, 255, 255, 0.15);
 }
 .w2g-card input[type="text"]:focus {
     outline: none;
     border-color: #f96d00;
+    background: rgba(0, 0, 0, 0.4);
+    box-shadow: 0 0 0 3px rgba(249, 109, 0, 0.1);
 }
 .w2g-card input[type="text"]::placeholder {
     color: #666;

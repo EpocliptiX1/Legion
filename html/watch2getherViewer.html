@@ -6,75 +6,93 @@
     <title>Watch2Gether - Legion Space</title>
     <style>
         * { box-sizing: border-box; }
-        html, body { margin: 0; padding: 0; height: 100%; background: #0c0c0c; font-family: Arial, sans-serif; }
+        html, body { margin: 0; padding: 0; height: 100%; background: #0d0d0d; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         .w2g-bar {
             position: fixed;
             top: 0; left: 0; right: 0;
-            height: 46px;
-            background: #141414;
-            border-bottom: 1px solid #333;
+            height: 52px;
+            background: linear-gradient(135deg, #141414 0%, #0f0f0f 100%);
+            border-bottom: 1px solid rgba(249, 109, 0, 0.15);
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 0 16px;
+            padding: 0 20px;
             z-index: 10;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
         }
         .w2g-bar-label {
             color: #fff;
-            font-size: 0.85rem;
-            font-weight: 700;
+            font-size: 0.9rem;
+            font-weight: 600;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
         }
         .w2g-dot {
-            width: 8px; height: 8px;
+            width: 9px; height: 9px;
             border-radius: 50%;
             background: #f96d00;
-            animation: w2g-pulse 1.4s infinite;
+            animation: w2g-pulse 1.5s infinite;
+            box-shadow: 0 0 0 0 rgba(249, 109, 0, 0.6);
         }
         @keyframes w2g-pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.35; }
+            0% { box-shadow: 0 0 0 0 rgba(249, 109, 0, 0.6); }
+            70% { box-shadow: 0 0 0 8px rgba(249, 109, 0, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(249, 109, 0, 0); }
         }
         .w2g-leave {
             background: rgba(255,255,255,0.08);
             border: 1px solid rgba(255,255,255,0.15);
             color: #fff;
-            padding: 6px 14px;
-            border-radius: 6px;
-            font-size: 0.78rem;
-            font-weight: 700;
+            padding: 8px 16px;
+            border-radius: 7px;
+            font-size: 0.8rem;
+            font-weight: 600;
             cursor: pointer;
+            transition: all 0.2s;
         }
-        .w2g-leave:hover { border-color: #f96d00; color: #f96d00; }
+        .w2g-leave:hover {
+            background: rgba(255,255,255,0.12);
+            border-color: #f96d00;
+            color: #f96d00;
+        }
         .w2g-request {
             background: #f96d00;
-            border: 1px solid #f96d00;
+            border: none;
             color: #fff;
-            padding: 6px 14px;
-            border-radius: 6px;
-            font-size: 0.78rem;
-            font-weight: 700;
+            padding: 8px 16px;
+            border-radius: 7px;
+            font-size: 0.8rem;
+            font-weight: 600;
             cursor: pointer;
             display: inline-flex;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+        .w2g-request:hover {
+            background: #ff7d16;
+            transform: translateY(-1px);
         }
         .w2g-request svg {
-            width: 14px;
-            height: 14px;
+            width: 16px;
+            height: 16px;
         }
         .w2g-request:disabled {
             background: rgba(255,255,255,0.08);
             border-color: rgba(255,255,255,0.15);
             color: rgba(255,255,255,0.4);
             cursor: default;
+            transform: none;
         }
-        .w2g-bar-right { display: flex; align-items: center; gap: 10px; }
+        .w2g-bar-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
         .w2g-frame-wrap {
             position: absolute;
-            top: 46px; left: 0; right: 0; bottom: 0;
+            top: 52px; left: 0; right: 0; bottom: 0;
         }
         iframe {
             width: 100%; height: 100%;
@@ -83,14 +101,28 @@
         }
         .w2g-waiting {
             position: absolute;
-            top: 46px; left: 0; right: 0; bottom: 0;
+            top: 52px; left: 0; right: 0; bottom: 0;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
             color: rgba(255,255,255,0.5);
-            font-size: 0.9rem;
+            font-size: 1rem;
             text-align: center;
             padding: 20px;
+        }
+        .w2g-waiting-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(249, 109, 0, 0.2);
+            border-top: 3px solid #f96d00;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
@@ -103,7 +135,7 @@
         </div>
     </div>
     <div class="w2g-frame-wrap">
-        <div class="w2g-waiting" id="w2gWaiting">Waiting for your friend to start hosting...</div>
+        <div class="w2g-waiting" id="w2gWaiting"><div class="w2g-waiting-spinner"></div>Waiting for your friend to start hosting...</div>
         <iframe id="w2gFrame" style="display:none;"></iframe>
     </div>
     <script src="/js/watch2getherViewer.js"></script>
