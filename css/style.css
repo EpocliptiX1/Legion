@@ -1790,6 +1790,7 @@ body {
         "status status"
         "left friends"
         "left friends"
+        "left friends"
         "left friends";
     gap: 14px;
 }
@@ -1802,6 +1803,12 @@ body {
 #watch2getherModal .w2g-card {
     grid-area: left;
 }
+/* Pins each stacked "left" column card (Your Code, Host a Session, Host Public Session,
+   Add a Friend) to its own row instead of letting them all default to the same "left" area
+   and overlap. Counted by :nth-of-type(N), N = card's position among ALL <div> children of
+   .w2g-content (not just .w2g-card ones) - div #1 is w2g-hero, #2 is watch2getherHostingStatus,
+   so the cards start at #3. Add another rule here (and another "left friends" row above) if a
+   5th card is ever added to this column. */
 #watch2getherModal .w2g-card:nth-of-type(3) {
     grid-row: 3;
 }
@@ -1810,6 +1817,9 @@ body {
 }
 #watch2getherModal .w2g-card:nth-of-type(5) {
     grid-row: 5;
+}
+#watch2getherModal .w2g-card:nth-of-type(6) {
+    grid-row: 6;
 }
 #watch2getherModal .w2g-card-friends {
     grid-area: friends;
