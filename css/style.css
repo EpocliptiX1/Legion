@@ -1829,10 +1829,9 @@ body {
     grid-template-areas:
         "hero hero"
         "status status"
-        "left friends"
-        "left friends"
-        "left friends"
-        "left friends";
+        "left right"
+        "left right"
+        "left right";
     gap: 16px;
 }
 
@@ -1876,11 +1875,9 @@ body {
 #watch2getherModal .w2g-card:nth-of-type(5) {
     grid-row: 5;
 }
-#watch2getherModal .w2g-card:nth-of-type(6) {
-    grid-row: 6;
-}
 #watch2getherModal .w2g-card-friends {
-    grid-area: friends;
+    grid-area: right;
+    grid-row: 3 / span 3;
     max-height: 320px;
     overflow-y: auto;
 }
