@@ -300,6 +300,24 @@
                 background: linear-gradient(180deg, transparent 40%, rgba(0,0,0,0.8) 100%);
             }
 
+            @keyframes livePulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.3; }
+            }
+
+            .live-indicator {
+                width: 12px;
+                height: 12px;
+                background: #00d960;
+                border-radius: 50%;
+                position: absolute;
+                top: 12px;
+                left: 12px;
+                animation: livePulse 1.5s infinite;
+                box-shadow: 0 0 8px rgba(0, 217, 96, 0.6);
+                z-index: 2;
+            }
+
             .session-card-badge {
                 position: absolute;
                 top: 12px;
@@ -548,44 +566,57 @@
             return;
         }
         const scheduleTime = new Date(timeInput).getTime();
+
+        // Request notification permission
+        if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+
         const sessionId = 'scheduled_' + Date.now();
-        scheduledSessions[sessionId] = { scheduleTime, created: Date.now() };
+        const now = Date.now();
+        const delayMs = scheduleTime - now;
+
+        if (delayMs < 0) {
+            alert('Please select a future time');
+            return;
+        }
+
+        scheduledSessions[sessionId] = { scheduleTime, created: now, active: true };
         localStorage.setItem('w2gScheduled', JSON.stringify(scheduledSessions));
+        loadSessions(); // Refresh to show in Waiting
 
-        // Set notification 10 seconds before
-        const notifyTime = scheduleTime - 10000;
-        const waitTime = notifyTime - Date.now();
-
-        if (waitTime > 0) {
+        // Notification 10 seconds before
+        const notifyDelay = delayMs - 10000;
+        if (notifyDelay > 0) {
             setTimeout(() => {
                 if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
                     new Notification('Watch2Gether', { body: 'Your scheduled stream starts in 10 seconds!' });
                 }
-            }, waitTime);
+            }, notifyDelay);
         }
 
         // Auto-start at scheduled time
         setTimeout(() => {
             hostPublicWatch2Gether();
-            delete scheduledSessions[sessionId];
+            scheduledSessions[sessionId].active = false;
             localStorage.setItem('w2gScheduled', JSON.stringify(scheduledSessions));
-        }, scheduleTime - Date.now());
+            loadSessions();
+        }, delayMs);
 
-        alert('Session scheduled! You will be notified 10 seconds before.');
+        alert('Session scheduled for ' + new Date(scheduleTime).toLocaleTimeString());
         document.getElementById('scheduleUI').style.display = 'none';
         closeWatch2GetherModal();
     };
 
     function getStatusType(session) {
+        if (session.isScheduled) {
+            if (session.scheduleTime > Date.now()) return 'waiting';
+            return 'live';
+        }
+
         const now = Math.floor(Date.now() / 1000);
         const cutoff = now - (30); // 30 second window for "ended"
         if (session.updatedAt < cutoff) return 'ended';
-
-        // Check if it's a scheduled session in waiting state
-        for (let id in scheduledSessions) {
-            const sched = scheduledSessions[id];
-            if (sched.scheduleTime > Date.now()) return 'waiting';
-        }
         return 'live';
     }
 
@@ -632,16 +663,19 @@
             const poster = s.posterUrl || '/img/LOGO_Short.png';
             const isPlaceholder = !s.posterUrl;
             const statusType = getStatusType(s);
-            const statusText = statusType === 'ended' ? 'Ended' : 'Live now';
+            const isEnded = statusType === 'ended';
+            const isLive = statusType === 'live';
+            const statusText = isEnded ? 'Ended' : 'Live now';
             const hostInitial = (s.hostUsername || '?')[0].toUpperCase();
-            const audioInfo = hasMedia ? '' : '<span>TBA</span>';
 
             return `
                 <div class="session-card">
                     <div class="session-card-top ${isPlaceholder ? 'placeholder-state' : ''}">
                         ${!isPlaceholder ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">` : `<div class="placeholder-text">Host is choosing...</div>`}
-                        <div class="session-card-overlay"></div>
-                        <div class="session-card-badge">${s.participantCount}/4</div>
+                        <div class="session-card-overlay">
+                            ${isLive ? '<div class="live-indicator"></div>' : ''}
+                        </div>
+                        <div class="session-card-badge">${isEnded ? 'Peak ' : ''}${s.participantCount}/4</div>
                     </div>
                     <div class="session-card-content">
                         <h3 class="session-card-title">${escapeHtml(title)}</h3>
@@ -654,7 +688,7 @@
                             <div class="session-host-avatar">${escapeHtml(hostInitial)}</div>
                             <span class="session-host-username">${escapeHtml(s.hostUsername)}</span>
                         </div>
-                        <button class="join-btn" onclick="joinSession(${s.sessionId}, this)">Join Session</button>
+                        <button class="join-btn" onclick="joinSession(${s.sessionId}, this)" ${isEnded ? 'disabled' : ''}>Join Session</button>
                     </div>
                 </div>
             `;
@@ -678,6 +712,26 @@
             }
             const data = await res.json();
             allSessions = data.sessions || [];
+
+            // Add scheduled sessions
+            for (let id in scheduledSessions) {
+                const sched = scheduledSessions[id];
+                if (sched.active) {
+                    allSessions.push({
+                        sessionId: id,
+                        hostUID: 'self',
+                        hostUsername: 'You',
+                        participantCount: 0,
+                        path: '',
+                        mediaTitle: 'Browsing Legion Space',
+                        posterUrl: null,
+                        updatedAt: Math.floor(sched.scheduleTime / 1000),
+                        isScheduled: true,
+                        scheduleTime: sched.scheduleTime
+                    });
+                }
+            }
+
             statusEl.innerHTML = '';
             renderSessions(allSessions);
         } catch (err) {
