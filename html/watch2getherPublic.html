@@ -567,6 +567,19 @@
     </div>
 
     <script>
+    // Pages that render per-account private data (saved lists, tracked-show calendars, watch
+    // progress) rather than shared/public content. The live preview iframe is same-origin, so
+    // it renders using the VIEWER's own login, not the host's -- on these pages that means each
+    // viewer would see their own private data, not a preview of the host. Never live-preview them.
+    const W2G_PREVIEW_BLOCKLIST = [
+        'personalList.html',
+        'customPlaylists.html',
+        'calendar.html',
+        'movieInfo.html',
+        'watch2getherPublic.html',
+        'watch2getherViewer.html'
+    ];
+
     let allSessions = [];
     let currentFilter = 'all';
     let scheduledSessions = JSON.parse(localStorage.getItem('w2gScheduled') || '{}');
@@ -706,7 +719,8 @@
             // live, scaled-down view of whatever page the host is actually on instead of a
             // dead grey box. Same-origin only (s.path always comes from the host's own
             // window.location.pathname server-side), so this is never a foreign URL.
-            const showLivePreview = isLive && isPlaceholder && s.path && s.path.startsWith('/');
+            const pathPage = (s.path || '').split('?')[0].split('/').pop();
+            const showLivePreview = isLive && isPlaceholder && s.path && s.path.startsWith('/') && !W2G_PREVIEW_BLOCKLIST.includes(pathPage);
             const statusText = isEnded ? 'Ended' : (isWaiting ? 'Not started' : 'Live now');
             const hostInitial = (s.hostUsername || '?')[0].toUpperCase();
             const displayTime = s.endedAt || s.updatedAt;
