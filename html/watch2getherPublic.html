@@ -126,7 +126,7 @@
                         </div>
                     </div>
                     <hr>
-                    <a href="#" class="drop-link" onclick="openWatch2GetherModal()">Start Session</a>
+                    <a href="#" class="drop-link" onclick="openWatch2GetherModal(); return false;">Start Session</a>
                     <a href="#" class="drop-link" onclick="openSettings()">Settings</a>
                     <a href="#" class="drop-link" onclick="logout()">Logout</a>
                 </div>
@@ -136,16 +136,11 @@
 <script id="navActiveScriptInserted">
 (function() {
     const currentPath = window.location.pathname.split('/').pop().toLowerCase();
-    const pageMap = {
-        'watch2gatherpublic.html': '/html/watch2getherPublic.html',
-    };
-    const activeHref = pageMap[currentPath] || '/html/watch2getherPublic.html';
-
     document.querySelectorAll('.sidebar-nav-link, .navbar-page-links a').forEach(link => {
         const href = link.getAttribute('href');
         if (!href) return;
         const normalizedHref = href.split('#')[0].split('?')[0];
-        if (normalizedHref === activeHref) {
+        if (normalizedHref.includes('watch2gether')) {
             if (link.classList.contains('sidebar-nav-link')) {
                 link.classList.add('sidebar-active');
             }
@@ -186,7 +181,7 @@
                 border: 1px solid rgba(249, 109, 0, 0.3);
                 border-radius: 12px;
                 padding: 40px;
-                margin-bottom: 40px;
+                margin-bottom: 48px;
                 text-align: center;
             }
 
@@ -246,6 +241,95 @@
                 background: rgba(255, 255, 255, 0.12);
                 border-color: #f96d00;
                 color: #f96d00;
+            }
+
+            .w2g-carousel-section {
+                margin-bottom: 50px;
+            }
+
+            .w2g-carousel-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 20px;
+            }
+
+            .w2g-carousel-header h3 {
+                font-size: 1.3rem;
+                margin: 0;
+                color: #fff;
+                font-weight: 700;
+            }
+
+            .w2g-carousel-arrows {
+                display: flex;
+                gap: 8px;
+            }
+
+            .w2g-carousel-arrow {
+                background: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                color: #fff;
+                width: 36px;
+                height: 36px;
+                border-radius: 6px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.2s;
+            }
+
+            .w2g-carousel-arrow:hover {
+                background: rgba(255, 255, 255, 0.15);
+                border-color: #f96d00;
+                color: #f96d00;
+            }
+
+            .w2g-carousel-row {
+                display: flex;
+                gap: 16px;
+                overflow-x: auto;
+                scroll-behavior: smooth;
+                padding: 8px 0;
+            }
+
+            .w2g-carousel-row::-webkit-scrollbar {
+                height: 6px;
+            }
+
+            .w2g-carousel-row::-webkit-scrollbar-track {
+                background: rgba(255, 255, 255, 0.05);
+                border-radius: 3px;
+            }
+
+            .w2g-carousel-row::-webkit-scrollbar-thumb {
+                background: rgba(249, 109, 0, 0.4);
+                border-radius: 3px;
+            }
+
+            .w2g-carousel-row::-webkit-scrollbar-thumb:hover {
+                background: rgba(249, 109, 0, 0.6);
+            }
+
+            .w2g-carousel-card {
+                flex-shrink: 0;
+                width: 160px;
+                cursor: pointer;
+                border-radius: 8px;
+                overflow: hidden;
+                transition: all 0.3s;
+            }
+
+            .w2g-carousel-card:hover {
+                transform: translateY(-4px);
+            }
+
+            .w2g-carousel-card img {
+                width: 100%;
+                height: 240px;
+                object-fit: cover;
+                display: block;
             }
 
             #status {
@@ -403,6 +487,7 @@
                 background: rgba(255,255,255,0.02);
                 border-radius: 12px;
                 border: 1px solid rgba(255,255,255,0.05);
+                grid-column: 1/-1;
             }
 
             .empty-state h3 {
@@ -419,6 +504,7 @@
                 text-align: center;
                 color: #888;
                 padding: 60px 20px;
+                grid-column: 1/-1;
             }
 
             .signin-hint a {
@@ -460,25 +546,58 @@
                     width: 100%;
                     justify-content: center;
                 }
+
+                .w2g-carousel-card {
+                    width: 140px;
+                }
+
+                .w2g-carousel-card img {
+                    height: 210px;
+                }
             }
         </style>
 
         <div class="w2g-section-header">
             <h1>Watch2Gether</h1>
-            <p>Join public streaming sessions or host your own to watch together in real-time.</p>
+            <p>Join live streaming sessions or host your own with friends.</p>
         </div>
 
         <div class="w2g-hero">
             <h2>🎬 Ready to watch together?</h2>
             <p>Start a public session and invite friends or watch with other Legion Space members.</p>
             <div class="w2g-hero-buttons">
-                <button class="w2g-btn-primary" onclick="openWatch2GetherModal()">
+                <button class="w2g-btn-primary" onclick="openWatch2GetherModal(); return false;">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
                     Host a Session
                 </button>
-                <button class="w2g-btn-secondary" onclick="document.getElementById('sessionList').scrollIntoView({behavior: 'smooth'})">
+                <button class="w2g-btn-secondary" onclick="document.getElementById('sessionList').scrollIntoView({behavior: 'smooth'}); return false;">
                     Browse Sessions
                 </button>
+            </div>
+        </div>
+
+        <!-- Trending/Popular Sections -->
+        <div id="w2gTrendingContainer" style="display: none;">
+            <div class="w2g-carousel-section">
+                <div class="w2g-carousel-header">
+                    <h3 id="trendingTitle">Trending Now</h3>
+                    <div class="w2g-carousel-arrows">
+                        <button class="w2g-carousel-arrow" onclick="scrollCarousel('trending', -1)">❮</button>
+                        <button class="w2g-carousel-arrow" onclick="scrollCarousel('trending', 1)">❯</button>
+                    </div>
+                </div>
+                <div class="w2g-carousel-row" id="trendingRow"></div>
+            </div>
+
+            <div class="w2g-carousel-section">
+                <div class="w2g-carousel-header">
+                    <h3 id="popularTitle">Popular on Legion Space</h3>
+                    <div class="w2g-carousel-arrows">
+                        <button class="w2g-carousel-arrow" onclick="scrollCarousel('popular', -1)">❮</button>
+                        <button class="w2g-carousel-arrow" onclick="scrollCarousel('popular', 1)">❯</button>
+                    </div>
+                </div>
+                <div class="w2g-carousel-row" id="popularRow"></div>
             </div>
         </div>
 
@@ -487,7 +606,66 @@
         <p class="refresh-note" id="refreshNote"></p>
     </main>
 
+    <!-- Watch2Gether Modal (for hosting sessions) -->
+    <div id="watch2getherModal" class="settings-modal-overlay">
+        <div class="w2g-content">
+            <span class="close-settings" onclick="closeWatch2GetherModal()"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg></span>
+            <div class="w2g-hero">
+                <div class="w2g-hero-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg></div>
+                <div class="w2g-hero-text">
+                    <h2>Watch2Gether</h2>
+                    <p class="w2g-hero-sub">Watch together with friends in real-time.</p>
+                </div>
+            </div>
+
+            <div id="watch2getherHostingStatus"></div>
+
+            <div class="w2g-card">
+                <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z" /></svg></span><h3>Your Code</h3></div>
+                <p class="setting-hint">Share this with a friend so they can invite you.</p>
+                <input type="text" id="watch2getherOwnCode" readonly placeholder="Loading...">
+            </div>
+
+            <div class="w2g-card">
+                <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12a7.5 7.5 0 0 0 15 0m-15 0a7.5 7.5 0 1 1 15 0m-15 0H3m16.5 0H21m-1.5 0H12m-8.457 3.077 1.41-.513m14.095-5.13 1.41-.513M5.106 17.785l1.15-.964m11.49-9.642 1.149-.964M7.501 19.795l.75-1.3m7.5-12.99.75-1.3m-6.063 16.658.26-1.477m2.605-14.772.26-1.477m0 17.726-.26-1.477M10.698 4.614l-.26-1.477M16.5 19.794l-.75-1.299M7.5 4.205 12 12m6.894 5.785-1.149-.964M6.256 7.178l-1.15-.964m15.352 8.864-1.41-.513M4.954 9.435l-1.41-.514M12.002 12l-3.75 6.495" /></svg></span><h3>Host a Session</h3></div>
+                <p class="setting-hint">Enter a friend's code to host a private session.</p>
+                <div class="w2g-inline-form">
+                    <input type="text" id="watch2getherFriendCode" placeholder="Friend's code">
+                    <button class="btn-small" onclick="hostWatch2Gether()">Host</button>
+                </div>
+            </div>
+
+            <div class="w2g-card">
+                <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" /></svg></span><h3>Host Public Session</h3></div>
+                <p class="setting-hint">Broadcast to all Legion Space users. Up to 4 people can join.</p>
+                <button class="btn-small" onclick="hostPublicWatch2Gether()">Host Public Session</button>
+            </div>
+
+            <div class="w2g-card">
+                <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></span><h3>Add a Friend</h3></div>
+                <p class="setting-hint">Enter a friend's code to add them to your friends list.</p>
+                <div class="w2g-inline-form">
+                    <input type="text" id="watch2getherAddFriendCode" placeholder="Friend's code">
+                    <button class="btn-small" onclick="addWatch2GetherFriend()">Add Friend</button>
+                </div>
+            </div>
+
+            <div class="w2g-card w2g-card-friends">
+                <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" /></svg></span><h3>Friends</h3></div>
+                <div id="watch2getherFriendsList" class="w2g-friends-list">
+                    <p class="setting-hint">Loading...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
+    function scrollCarousel(carousel, direction) {
+        const row = document.getElementById(carousel === 'trending' ? 'trendingRow' : 'popularRow');
+        if (!row) return;
+        row.scrollBy({ left: direction * 300, behavior: 'smooth' });
+    }
+
     (function () {
         const statusEl = document.getElementById('status');
         const listEl = document.getElementById('sessionList');
@@ -496,7 +674,7 @@
 
         if (!token) {
             statusEl.innerHTML = '';
-            listEl.innerHTML = '<div class="signin-hint"><strong>You need to sign in</strong><br><a href="/html/indexMain.html">Sign in to join or host public sessions</a></div>';
+            listEl.innerHTML = '<div class="signin-hint"><strong>You need to sign in</strong><br><a href="/html/indexMain.html" onclick="openSignInModal(); return false;">Sign in to join or host public sessions</a></div>';
             return;
         }
 
@@ -527,7 +705,7 @@
                     listEl.innerHTML = `<div class="empty-state" style="grid-column: 1/-1;">
                         <h3>🎯 No active sessions</h3>
                         <p>Start your own public session to watch together!</p>
-                        <button class="w2g-btn-primary" onclick="openWatch2GetherModal()">
+                        <button class="w2g-btn-primary" onclick="openWatch2GetherModal(); return false;">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
                             Host a Session
                         </button>
@@ -538,7 +716,6 @@
                 listEl.innerHTML = sessions.map(s => {
                     const title = s.mediaTitle || 'Browsing Legion Space';
                     const poster = s.posterUrl || '/img/LOGO_Short.png';
-                    const participantPct = Math.round((s.participantCount / 4) * 100);
                     return `
                     <div class="session-card">
                         <div class="session-card-top">
@@ -602,7 +779,6 @@
         setInterval(loadSessions, 10000);
         refreshNoteEl.textContent = 'Refreshes automatically every 10 seconds. Last updated just now.';
 
-        // Dismiss loading overlay after a short delay to ensure smooth transition
         setTimeout(() => {
             if (typeof dismissPageLoadingOverlay === 'function') {
                 dismissPageLoadingOverlay();
