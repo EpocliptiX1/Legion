@@ -35,6 +35,33 @@ function tmdbImgUrl(imgPath, normalSize, slowSize) {
     return `https://image.tmdb.org/t/p/${size}${imgPath}`;
 }
 
+// AniList-sourced recommendation cards (genre row) carry an anilistId, and a TMDB id only
+// when the backend already had that mapping cached (a free local lookup - it no longer does a
+// live reverse-search per card, which used to mean up to ~26 sequential lookups before the row
+// could even render). If we already have knownTmdbId, navigate instantly; only hit
+// /api/anime-tmdb-id (one lookup, live search allowed there) for the specific card someone
+// actually clicked when it wasn't pre-cached.
+async function navigateToAnimeRecommendation(cardEl, anilistId, displayName, knownTmdbId) {
+    if (knownTmdbId) {
+        window.location.href = `movieInfo.html?id=${knownTmdbId}&type=tv`;
+        return;
+    }
+    if (!anilistId) return;
+    const original = cardEl?.style.opacity;
+    if (cardEl) cardEl.style.opacity = '0.5';
+    try {
+        const res = await fetch(`/api/anime-tmdb-id?anilistId=${encodeURIComponent(anilistId)}&title=${encodeURIComponent(displayName || '')}`);
+        if (!res.ok) throw new Error('not found');
+        const data = await res.json();
+        if (!data.tmdb_id) throw new Error('no tmdb_id in response');
+        window.location.href = `movieInfo.html?id=${data.tmdb_id}&type=tv`;
+    } catch (err) {
+        console.error('[AnimeReco] Could not resolve TMDB id for AniList', anilistId, err);
+        if (cardEl) cardEl.style.opacity = original || '';
+        if (typeof showLimitToast === 'function') showLimitToast('Could not open that title right now.');
+    }
+}
+
 async function fetchAniListTimelineRow(movieYear) {
     const startYear = Number(movieYear) - 5;
     const endYear = Number(movieYear) + 5;
@@ -827,14 +854,14 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                     } else {
                         genreRow.innerHTML = '';
                         const cards = [];
-                        recs.forEach(item => {
-                            if (!item || !item.ID || item.ID === movie.id) return;
+                        const mappedItems = recs.filter(item => item && item.anilistId && item.ID !== movie.id);
+                        mappedItems.forEach(item => {
                             const displayName = item['Movie Name'] || 'Unknown';
                             const year = item.Year || 'N/A';
                             const poster = item.poster_full_url || '/img/LOGO_Short.png';
                             const card = document.createElement('div');
                             card.className = 'mini-card';
-                            card.dataset.tmdbId = item.ID;
+                            card.dataset.anilistId = item.anilistId;
                             card.innerHTML = `
                                 <img src="${poster}" alt="${displayName}">
                                 <div class="mini-info">
@@ -843,9 +870,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                                     <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">AniList Recommendations</p>
                                 </div>
                             `;
-                            card.onclick = () => {
-                                window.location.href = `movieInfo.html?id=${item.ID}&type=tv`;
-                            };
+                            card.onclick = () => navigateToAnimeRecommendation(card, item.anilistId, displayName, item.ID);
                             genreRow.appendChild(card);
                             cards.push(card.outerHTML);
                         });
@@ -854,11 +879,8 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                             genreRowClone.innerHTML = cards.join('');
                             Array.from(genreRowClone.querySelectorAll('.mini-card')).forEach((el, idx) => {
                                 el.onclick = () => {
-                                    const mappedItems = recs.filter(item => item && item.ID && item.ID !== movie.id);
                                     const item = mappedItems[idx];
-                                    if (item) {
-                                        window.location.href = `movieInfo.html?id=${item.ID}&type=tv`;
-                                    }
+                                    if (item) navigateToAnimeRecommendation(el, item.anilistId, item['Movie Name'], item.ID);
                                 };
                             });
                         }

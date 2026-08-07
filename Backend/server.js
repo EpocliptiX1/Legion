@@ -6817,32 +6817,27 @@ app.get('/api/anime-recommendations', async (req, res) => {
 
         const edges = graph?.data?.Media?.recommendations?.edges || [];
         console.log('[AnimeReco] edges:', edges.length);
-        const recommendations = [];
 
+        // Used to reverse-lookup every recommendation's TMDB id here (one AniList->TMDB search
+        // per edge, doing a LIVE network search whenever it wasn't already cached) before
+        // responding - up to ~26 sequential lookups for a title like Mushoku Tensei, so even a
+        // cache HIT on the AniList data above could still take 2+ seconds. The cache check
+        // itself (animeTmdbMappingGetByAniListId) is a local SQLite lookup, effectively free -
+        // it's the live-search fallback (getTmdbIdForAniList) that was slow, so that part is
+        // gone from this hot path. Anything not yet mapped just comes back with ID: null;
+        // movieInfo's genre row resolves those lazily on click via anilistId + GET
+        // /api/anime-tmdb-id (which also warms this same cache for next time), and
+        // animePage.js's recommendation rows already skip entries without an ID exactly like
+        // they did before this change.
+        const recommendations = [];
         for (const edge of edges) {
             const rec = edge?.node?.mediaRecommendation;
             if (!rec?.id) continue;
-
-            console.log('[AnimeReco] Recommendation:', rec.title?.romaji || rec.title?.english || rec.title?.native || '<unknown>');
-            console.log('[AnimeReco] AniList ID:', rec.id);
-            console.log('[AnimeReco] AniList MAL ID:', rec.idMal);
-
-            let mapping = await animeTmdbMappingGetByAniListId(rec.id);
-            console.log('[AnimeReco] Mapping before lookup:', mapping);
-
-            if (!mapping?.tmdb_id) {
-                const title = rec.title?.english || rec.title?.romaji || rec.title?.native || null;
-                const tmdbId = await getTmdbIdForAniList(rec.id, title, rec.idMal || null);
-                mapping = tmdbId ? { tmdb_id: tmdbId } : null;
-                console.log('[AnimeReco] Mapping after reverse lookup:', mapping);
-            }
-
-            console.log('[AnimeReco] TMDB:', mapping?.tmdb_id);
-
-            if (!mapping?.tmdb_id) continue;
-
+            const mapping = await animeTmdbMappingGetByAniListId(rec.id);
             recommendations.push({
-                ID: mapping.tmdb_id,
+                ID: mapping?.tmdb_id || null,
+                anilistId: rec.id,
+                malId: rec.idMal || null,
                 poster_full_url: rec.coverImage?.extraLarge || rec.coverImage?.large || rec.coverImage?.medium || '/img/LOGO_Short.png',
                 'Movie Name': rec.title?.english || rec.title?.romaji || rec.title?.native || 'Unknown',
                 Rating: rec.averageScore != null ? (rec.averageScore / 10) : 'N/A',
