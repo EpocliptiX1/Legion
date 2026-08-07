@@ -280,6 +280,30 @@
                 padding: 20px;
             }
 
+            /* Live preview: iframes the host's current page at 4x size then scales it back
+               down, so the thumbnail shows an accurate small view of the whole page instead
+               of just its top-left corner. Read-only -- pointer-events disabled so clicks
+               land on the card, not the embedded page. */
+            .session-live-preview {
+                position: relative;
+                width: 100%;
+                height: 100%;
+                overflow: hidden;
+                background: #0d0d0d;
+                pointer-events: none;
+            }
+
+            .session-live-preview iframe {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 400%;
+                height: 400%;
+                border: none;
+                transform: scale(0.25);
+                transform-origin: 0 0;
+            }
+
             .session-poster {
                 width: 100%;
                 height: 100%;
@@ -678,6 +702,11 @@
             const hasMedia = s.mediaTitle && s.mediaTitle !== 'Browsing Legion Space';
             const poster = s.posterUrl || '/img/LOGO_Short.png';
             const isPlaceholder = !s.posterUrl;
+            // No TMDB poster to show yet (host hasn't picked something to watch) -- show a
+            // live, scaled-down view of whatever page the host is actually on instead of a
+            // dead grey box. Same-origin only (s.path always comes from the host's own
+            // window.location.pathname server-side), so this is never a foreign URL.
+            const showLivePreview = isLive && isPlaceholder && s.path && s.path.startsWith('/');
             const statusText = isEnded ? 'Ended' : (isWaiting ? 'Not started' : 'Live now');
             const hostInitial = (s.hostUsername || '?')[0].toUpperCase();
             const displayTime = s.endedAt || s.updatedAt;
@@ -689,8 +718,12 @@
 
             return `
                 <div class="session-card">
-                    <div class="session-card-top ${isPlaceholder ? 'placeholder-state' : ''}">
-                        ${!isPlaceholder ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">` : `<div class="placeholder-text">${isEnded ? 'Stream ended' : (isWaiting ? 'Not started' : 'Host is choosing...')}</div>`}
+                    <div class="session-card-top ${(isPlaceholder && !showLivePreview) ? 'placeholder-state' : ''}">
+                        ${showLivePreview
+                            ? `<div class="session-live-preview"><iframe src="${escapeHtml(s.path)}" loading="lazy" tabindex="-1" sandbox="allow-scripts allow-same-origin allow-forms" title="Live preview of ${escapeHtml(s.hostUsername)}'s screen"></iframe></div>`
+                            : (!isPlaceholder
+                                ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">`
+                                : `<div class="placeholder-text">${isEnded ? 'Stream ended' : (isWaiting ? 'Not started' : 'Host is choosing...')}</div>`)}
                         <div class="session-card-overlay">
                             ${isLive ? '<div class="live-indicator"></div>' : ''}
                         </div>
