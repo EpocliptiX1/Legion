@@ -2149,6 +2149,10 @@ activityDb.serialize(() => {
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN video_paused INTEGER`, () => {});
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN video_time REAL`, () => {});
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN search_query TEXT`, () => {});
+    // Public sessions: joinable by any signed-in user without an invite/friend code, still
+    // capped at the same 5 total (host + 4) as private ones. Listed on the "who's streaming"
+    // page via GET /watch2gether/public-sessions.
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0`, () => {});
     // Group sessions: up to 5 people total (host + up to 4 participants). The old single
     // friend_uid column is left in place (unused going forward) rather than dropped -- SQLite
     // can't cheaply drop a NOT NULL column, and nothing reads it anymore now that
@@ -2917,23 +2921,43 @@ app.post('/users/friends/respond', requireAuth, async (req, res) => {
 
 // Reuses the host's most recent session if it still has room (host + up to 4 participants),
 // otherwise starts a fresh one -- so batch/serial invites from the same host land in one room.
+// Filtered to is_public = 0/1 respectively so a private invite-only session and a public
+// join-anyone session never get conflated into the same room by accident.
 function w2gGetOrCreateHostSession(hostUID) {
+    return w2gGetOrCreateHostSessionByType(hostUID, 0);
+}
+
+// "Host Public Session" - same 5-person cap, but anyone signed in can join via
+// POST /watch2gether/join-public/:id (no invite/friend code needed), and the session is
+// listed on GET /watch2gether/public-sessions for the "who's streaming" page to show.
+function w2gGetOrCreatePublicHostSession(hostUID) {
+    return w2gGetOrCreateHostSessionByType(hostUID, 1);
+}
+
+function w2gGetOrCreateHostSessionByType(hostUID, isPublic) {
     return new Promise((resolve, reject) => {
         activityDb.get(
             `SELECT ws.id, COUNT(wp.id) as participant_count
              FROM watch2gether_sessions ws
              LEFT JOIN watch2gether_participants wp ON wp.session_id = ws.id
-             WHERE ws.host_uid = ?
+             WHERE ws.host_uid = ? AND ws.is_public = ?
              GROUP BY ws.id
              ORDER BY ws.id DESC
              LIMIT 1`,
-            [hostUID],
+            [hostUID, isPublic],
             (err, row) => {
                 if (err) return reject(err);
-                if (row && row.participant_count < 4) return resolve(row.id);
+                if (row && row.participant_count < 4) {
+                    // Reusing an existing session doesn't otherwise touch updated_at, so if the
+                    // host's own state-report heartbeat hasn't run yet (or is delayed for any
+                    // reason), a previously-gone-stale public session would stay excluded from
+                    // the "who's streaming" list even though hosting was just (re)started.
+                    activityDb.run(`UPDATE watch2gether_sessions SET updated_at = strftime('%s','now') WHERE id = ?`, [row.id]);
+                    return resolve(row.id);
+                }
                 activityDb.run(
-                    `INSERT INTO watch2gether_sessions (host_uid, friend_uid) VALUES (?, ?)`,
-                    [hostUID, hostUID],
+                    `INSERT INTO watch2gether_sessions (host_uid, friend_uid, is_public) VALUES (?, ?, ?)`,
+                    [hostUID, hostUID, isPublic],
                     function (insertErr) {
                         if (insertErr) return reject(insertErr);
                         resolve(this.lastID);
@@ -3056,6 +3080,93 @@ app.post('/watch2gether/respond', requireAuth, async (req, res) => {
             );
         }
     );
+});
+
+// Starts (or reuses, if it still has room) a public Watch2Gether session for the caller.
+// Unlike /watch2gether/invite, no target user/friend code is needed here - the session just
+// gets listed on GET /watch2gether/public-sessions for anyone to find and join.
+app.post('/watch2gether/host-public', requireAuth, async (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    try {
+        const sessionId = await w2gGetOrCreatePublicHostSession(String(uidNum));
+        res.json({ ok: true, sessionId });
+    } catch (err) {
+        console.error('[Watch2Gether] host-public failed', err.message);
+        res.status(500).json({ error: 'Could not start a public session' });
+    }
+});
+
+// "Who's streaming right now" - every public session with room left, newest first. Sessions
+// go stale once nobody's touched them in a while (same staleness window the state polling
+// already relies on elsewhere), so long-abandoned ones don't linger in the list forever.
+const WATCH2GETHER_PUBLIC_SESSION_STALE_SEC = 5 * 60;
+app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
+    const cutoff = Math.floor(Date.now() / 1000) - WATCH2GETHER_PUBLIC_SESSION_STALE_SEC;
+    activityDb.all(
+        `SELECT ws.id, ws.host_uid, ws.path, ws.updated_at, COUNT(wp.id) as participant_count
+         FROM watch2gether_sessions ws
+         LEFT JOIN watch2gether_participants wp ON wp.session_id = ws.id
+         WHERE ws.is_public = 1 AND ws.updated_at >= ?
+         GROUP BY ws.id
+         HAVING participant_count < 4
+         ORDER BY ws.updated_at DESC`,
+        [cutoff],
+        async (err, rows) => {
+            if (err) {
+                console.error('[Watch2Gether] public-sessions failed', err.message);
+                return res.status(500).json({ error: 'Database error' });
+            }
+            const sessions = [];
+            for (const row of rows || []) {
+                const host = await new Promise((resolve) => {
+                    usersDb.get('SELECT username FROM users WHERE userUID = ?', [row.host_uid], (e, u) => resolve(u));
+                });
+                sessions.push({
+                    sessionId: row.id,
+                    hostUID: row.host_uid,
+                    hostUsername: host?.username || 'Someone',
+                    participantCount: row.participant_count,
+                    path: row.path,
+                    updatedAt: row.updated_at
+                });
+            }
+            res.json({ sessions });
+        }
+    );
+});
+
+// Joins a public session directly - no invite, no friend code, no friendship required. Same
+// 5-person cap as private sessions.
+app.post('/watch2gether/join-public/:id', requireAuth, async (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+    const sessionId = parseInt(req.params.id, 10);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
+
+    activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ? AND is_public = 1`, [sessionId], (err, session) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!session) return res.status(404).json({ error: 'Public session not found' });
+        if (String(session.host_uid) === String(uidNum)) return res.status(400).json({ error: 'You are already hosting this session' });
+
+        activityDb.get(`SELECT COUNT(*) as c FROM watch2gether_participants WHERE session_id = ?`, [sessionId], (countErr, countRow) => {
+            if (countErr) return res.status(500).json({ error: 'Database error' });
+            if ((countRow?.c || 0) >= 4) return res.status(409).json({ error: 'That session is already full' });
+
+            activityDb.run(
+                `INSERT OR IGNORE INTO watch2gether_participants (session_id, user_uid) VALUES (?, ?)`,
+                [sessionId, String(uidNum)],
+                (insertErr) => {
+                    if (insertErr) {
+                        console.error('[Watch2Gether] join-public failed', insertErr.message);
+                        return res.status(500).json({ error: 'Could not join session' });
+                    }
+                    res.json({ ok: true, sessionId });
+                }
+            );
+        });
+    });
 });
 
 const WATCH2GETHER_CONTROL_WINDOW_SEC = 60;

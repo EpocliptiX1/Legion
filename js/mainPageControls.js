@@ -3167,6 +3167,34 @@ window.hostWatch2Gether = async function () {
     await _w2gSendInvite({ friendCode }, () => { if (input) input.value = ''; });
 };
 
+// Public sessions skip the invite step entirely - there's no one specific being invited, so
+// (unlike hostWatch2Gether/_w2gSendInvite, which only starts state-syncing once an invite is
+// actually accepted) hosting has to start right away here, since a stranger could join from
+// the public list at any moment with no accept event to trigger it.
+window.hostPublicWatch2Gether = async function () {
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+        showLimitToast('⚠️ Sign in to use Watch2Gether!');
+        return;
+    }
+    try {
+        const res = await fetch('/watch2gether/host-public', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.sessionId) {
+            showLimitToast(`⚠️ ${data.error || 'Could not start a public session.'}`);
+            return;
+        }
+        window.startWatch2GetherHosting(data.sessionId);
+        closeWatch2GetherModal();
+        showLimitToast('📡 Public session started — up to 4 people can join from the streaming page.');
+    } catch (e) {
+        showLimitToast('⚠️ Could not reach server.');
+    }
+};
+
 // Shared by both the manual friend-code box and the Friends-list invite buttons.
 // payload is { friendCode } or { friendUIDs: [...] }.
 async function _w2gSendInvite(payload, onSuccess) {

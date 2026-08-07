@@ -53,7 +53,7 @@
                 <svg class="sidebar-nav-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/></svg>
                 <span>Calendar</span>
             </a></li>
-            <li><a href="javascript:;" class="sidebar-nav-link" onclick="openWatch2GetherModal()">
+            <li><a href="/html/watch2getherPublic.html" class="sidebar-nav-link">
                 <svg class="sidebar-nav-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"></path></svg>
                 <span>Watch2Gether</span>
             </a></li>
@@ -78,7 +78,7 @@
                 <li><a href="/html/customPlaylists.html">Playlists</a></li>
                 <li><a href="/html/forum.html">Forum</a></li>
                 <li><a href="/html/calendar.html">Calendar</a></li>
-                <li><a href="javascript:;" onclick="openWatch2GetherModal()">Watch2Gether</a></li>
+                <li><a href="/html/watch2getherPublic.html">Watch2Gether</a></li>
             </ul>
             <div class="search-wrapper">
                 <div class="search-box">
@@ -664,6 +664,12 @@
                     <input type="text" id="watch2getherFriendCode" placeholder="Friend's code">
                     <button class="btn-small" onclick="hostWatch2Gether()">Host</button>
                 </div>
+            </div>
+
+            <div class="w2g-card">
+                <div class="w2g-card-head"><span class="w2g-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" /></svg></span><h3>Host Public Session</h3></div>
+                <p class="setting-hint">Anyone can join, no invite or friend code needed. Up to 4 people.</p>
+                <button class="btn-small" onclick="hostPublicWatch2Gether()">Host Public Session</button>
             </div>
 
             <div class="w2g-card">

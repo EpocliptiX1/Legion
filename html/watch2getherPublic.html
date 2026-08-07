@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Watch2Gether - Public Sessions</title>
+<style>
+    /* Temporary/quick page - inline styles on purpose, just proving the public-session
+       flow works end to end before this gets folded into the real site styling. */
+    body {
+        margin: 0;
+        background: #0d0d0d;
+        color: #eee;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        padding: 32px 20px 60px;
+    }
+    .wrap {
+        max-width: 720px;
+        margin: 0 auto;
+    }
+    a.back-link {
+        color: #999;
+        text-decoration: none;
+        font-size: 0.9rem;
+    }
+    a.back-link:hover { color: #f96d00; }
+    h1 {
+        margin: 16px 0 4px;
+        font-size: 1.8rem;
+    }
+    p.sub {
+        color: #999;
+        margin: 0 0 24px;
+    }
+    #status {
+        color: #999;
+        padding: 20px 0;
+    }
+    .session-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        background: #161616;
+        border: 1px solid #262626;
+        border-radius: 10px;
+        padding: 16px 18px;
+        margin-bottom: 12px;
+    }
+    .session-info h3 {
+        margin: 0 0 4px;
+        font-size: 1.05rem;
+    }
+    .session-info .meta {
+        color: #888;
+        font-size: 0.85rem;
+    }
+    .session-info .path {
+        color: #666;
+        font-size: 0.78rem;
+        margin-top: 2px;
+        word-break: break-all;
+    }
+    .join-btn {
+        background: #f96d00;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        padding: 10px 18px;
+        font-weight: 600;
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    .join-btn:hover { background: #ff7d16; }
+    .join-btn:disabled {
+        background: #333;
+        color: #777;
+        cursor: not-allowed;
+    }
+    .empty-state {
+        text-align: center;
+        color: #888;
+        padding: 48px 0;
+    }
+    .signin-hint {
+        text-align: center;
+        color: #888;
+        padding: 48px 0;
+    }
+    .signin-hint a { color: #f96d00; }
+    .refresh-note {
+        color: #555;
+        font-size: 0.8rem;
+        margin-top: 24px;
+        text-align: center;
+    }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <a href="/html/indexMain.html" class="back-link">&larr; Back to site</a>
+    <h1>Who's Streaming</h1>
+    <p class="sub">Public Watch2Gether sessions anyone can join right now.</p>
+
+    <div id="status"></div>
+    <div id="sessionList"></div>
+    <p class="refresh-note" id="refreshNote"></p>
+</div>
+
+<script>
+(function () {
+    const statusEl = document.getElementById('status');
+    const listEl = document.getElementById('sessionList');
+    const refreshNoteEl = document.getElementById('refreshNote');
+    const token = localStorage.getItem('authToken');
+
+    if (!token) {
+        statusEl.innerHTML = '';
+        listEl.innerHTML = '<div class="signin-hint">You need to <a href="/html/indexMain.html">sign in</a> to see or join public sessions.</div>';
+        return;
+    }
+
+    function timeAgo(unixSeconds) {
+        const diff = Date.now() - (unixSeconds * 1000);
+        const m = Math.floor(diff / 60000);
+        if (m < 1) return 'just now';
+        if (m < 60) return `${m}m ago`;
+        return `${Math.floor(m / 60)}h ago`;
+    }
+
+    async function loadSessions() {
+        try {
+            const res = await fetch('/watch2gether/public-sessions', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (!res.ok) {
+                statusEl.textContent = 'Could not load public sessions.';
+                return;
+            }
+            const data = await res.json();
+            const sessions = data.sessions || [];
+
+            statusEl.innerHTML = '';
+
+            if (!sessions.length) {
+                listEl.innerHTML = '<div class="empty-state">Nobody is publicly streaming right now.<br>Start your own from the Watch2Gether menu.</div>';
+                return;
+            }
+
+            listEl.innerHTML = sessions.map(s => `
+                <div class="session-card">
+                    <div class="session-info">
+                        <h3>${escapeHtml(s.hostUsername)}</h3>
+                        <div class="meta">${s.participantCount}/4 joined &middot; updated ${timeAgo(s.updatedAt)}</div>
+                        ${s.path ? `<div class="path">${escapeHtml(s.path)}</div>` : ''}
+                    </div>
+                    <button class="join-btn" onclick="joinSession(${s.sessionId}, this)">Join</button>
+                </div>
+            `).join('');
+        } catch (err) {
+            statusEl.textContent = 'Could not reach server.';
+        }
+    }
+
+    function escapeHtml(text) {
+        return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    window.joinSession = async function (sessionId, btn) {
+        btn.disabled = true;
+        btn.textContent = 'Joining...';
+        try {
+            const res = await fetch(`/watch2gether/join-public/${sessionId}`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                statusEl.textContent = data.error || 'Could not join that session.';
+                btn.disabled = false;
+                btn.textContent = 'Join';
+                return;
+            }
+            window.open(`/html/watch2getherViewer.html?session=${data.sessionId}`, '_blank');
+            btn.textContent = 'Joined';
+        } catch (err) {
+            statusEl.textContent = 'Could not reach server.';
+            btn.disabled = false;
+            btn.textContent = 'Join';
+        }
+    };
+
+    statusEl.textContent = 'Loading...';
+    loadSessions();
+    setInterval(loadSessions, 10000);
+    refreshNoteEl.textContent = 'Refreshes automatically every 10 seconds.';
+})();
+</script>
+</body>
+</html>
