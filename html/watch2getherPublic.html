@@ -303,6 +303,16 @@
                 justify-content: center;
             }
 
+            /* Layout-transparent: makes .placeholder-text/.session-poster/.session-live-preview
+               behave exactly as if they were direct children of .session-card-top again (flex
+               centering, height:100% resolution, etc). Needed because renderSessions() wraps
+               them in this element so it can update just the media without touching sibling
+               content -- without display:contents, percentage heights inside would resolve
+               against this wrapper's own auto height instead of .session-card-top's 160px. */
+            .session-card-media {
+                display: contents;
+            }
+
             .placeholder-text {
                 color: #666;
                 font-size: 0.9rem;
@@ -779,69 +789,137 @@
         return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
+    // Computes everything renderSessions needs for one card without producing any HTML for the
+    // live-preview iframe itself -- that part is handled separately so an unchanged iframe is
+    // never touched (see renderSessions).
+    function computeCardParts(s) {
+        const statusType = getStatusType(s);
+        const isEnded = statusType === 'ended';
+        const isLive = statusType === 'live';
+        const isWaiting = statusType === 'waiting';
+        const isScheduled = !!s.isScheduled;
+
+        const title = (isScheduled && isWaiting)
+            ? `Scheduled for ${new Date(s.scheduleTime).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+            : (s.mediaTitle || 'Browsing Legion Space');
+        const hasMedia = s.mediaTitle && s.mediaTitle !== 'Browsing Legion Space';
+        const poster = s.posterUrl || '/img/LOGO_Short.png';
+        const isPlaceholder = !s.posterUrl;
+        // No TMDB poster to show yet (host hasn't picked something to watch) -- show a
+        // live, scaled-down view of whatever page the host is actually on instead of a
+        // dead grey box. Same-origin only (s.path always comes from the host's own
+        // window.location.pathname server-side), so this is never a foreign URL.
+        const pathPage = (s.path || '').split('?')[0].split('/').pop();
+        const showLivePreview = isLive && isPlaceholder && s.path && s.path.startsWith('/') && !W2G_PREVIEW_BLOCKLIST.includes(pathPage);
+        const statusText = isEnded ? 'Ended' : (isWaiting ? 'Not started' : 'Live now');
+        const hostInitial = (s.hostUsername || '?')[0].toUpperCase();
+        const displayTime = s.endedAt || s.updatedAt;
+        const isSubscribed = !!notifySubscriptions[s.sessionId];
+
+        const actionButton = (isScheduled && isWaiting)
+            ? `<button class="join-btn" onclick="notifyWhenStarted('${s.sessionId}', ${s.scheduleTime}, this)" ${isSubscribed ? 'disabled' : ''}>${isSubscribed ? '🔔 Notifying...' : '🔔 Notify Me'}</button>`
+            : `<button class="join-btn" onclick="joinSession(${s.sessionId}, this)" ${isEnded ? 'disabled' : ''}>Join Session</button>`;
+
+        return {
+            isPlaceholderState: isPlaceholder && !showLivePreview,
+            showLivePreview,
+            previewSrc: s.path,
+            hostUsername: s.hostUsername,
+            mediaHtml: !isPlaceholder
+                ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">`
+                : `<div class="placeholder-text">${isEnded ? 'Stream ended' : (isWaiting ? 'Not started' : 'Host is choosing...')}</div>`,
+            overlayHtml: isLive ? '<div class="live-indicator"></div>' : '',
+            badgeHtml: `${isEnded ? 'Peak ' : ''}${s.participantCount}/4`,
+            contentHtml: `
+                <h3 class="session-card-title">${escapeHtml(title)}</h3>
+                <div class="session-card-meta">
+                    ${hasMedia ? `<span>Subbed</span><span>•</span>` : ''}
+                    <span>${timeAgo(displayTime)}</span>
+                </div>
+                <div class="session-status">${statusText}</div>
+                <div class="session-host-info">
+                    <div class="session-host-avatar">${escapeHtml(hostInitial)}</div>
+                    <span class="session-host-username">${escapeHtml(s.hostUsername)}</span>
+                </div>
+                ${actionButton}
+            `
+        };
+    }
+
+    // sessionId -> that card's persistent DOM node. Kept across renders so an unchanged live
+    // preview iframe is never removed from the document -- removing an iframe from the DOM
+    // unloads its content immediately, so the earlier "swap the old iframe back in after
+    // innerHTML" approach didn't actually work: by the time that code ran, innerHTML had
+    // already destroyed the old iframe's content. The only real fix is to never recreate a
+    // card's DOM at all when nothing about it actually changed.
+    let renderedCards = new Map();
+
     function renderSessions(sessions) {
         if (!sessions.length) {
             listEl.innerHTML = `<div class="empty-state"><h3>🎯 No sessions found</h3><p>Start your own public session to watch together!</p></div>`;
+            renderedCards.clear();
             return;
         }
 
-        listEl.innerHTML = sessions.map(s => {
-            const statusType = getStatusType(s);
-            const isEnded = statusType === 'ended';
-            const isLive = statusType === 'live';
-            const isWaiting = statusType === 'waiting';
-            const isScheduled = !!s.isScheduled;
+        listEl.querySelectorAll('.empty-state, .signin-hint, .error-hint').forEach(el => el.remove());
 
-            const title = (isScheduled && isWaiting)
-                ? `Scheduled for ${new Date(s.scheduleTime).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
-                : (s.mediaTitle || 'Browsing Legion Space');
-            const hasMedia = s.mediaTitle && s.mediaTitle !== 'Browsing Legion Space';
-            const poster = s.posterUrl || '/img/LOGO_Short.png';
-            const isPlaceholder = !s.posterUrl;
-            // No TMDB poster to show yet (host hasn't picked something to watch) -- show a
-            // live, scaled-down view of whatever page the host is actually on instead of a
-            // dead grey box. Same-origin only (s.path always comes from the host's own
-            // window.location.pathname server-side), so this is never a foreign URL.
-            const pathPage = (s.path || '').split('?')[0].split('/').pop();
-            const showLivePreview = isLive && isPlaceholder && s.path && s.path.startsWith('/') && !W2G_PREVIEW_BLOCKLIST.includes(pathPage);
-            const statusText = isEnded ? 'Ended' : (isWaiting ? 'Not started' : 'Live now');
-            const hostInitial = (s.hostUsername || '?')[0].toUpperCase();
-            const displayTime = s.endedAt || s.updatedAt;
-            const isSubscribed = !!notifySubscriptions[s.sessionId];
+        const seenIds = new Set();
 
-            const actionButton = (isScheduled && isWaiting)
-                ? `<button class="join-btn" onclick="notifyWhenStarted('${s.sessionId}', ${s.scheduleTime}, this)" ${isSubscribed ? 'disabled' : ''}>${isSubscribed ? '🔔 Notifying...' : '🔔 Notify Me'}</button>`
-                : `<button class="join-btn" onclick="joinSession(${s.sessionId}, this)" ${isEnded ? 'disabled' : ''}>Join Session</button>`;
+        sessions.forEach(s => {
+            const sessionId = String(s.sessionId);
+            seenIds.add(sessionId);
+            const parts = computeCardParts(s);
 
-            return `
-                <div class="session-card">
-                    <div class="session-card-top ${(isPlaceholder && !showLivePreview) ? 'placeholder-state' : ''}">
-                        ${showLivePreview
-                            ? `<div class="session-live-preview"><iframe src="${escapeHtml(s.path)}" loading="lazy" tabindex="-1" sandbox="allow-scripts allow-same-origin allow-forms" title="Live preview of ${escapeHtml(s.hostUsername)}'s screen"></iframe></div>`
-                            : (!isPlaceholder
-                                ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">`
-                                : `<div class="placeholder-text">${isEnded ? 'Stream ended' : (isWaiting ? 'Not started' : 'Host is choosing...')}</div>`)}
-                        <div class="session-card-overlay">
-                            ${isLive ? '<div class="live-indicator"></div>' : ''}
-                        </div>
-                        <div class="session-card-badge">${isEnded ? 'Peak ' : ''}${s.participantCount}/4</div>
+            let cardEl = renderedCards.get(sessionId);
+            if (!cardEl) {
+                cardEl = document.createElement('div');
+                cardEl.className = 'session-card';
+                cardEl.dataset.sessionId = sessionId;
+                cardEl.innerHTML = `
+                    <div class="session-card-top">
+                        <div class="session-card-media"></div>
+                        <div class="session-card-overlay"></div>
+                        <div class="session-card-badge"></div>
                     </div>
-                    <div class="session-card-content">
-                        <h3 class="session-card-title">${escapeHtml(title)}</h3>
-                        <div class="session-card-meta">
-                            ${hasMedia ? `<span>Subbed</span><span>•</span>` : ''}
-                            <span>${timeAgo(displayTime)}</span>
-                        </div>
-                        <div class="session-status">${statusText}</div>
-                        <div class="session-host-info">
-                            <div class="session-host-avatar">${escapeHtml(hostInitial)}</div>
-                            <span class="session-host-username">${escapeHtml(s.hostUsername)}</span>
-                        </div>
-                        ${actionButton}
-                    </div>
-                </div>
-            `;
-        }).join('');
+                    <div class="session-card-content"></div>
+                `;
+                renderedCards.set(sessionId, cardEl);
+            }
+
+            const topEl = cardEl.querySelector('.session-card-top');
+            topEl.className = 'session-card-top' + (parts.isPlaceholderState ? ' placeholder-state' : '');
+
+            const mediaEl = cardEl.querySelector('.session-card-media');
+            if (parts.showLivePreview) {
+                const existingIframe = mediaEl.querySelector('iframe');
+                if (!existingIframe || existingIframe.getAttribute('data-preview-src') !== parts.previewSrc) {
+                    // Path actually changed (or there was no preview here before) -- a real
+                    // navigation is correct here, this is the one case that SHOULD reload.
+                    mediaEl.innerHTML = `<div class="session-live-preview"><iframe data-preview-src="${escapeHtml(parts.previewSrc)}" src="${escapeHtml(parts.previewSrc)}" loading="lazy" tabindex="-1" sandbox="allow-scripts allow-same-origin allow-forms" title="Live preview of ${escapeHtml(parts.hostUsername)}'s screen"></iframe></div>`;
+                }
+                // else: same src as last render -- leave the existing iframe completely alone.
+            } else {
+                // Non-preview content (poster image / placeholder text) is cheap to refresh
+                // every render -- no network round-trip, no visible flicker.
+                mediaEl.innerHTML = parts.mediaHtml;
+            }
+
+            cardEl.querySelector('.session-card-overlay').innerHTML = parts.overlayHtml;
+            cardEl.querySelector('.session-card-badge').innerHTML = parts.badgeHtml;
+            cardEl.querySelector('.session-card-content').innerHTML = parts.contentHtml;
+        });
+
+        for (const [id, cardEl] of renderedCards) {
+            if (!seenIds.has(id)) {
+                cardEl.remove();
+                renderedCards.delete(id);
+            }
+        }
+
+        // appendChild on a node already in the document just moves it -- this both re-orders
+        // to match `sessions` and leaves untouched cards (including their iframes) exactly as
+        // they were.
+        sessions.forEach(s => listEl.appendChild(renderedCards.get(String(s.sessionId))));
     }
 
     async function loadSessions() {
