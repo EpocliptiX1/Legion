@@ -266,8 +266,8 @@
 
             #sessionList {
                 display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-                gap: 20px;
+                grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+                gap: 14px;
                 margin-bottom: 40px;
             }
 
@@ -276,22 +276,27 @@
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 12px;
                 overflow: hidden;
-                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
                 display: flex;
-                flex-direction: column;
-                height: 100%;
+                flex-direction: row;
+                align-items: stretch;
+                padding: 12px;
+                gap: 12px;
             }
 
             .session-card:hover {
                 background: rgba(255, 255, 255, 0.06);
                 border-color: rgba(249, 109, 0, 0.3);
-                transform: translateY(-4px);
-                box-shadow: 0 12px 32px rgba(249, 109, 0, 0.15);
+                transform: translateY(-2px);
+                box-shadow: 0 8px 24px rgba(249, 109, 0, 0.12);
             }
 
             .session-card-top {
                 position: relative;
-                height: 160px;
+                width: 96px;
+                height: 96px;
+                flex-shrink: 0;
+                border-radius: 8px;
                 background: #0d0d0d;
                 overflow: hidden;
             }
@@ -315,10 +320,10 @@
 
             .placeholder-text {
                 color: #666;
-                font-size: 0.9rem;
+                font-size: 0.65rem;
                 font-weight: 600;
                 text-align: center;
-                padding: 20px;
+                padding: 6px;
             }
 
             .session-poster {
@@ -332,120 +337,141 @@
                 transform: scale(1.08);
             }
 
-            .session-card-overlay {
-                position: absolute;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background: linear-gradient(180deg, transparent 40%, rgba(0,0,0,0.8) 100%);
-            }
-
             @keyframes livePulse {
                 0%, 100% { opacity: 1; }
                 50% { opacity: 0.3; }
             }
 
-            .live-indicator {
-                width: 12px;
-                height: 12px;
-                background: #00d960;
-                border-radius: 50%;
-                position: absolute;
-                top: 12px;
-                left: 12px;
-                animation: livePulse 1.5s infinite;
-                box-shadow: 0 0 8px rgba(0, 217, 96, 0.6);
-                z-index: 2;
-            }
-
             .session-card-badge {
                 position: absolute;
-                top: 12px;
-                right: 12px;
-                background: #f96d00;
+                top: 5px;
+                right: 5px;
+                background: rgba(0, 0, 0, 0.65);
                 color: #fff;
-                padding: 5px 10px;
-                border-radius: 16px;
-                font-size: 0.7rem;
+                padding: 2px 6px;
+                border-radius: 10px;
+                font-size: 0.6rem;
                 font-weight: 700;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
             }
 
             .session-card-content {
-                padding: 16px;
                 flex: 1;
+                min-width: 0;
                 display: flex;
                 flex-direction: column;
+                justify-content: center;
+                gap: 4px;
+            }
+
+            .session-live-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+                background: rgba(255, 45, 85, 0.15);
+                color: #ff3b5c;
+                border: 1px solid rgba(255, 45, 85, 0.35);
+                padding: 2px 8px;
+                border-radius: 10px;
+                font-size: 0.62rem;
+                font-weight: 800;
+                text-transform: uppercase;
+                letter-spacing: 0.4px;
+                width: fit-content;
+            }
+
+            .session-live-badge::before {
+                content: '';
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                background: #ff3b5c;
+                animation: livePulse 1.5s infinite;
             }
 
             .session-card-title {
-                font-size: 1.05rem;
+                font-size: 0.95rem;
                 font-weight: 700;
-                margin: 0 0 6px 0;
+                margin: 0;
                 color: #4ac4ff;
                 line-height: 1.3;
                 word-break: break-word;
+                display: -webkit-box;
+                -webkit-line-clamp: 2;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
             }
 
             .session-card-meta {
                 display: flex;
-                gap: 8px;
-                font-size: 0.75rem;
+                align-items: center;
+                gap: 6px;
+                font-size: 0.7rem;
                 color: #999;
-                margin-bottom: 10px;
                 flex-wrap: wrap;
             }
 
             .session-status {
                 color: #aaa;
-                font-size: 0.8rem;
-                margin-bottom: 12px;
+                font-size: 0.75rem;
             }
 
             .session-host-info {
                 display: flex;
                 align-items: center;
                 gap: 8px;
-                font-size: 0.8rem;
-                color: #888;
-                margin-bottom: 12px;
-                padding-top: 10px;
+                margin-top: 4px;
+                padding-top: 8px;
                 border-top: 1px solid rgba(255, 255, 255, 0.05);
             }
 
             .session-host-avatar {
-                width: 24px;
-                height: 24px;
+                width: 26px;
+                height: 26px;
                 border-radius: 50%;
                 background: linear-gradient(135deg, #f96d00, #ff7d16);
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 0.7rem;
+                font-size: 0.65rem;
                 font-weight: 700;
                 color: #fff;
                 flex-shrink: 0;
             }
 
+            .session-host-text {
+                display: flex;
+                flex-direction: column;
+                min-width: 0;
+                line-height: 1.25;
+                flex: 1;
+            }
+
             .session-host-username {
                 color: #fff;
                 font-weight: 600;
+                font-size: 0.78rem;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .session-host-sub {
+                color: #777;
+                font-size: 0.68rem;
             }
 
             .join-btn {
                 background: #f96d00;
                 color: #fff;
                 border: none;
-                padding: 10px 16px;
+                padding: 6px 14px;
                 border-radius: 6px;
-                font-size: 0.85rem;
+                font-size: 0.72rem;
                 font-weight: 700;
                 cursor: pointer;
-                width: 100%;
+                white-space: nowrap;
+                flex-shrink: 0;
                 transition: all 0.2s;
-                margin-top: auto;
             }
 
             .join-btn:hover {
@@ -783,20 +809,20 @@
             mediaHtml: !isPlaceholder
                 ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">`
                 : `<div class="placeholder-text">${isEnded ? 'Stream ended' : (isWaiting ? 'Not started' : 'Host is choosing...')}</div>`,
-            overlayHtml: isLive ? '<div class="live-indicator"></div>' : '',
             badgeHtml: `${isEnded ? 'Peak ' : ''}${s.participantCount}/4`,
             contentHtml: `
+                ${isLive ? `<div class="session-live-badge">Live</div>` : ''}
                 <h3 class="session-card-title">${escapeHtml(title)}</h3>
-                <div class="session-card-meta">
-                    ${hasMedia ? `<span>Subbed</span><span>•</span>` : ''}
-                    <span>${timeAgo(displayTime)}</span>
-                </div>
+                ${hasMedia ? `<div class="session-card-meta"><span>Subbed</span></div>` : ''}
                 <div class="session-status">${statusText}</div>
                 <div class="session-host-info">
                     <div class="session-host-avatar">${escapeHtml(hostInitial)}</div>
-                    <span class="session-host-username">${escapeHtml(s.hostUsername)}</span>
+                    <div class="session-host-text">
+                        <span class="session-host-username">${escapeHtml(s.hostUsername)}</span>
+                        <span class="session-host-sub">${timeAgo(displayTime)}</span>
+                    </div>
+                    ${actionButton}
                 </div>
-                ${actionButton}
             `
         };
     }
@@ -830,7 +856,6 @@
                 cardEl.innerHTML = `
                     <div class="session-card-top">
                         <div class="session-card-media"></div>
-                        <div class="session-card-overlay"></div>
                         <div class="session-card-badge"></div>
                     </div>
                     <div class="session-card-content"></div>
@@ -847,7 +872,6 @@
             // plain poster/placeholder until it gets redesigned.
             cardEl.querySelector('.session-card-media').innerHTML = parts.mediaHtml;
 
-            cardEl.querySelector('.session-card-overlay').innerHTML = parts.overlayHtml;
             cardEl.querySelector('.session-card-badge').innerHTML = parts.badgeHtml;
             cardEl.querySelector('.session-card-content').innerHTML = parts.contentHtml;
         });
