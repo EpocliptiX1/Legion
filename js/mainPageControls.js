@@ -3489,6 +3489,30 @@ document.addEventListener('DOMContentLoaded', () => {
     _w2gRenderHostBar();
 });
 
+// A scheduled public session gets auto-started server-side at its scheduled time (see
+// w2gSweepScheduledSessions in server.js), independent of whether the host's tab is even open.
+// This is what actually notices that transition from wherever the host happens to be browsing
+// and switches on real state reporting for it -- only the host's own browser can ever know what
+// page/video state to broadcast, so the server creating the session row isn't enough by itself.
+async function _w2gCheckScheduledAutoStart() {
+    if (window.self !== window.top) return;
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+    try {
+        const res = await fetch('/watch2gether/my-scheduled-sessions', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) return;
+        const data = await res.json();
+        const currentlyHosting = localStorage.getItem('w2gHostingSessionId');
+        for (const sched of data.scheduled || []) {
+            if (sched.status === 'started' && sched.sessionId && String(sched.sessionId) !== String(currentlyHosting)) {
+                window.startWatch2GetherHosting(sched.sessionId, true);
+            }
+        }
+    } catch (e) {}
+}
+document.addEventListener('DOMContentLoaded', _w2gCheckScheduledAutoStart);
+setInterval(_w2gCheckScheduledAutoStart, 20000);
+
 function loadCurrentSettings() {
     const currentTheme = localStorage.getItem('userTheme') || 'dark';
     document.querySelectorAll('.theme-option').forEach(btn => {

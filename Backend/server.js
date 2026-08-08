@@ -2181,6 +2181,19 @@ activityDb.serialize(() => {
         is_public INTEGER DEFAULT 0
     )`);
     activityDb.run(`CREATE INDEX IF NOT EXISTS idx_w2g_archive_ended ON watch2gether_session_archive(ended_at DESC)`);
+    // Scheduled public sessions - server-side so every signed-in user sees the same "waiting"
+    // list regardless of which browser/device made the schedule, and so the session actually
+    // starts at the right time even if the host's own tab isn't open (see w2gSweepScheduledSessions).
+    activityDb.run(`CREATE TABLE IF NOT EXISTS watch2gether_scheduled_sessions (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        host_uid       TEXT    NOT NULL,
+        host_username  TEXT,
+        scheduled_time INTEGER NOT NULL,
+        status         TEXT    NOT NULL DEFAULT 'pending',
+        session_id     INTEGER,
+        created_at     INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    )`);
+    activityDb.run(`CREATE INDEX IF NOT EXISTS idx_w2g_scheduled_status ON watch2gether_scheduled_sessions(status, scheduled_time)`);
     activityDb.run(`CREATE TABLE IF NOT EXISTS friends (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         user_uid   TEXT    NOT NULL,
@@ -2984,6 +2997,33 @@ function w2gGetOrCreateHostSessionByType(hostUID, isPublic) {
     });
 }
 
+// Server-side cron-like sweep: promotes scheduled public sessions to real live sessions once
+// their time arrives, independent of whether the host's browser tab is even open (the old
+// client-only setTimeout implementation lost the schedule entirely if that one tab closed).
+// Runs every 15s -- frequent enough that "waiting" -> "live" feels prompt without hammering the DB.
+function w2gSweepScheduledSessions() {
+    const now = Math.floor(Date.now() / 1000);
+    activityDb.all(
+        `SELECT id, host_uid FROM watch2gether_scheduled_sessions WHERE status = 'pending' AND scheduled_time <= ?`,
+        [now],
+        async (err, rows) => {
+            if (err || !rows || rows.length === 0) return;
+            for (const row of rows) {
+                try {
+                    const sessionId = await w2gGetOrCreatePublicHostSession(row.host_uid);
+                    activityDb.run(
+                        `UPDATE watch2gether_scheduled_sessions SET status = 'started', session_id = ? WHERE id = ?`,
+                        [sessionId, row.id]
+                    );
+                } catch (e) {
+                    console.error('[Watch2Gether] scheduled sweep failed for', row.id, e.message);
+                }
+            }
+        }
+    );
+}
+setInterval(w2gSweepScheduledSessions, 15000);
+
 app.post('/watch2gether/invite', requireAuth, async (req, res) => {
     const uidNum = parseInt(req.user.userUID, 10);
     if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
@@ -3114,6 +3154,77 @@ app.post('/watch2gether/host-public', requireAuth, async (req, res) => {
     }
 });
 
+// Schedules a public session to auto-start later. Stored server-side (not localStorage) so it
+// shows up in the "Waiting" list for every signed-in user, and so w2gSweepScheduledSessions can
+// actually start it even if the host's own tab isn't open at the scheduled time.
+app.post('/watch2gether/schedule-public', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    const scheduledTimeMs = parseInt(req.body?.scheduledTime, 10);
+    if (!scheduledTimeMs || scheduledTimeMs <= Date.now()) {
+        return res.status(400).json({ error: 'scheduledTime must be a future timestamp' });
+    }
+
+    const hostUsername = req.user.username || 'Someone';
+    const scheduledTimeSec = Math.floor(scheduledTimeMs / 1000);
+    activityDb.run(
+        `INSERT INTO watch2gether_scheduled_sessions (host_uid, host_username, scheduled_time) VALUES (?, ?, ?)`,
+        [String(uidNum), hostUsername, scheduledTimeSec],
+        function (err) {
+            if (err) {
+                console.error('[Watch2Gether] schedule-public failed', err.message);
+                return res.status(500).json({ error: 'Could not schedule session' });
+            }
+            res.json({ ok: true, scheduleId: this.lastID, scheduledTime: scheduledTimeMs });
+        }
+    );
+});
+
+// Cancels a still-pending schedule. Only the host who created it can cancel it.
+app.delete('/watch2gether/schedule-public/:id', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    const scheduleId = parseInt(req.params.id, 10);
+    if (!uidNum || !scheduleId) return res.status(400).json({ error: 'Invalid request' });
+
+    activityDb.run(
+        `DELETE FROM watch2gether_scheduled_sessions WHERE id = ? AND host_uid = ? AND status = 'pending'`,
+        [scheduleId, String(uidNum)],
+        function (err) {
+            if (err) return res.status(500).json({ error: 'Database error' });
+            if (this.changes === 0) return res.status(404).json({ error: 'Schedule not found' });
+            res.json({ ok: true });
+        }
+    );
+});
+
+// Lets a host's browser, on any page load or poll, notice that one of its own scheduled
+// sessions has been auto-started server-side (by w2gSweepScheduledSessions) so it can start
+// actually reporting real state -- the server can create the session row, but only the host's
+// own browser can ever know what page/video state to broadcast for it.
+app.get('/watch2gether/my-scheduled-sessions', requireAuth, (req, res) => {
+    const uidNum = parseInt(req.user.userUID, 10);
+    if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
+
+    activityDb.all(
+        `SELECT id, scheduled_time, status, session_id FROM watch2gether_scheduled_sessions
+         WHERE host_uid = ? AND status IN ('pending', 'started')
+         ORDER BY scheduled_time DESC`,
+        [String(uidNum)],
+        (err, rows) => {
+            if (err) return res.status(500).json({ error: 'Database error' });
+            res.json({
+                scheduled: (rows || []).map(r => ({
+                    scheduleId: r.id,
+                    scheduledTime: r.scheduled_time * 1000,
+                    status: r.status,
+                    sessionId: r.session_id
+                }))
+            });
+        }
+    );
+});
+
 // Pulls the TMDB id + type out of a session's tracked path, e.g.
 // "/html/movieInfo.html?id=302051&type=tv" - the same shape movieLoading.js's own type
 // detection uses (tv/series/anime all mean the TMDB /tv/ endpoint), so this stays consistent
@@ -3233,6 +3344,9 @@ function w2gArchiveStalePublicSessions(callback) {
 }
 
 app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
+    // Catch any schedule that came due since the last 15s sweep tick, so it doesn't sit
+    // showing as "waiting" a few seconds longer than necessary.
+    w2gSweepScheduledSessions();
     // Archive stale sessions first
     w2gArchiveStalePublicSessions(async () => {
         const cutoff = Math.floor(Date.now() / 1000) - WATCH2GETHER_PUBLIC_SESSION_STALE_SEC;
@@ -3304,7 +3418,34 @@ app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
                             });
                         }
 
-                        res.json({ sessions });
+                        // Get pending scheduled sessions -- server-side now, so every viewer sees
+                        // the same "waiting" list regardless of which browser scheduled it.
+                        activityDb.all(
+                            `SELECT id, host_uid, host_username, scheduled_time
+                             FROM watch2gether_scheduled_sessions
+                             WHERE status = 'pending'
+                             ORDER BY scheduled_time ASC`,
+                            [],
+                            (schedErr, schedRows) => {
+                                if (!schedErr) {
+                                    for (const row of schedRows || []) {
+                                        sessions.push({
+                                            sessionId: 'sched_' + row.id,
+                                            hostUID: row.host_uid,
+                                            hostUsername: row.host_username || 'Someone',
+                                            participantCount: 0,
+                                            path: null,
+                                            mediaTitle: null,
+                                            posterUrl: null,
+                                            updatedAt: Math.floor(Date.now() / 1000),
+                                            isScheduled: true,
+                                            scheduleTime: row.scheduled_time * 1000
+                                        });
+                                    }
+                                }
+                                res.json({ sessions });
+                            }
+                        );
                     }
                 );
             }
