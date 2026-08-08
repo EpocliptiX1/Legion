@@ -5,14 +5,6 @@
     const statusText = document.getElementById('w2gStatusText');
     const requestBtn = document.getElementById('w2gRequestBtn');
 
-    // Ghost mode: this is a passive preview embed (e.g. the live-preview thumbnail on the
-    // public Watch2Gether browse page), not a real invited viewer. Same mirroring/polling as
-    // normal, just no interactive chrome -- there is no "Leave" to click and no "Request to
-    // Interact" to offer, since a ghost was never a real participant and request-control
-    // already rejects non-participants server-side regardless.
-    const isGhost = new URLSearchParams(window.location.search).get('ghost') === '1';
-    if (isGhost) document.body.classList.add('w2g-ghost-mode');
-
     let lastPath = null;
     let pendingScrollY = null;
     let iHaveControl = false;

@@ -303,12 +303,12 @@
                 justify-content: center;
             }
 
-            /* Layout-transparent: makes .placeholder-text/.session-poster/.session-live-preview
-               behave exactly as if they were direct children of .session-card-top again (flex
-               centering, height:100% resolution, etc). Needed because renderSessions() wraps
-               them in this element so it can update just the media without touching sibling
-               content -- without display:contents, percentage heights inside would resolve
-               against this wrapper's own auto height instead of .session-card-top's 160px. */
+            /* Layout-transparent: makes .placeholder-text/.session-poster behave exactly as if
+               they were direct children of .session-card-top again (flex centering, height:100%
+               resolution, etc). Needed because renderSessions() wraps them in this element so it
+               can update just the media without touching sibling content -- without
+               display:contents, percentage heights inside would resolve against this wrapper's
+               own auto height instead of .session-card-top's 160px. */
             .session-card-media {
                 display: contents;
             }
@@ -319,30 +319,6 @@
                 font-weight: 600;
                 text-align: center;
                 padding: 20px;
-            }
-
-            /* Live preview: iframes the host's current page at 4x size then scales it back
-               down, so the thumbnail shows an accurate small view of the whole page instead
-               of just its top-left corner. Read-only -- pointer-events disabled so clicks
-               land on the card, not the embedded page. */
-            .session-live-preview {
-                position: relative;
-                width: 100%;
-                height: 100%;
-                overflow: hidden;
-                background: #0d0d0d;
-                pointer-events: none;
-            }
-
-            .session-live-preview iframe {
-                position: absolute;
-                top: 0;
-                left: 0;
-                width: 400%;
-                height: 400%;
-                border: none;
-                transform: scale(0.25);
-                transform-origin: 0 0;
             }
 
             .session-poster {
@@ -667,28 +643,6 @@
     </div>
 
     <script>
-    // personalList.html renders 100% per-account private data (the viewer's own saved list) --
-    // the live preview iframe is same-origin, so it renders using the VIEWER's own login, not
-    // the host's, meaning every viewer would see their own list instead of a preview of the
-    // host. calendar.html/customPlaylists.html/movieInfo.html don't have that failure mode and
-    // stay unblocked (see prior commit).
-    //
-    // watch2getherPublic.html and watch2getherViewer.html DO have to stay blocked, permanently,
-    // regardless of privacy concerns -- this is a runaway-recursion problem, not a privacy one,
-    // and it applies no matter how the preview itself is implemented. If a host's current page
-    // is watch2getherPublic.html, its card here shows a preview that mirrors THAT page via
-    // watch2getherViewer.html?ghost=1 -- and that nested copy of watch2getherPublic.html runs
-    // its own independent loadSessions() and, being the same unblocked code, decides to show a
-    // preview of the SAME session again, nesting another copy inside itself, forever (confirmed
-    // live via DevTools: 3000+ requests for watch2getherViewer.html/.js piling up). Blocking
-    // these two here is the only thing that breaks that cycle, since the nested copy inherits
-    // this exact same list.
-    const W2G_PREVIEW_BLOCKLIST = [
-        'personalList.html',
-        'watch2getherPublic.html',
-        'watch2getherViewer.html'
-    ];
-
     let allSessions = [];
     let currentFilter = 'all';
     let notifySubscriptions = JSON.parse(localStorage.getItem('w2gNotifySubs') || '{}');
@@ -815,22 +769,6 @@
         const hasMedia = s.mediaTitle && s.mediaTitle !== 'Browsing Legion Space';
         const poster = s.posterUrl || '/img/LOGO_Short.png';
         const isPlaceholder = !s.posterUrl;
-        // No TMDB poster to show yet (host hasn't picked something to watch) -- show a live
-        // "ghost viewer" preview instead of a dead grey box: an iframe of watch2getherViewer.html
-        // itself (in ?ghost=1 mode, no bar/controls), which mirrors the host's page the exact
-        // same proven way a real invited friend's viewer does -- its own internal poll loop
-        // already diffs path/scroll/video state correctly, so none of that needs reimplementing
-        // here. s.path is only used below to decide WHETHER to show a preview at all (privacy
-        // blocklist), never as the iframe's actual src.
-        const pathPage = (s.path || '').split('?')[0].split('/').pop();
-        // Deliberately NOT keyed off isLive here -- isLive flips on a fast, cosmetic 30s
-        // staleness check, while the backend only actually archives a session (isArchived)
-        // after 5 real minutes of silence. Any heartbeat gap past 30s -- a backgrounded host
-        // tab getting its timers throttled by the browser is a completely normal one -- used to
-        // flip isLive false, tear down the iframe, then flip true again and recreate a brand
-        // new one on the very next poll. Same session staying not-yet-archived is a much more
-        // stable signal for "does a live preview still make sense here."
-        const showLivePreview = !s.isArchived && isPlaceholder && s.path && s.path.startsWith('/') && !W2G_PREVIEW_BLOCKLIST.includes(pathPage);
         const statusText = isEnded ? 'Ended' : (isWaiting ? 'Not started' : 'Live now');
         const hostInitial = (s.hostUsername || '?')[0].toUpperCase();
         const displayTime = s.endedAt || s.updatedAt;
@@ -841,10 +779,7 @@
             : `<button class="join-btn" onclick="joinSession(${s.sessionId}, this)" ${isEnded ? 'disabled' : ''}>Join Session</button>`;
 
         return {
-            isPlaceholderState: isPlaceholder && !showLivePreview,
-            showLivePreview,
-            previewSrc: `/html/watch2getherViewer.html?session=${encodeURIComponent(s.sessionId)}&ghost=1`,
-            hostUsername: s.hostUsername,
+            isPlaceholderState: isPlaceholder,
             mediaHtml: !isPlaceholder
                 ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">`
                 : `<div class="placeholder-text">${isEnded ? 'Stream ended' : (isWaiting ? 'Not started' : 'Host is choosing...')}</div>`,
@@ -866,12 +801,9 @@
         };
     }
 
-    // sessionId -> that card's persistent DOM node. Kept across renders so an unchanged live
-    // preview iframe is never removed from the document -- removing an iframe from the DOM
-    // unloads its content immediately, so the earlier "swap the old iframe back in after
-    // innerHTML" approach didn't actually work: by the time that code ran, innerHTML had
-    // already destroyed the old iframe's content. The only real fix is to never recreate a
-    // card's DOM at all when nothing about it actually changed.
+    // sessionId -> that card's persistent DOM node. Kept across renders (rather than a full
+    // listEl.innerHTML rebuild every poll) so unchanged cards aren't torn down and recreated
+    // for no reason every 10s.
     let renderedCards = new Map();
 
     function renderSessions(sessions) {
@@ -909,23 +841,11 @@
             const topEl = cardEl.querySelector('.session-card-top');
             topEl.className = 'session-card-top' + (parts.isPlaceholderState ? ' placeholder-state' : '');
 
-            const mediaEl = cardEl.querySelector('.session-card-media');
-            if (parts.showLivePreview) {
-                const existingIframe = mediaEl.querySelector('iframe');
-                if (!existingIframe || existingIframe.getAttribute('data-preview-src') !== parts.previewSrc) {
-                    // previewSrc only depends on sessionId now (watch2getherViewer.html?session=X
-                    // &ghost=1), not on the host's mutable current page -- so in practice this only
-                    // fires once, the first time this session gets a preview. Path/scroll/video
-                    // sync while it stays open is entirely watch2getherViewer.js's job now, via
-                    // its own independent poll loop -- no more reason for this browse-list poll
-                    // to ever touch the iframe again after that.
-                    mediaEl.innerHTML = `<div class="session-live-preview"><iframe data-preview-src="${escapeHtml(parts.previewSrc)}" src="${escapeHtml(parts.previewSrc)}" loading="lazy" tabindex="-1" sandbox="allow-scripts allow-same-origin allow-forms" title="Live preview of ${escapeHtml(parts.hostUsername)}'s screen"></iframe></div>`;
-                }
-            } else {
-                // Non-preview content (poster image / placeholder text) is cheap to refresh
-                // every render -- no network round-trip, no visible flicker.
-                mediaEl.innerHTML = parts.mediaHtml;
-            }
+            // Live preview (iframing a ghost viewer of the host's page) was removed here --
+            // went through several rounds of bugs (constant reload, self-recursion, tearing
+            // itself down on any heartbeat gap) without landing on something solid. Back to a
+            // plain poster/placeholder until it gets redesigned.
+            cardEl.querySelector('.session-card-media').innerHTML = parts.mediaHtml;
 
             cardEl.querySelector('.session-card-overlay').innerHTML = parts.overlayHtml;
             cardEl.querySelector('.session-card-badge').innerHTML = parts.badgeHtml;

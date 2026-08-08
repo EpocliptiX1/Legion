@@ -3595,14 +3595,7 @@ app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
             if (!row) return res.status(404).json({ error: 'Session not found' });
 
             w2gLoadParticipants(sessionId, (participantUIDs) => {
-                // Public sessions are readable (state only -- never control) by any signed-in
-                // user, not just actual participants. This is what lets the "ghost" preview on
-                // the public browse page work: it mirrors a live public session's state without
-                // consuming one of the real 4 participant slots. request-control/grant-control
-                // are untouched and still require real participant membership, so a ghost viewer
-                // can never actually take control, only watch.
-                const isReadableGhost = row.is_public === 1;
-                if (row.host_uid !== uidNum && !participantUIDs.includes(uidNum) && !isReadableGhost) {
+                if (row.host_uid !== uidNum && !participantUIDs.includes(uidNum)) {
                     return res.status(403).json({ error: 'Not part of this session' });
                 }
 
