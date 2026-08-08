@@ -271,70 +271,30 @@
                 margin-bottom: 40px;
             }
 
+            /* The poster (when there is one) is set as this element's own background-image
+               per-card in JS, layered under a dark gradient baked into the same background-image
+               value -- darkest at the bottom, where the content sits, so text stays readable
+               without needing a separate flat-color panel. No poster yet (host hasn't picked
+               something to watch) just gets the gradient alone, matching the old placeholder
+               look. */
             .session-card {
-                background: rgba(255, 255, 255, 0.04);
+                position: relative;
+                min-height: 190px;
+                background-color: #0d0d0d;
+                background-size: cover;
+                background-position: center;
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 12px;
                 overflow: hidden;
                 transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
                 display: flex;
-                flex-direction: row;
-                align-items: stretch;
-                padding: 12px;
-                gap: 12px;
+                align-items: flex-end;
             }
 
             .session-card:hover {
-                background: rgba(255, 255, 255, 0.06);
                 border-color: rgba(249, 109, 0, 0.3);
                 transform: translateY(-2px);
                 box-shadow: 0 8px 24px rgba(249, 109, 0, 0.12);
-            }
-
-            .session-card-top {
-                position: relative;
-                width: 96px;
-                height: 96px;
-                flex-shrink: 0;
-                border-radius: 8px;
-                background: #0d0d0d;
-                overflow: hidden;
-            }
-
-            .session-card-top.placeholder-state {
-                background: linear-gradient(135deg, #2a2a2a 0%, #1f1f1f 100%);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-
-            /* Layout-transparent: makes .placeholder-text/.session-poster behave exactly as if
-               they were direct children of .session-card-top again (flex centering, height:100%
-               resolution, etc). Needed because renderSessions() wraps them in this element so it
-               can update just the media without touching sibling content -- without
-               display:contents, percentage heights inside would resolve against this wrapper's
-               own auto height instead of .session-card-top's 160px. */
-            .session-card-media {
-                display: contents;
-            }
-
-            .placeholder-text {
-                color: #666;
-                font-size: 0.65rem;
-                font-weight: 600;
-                text-align: center;
-                padding: 6px;
-            }
-
-            .session-poster {
-                width: 100%;
-                height: 100%;
-                object-fit: cover;
-                transition: transform 0.3s;
-            }
-
-            .session-card:hover .session-poster {
-                transform: scale(1.08);
             }
 
             @keyframes livePulse {
@@ -344,22 +304,24 @@
 
             .session-card-badge {
                 position: absolute;
-                top: 5px;
-                right: 5px;
+                top: 10px;
+                right: 10px;
                 background: rgba(0, 0, 0, 0.65);
                 color: #fff;
-                padding: 2px 6px;
+                padding: 3px 8px;
                 border-radius: 10px;
-                font-size: 0.6rem;
+                font-size: 0.65rem;
                 font-weight: 700;
+                z-index: 2;
             }
 
             .session-card-content {
-                flex: 1;
-                min-width: 0;
+                position: relative;
+                z-index: 1;
+                width: 100%;
+                padding: 16px;
                 display: flex;
                 flex-direction: column;
-                justify-content: center;
                 gap: 4px;
             }
 
@@ -395,6 +357,7 @@
                 color: #4ac4ff;
                 line-height: 1.3;
                 word-break: break-word;
+                text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
                 display: -webkit-box;
                 -webkit-line-clamp: 2;
                 -webkit-box-orient: vertical;
@@ -406,13 +369,15 @@
                 align-items: center;
                 gap: 6px;
                 font-size: 0.7rem;
-                color: #999;
+                color: #ccc;
                 flex-wrap: wrap;
+                text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
             }
 
             .session-status {
-                color: #aaa;
+                color: #ddd;
                 font-size: 0.75rem;
+                text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
             }
 
             .session-host-info {
@@ -421,7 +386,7 @@
                 gap: 8px;
                 margin-top: 4px;
                 padding-top: 8px;
-                border-top: 1px solid rgba(255, 255, 255, 0.05);
+                border-top: 1px solid rgba(255, 255, 255, 0.15);
             }
 
             .session-host-avatar {
@@ -793,8 +758,6 @@
             ? `Scheduled for ${new Date(s.scheduleTime).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
             : (s.mediaTitle || 'Browsing Legion Space');
         const hasMedia = s.mediaTitle && s.mediaTitle !== 'Browsing Legion Space';
-        const poster = s.posterUrl || '/img/LOGO_Short.png';
-        const isPlaceholder = !s.posterUrl;
         const statusText = isEnded ? 'Ended' : (isWaiting ? 'Not started' : 'Live now');
         const hostInitial = (s.hostUsername || '?')[0].toUpperCase();
         const displayTime = s.endedAt || s.updatedAt;
@@ -804,11 +767,18 @@
             ? `<button class="join-btn" onclick="notifyWhenStarted('${s.sessionId}', ${s.scheduleTime}, this)" ${isSubscribed ? 'disabled' : ''}>${isSubscribed ? '🔔 Notifying...' : '🔔 Notify Me'}</button>`
             : `<button class="join-btn" onclick="joinSession(${s.sessionId}, this)" ${isEnded ? 'disabled' : ''}>Join Session</button>`;
 
+        // Poster stretched to cover the whole card with a dark gradient baked into the same
+        // background-image value (darkest at the bottom, where the content sits) instead of a
+        // small isolated thumbnail box -- gives the card real poster-art presence instead of a
+        // flat dark panel. No poster yet (host hasn't picked a title) just gets the gradient,
+        // same look the old placeholder box had.
+        const cardGradient = 'linear-gradient(180deg, rgba(10,10,10,0.25) 0%, rgba(10,10,10,0.55) 50%, rgba(10,10,10,0.96) 100%)';
+        const backgroundImage = s.posterUrl
+            ? `${cardGradient}, url('${s.posterUrl.replace(/'/g, "\\'")}')`
+            : 'linear-gradient(135deg, #2a2a2a 0%, #1f1f1f 100%)';
+
         return {
-            isPlaceholderState: isPlaceholder,
-            mediaHtml: !isPlaceholder
-                ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">`
-                : `<div class="placeholder-text">${isEnded ? 'Stream ended' : (isWaiting ? 'Not started' : 'Host is choosing...')}</div>`,
+            backgroundImage,
             badgeHtml: `${isEnded ? 'Peak ' : ''}${s.participantCount}/4`,
             contentHtml: `
                 ${isLive ? `<div class="session-live-badge">Live</div>` : ''}
@@ -854,24 +824,13 @@
                 cardEl.className = 'session-card';
                 cardEl.dataset.sessionId = sessionId;
                 cardEl.innerHTML = `
-                    <div class="session-card-top">
-                        <div class="session-card-media"></div>
-                        <div class="session-card-badge"></div>
-                    </div>
+                    <div class="session-card-badge"></div>
                     <div class="session-card-content"></div>
                 `;
                 renderedCards.set(sessionId, cardEl);
             }
 
-            const topEl = cardEl.querySelector('.session-card-top');
-            topEl.className = 'session-card-top' + (parts.isPlaceholderState ? ' placeholder-state' : '');
-
-            // Live preview (iframing a ghost viewer of the host's page) was removed here --
-            // went through several rounds of bugs (constant reload, self-recursion, tearing
-            // itself down on any heartbeat gap) without landing on something solid. Back to a
-            // plain poster/placeholder until it gets redesigned.
-            cardEl.querySelector('.session-card-media').innerHTML = parts.mediaHtml;
-
+            cardEl.style.backgroundImage = parts.backgroundImage;
             cardEl.querySelector('.session-card-badge').innerHTML = parts.badgeHtml;
             cardEl.querySelector('.session-card-content').innerHTML = parts.contentHtml;
         });
