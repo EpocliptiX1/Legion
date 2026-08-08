@@ -657,17 +657,16 @@
     </div>
 
     <script>
-    // Pages that render per-account private data (saved lists, tracked-show calendars, watch
-    // progress) rather than shared/public content. The live preview iframe is same-origin, so
-    // it renders using the VIEWER's own login, not the host's -- on these pages that means each
-    // viewer would see their own private data, not a preview of the host. Never live-preview them.
+    // personalList.html renders 100% per-account private data (the viewer's own saved list) --
+    // the live preview iframe is same-origin, so it renders using the VIEWER's own login, not
+    // the host's, meaning every viewer would see their own list instead of a preview of the
+    // host. customPlaylists.html/calendar.html/movieInfo.html/watch2gether pages were also
+    // blocked here at first out of caution, but don't have that failure mode: calendar.html is
+    // a public release schedule with no per-user data, customPlaylists.html's playlists are
+    // shared/community content (only the vote buttons reflect the viewer, not the whole page),
+    // and the watch2gether pages have no private content to leak.
     const W2G_PREVIEW_BLOCKLIST = [
-        'personalList.html',
-        'customPlaylists.html',
-        'calendar.html',
-        'movieInfo.html',
-        'watch2getherPublic.html',
-        'watch2getherViewer.html'
+        'personalList.html'
     ];
 
     let allSessions = [];
