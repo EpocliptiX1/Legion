@@ -134,7 +134,6 @@
                             </button>
                         </div>
                     </div>
-                    <a href="#" id="convertGuestLink" class="drop-link hidden" onclick="openConvertGuestModal()">⭐ Convert to Full Account</a>
                     <hr>
                     <a href="#" id="signInLink" class="drop-link" onclick="openSignInModal()" data-i18n="nav_signin">Sign In</a>
                     <a href="#" id="signUpLink" class="drop-link" onclick="openSignupModal()" data-i18n="nav_signup">Create Account</a>
@@ -537,6 +536,65 @@
         <div id="status"></div>
         <div id="sessionList"></div>
     </main>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="settings-modal-overlay">
+        <div class="settings-content">
+            <span class="close-settings" onclick="closeSettings()"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg></span>
+            <h2>Settings</h2>
+            <div class="settings-grid">
+                <div class="settings-section">
+                    <h3>Account Details</h3>
+                    <div class="setting-item">
+                        <label>Username</label>
+                        <p class="setting-hint">Click below to change your username, then hit Save Changes</p>
+                        <input type="text" id="settingsUsername" placeholder="Enter new username">
+                    </div>
+                    <div class="setting-item">
+                        <label>Change Password</label>
+                        <input type="password" id="settingsCurrentPassword" name="current-password-field" placeholder="Current password" autocomplete="new-password" data-lpignore="true" data-form-type="other" style="margin-bottom:8px;">
+                        <input type="password" id="settingsNewPassword" name="new-password-field" placeholder="New password" autocomplete="new-password" data-lpignore="true" data-form-type="other" style="margin-bottom:8px;">
+                        <input type="password" id="settingsConfirmPassword" name="confirm-password-field" placeholder="Confirm new password" autocomplete="new-password" data-lpignore="true" data-form-type="other" style="margin-bottom:8px;">
+                        <button class="btn-small" onclick="changePassword()">Update Password</button>
+                    </div>
+                        <div class="setting-item">
+                            <label>Merge Guest Session</label>
+                            <p class="setting-hint">If you browsed as a guest on this device before making this account, that session's watch history and My List items can be folded into this account instead.</p>
+                            <button class="btn-small" onclick="mergeGuestIntoAccount()">Merge Guest Activity</button>
+                        </div>
+                </div>
+                <div class="settings-section">
+<div class="setting-item">
+                        <label>Profile Picture</label>
+                        <div class="large-profile-icon" style="margin-bottom: 10px;"></div>
+                        <button class="btn-small" onclick="document.getElementById('pfpInput').click()">Upload New Image (up to 5MB)</button>
+                        <input type="file" id="pfpInput" accept="image/*" style="display: none;" onchange="handlePFPUpload(event)">
+                    </div>
+
+                    <div class="setting-item hero-audio-setting">
+                        <div class="hero-audio-copy">
+                            <label for="muteAudio">Mute Hero Trailer</label>
+                            <p>Silence autoplay trailers on the home screen</p>
+                        </div>
+                        <label class="hero-audio-switch" aria-label="Mute Hero Trailer Audio">
+                            <input type="checkbox" id="muteAudio" onchange="toggleMuteAudio()">
+                            <span class="hero-audio-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                            <label>Merge Another Account</label>
+                            <p class="setting-hint">Combine another account's watch history and list into this one. This permanently deletes the other account.</p>
+                            <input type="email" id="mergeOtherEmail" placeholder="Other account's email" autocomplete="off">
+                            <input type="password" id="mergeOtherPassword" name="merge-other-password" placeholder="Other account's password" autocomplete="new-password" data-lpignore="true" data-form-type="other" style="margin-bottom:8px;">
+                            <button class="btn-small" onclick="mergeOtherAccount()">Merge Account</button>
+                        </div>
+                </div>
+            </div>
+            <div class="settings-footer">
+                <button class="btn-save" onclick="saveSettings()">Save Changes</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Watch2Gether Modal -->
     <div id="watch2getherModal" class="settings-modal-overlay">
