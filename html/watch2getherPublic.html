@@ -670,13 +670,23 @@
     // personalList.html renders 100% per-account private data (the viewer's own saved list) --
     // the live preview iframe is same-origin, so it renders using the VIEWER's own login, not
     // the host's, meaning every viewer would see their own list instead of a preview of the
-    // host. customPlaylists.html/calendar.html/movieInfo.html/watch2gether pages were also
-    // blocked here at first out of caution, but don't have that failure mode: calendar.html is
-    // a public release schedule with no per-user data, customPlaylists.html's playlists are
-    // shared/community content (only the vote buttons reflect the viewer, not the whole page),
-    // and the watch2gether pages have no private content to leak.
+    // host. calendar.html/customPlaylists.html/movieInfo.html don't have that failure mode and
+    // stay unblocked (see prior commit).
+    //
+    // watch2getherPublic.html and watch2getherViewer.html DO have to stay blocked, permanently,
+    // regardless of privacy concerns -- this is a runaway-recursion problem, not a privacy one,
+    // and it applies no matter how the preview itself is implemented. If a host's current page
+    // is watch2getherPublic.html, its card here shows a preview that mirrors THAT page via
+    // watch2getherViewer.html?ghost=1 -- and that nested copy of watch2getherPublic.html runs
+    // its own independent loadSessions() and, being the same unblocked code, decides to show a
+    // preview of the SAME session again, nesting another copy inside itself, forever (confirmed
+    // live via DevTools: 3000+ requests for watch2getherViewer.html/.js piling up). Blocking
+    // these two here is the only thing that breaks that cycle, since the nested copy inherits
+    // this exact same list.
     const W2G_PREVIEW_BLOCKLIST = [
-        'personalList.html'
+        'personalList.html',
+        'watch2getherPublic.html',
+        'watch2getherViewer.html'
     ];
 
     let allSessions = [];
