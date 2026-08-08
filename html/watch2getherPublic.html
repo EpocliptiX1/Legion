@@ -823,7 +823,14 @@
         // here. s.path is only used below to decide WHETHER to show a preview at all (privacy
         // blocklist), never as the iframe's actual src.
         const pathPage = (s.path || '').split('?')[0].split('/').pop();
-        const showLivePreview = isLive && isPlaceholder && s.path && s.path.startsWith('/') && !W2G_PREVIEW_BLOCKLIST.includes(pathPage);
+        // Deliberately NOT keyed off isLive here -- isLive flips on a fast, cosmetic 30s
+        // staleness check, while the backend only actually archives a session (isArchived)
+        // after 5 real minutes of silence. Any heartbeat gap past 30s -- a backgrounded host
+        // tab getting its timers throttled by the browser is a completely normal one -- used to
+        // flip isLive false, tear down the iframe, then flip true again and recreate a brand
+        // new one on the very next poll. Same session staying not-yet-archived is a much more
+        // stable signal for "does a live preview still make sense here."
+        const showLivePreview = !s.isArchived && isPlaceholder && s.path && s.path.startsWith('/') && !W2G_PREVIEW_BLOCKLIST.includes(pathPage);
         const statusText = isEnded ? 'Ended' : (isWaiting ? 'Not started' : 'Live now');
         const hostInitial = (s.hostUsername || '?')[0].toUpperCase();
         const displayTime = s.endedAt || s.updatedAt;
