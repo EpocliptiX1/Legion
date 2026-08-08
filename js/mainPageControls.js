@@ -3291,11 +3291,16 @@ function w2gBuildSelector(el) {
     return parts.length ? parts.join(' > ') : null;
 }
 
-// Only ever broadcast from the tab the user is actually looking at -- otherwise every open tab
-// of the site independently reports its own (possibly stale) page, and whichever tab's report
-// happens to land last in the database "wins", regardless of which one the host is using.
+// Only ever broadcast from the specific tab that actually started (or resumed) hosting --
+// otherwise every open tab of the site independently reports its own page (they all share the
+// same w2gHostingSessionId via localStorage), and whichever tab happens to be focused at the
+// moment "wins", clobbering the real one. sessionStorage is per-tab (never shared, even between
+// tabs of the same account), so this flag can only be set by a tab that itself called
+// startWatch2GetherHosting -- an unrelated tab (e.g. one just sitting on movieInfo.html) can
+// never acquire it just by being focused. Previously this checked document.visibilityState
+// instead, which is exactly the bug: any tab becomes "visible" the moment you switch to it.
 function _w2gIsActiveTab() {
-    return document.visibilityState === 'visible';
+    return sessionStorage.getItem('w2gIsHostingTab') === '1';
 }
 
 // The video player uses native <video controls> -- native play/pause/fullscreen/seek controls
@@ -3438,6 +3443,7 @@ function _w2gEnsureLoopsRunning() {
 }
 
 window.startWatch2GetherHosting = function (sessionId, silent) {
+    sessionStorage.setItem('w2gIsHostingTab', '1');
     localStorage.setItem('w2gHostingSessionId', String(sessionId));
     _w2gReportState();
     _w2gEnsureLoopsRunning();
@@ -3446,6 +3452,7 @@ window.startWatch2GetherHosting = function (sessionId, silent) {
 };
 
 window.stopWatch2GetherHosting = function () {
+    sessionStorage.removeItem('w2gIsHostingTab');
     localStorage.removeItem('w2gHostingSessionId');
     _w2gFollowing = false;
     _w2gRenderHostBar();
