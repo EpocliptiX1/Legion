@@ -805,10 +805,13 @@
         const hasMedia = s.mediaTitle && s.mediaTitle !== 'Browsing Legion Space';
         const poster = s.posterUrl || '/img/LOGO_Short.png';
         const isPlaceholder = !s.posterUrl;
-        // No TMDB poster to show yet (host hasn't picked something to watch) -- show a
-        // live, scaled-down view of whatever page the host is actually on instead of a
-        // dead grey box. Same-origin only (s.path always comes from the host's own
-        // window.location.pathname server-side), so this is never a foreign URL.
+        // No TMDB poster to show yet (host hasn't picked something to watch) -- show a live
+        // "ghost viewer" preview instead of a dead grey box: an iframe of watch2getherViewer.html
+        // itself (in ?ghost=1 mode, no bar/controls), which mirrors the host's page the exact
+        // same proven way a real invited friend's viewer does -- its own internal poll loop
+        // already diffs path/scroll/video state correctly, so none of that needs reimplementing
+        // here. s.path is only used below to decide WHETHER to show a preview at all (privacy
+        // blocklist), never as the iframe's actual src.
         const pathPage = (s.path || '').split('?')[0].split('/').pop();
         const showLivePreview = isLive && isPlaceholder && s.path && s.path.startsWith('/') && !W2G_PREVIEW_BLOCKLIST.includes(pathPage);
         const statusText = isEnded ? 'Ended' : (isWaiting ? 'Not started' : 'Live now');
@@ -823,8 +826,7 @@
         return {
             isPlaceholderState: isPlaceholder && !showLivePreview,
             showLivePreview,
-            previewSrc: s.path,
-            previewScrollY: s.scrollY || 0,
+            previewSrc: `/html/watch2getherViewer.html?session=${encodeURIComponent(s.sessionId)}&ghost=1`,
             hostUsername: s.hostUsername,
             mediaHtml: !isPlaceholder
                 ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">`
@@ -894,31 +896,13 @@
             if (parts.showLivePreview) {
                 const existingIframe = mediaEl.querySelector('iframe');
                 if (!existingIframe || existingIframe.getAttribute('data-preview-src') !== parts.previewSrc) {
-                    // Path actually changed (or there was no preview here before) -- a real
-                    // navigation is correct here, this is the one case that SHOULD reload.
+                    // previewSrc only depends on sessionId now (watch2getherViewer.html?session=X
+                    // &ghost=1), not on the host's mutable current page -- so in practice this only
+                    // fires once, the first time this session gets a preview. Path/scroll/video
+                    // sync while it stays open is entirely watch2getherViewer.js's job now, via
+                    // its own independent poll loop -- no more reason for this browse-list poll
+                    // to ever touch the iframe again after that.
                     mediaEl.innerHTML = `<div class="session-live-preview"><iframe data-preview-src="${escapeHtml(parts.previewSrc)}" src="${escapeHtml(parts.previewSrc)}" loading="lazy" tabindex="-1" sandbox="allow-scripts allow-same-origin allow-forms" title="Live preview of ${escapeHtml(parts.hostUsername)}'s screen"></iframe></div>`;
-                }
-                // else: same src as last render -- leave the existing iframe completely alone.
-
-                // Follow the host's scroll position every render -- the iframe itself is
-                // read-only (pointer-events: none), so it never has a scroll position of its
-                // own to conflict with. Re-applied every poll (not just on load) so an already-
-                // loaded, untouched iframe still scrolls along as the host scrolls further,
-                // which is only possible now that it isn't being torn down every 10s.
-                const previewIframe = mediaEl.querySelector('iframe');
-                if (previewIframe) {
-                    const targetScrollY = parts.previewScrollY;
-                    const applyScroll = () => {
-                        try { previewIframe.contentWindow.scrollTo(0, targetScrollY); } catch (e) {}
-                    };
-                    if (previewIframe.dataset.loaded === 'true') {
-                        applyScroll();
-                    } else {
-                        previewIframe.addEventListener('load', () => {
-                            previewIframe.dataset.loaded = 'true';
-                            applyScroll();
-                        }, { once: true });
-                    }
                 }
             } else {
                 // Non-preview content (poster image / placeholder text) is cheap to refresh
