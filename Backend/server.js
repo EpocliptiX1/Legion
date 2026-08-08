@@ -3354,7 +3354,7 @@ app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
 
         // Get live sessions
         activityDb.all(
-            `SELECT ws.id, ws.host_uid, ws.path, ws.updated_at, COUNT(wp.id) as participant_count
+            `SELECT ws.id, ws.host_uid, ws.path, ws.scroll_y, ws.updated_at, COUNT(wp.id) as participant_count
              FROM watch2gether_sessions ws
              LEFT JOIN watch2gether_participants wp ON wp.session_id = ws.id
              WHERE ws.is_public = 1 AND ws.updated_at >= ?
@@ -3396,6 +3396,7 @@ app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
                                 hostUsername: host?.username || 'Someone',
                                 participantCount: row.participant_count,
                                 path: row.path,
+                                scrollY: row.scroll_y || 0,
                                 mediaTitle: media.title,
                                 posterUrl: media.posterUrl,
                                 updatedAt: row.updated_at,

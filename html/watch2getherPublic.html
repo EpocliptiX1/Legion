@@ -824,6 +824,7 @@
             isPlaceholderState: isPlaceholder && !showLivePreview,
             showLivePreview,
             previewSrc: s.path,
+            previewScrollY: s.scrollY || 0,
             hostUsername: s.hostUsername,
             mediaHtml: !isPlaceholder
                 ? `<img class="session-poster" src="${escapeHtml(poster)}" alt="" onerror="this.src='/img/LOGO_Short.png'">`
@@ -898,6 +899,27 @@
                     mediaEl.innerHTML = `<div class="session-live-preview"><iframe data-preview-src="${escapeHtml(parts.previewSrc)}" src="${escapeHtml(parts.previewSrc)}" loading="lazy" tabindex="-1" sandbox="allow-scripts allow-same-origin allow-forms" title="Live preview of ${escapeHtml(parts.hostUsername)}'s screen"></iframe></div>`;
                 }
                 // else: same src as last render -- leave the existing iframe completely alone.
+
+                // Follow the host's scroll position every render -- the iframe itself is
+                // read-only (pointer-events: none), so it never has a scroll position of its
+                // own to conflict with. Re-applied every poll (not just on load) so an already-
+                // loaded, untouched iframe still scrolls along as the host scrolls further,
+                // which is only possible now that it isn't being torn down every 10s.
+                const previewIframe = mediaEl.querySelector('iframe');
+                if (previewIframe) {
+                    const targetScrollY = parts.previewScrollY;
+                    const applyScroll = () => {
+                        try { previewIframe.contentWindow.scrollTo(0, targetScrollY); } catch (e) {}
+                    };
+                    if (previewIframe.dataset.loaded === 'true') {
+                        applyScroll();
+                    } else {
+                        previewIframe.addEventListener('load', () => {
+                            previewIframe.dataset.loaded = 'true';
+                            applyScroll();
+                        }, { once: true });
+                    }
+                }
             } else {
                 // Non-preview content (poster image / placeholder text) is cheap to refresh
                 // every render -- no network round-trip, no visible flicker.
