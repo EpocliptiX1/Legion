@@ -90,7 +90,7 @@
             </ul>
             <div class="search-wrapper">
                 <div class="search-box">
-                    <input type="search" id="mainSearch" name="site-search" placeholder="Titles..." autocomplete="off" autocorrect="off" data-lpignore="true" data-form-type="other">
+                    <input type="search" id="mainSearch" name="site-search" placeholder="Titles..." data-i18n-placeholder="nav_search_placeholder" autocomplete="off" autocorrect="off" data-lpignore="true" data-form-type="other">
                     <button id="voiceSearchBtn" title="Voice Search" style="background: none; border: none; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); cursor: pointer; padding: 0;">
                         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <path d="M12 15c1.66 0 3-1.34 3-3V6c0-1.66-1.34-3-3-3s-3 1.34-3 3v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-2.08c3.39-.49 6-3.39 6-6.92h-2z" fill="#888"/>
@@ -114,41 +114,73 @@
             </div>
             <div class="account-trigger" onclick="toggleAccountMenu()">
                 <div class="grey-profile-pic"></div>
-                <span id="navUsername">Guest</span>
+                <span id="navUsername" data-i18n="nav_guest">Guest</span>
                 <div class="account-dropdown" id="accountDropdown">
                     <div class="dropdown-header">
-                        <p id="dropTier" class="tier-badge">Free Tier</p>
+                        <p id="dropTier" class="tier-badge" data-i18n="nav_free_tier">Free Tier</p>
                     </div>
                     <div class="dropdown-stats">
                         <div class="stat-line">
-                            <span>Views:</span>
+                            <span data-i18n="nav_views">Views:</span>
                             <span id="statView">0</span>
                         </div>
+                        <div class="stat-line login-code-row hidden" id="loginCodeRow">
+                            <span>Login Code:</span>
+                            <span id="loginCodeValue">XXXXXXXXXX</span>
+                            <button type="button" class="code-visibility-toggle" data-visible="false" aria-pressed="false" onclick="toggleLoginCodeVisibility(event)" aria-label="Toggle login code visibility">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
+                    <a href="#" id="convertGuestLink" class="drop-link hidden" onclick="openConvertGuestModal()">⭐ Convert to Full Account</a>
                     <hr>
-                    <a href="#" class="drop-link" onclick="openWatch2GetherModal(); return false;">Start Session</a>
-                    <a href="#" class="drop-link" onclick="openSettings()">Settings</a>
-                    <a href="#" class="drop-link" onclick="logout()">Logout</a>
+                    <a href="#" id="signInLink" class="drop-link" onclick="openSignInModal()" data-i18n="nav_signin">Sign In</a>
+                    <a href="#" id="signUpLink" class="drop-link" onclick="openSignupModal()" data-i18n="nav_signup">Create Account</a>
+                    <a href="#" class="drop-link" onclick="openWatch2GetherModal()">Watch2Gether</a>
+                    <a href="#" class="drop-link" onclick="openSettings()" data-i18n="nav_settings">Settings</a>
+                    <a href="#" class="drop-link" onclick="logout()" data-i18n="nav_logout">Logout</a>
                 </div>
             </div>
         </div>
     </nav>
+<script id="navActiveScriptInserted">
+(function() {
+    const currentPath = window.location.pathname.split('/').pop().toLowerCase();
+    const pageMap = {
+        'movieinfo.html': '/html/allMovies.html',
+        'searchqueryresult.html': '/html/indexBrowse.html',
+        'indexbrowse.html': '/html/indexBrowse.html',
+        'indexmain.html': '/html/indexMain.html',
+        'allmovies.html': '/html/allMovies.html',
+        'personallist.html': '/html/personalList.html',
+        'customplaylists.html': '/html/customPlaylists.html',
+        'forum.html': '/html/forum.html',
+        'calendar.html': '/html/calendar.html',
+        'watch2getherpublic.html': '/html/watch2getherPublic.html',
+        'watch2getherviewer.html': '/html/watch2getherPublic.html'
+    };
+    const activeHref = pageMap[currentPath] || '/html/' + currentPath;
 
-    <script id="navActiveScriptInserted">
-    (function() {
-        document.querySelectorAll('.sidebar-nav-link, .navbar-page-links a').forEach(link => {
-            const href = link.getAttribute('href');
-            if (href && href.includes('watch2gether')) {
-                if (link.classList.contains('sidebar-nav-link')) {
-                    link.classList.add('sidebar-active');
-                }
-                if (link.closest('.navbar-page-links')) {
-                    link.classList.add('navbar-link-active');
-                }
+    document.querySelectorAll('.sidebar-nav-link, .navbar-page-links a').forEach(link => {
+        const href = link.getAttribute('href');
+        if (!href) return;
+        const normalizedHref = href.split('#')[0].split('?')[0];
+        if (normalizedHref === activeHref) {
+            if (link.classList.contains('sidebar-nav-link')) {
+                link.classList.add('sidebar-active');
             }
-        });
-    })();
-    </script>
+            if (link.closest('.navbar-page-links')) {
+                link.classList.add('navbar-link-active');
+            }
+        } else {
+            link.classList.remove('sidebar-active');
+            link.classList.remove('navbar-link-active');
+        }
+    });
+})();
+</script>
 
     <!-- ── MAIN CONTENT ───────────────────────────────────── -->
     <main class="container w2g-main-content" id="w2gMain">
