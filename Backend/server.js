@@ -3290,7 +3290,22 @@ const WATCH2GETHER_PUBLIC_SESSION_STALE_SEC = 5 * 60;
 
 // Archive sessions that are about to become stale (> 5 min old)
 // This ensures ended sessions persist in the archive for the "Ended" filter
+// This function is called both from a 15s setInterval AND inline on every
+// /watch2gether/public-sessions request -- with multiple browser tabs each polling every 10s,
+// several calls can genuinely overlap. Without a guard, two overlapping calls can both SELECT
+// the same stale row (neither has deleted it yet -- w2gResolveSessionMedia's TMDB/cache lookup
+// takes long enough for a second call to land in that window) and each independently archive
+// it, producing duplicate rows for the same session_id. Confirmed live: 6 duplicate archive
+// rows for the same session_id, all with the exact same ended_at timestamp. This lock just
+// serializes runs -- if one is already in progress, skip; the next poll (15s or 10s away) will
+// pick up anything still stale.
+let _w2gArchiveSweepInProgress = false;
+
 function w2gArchiveStalePublicSessions(callback) {
+    if (_w2gArchiveSweepInProgress) return callback();
+    _w2gArchiveSweepInProgress = true;
+    const done = () => { _w2gArchiveSweepInProgress = false; callback(); };
+
     const now = Math.floor(Date.now() / 1000);
     const staleThreshold = now - WATCH2GETHER_PUBLIC_SESSION_STALE_SEC;
 
@@ -3304,7 +3319,7 @@ function w2gArchiveStalePublicSessions(callback) {
         [staleThreshold],
         async (err, rows) => {
             if (err || !rows || rows.length === 0) {
-                return callback();
+                return done();
             }
 
             let completed = 0;
@@ -3340,11 +3355,11 @@ function w2gArchiveStalePublicSessions(callback) {
                             // Delete from active sessions once archived
                             activityDb.run(`DELETE FROM watch2gether_sessions WHERE id = ?`, [row.id], () => {
                                 completed++;
-                                if (completed === total) callback();
+                                if (completed === total) done();
                             });
                         } else {
                             completed++;
-                            if (completed === total) callback();
+                            if (completed === total) done();
                         }
                     }
                 );
@@ -3360,7 +3375,9 @@ app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
     // Archive stale sessions first
     w2gArchiveStalePublicSessions(async () => {
         const cutoff = Math.floor(Date.now() / 1000) - WATCH2GETHER_PUBLIC_SESSION_STALE_SEC;
-        const archiveCutoff = Math.floor(Date.now() / 1000) - 3600; // Include archived sessions from last hour
+        // No time cutoff here -- previously limited to the last hour, which made ended sessions
+        // just silently vanish from the "Ended" tab (the rows were never actually deleted, they
+        // were just filtered out of the query). LIMIT 50 below is the only cap now.
 
         // Get live sessions
         activityDb.all(
@@ -3382,10 +3399,10 @@ app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
                 activityDb.all(
                     `SELECT id, session_id, host_uid, host_username, path, participant_count, media_title, poster_path, ended_at
                      FROM watch2gether_session_archive
-                     WHERE is_public = 1 AND ended_at >= ?
+                     WHERE is_public = 1
                      ORDER BY ended_at DESC
                      LIMIT 50`,
-                    [archiveCutoff],
+                    [],
                     async (archErr, archRows) => {
                         if (archErr) {
                             console.error('[Watch2Gether] public-sessions archive failed', archErr.message);
