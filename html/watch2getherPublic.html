@@ -251,6 +251,212 @@
                 border-bottom-color: #f96d00;
             }
 
+            .w2g-create-section {
+                background: linear-gradient(135deg, rgba(249, 109, 0, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
+                border: 1px solid rgba(249, 109, 0, 0.2);
+                border-radius: 14px;
+                padding: 24px;
+                margin-bottom: 32px;
+            }
+
+            .w2g-create-intro {
+                color: #bbb;
+                font-size: 0.9rem;
+                line-height: 1.6;
+                margin: 0 0 18px 0;
+                max-width: 720px;
+            }
+
+            .w2g-create-intro strong {
+                color: #f96d00;
+            }
+
+            .w2g-create-mode-tabs {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 18px;
+            }
+
+            .w2g-create-mode {
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                color: #999;
+                padding: 8px 16px;
+                border-radius: 8px;
+                font-size: 0.85rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s;
+            }
+
+            .w2g-create-mode:hover {
+                border-color: rgba(249, 109, 0, 0.4);
+                color: #ddd;
+            }
+
+            .w2g-create-mode.active {
+                background: rgba(249, 109, 0, 0.15);
+                border-color: #f96d00;
+                color: #f96d00;
+            }
+
+            .w2g-create-form {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: flex-end;
+                gap: 16px;
+            }
+
+            .w2g-create-field {
+                flex: 1;
+                min-width: 240px;
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+            }
+
+            .w2g-create-field label {
+                font-size: 0.8rem;
+                font-weight: 600;
+                color: #ccc;
+            }
+
+            .w2g-optional {
+                font-weight: 400;
+                color: #777;
+            }
+
+            .w2g-create-field input[type="text"] {
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                padding: 10px 12px;
+                color: #fff;
+                font-size: 0.88rem;
+                width: 100%;
+            }
+
+            .w2g-create-field input[type="text"]:focus {
+                outline: none;
+                border-color: #f96d00;
+                box-shadow: 0 0 0 3px rgba(249, 109, 0, 0.15);
+            }
+
+            .w2g-media-search-wrap {
+                position: relative;
+            }
+
+            .w2g-media-search-results {
+                display: none;
+                position: absolute;
+                top: calc(100% + 6px);
+                left: 0;
+                right: 0;
+                background: #1a1a1a;
+                border: 1px solid rgba(249, 109, 0, 0.25);
+                border-radius: 10px;
+                max-height: 280px;
+                overflow-y: auto;
+                z-index: 20;
+                box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6);
+            }
+
+            .w2g-media-search-results.active {
+                display: block;
+            }
+
+            .w2g-media-result {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 8px 10px;
+                cursor: pointer;
+                transition: background 0.15s;
+            }
+
+            .w2g-media-result:hover {
+                background: rgba(249, 109, 0, 0.1);
+            }
+
+            .w2g-media-result img {
+                width: 32px;
+                height: 46px;
+                object-fit: cover;
+                border-radius: 4px;
+                flex-shrink: 0;
+                background: #0d0d0d;
+            }
+
+            .w2g-media-result-info {
+                display: flex;
+                flex-direction: column;
+                min-width: 0;
+            }
+
+            .w2g-media-result-title {
+                color: #fff;
+                font-size: 0.85rem;
+                font-weight: 600;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .w2g-media-result-year {
+                color: #888;
+                font-size: 0.72rem;
+            }
+
+            .w2g-media-result-empty {
+                padding: 14px;
+                color: #888;
+                font-size: 0.85rem;
+                text-align: center;
+            }
+
+            .w2g-media-selected-chip {
+                align-items: center;
+                gap: 8px;
+                background: rgba(249, 109, 0, 0.1);
+                border: 1px solid rgba(249, 109, 0, 0.3);
+                border-radius: 8px;
+                padding: 6px 10px;
+                margin-top: 8px;
+                width: fit-content;
+            }
+
+            .w2g-media-selected-chip img {
+                width: 24px;
+                height: 34px;
+                object-fit: cover;
+                border-radius: 3px;
+            }
+
+            .w2g-media-selected-chip span {
+                color: #fff;
+                font-size: 0.82rem;
+                font-weight: 600;
+            }
+
+            .w2g-media-selected-chip button {
+                background: none;
+                border: none;
+                color: #999;
+                font-size: 1.1rem;
+                line-height: 1;
+                cursor: pointer;
+                padding: 0 2px;
+            }
+
+            .w2g-media-selected-chip button:hover {
+                color: #ff6b6b;
+            }
+
+            .w2g-create-submit {
+                white-space: nowrap;
+                padding: 10px 22px !important;
+            }
+
             #status {
                 margin-bottom: 24px;
                 font-size: 0.95rem;
@@ -533,6 +739,31 @@
             <h1>Browse</h1>
         </div>
 
+        <div class="w2g-create-section">
+            <p class="w2g-create-intro">
+                Watch2Gether lets you stream anime or movies in sync with friends, in real time — pick a title, start a room, and everyone's player follows along together. Host a <strong>public</strong> room for any signed-in user to find and join below, or a <strong>private</strong> one and invite one specific friend by their code.
+            </p>
+            <div class="w2g-create-mode-tabs">
+                <button type="button" class="w2g-create-mode active" data-mode="public" onclick="setW2gCreateMode('public', this)">🌐 Public Room</button>
+                <button type="button" class="w2g-create-mode" data-mode="private" onclick="setW2gCreateMode('private', this)">🔒 Private Room</button>
+            </div>
+            <div class="w2g-create-form">
+                <div class="w2g-create-field">
+                    <label>What are you watching? <span class="w2g-optional">(optional — pick later if you skip this)</span></label>
+                    <div class="w2g-media-search-wrap">
+                        <input type="text" id="w2gCreateMediaSearch" placeholder="Search anime or movies...">
+                        <div id="w2gCreateMediaResults" class="w2g-media-search-results"></div>
+                    </div>
+                    <div id="w2gCreateMediaChip" class="w2g-media-selected-chip" style="display:none;"></div>
+                </div>
+                <div class="w2g-create-field" id="w2gCreateFriendField" style="display:none;">
+                    <label>Friend's code</label>
+                    <input type="text" id="w2gCreateFriendCode" placeholder="Enter their code to invite them">
+                </div>
+                <button type="button" class="btn-small w2g-create-submit" onclick="submitW2gCreateRoom()">Start Hosting</button>
+            </div>
+        </div>
+
         <div class="w2g-tabs">
             <button class="w2g-tab active" onclick="filterSessions('all', this)">All</button>
             <button class="w2g-tab" onclick="filterSessions('live', this)">Live</button>
@@ -671,6 +902,137 @@
     const statusEl = document.getElementById('status');
     const listEl = document.getElementById('sessionList');
     const token = localStorage.getItem('authToken');
+
+    // ── "Create a Room" quick-start section ─────────────────────────────────
+    // Self-contained: talks to the same backend endpoints the full Watch2Gether modal uses
+    // (host-public / invite), but doesn't touch that modal's markup or JS at all. Its grid
+    // layout is shared across ~10 pages and pinned together with fragile nth-of-type CSS
+    // (see css/style.css around #watch2getherModal .w2g-card:nth-of-type) -- adding a card
+    // there would mean updating every page that shares it just to avoid breaking their layout.
+    // A standalone section here sidesteps that entirely.
+    let w2gCreateMode = 'public';
+    let w2gCreateSelectedMedia = null;
+
+    window.setW2gCreateMode = function(mode, btn) {
+        w2gCreateMode = mode;
+        document.querySelectorAll('.w2g-create-mode').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('w2gCreateFriendField').style.display = mode === 'private' ? 'flex' : 'none';
+    };
+
+    let w2gCreateSearchTimeout = null;
+    document.getElementById('w2gCreateMediaSearch')?.addEventListener('input', (e) => {
+        clearTimeout(w2gCreateSearchTimeout);
+        const q = e.target.value.trim();
+        const resultsEl = document.getElementById('w2gCreateMediaResults');
+        if (!q) {
+            resultsEl.classList.remove('active');
+            resultsEl.innerHTML = '';
+            return;
+        }
+        w2gCreateSearchTimeout = setTimeout(() => performW2gCreateSearch(q), 300);
+    });
+
+    async function performW2gCreateSearch(q) {
+        const resultsEl = document.getElementById('w2gCreateMediaResults');
+        resultsEl.classList.add('active');
+        resultsEl.innerHTML = '<div class="w2g-media-result-empty">Searching...</div>';
+        try {
+            const res = await fetch(`/api/tmdb/search?q=${encodeURIComponent(q)}`);
+            const items = await res.json();
+            if (!Array.isArray(items) || !items.length) {
+                resultsEl.innerHTML = '<div class="w2g-media-result-empty">No results</div>';
+                return;
+            }
+            resultsEl.innerHTML = items.slice(0, 6).map(item => `
+                <div class="w2g-media-result" data-id="${escapeHtml(String(item.id))}" data-type="${escapeHtml(item.type)}" data-title="${escapeHtml(item.title)}" data-poster="${escapeHtml(item.poster || '')}">
+                    <img src="${escapeHtml(item.poster || '/img/LOGO_Short.png')}" alt="" onerror="this.src='/img/LOGO_Short.png'">
+                    <div class="w2g-media-result-info">
+                        <span class="w2g-media-result-title">${escapeHtml(item.title)}</span>
+                        <span class="w2g-media-result-year">${escapeHtml(item.year || '')}${item.year ? ' · ' : ''}${item.type === 'tv' ? 'TV' : 'Movie'}</span>
+                    </div>
+                </div>
+            `).join('');
+        } catch (e) {
+            resultsEl.innerHTML = '<div class="w2g-media-result-empty">Search failed</div>';
+        }
+    }
+
+    document.getElementById('w2gCreateMediaResults')?.addEventListener('click', (e) => {
+        const item = e.target.closest('.w2g-media-result');
+        if (!item) return;
+        w2gCreateSelectedMedia = { id: item.dataset.id, type: item.dataset.type, title: item.dataset.title };
+        document.getElementById('w2gCreateMediaResults').classList.remove('active');
+        document.getElementById('w2gCreateMediaSearch').value = '';
+        const chip = document.getElementById('w2gCreateMediaChip');
+        chip.style.display = 'flex';
+        chip.innerHTML = `<img src="${escapeHtml(item.dataset.poster || '/img/LOGO_Short.png')}" alt="" onerror="this.src='/img/LOGO_Short.png'"><span>${escapeHtml(item.dataset.title)}</span><button type="button" onclick="clearW2gCreateMedia()">&times;</button>`;
+    });
+
+    window.clearW2gCreateMedia = function() {
+        w2gCreateSelectedMedia = null;
+        document.getElementById('w2gCreateMediaChip').style.display = 'none';
+    };
+
+    window.submitW2gCreateRoom = async function() {
+        if (!token) {
+            alert('Sign in to use Watch2Gether!');
+            return;
+        }
+        const submitBtn = document.querySelector('.w2g-create-submit');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Starting...';
+
+        try {
+            if (w2gCreateMode === 'public') {
+                const res = await fetch('/watch2gether/host-public', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.sessionId) {
+                    alert(data.error || 'Could not start a public session.');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Start Hosting';
+                    return;
+                }
+                window.startWatch2GetherHosting?.(data.sessionId);
+            } else {
+                const friendCode = document.getElementById('w2gCreateFriendCode').value.trim();
+                if (!friendCode) {
+                    alert("Enter your friend's code first.");
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Start Hosting';
+                    return;
+                }
+                const res = await fetch('/watch2gether/invite', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    body: JSON.stringify({ friendCode })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    alert(data.error || 'Could not send invite.');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Start Hosting';
+                    return;
+                }
+                alert(`Invite sent to ${(data.invited || []).join(', ') || 'your friend'}! Hosting will start once they accept.`);
+            }
+
+            // If a title was picked, send the host straight there -- by the time hosting
+            // actually starts reporting (immediately for public, on invite-accept for private),
+            // they're already on the right page and it gets picked up naturally.
+            if (w2gCreateSelectedMedia && w2gCreateSelectedMedia.id) {
+                window.location.href = `/html/movieInfo.html?id=${encodeURIComponent(w2gCreateSelectedMedia.id)}&type=${encodeURIComponent(w2gCreateSelectedMedia.type)}`;
+            } else {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Start Hosting';
+                loadSessions();
+            }
+        } catch (e) {
+            alert('Could not reach server.');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Start Hosting';
+        }
+    };
 
     window.toggleScheduleUI = function() {
         const ui = document.getElementById('scheduleUI');
