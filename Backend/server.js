@@ -3255,11 +3255,11 @@ function w2gPosterCacheGetByTmdbId(tmdbId, type) {
 // normal poster-loading flow yet) falls back to a single live TMDB lookup.
 async function w2gResolveSessionMedia(path) {
     const parsed = w2gParseMediaFromPath(path);
-    if (!parsed || !parsed.tmdbId) return { title: null, posterUrl: null };
+    if (!parsed || !parsed.tmdbId) return { title: null, posterUrl: null, posterPath: null };
 
     const cached = await w2gPosterCacheGetByTmdbId(parsed.tmdbId, parsed.type);
     if (cached?.poster_path) {
-        return { title: cached.name || null, posterUrl: `${TMDB_IMAGE_BASE}${cached.poster_path}` };
+        return { title: cached.name || null, posterUrl: `${TMDB_IMAGE_BASE}${cached.poster_path}`, posterPath: cached.poster_path };
     }
 
     try {
@@ -3268,10 +3268,11 @@ async function w2gResolveSessionMedia(path) {
         const data = tmdbRes.data || {};
         return {
             title: data.title || data.name || null,
-            posterUrl: data.poster_path ? `${TMDB_IMAGE_BASE}${data.poster_path}` : null
+            posterUrl: data.poster_path ? `${TMDB_IMAGE_BASE}${data.poster_path}` : null,
+            posterPath: data.poster_path || null
         };
     } catch (err) {
-        return { title: null, posterUrl: null };
+        return { title: null, posterUrl: null, posterPath: null };
     }
 }
 

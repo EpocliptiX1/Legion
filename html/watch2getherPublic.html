@@ -271,19 +271,18 @@
                 margin-bottom: 40px;
             }
 
-            /* The poster (when there is one) is set as this element's own background-image
-               per-card in JS, layered under a dark gradient baked into the same background-image
-               value -- darkest at the bottom, where the content sits, so text stays readable
-               without needing a separate flat-color panel. No poster yet (host hasn't picked
-               something to watch) just gets the gradient alone, matching the old placeholder
-               look. */
+            /* Poster (::before) and the darkening gradient (::after) are separate layers now,
+               not one background-image, so an ended session can blur+dim just the poster while
+               the gradient and text on top stay crisp. The poster URL is set per-card in JS via
+               the --card-poster custom property; .session-card's own background-color/gradient
+               is the base layer underneath both, used as-is when there's no poster at all. */
             .session-card {
                 position: relative;
                 min-height: 190px;
                 background-color: #0d0d0d;
-                background-size: cover;
-                background-position: center;
+                background-image: linear-gradient(135deg, #2a2a2a 0%, #1f1f1f 100%);
                 border: 1px solid rgba(255, 255, 255, 0.08);
+                border: 0px solid rgb(249 109 0);
                 border-radius: 12px;
                 overflow: hidden;
                 transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -295,6 +294,38 @@
                 border-color: rgba(249, 109, 0, 0.3);
                 transform: translateY(-2px);
                 box-shadow: 0 8px 24px rgba(249, 109, 0, 0.12);
+            }
+
+            .session-card::before {
+                content: '';
+                position: absolute;
+                inset: 0;
+                background-image: var(--card-poster, none);
+                background-size: cover;
+                background-position: center;
+                filter: brightness(1) blur(0px) saturate(1);
+                transition: filter 0.4s ease;
+                z-index: 0;
+            }
+
+            /* Ended: keep showing the same poster (no reason to lose it) but push it back
+               visually -- darker, desaturated, and blurred, so it reads as "this is over" at a
+               glance instead of looking like it's still live. */
+            .session-card.session-card-ended::before {
+                filter: brightness(0.45) blur(3px) saturate(0.6);
+            }
+
+            .session-card::after {
+                content: '';
+                position: absolute;
+                inset: 0;
+                background: linear-gradient(180deg, rgba(10, 10, 10, 0.25) 0%, rgba(10, 10, 10, 0.55) 50%, rgba(10, 10, 10, 0.96) 100%);
+                transition: background 0.4s ease;
+                z-index: 0;
+            }
+
+            .session-card.session-card-ended::after {
+                background: linear-gradient(180deg, rgba(10, 10, 10, 0.55) 0%, rgba(10, 10, 10, 0.8) 50%, rgba(10, 10, 10, 0.98) 100%);
             }
 
             @keyframes livePulse {
@@ -354,7 +385,7 @@
                 font-size: 0.95rem;
                 font-weight: 700;
                 margin: 0;
-                color: #4ac4ff;
+                color: rgb(249, 109, 0);
                 line-height: 1.3;
                 word-break: break-word;
                 text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
@@ -767,18 +798,15 @@
             ? `<button class="join-btn" onclick="notifyWhenStarted('${s.sessionId}', ${s.scheduleTime}, this)" ${isSubscribed ? 'disabled' : ''}>${isSubscribed ? '🔔 Notifying...' : '🔔 Notify Me'}</button>`
             : `<button class="join-btn" onclick="joinSession(${s.sessionId}, this)" ${isEnded ? 'disabled' : ''}>Join Session</button>`;
 
-        // Poster stretched to cover the whole card with a dark gradient baked into the same
-        // background-image value (darkest at the bottom, where the content sits) instead of a
-        // small isolated thumbnail box -- gives the card real poster-art presence instead of a
-        // flat dark panel. No poster yet (host hasn't picked a title) just gets the gradient,
-        // same look the old placeholder box had.
-        const cardGradient = 'linear-gradient(180deg, rgba(10,10,10,0.25) 0%, rgba(10,10,10,0.55) 50%, rgba(10,10,10,0.96) 100%)';
-        const backgroundImage = s.posterUrl
-            ? `${cardGradient}, url('${s.posterUrl.replace(/'/g, "\\'")}')`
-            : 'linear-gradient(135deg, #2a2a2a 0%, #1f1f1f 100%)';
+        // Poster is set via the --card-poster custom property, read by .session-card::before --
+        // ended sessions keep showing it (no reason to lose it, and the archive now actually
+        // stores it -- see w2gResolveSessionMedia/posterPath), just blurred/dimmed more heavily
+        // via .session-card-ended so it visually reads as "over" instead of still-live.
+        const cardPoster = s.posterUrl ? `url('${s.posterUrl.replace(/'/g, "\\'")}')` : 'none';
 
         return {
-            backgroundImage,
+            cardPoster,
+            isEnded,
             badgeHtml: `${isEnded ? 'Peak ' : ''}${s.participantCount}/4`,
             contentHtml: `
                 ${isLive ? `<div class="session-live-badge">Live</div>` : ''}
@@ -830,7 +858,8 @@
                 renderedCards.set(sessionId, cardEl);
             }
 
-            cardEl.style.backgroundImage = parts.backgroundImage;
+            cardEl.style.setProperty('--card-poster', parts.cardPoster);
+            cardEl.classList.toggle('session-card-ended', parts.isEnded);
             cardEl.querySelector('.session-card-badge').innerHTML = parts.badgeHtml;
             cardEl.querySelector('.session-card-content').innerHTML = parts.contentHtml;
         });
