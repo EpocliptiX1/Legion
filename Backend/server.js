@@ -2153,6 +2153,13 @@ activityDb.serialize(() => {
     // capped at the same 5 total (host + 4) as private ones. Listed on the "who's streaming"
     // page via GET /watch2gether/public-sessions.
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0`, () => {});
+    // Sticky "what was actually being watched" -- path only updates here when the host's
+    // current page resolves to real media (w2gParseMediaFromPath). Browsing away afterward (back
+    // to indexMain.html, etc.) keeps updating `path` as normal but leaves this alone, so the
+    // poster/title shown for the session -- both while live and once archived -- is "the last
+    // thing they watched" instead of flickering to a placeholder the moment they navigate off
+    // the movieInfo.html page.
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN last_media_path TEXT`, () => {});
     // Group sessions: up to 5 people total (host + up to 4 participants). The old single
     // friend_uid column is left in place (unused going forward) rather than dropped -- SQLite
     // can't cheaply drop a NOT NULL column, and nothing reads it anymore now that
@@ -3289,7 +3296,7 @@ function w2gArchiveStalePublicSessions(callback) {
 
     // Find sessions that haven't been updated in > 5 minutes and archive them
     activityDb.all(
-        `SELECT ws.id, ws.host_uid, ws.path, ws.updated_at, COUNT(wp.id) as participant_count
+        `SELECT ws.id, ws.host_uid, ws.path, ws.last_media_path, ws.updated_at, COUNT(wp.id) as participant_count
          FROM watch2gether_sessions ws
          LEFT JOIN watch2gether_participants wp ON wp.session_id = ws.id
          WHERE ws.is_public = 1 AND ws.updated_at < ?
@@ -3307,7 +3314,9 @@ function w2gArchiveStalePublicSessions(callback) {
                 const host = await new Promise((resolve) => {
                     usersDb.get('SELECT username FROM users WHERE userUID = ?', [row.host_uid], (e, u) => resolve(u));
                 });
-                const media = await w2gResolveSessionMedia(row.path);
+                // Last thing they actually watched, not wherever they happened to be sitting
+                // when the session finally went stale.
+                const media = await w2gResolveSessionMedia(row.last_media_path || row.path);
 
                 // Archive this session
                 activityDb.run(
@@ -3355,7 +3364,7 @@ app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
 
         // Get live sessions
         activityDb.all(
-            `SELECT ws.id, ws.host_uid, ws.path, ws.scroll_y, ws.updated_at, COUNT(wp.id) as participant_count
+            `SELECT ws.id, ws.host_uid, ws.path, ws.last_media_path, ws.scroll_y, ws.updated_at, COUNT(wp.id) as participant_count
              FROM watch2gether_sessions ws
              LEFT JOIN watch2gether_participants wp ON wp.session_id = ws.id
              WHERE ws.is_public = 1 AND ws.updated_at >= ?
@@ -3390,7 +3399,11 @@ app.get('/watch2gether/public-sessions', requireAuth, async (req, res) => {
                             const host = await new Promise((resolve) => {
                                 usersDb.get('SELECT username FROM users WHERE userUID = ?', [row.host_uid], (e, u) => resolve(u));
                             });
-                            const media = await w2gResolveSessionMedia(row.path);
+                            // Last thing actually watched, not wherever they currently are --
+                            // otherwise the poster flickers to a placeholder the instant they
+                            // navigate off movieInfo.html, then "reappears" once the session
+                            // archives. Keeping it the same source as archiving avoids that.
+                            const media = await w2gResolveSessionMedia(row.last_media_path || row.path);
                             sessions.push({
                                 sessionId: row.id,
                                 hostUID: row.host_uid,
@@ -3556,6 +3569,12 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
 
             const setClauses = ['path = ?', 'scroll_y = ?', `updated_at = strftime('%s','now')`];
             const params = [path, scrollY];
+            // Only overwrite last_media_path when this path actually resolves to real media --
+            // navigating away afterward must NOT clear it, that's the whole point.
+            if (w2gParseMediaFromPath(path)) {
+                setClauses.push('last_media_path = ?');
+                params.push(path);
+            }
             if (clickSelector) {
                 setClauses.push('last_click_selector = ?', 'last_click_at = ?');
                 params.push(clickSelector, clickAt);
