@@ -3754,6 +3754,111 @@ app.post('/watch2gether/session/:id/kick', requireAuth, async (req, res) => {
     });
 });
 
+// Archives one specific public session right now (vs. w2gArchiveStalePublicSessions, which only
+// sweeps sessions that have gone quiet for 5 minutes). Used by /session/:id/end so a host
+// explicitly stopping doesn't leave a stale row sitting around to get silently resurrected the
+// next time they start hosting -- w2gGetOrCreateHostSessionByType reuses whatever row it finds
+// most recently, "ended" or not, and this is what stops that row from still being there.
+function w2gArchiveOneSession(sessionId, callback) {
+    activityDb.get(
+        `SELECT ws.id, ws.host_uid, ws.path, ws.last_media_path, ws.updated_at, COUNT(wp.id) as participant_count
+         FROM watch2gether_sessions ws
+         LEFT JOIN watch2gether_participants wp ON wp.session_id = ws.id
+         WHERE ws.id = ?
+         GROUP BY ws.id`,
+        [sessionId],
+        async (err, row) => {
+            if (err || !row) return callback(err);
+            const now = Math.floor(Date.now() / 1000);
+            const host = await new Promise((resolve) => {
+                usersDb.get('SELECT username FROM users WHERE userUID = ?', [row.host_uid], (e, u) => resolve(u));
+            });
+            const media = await w2gResolveSessionMedia(row.last_media_path || row.path);
+            activityDb.run(
+                `INSERT INTO watch2gether_session_archive
+                 (session_id, host_uid, host_username, path, participant_count, media_title, poster_path, ended_at, duration_seconds, is_public)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [row.id, row.host_uid, host?.username || 'Someone', row.path, row.participant_count, media.title, media.posterPath || null, now, now - row.updated_at, 1],
+                (insertErr) => {
+                    if (insertErr) return callback(insertErr);
+                    activityDb.run(`DELETE FROM watch2gether_sessions WHERE id = ?`, [row.id], (delErr) => callback(delErr));
+                }
+            );
+        }
+    );
+}
+
+// Host explicitly ending the session -- as opposed to just closing their tab, which previously
+// left the row (and everyone's participant rows) sitting around untouched. Kicks every current
+// participant with a notification, then archives (public) or deletes (private) the session.
+app.post('/watch2gether/session/:id/end', requireAuth, async (req, res) => {
+    const uidNum = String(parseInt(req.user.userUID, 10));
+    const sessionId = parseInt(req.params.id, 10);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session' });
+
+    activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!row || row.host_uid !== uidNum) return res.status(403).json({ error: 'Not the host of this session' });
+
+        w2gLoadParticipants(sessionId, async (participantUIDs) => {
+            const hostUsername = req.user.username || 'The host';
+            await Promise.all(participantUIDs.map(targetUID => notifInsert(
+                targetUID,
+                'watch2gether_session_ended',
+                `w2g-ended:${sessionId}:${Date.now()}`,
+                'Stream Ended',
+                `${hostUsername} ended the stream.`,
+                null, null,
+                { sessionId }
+            )));
+
+            activityDb.run(`DELETE FROM watch2gether_participants WHERE session_id = ?`, [sessionId], (delErr) => {
+                if (delErr) return res.status(500).json({ error: 'Database error' });
+
+                if (row.is_public) {
+                    w2gArchiveOneSession(sessionId, (archiveErr) => {
+                        if (archiveErr) console.error('[Watch2Gether] end -> archive failed', archiveErr.message);
+                        res.json({ ok: true });
+                    });
+                } else {
+                    activityDb.run(`DELETE FROM watch2gether_sessions WHERE id = ?`, [sessionId], () => res.json({ ok: true }));
+                }
+            });
+        });
+    });
+});
+
+// Participant self-removal -- previously "Leave" just closed the tab, so the host kept seeing
+// them listed as still present indefinitely.
+app.post('/watch2gether/session/:id/leave', requireAuth, (req, res) => {
+    const uidNum = String(parseInt(req.user.userUID, 10));
+    const sessionId = parseInt(req.params.id, 10);
+    if (!sessionId) return res.status(400).json({ error: 'Invalid session' });
+
+    activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+        if (!row) return res.json({ ok: true }); // already gone, nothing to do
+
+        activityDb.run(
+            `DELETE FROM watch2gether_participants WHERE session_id = ? AND user_uid = ?`,
+            [sessionId, uidNum],
+            (delErr) => {
+                if (delErr) return res.status(500).json({ error: 'Database error' });
+                // Same as kick -- don't leave control stuck on someone no longer in the session.
+                if (row.control_owner === uidNum) {
+                    activityDb.run(
+                        `UPDATE watch2gether_sessions SET control_owner = 'host', control_expires_at = 0 WHERE id = ?`,
+                        [sessionId],
+                        () => res.json({ ok: true })
+                    );
+                } else {
+                    res.json({ ok: true });
+                }
+            }
+        );
+    });
+});
+
 app.post('/notifications/mark-read', (req, res) => {
     const { userUID, id } = req.body || {};
     const safeUID = String(userUID || '').slice(0, 64);

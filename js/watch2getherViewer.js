@@ -132,6 +132,18 @@
         }
     });
 
+    // Previously just window.close() -- the tab closing told the backend nothing, so the
+    // participant row stuck around and the host kept seeing this person listed as still present.
+    window.leaveWatch2GetherSession = async function () {
+        try {
+            await fetch(`/watch2gether/session/${encodeURIComponent(sessionId)}/leave`, {
+                method: 'POST',
+                headers: authHeaders()
+            });
+        } catch (e) {}
+        window.close();
+    };
+
     window.requestWatch2GetherControl = async function () {
         requestBtn.disabled = true;
         requestBtn.textContent = 'Request sent...';
@@ -175,8 +187,18 @@
                 headers: authHeaders()
             });
             if (res.status === 403) {
+                // Kicked specifically -- the session itself still exists, just not for you.
                 removedFromSession = true;
                 statusText.textContent = 'You were removed from this session by the host.';
+                requestBtn.style.display = 'none';
+                return;
+            }
+            if (res.status === 404) {
+                // Session row no longer exists at all -- /session/:id/end deletes/archives it
+                // once the host actually ends the stream (as opposed to 403, which only means
+                // your participant row was removed but the session is still running for others).
+                removedFromSession = true;
+                statusText.textContent = 'This session has ended.';
                 requestBtn.style.display = 'none';
                 return;
             }
@@ -208,6 +230,9 @@
 
             if (!data.path) return;
             pendingScrollY = data.scrollY || 0;
+
+            // TEMP DEBUG -- tracking down the spam-refresh report. Remove once resolved.
+            console.log('[W2G DEBUG]', { incoming: data.path, lastPath, changed: data.path !== lastPath, updatedAt: data.updatedAt });
 
             if (data.path !== lastPath) {
                 lastPath = data.path;

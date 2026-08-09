@@ -3452,11 +3452,25 @@ window.startWatch2GetherHosting = function (sessionId, silent) {
 };
 
 window.stopWatch2GetherHosting = function () {
+    const sessionId = localStorage.getItem('w2gHostingSessionId');
+    const token = localStorage.getItem('authToken');
     sessionStorage.removeItem('w2gIsHostingTab');
     localStorage.removeItem('w2gHostingSessionId');
     _w2gFollowing = false;
     _w2gRenderHostBar();
     showLimitToast('Stopped hosting Watch2Gether.');
+
+    // Actually tell the backend the session is over -- otherwise the row just sits there
+    // untouched, and starting a new session later silently resurrects this "ended" one instead
+    // of creating a fresh one (w2gGetOrCreateHostSessionByType reuses whatever it finds most
+    // recently, with no concept of "this one was stopped"). This also kicks everyone still in
+    // it with a notification, instead of leaving them listed as present forever.
+    if (sessionId && token) {
+        fetch(`/watch2gether/session/${sessionId}/end`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` }
+        }).catch(() => {});
+    }
 };
 
 window.grantWatch2GetherControl = async function (notificationId, sessionId, granteeUID) {
@@ -3835,7 +3849,7 @@ window.__notifications = [];
 const NOTIF_ICON_WATCH2GETHER_INVITE = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg>`;
 const NOTIF_ICON_REMOVED = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636" /></svg>`;
 const NOTIF_ICON_FRIEND_REQUEST = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 0 0-3.7-3.7 48.678 48.678 0 0 0-7.324 0 4.006 4.006 0 0 0-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 0 0 3.7 3.7 48.656 48.656 0 0 0 7.324 0 4.006 4.006 0 0 0 3.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3-3 3" /></svg>`;
-const NOTIF_ICONS = { continue_watching: '▶', new_episode: '⛩', download_ready: '⬇', watch2gether_invite: NOTIF_ICON_WATCH2GETHER_INVITE, watch2gether_accepted: '🎉', watch2gether_control_request: '🙋', watch2gether_kicked: NOTIF_ICON_REMOVED, friend_request: NOTIF_ICON_FRIEND_REQUEST, friend_accepted: '🤝', friend_online: '🟢' };
+const NOTIF_ICONS = { continue_watching: '▶', new_episode: '⛩', download_ready: '⬇', watch2gether_invite: NOTIF_ICON_WATCH2GETHER_INVITE, watch2gether_accepted: '🎉', watch2gether_control_request: '🙋', watch2gether_kicked: NOTIF_ICON_REMOVED, watch2gether_session_ended: '🛑', friend_request: NOTIF_ICON_FRIEND_REQUEST, friend_accepted: '🤝', friend_online: '🟢' };
 
 function notifEscapeHtml(text) {
     return String(text || '')
