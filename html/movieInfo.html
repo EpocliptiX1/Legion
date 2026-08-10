@@ -57,6 +57,50 @@ window.openMovie = function(movie, type) {
             <a href="/html/indexMain.html" class="logo-link">
                 <img src="/img/LOGO_Short.png" alt="Logo" class="logo-img sidebar-logo-img">
             </a>
+            <a href="/html/indexMain.html" class="sidebar-brand-mark">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="20 0 500 120" width="100%" height="100%">
+                    <defs>
+                        <!-- Subtle filter to round corners without merging nearby glyphs -->
+                        <filter id="round-corners" x="-20%" y="-20%" width="140%" height="140%">
+                            <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" result="blur" />
+                            <feColorMatrix in="blur" type="matrix" values="
+                              1 0 0 0 0
+                              0 1 0 0 0
+                              0 0 1 0 0
+                              0 0 0 12 -4" result="rounded" />
+                            <feComposite in="SourceGraphic" in2="rounded" operator="atop" />
+                        </filter>
+
+                        <style>
+                            .text {
+                              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                              font-weight: 800;
+                              font-size: 72px;
+                              letter-spacing: 3px;
+                              filter: url(#round-corners);
+                            }
+                            .ani { fill: #f96d00; }
+                            .kino { fill: #ffffff; }
+                            .big-letter { font-size: 90px; }
+                            .small-slash { font-size: 54px; }
+                        </style>
+                    </defs>
+
+                    <text x="50%" y="50%" dominant-baseline="central" text-anchor="middle" class="text">
+                      <tspan class="ani big-letter" rotate="-8">A</tspan><tspan class="ani" rotate="0" dx="-5">n</tspan><tspan class="ani" rotate="0" dx="-2">!</tspan><tspan class="kino big-letter" rotate="8" dx="-8">K</tspan><tspan class="kino small-slash" rotate="0" dx="1" dy="5">/</tspan><tspan class="kino" rotate="0" dx="-2" dy="-5">n</tspan>
+                    </text>
+
+                    <!-- Play icon replacing 'o': play outline updated to pure black (#000000). 5% smaller, nudged down. -->
+                    <g transform="translate(381.7, 47.7) scale(2.3)" filter="url(#round-corners)">
+                        <circle cx="12" cy="12" r="7.5" fill="#f96d00" />
+                        <circle cx="12" cy="12" r="9" stroke="#000000" stroke-width="1.5" fill="none" />
+                        <path fill="#000000" d="M15.91 11.672a.375.375 0 0 1 0 .656l-5.603 3.113a.375.375 0 0 1-.557-.328V8.887c0-.286.307-.466.557-.327l5.603 3.112Z" />
+                    </g>
+
+                    <!-- Dot above the '/' stem, nudged down to sit closer to the slash -->
+                    <polygon class="ani" points="336,39 345,39 340,46 331,46" filter="url(#round-corners)" />
+                </svg>
+            </a>
         </div>
         <ul class="sidebar-nav-list">
             <li><a href="/html/indexMain.html" class="sidebar-nav-link">

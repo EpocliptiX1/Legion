@@ -118,6 +118,7 @@
 }
 .movie-header-main-inner {
     min-width: 0 !important;
+    width: 100%;
 }
 /* ── Global Scrollbar ─────────────────────────────────────────── */
 * {
@@ -530,16 +531,32 @@ body {
 }
 
 .sidebar-logo-wrap {
-    padding: 18px 20px 20px;
-    padding-bottom: 28px;
+    padding: 14px 22px ;
+    /* padding-bottom: 29px; */
     border-bottom: 1px solid rgba(43, 43, 43, 0.8);
     flex-shrink: 0;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
 }
 
 .sidebar-logo-img {
     height: 22px;
+    flex-shrink: 0;
+}
+
+.sidebar-brand-mark {
+    /* margin-left: 8px; */
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    text-decoration: none;
+}
+
+.sidebar-brand-mark svg {
+    /* width: 110px; */
+    height: 42px;
+    display: block;
 }
 
 .sidebar-nav-list {
@@ -928,6 +945,7 @@ body {
 
 .logo-link {
     text-decoration: none;
+    display: none;
 }
 
 /* Search Bar */
@@ -956,7 +974,7 @@ body {
 
 .search-box.expanded {
     border-color: #f96d00 !important;
-    width: 90%;
+    width: 100%;
     position: absolute;
     right: 0;
     left: auto;
@@ -1694,8 +1712,8 @@ body {
 }
 
 .close-settings:hover {
-    color: #fff;
-    background: rgba(255, 255, 255, 0.1);
+    color: #f96d00 !important;
+    /* background: rgba(255, 255, 255, 0.1); */
 }
 
 /* Add More Button in Header */
@@ -1894,14 +1912,14 @@ body {
 }
 #watch2getherModal .w2g-card-addfriend-top + .w2g-card-friends {
     grid-row: 4 / span 2;
-    max-height: 220px;
+    max-height: 100%;
 }
 #watch2getherModal .close-settings {
     position: absolute;
     top: 16px;
     right: 16px;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    /* background: rgba(255, 255, 255, 0.06); */
+    /* border: 1px solid rgba(255, 255, 255, 0.12); */
     border-radius: 50%;
     width: 36px;
     height: 36px;
@@ -1914,7 +1932,7 @@ body {
     color: #999;
 }
 #watch2getherModal .close-settings:hover {
-    background: rgba(255, 255, 255, 0.1);
+    /* background: rgba(255, 255, 255, 0.1); */
     border-color: rgba(249, 109, 0, 0.3);
     color: #f96d00;
 }
@@ -2988,7 +3006,7 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
 
 /* ── Full Calendar page ──────────────────────────────────────────── */
 .calendar-page-wrap {
-    padding: 100px 4% 60px;
+    padding: 60px 4% 60px;
 }
 
 .calendar-page-header {
@@ -7801,7 +7819,7 @@ body.blur-active {
     padding: 10px;
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.6);
     width: 350px;
-    max-height: 400px;
+    max-height: 468px;
     display: flex;
     flex-direction: column;
 }
@@ -8407,6 +8425,8 @@ body.blur-active {
         justify-content: center;
         text-align: center;
     }
+
+
 }
 
 @media (max-width: 680px) {
@@ -8890,6 +8910,11 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     color: #e63c3c;
     margin-top:5px;
 }
+.downloadButtonMovieInfoParent{
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
 .download-progress-track {
     width: 100%;
     height: 14px;
@@ -8974,11 +8999,15 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     height: 20px;
 }
 /* ── RESPONSIVE MEDIA QUERIES (1200px → 620px) ────────────────── */
-@media (max-width: 1262px) {
+@media (max-width: 1386px) {
     .navbar-page-links{
         display: none;
     }
+    .search-box{
+        width: 100%;
+    }
 }
+
 @media (max-width: 1200px) {
     .movie-header{
         padding: 40px 20px !important;
@@ -9297,6 +9326,14 @@ body.personal-list-page .grid-card {
 }
 
 @media (max-width: 730px) {
+        /* 4 download buttons in a single nowrap row (forced by the 1000px breakpoint's
+       flex-wrap:nowrap !important) get cramped/overflow at this width -- switch to a
+       2x2 grid instead. Grid ignores flex-direction/flex-wrap, so this wins over that
+       rule regardless of it coming later in the file. */
+    .downloadButtonMovieInfoParent {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+    }
     .player-block-left{
         flex-direction: column !important;
     }
