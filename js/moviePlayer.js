@@ -631,7 +631,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             let episode = 1;
             let season = 1;
-            let audioType = 'sub';
+            let audioType = localStorage.getItem('preferredAudio') === 'dub' ? 'dub' : 'sub';
 
             // Try to get watch history (may not be loaded yet, fetch it if needed)
             let historyCache = window.__watchHistoryCache;
@@ -692,7 +692,7 @@ document.addEventListener('DOMContentLoaded', function() {
             fetch(nekoUrl).then(res => res.json()).then(data => {
                 if (data?.stream || data?.sources?.file) {
                     window.__preloadedNekoSources = data;
-                    window.__preloadedNekoEpisode = { season, ep: episode };
+                    window.__preloadedNekoEpisode = { season, ep: episode, audio: audioType };
                     console.log('[Preload] ✓ Neko sources cached for S' + season + 'E' + episode, { hasStream: !!data.stream });
                 } else {
                     console.log('[Preload] ✗ Neko returned no stream:', data);
@@ -1236,7 +1236,26 @@ document.addEventListener('DOMContentLoaded', function() {
                         'settings',
                         'pip',
                         'fullscreen'
-                    ]
+                    ],
+                    settings: ['captions', 'quality', 'speed'],
+                    // The vidtub HLS masters (KAA + Neko) always ship 360p/720p/1080p variants
+                    // -- Plyr just needs to know the option list up front to render the menu;
+                    // onChange resolves the actual hls.js level by height at click time, by
+                    // which point MANIFEST_PARSED has long since fired.
+                    quality: {
+                        default: 0,
+                        options: [0, 1080, 720, 360],
+                        forced: true,
+                        onChange: (newQuality) => {
+                            if (!currentHls) return;
+                            if (newQuality === 0) {
+                                currentHls.currentLevel = -1;
+                                return;
+                            }
+                            const levelIndex = currentHls.levels.findIndex(l => l.height === newQuality);
+                            if (levelIndex >= 0) currentHls.currentLevel = levelIndex;
+                        }
+                    }
                 });
                 movePlyrTopControls();
                 setTimeout(() => {
@@ -1339,7 +1358,7 @@ document.addEventListener('DOMContentLoaded', function() {
         function preloadNekoForEpisode(season, episode, audioType) {
             const key = `${season}:${episode}:${audioType}`;
             const already = window.__preloadedNekoEpisode;
-            if (window.__preloadedNekoSources && already && parseInt(season) === parseInt(already.season || 1) && parseInt(episode) === parseInt(already.ep || 1)) {
+            if (window.__preloadedNekoSources && already && parseInt(season) === parseInt(already.season || 1) && parseInt(episode) === parseInt(already.ep || 1) && (already.audio || 'sub') === audioType) {
                 return;
             }
             if (window.__nekoPreloadInFlight.has(key)) return;
@@ -1350,7 +1369,7 @@ document.addEventListener('DOMContentLoaded', function() {
             fetch(`/api/anime-neko-log?${query.toString()}`).then(res => res.json()).then(data => {
                 if (data?.stream || data?.sources?.file) {
                     window.__preloadedNekoSources = data;
-                    window.__preloadedNekoEpisode = { season, ep: episode };
+                    window.__preloadedNekoEpisode = { season, ep: episode, audio: audioType };
                     console.log(`[Preload] ✓ Neko ready for S${season}E${episode}`);
                 }
             }).catch(() => {}).finally(() => window.__nekoPreloadInFlight.delete(key));
@@ -1433,7 +1452,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     // attempt on every new episode rather than sticking to whatever this one
                     // fell back to.
                     const preloadedNekoEp = window.__preloadedNekoEpisode;
-                    if (window.__preloadedNekoSources && preloadedNekoEp && parseInt(selectedSeason) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1)) {
+                    if (window.__preloadedNekoSources && preloadedNekoEp && parseInt(selectedSeason) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1) && (preloadedNekoEp.audio || 'sub') === audioType) {
                         console.log('[Fallback] KAA had no sources, using preloaded Neko instead');
                         document.querySelectorAll('.server-btn').forEach(btn => btn.classList.toggle('active', btn.id === 'srvNeko1'));
                         window.currentServer = 'srvNeko1';
@@ -1510,7 +1529,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
         async function fetchKaaSubtitlesForEpisode(episode, audioType, season) {
             try {
-                if (String(audioType || '').toLowerCase() !== 'sub') return [];
+                // Anikoto/Neko doesn't provide its own caption tracks -- borrow KAA's (always
+                // requested as its 'sub' flow below, since that's where KAA's captions live)
+                // regardless of which audio Neko itself is playing, sub or dub.
                 const seasonSelectEl = document.getElementById('seasonSelect');
                 const selectedSeason = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || season || 1;
                 const title = document.getElementById('title')?.textContent.trim() || '';
@@ -1622,7 +1643,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 let data;
                 const preloadedNekoEp = window.__preloadedNekoEpisode;
-                if (window.__preloadedNekoSources && preloadedNekoEp && parseInt(season) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1)) {
+                if (window.__preloadedNekoSources && preloadedNekoEp && parseInt(season) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1) && (preloadedNekoEp.audio || 'sub') === audioType) {
                     console.log('[Neko] Using preloaded sources for S' + season + 'E' + episode);
                     data = window.__preloadedNekoSources;
                     window.__preloadedNekoSources = null;
@@ -2242,11 +2263,15 @@ document.addEventListener('DOMContentLoaded', function() {
                     //     specialsOption = '<option value="specials">Specials</option>';
                     // }
 
-                    seasonSelect.innerHTML = useAnimeSeasonUX
+                    // Anime keeps its existing lever-gated "All eps" behavior untouched.
+                    // Non-anime shows get the same "All eps" option whenever there's actually
+                    // more than one season to pick from.
+                    const showAllEpsOption = useAnimeSeasonUX || (!isAnime && seasonEntries.length > 1);
+                    seasonSelect.innerHTML = showAllEpsOption
                         ? `<option value="all">All eps</option>${seasonEntries.map(s => `<option value="${s.season_number}">Season ${s.season_number}</option>`).join('')}`
                         : seasonEntries.map(s => `<option value="${s.season_number}">Season ${s.season_number}</option>`).join('');
                     if (seasonPickerWrap) {
-                        seasonPickerWrap.style.display = useAnimeSeasonUX ? 'flex' : 'none';
+                        seasonPickerWrap.style.display = showAllEpsOption ? 'flex' : 'none';
                     }
 
                     // NEW DYNAMIC POPULATOR
@@ -2267,7 +2292,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             //     console.log(`[Episodes] Season 0 fetched: ${Array.isArray(seasonData?.episodes) ? seasonData.episodes.length : 0} episodes`);
                             //     bySeason.push({ seasonNumber: 0, episodes: Array.isArray(seasonData?.episodes) ? seasonData.episodes : [] });
                             // } else
-                            if (mode === 'all' && useAnimeSeasonUX) {
+                            if (mode === 'all' && showAllEpsOption) {
                                 if (resolvedSeasonGroups && resolvedSeasonGroups.length > 0) {
                                     bySeason.push(...resolvedSeasonGroups.map(g => ({ seasonNumber: g.seasonNumber, episodes: g.episodes })));
                                 } else {

@@ -45,25 +45,25 @@ function logKaaDebug(...parts) {
     }
 }
 
-// NekoStream debug logger (disabled - KAA debugging takes priority)
+// NekoStream debug logger -- TEMP: investigating dub fallback, writes to
+// neko_dub_debugging.txt at repo root only (never stdout) per debugging rules.
+const NEKO_DUB_DEBUG_LOG_PATH = path.join(__dirname, '..', 'neko_dub_debugging.txt');
 function logNekoDebug(...parts) {
-    // NekoStream logging disabled - using kaa-debug-log.txt for KAA debugging
-    // const stamp = new Date().toISOString();
-    // const text = parts.map(part => {
-    //     if (typeof part === 'string') return part;
-    //     try {
-    //         return JSON.stringify(part, null, 2);
-    //     } catch (e) {
-    //         return String(part);
-    //     }
-    // }).join(' ');
-    // const line = `[${stamp}] [NEKO] ${text}`;
-    // console.log(line);
-    // try {
-    //     fs.appendFileSync(KAA_DEBUG_LOG_PATH, line + '\n');
-    // } catch (err) {
-    //     // Silent fail
-    // }
+    const stamp = new Date().toISOString();
+    const text = parts.map(part => {
+        if (typeof part === 'string') return part;
+        try {
+            return JSON.stringify(part, null, 2);
+        } catch (e) {
+            return String(part);
+        }
+    }).join(' ');
+    const line = `[${stamp}] [NEKO] ${text}`;
+    try {
+        fs.appendFileSync(NEKO_DUB_DEBUG_LOG_PATH, line + '\n');
+    } catch (err) {
+        // Silent fail
+    }
 }
 
 logKaaDebug('[KAA DEBUG] logger ready', {
@@ -9291,15 +9291,31 @@ app.get('/api/anime-neko-log', async (req, res) => {
             try {
                 const nekoUrl = `https://mapper.nekostream.site/api/mal/${mal}/${epSlug}/${timestamp}`;
                 const nekoRes = await axios.get(nekoUrl, { headers: { ...baseHeaders, 'Origin': 'https://anikoto.cz' } });
+                logNekoDebug('[Neko] mapper.nekostream.site raw response', nekoRes.data);
                 const providers = Object.keys(nekoRes.data).filter(key => key !== 'status');
-                
+
+                // pData.sub.download / pData.dub.download is keyed by QUALITY ("360p"/"720p"/
+                // "1080p"), not by provider name -- indexing it with [prov] never hits, and the
+                // old `|| pData?.sub?.download` fallback then stored that whole quality-keyed
+                // object as if it were a single URL string. Pick the highest quality's URL
+                // instead so downstream code (which expects one download link) gets one.
+                const bestDownloadUrl = (node) => {
+                    if (!node) return null;
+                    if (typeof node.download === 'string') return node.download;
+                    if (node.download && typeof node.download === 'object') {
+                        return node.download['1080p'] || node.download['720p'] || node.download['360p']
+                            || Object.values(node.download)[0] || null;
+                    }
+                    return node.dl || null;
+                };
+
                 providers.forEach(prov => {
                     const pData = nekoRes.data[prov];
-                    
-                    const subDl = pData?.sub?.download?.[prov] || pData?.sub?.download || pData?.sub?.dl;
+
+                    const subDl = bestDownloadUrl(pData?.sub);
                     if (subDl && !subLinks.includes(subDl)) subLinks.push(subDl);
 
-                    const dubDl = pData?.dub?.download?.[prov] || pData?.dub?.download || pData?.dub?.dl;
+                    const dubDl = bestDownloadUrl(pData?.dub);
                     if (dubDl && !dubLinks.includes(dubDl)) dubLinks.push(dubDl);
                 });
             } catch (err) {
