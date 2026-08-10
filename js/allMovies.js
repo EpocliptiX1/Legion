@@ -1,195 +1,19 @@
 let currentPage = 1;
 const limit = 50;
 let isLoading = false;
-// While an AniList-filtered anime view is showing, the scroll-triggered loadMovies() (Jikan
-// path) must not fire -- it would append unrelated, unfiltered results underneath.
+// While an AniList-filtered anime view is showing, the scroll-triggered loadMovies() (default
+// AniList row path) must not fire -- it would append unrelated, unfiltered results underneath.
 let anilistFilteredViewActive = false;
 
 function isAnimeLibraryMode() {
     return localStorage.getItem('animeMode') === 'true';
 }
 
-const jikanGenreMap = {
-    "Action": 1,
-    "Adventure": 2,
-    "Comedy": 4,
-    "Drama": 8,
-    "Fantasy": 10,
-    "Horror": 14,
-    "Mystery": 7,
-    "Romance": 22,
-    "Science Fiction": 24,
-    "Sports": 30,
-    "Music": 19
-};
-
 function getLibrarySearchQuery() {
     const mainSearch = document.getElementById('mainSearch');
     const searchInput = document.getElementById('searchInput');
     const raw = (mainSearch && mainSearch.value) || (searchInput && searchInput.value) || '';
     return raw.trim();
-}
-
-function getAnimeTitle(item) {
-    return item.title_english || item.title || item.title_japanese || 'Unknown Title';
-}
-
-function getAnimeYear(item) {
-    if (item.year) return String(item.year);
-    const from = item.aired && item.aired.from ? String(item.aired.from) : '';
-    return from ? from.slice(0, 4) : '';
-}
-
-function getAnimePoster(item) {
-    return (item.images && item.images.jpg && (item.images.jpg.large_image_url || item.images.jpg.image_url))
-        ? (item.images.jpg.large_image_url || item.images.jpg.image_url)
-        : '/img/default_poster.png';
-}
-
-function getAnimeAliases(item) {
-    const aliases = [];
-    if (item.title_english) aliases.push(item.title_english);
-    if (item.title) aliases.push(item.title);
-    if (item.title_japanese) aliases.push(item.title_japanese);
-    if (Array.isArray(item.title_synonyms)) aliases.push(...item.title_synonyms);
-
-    const unique = [];
-    const seen = new Set();
-    for (const raw of aliases) {
-        const t = String(raw || '').trim();
-        if (!t) continue;
-        const key = t.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        unique.push(t);
-        if (unique.length >= 4) break;
-    }
-    return unique;
-}
-
-const animeResolveCache = new Map();
-const tmdbToMalCache = new Map();
-
-async function getMalIdForTmdb(tmdbId) {
-    const key = String(tmdbId);
-    if (tmdbToMalCache.has(key)) return tmdbToMalCache.get(key);
-    try {
-        const r = await fetch(`/api/anime-mal-id?tmdbId=${encodeURIComponent(tmdbId)}&season=1`);
-        if (!r.ok) {
-            tmdbToMalCache.set(key, null);
-            return null;
-        }
-        const d = await r.json();
-        const mal = d && d.mal_id ? String(d.mal_id) : null;
-        tmdbToMalCache.set(key, mal);
-        return mal;
-    } catch (_) {
-        tmdbToMalCache.set(key, null);
-        return null;
-    }
-}
-
-async function resolveTmdbAnimeForJikanEntry(anime) {
-    const malId = anime && anime.mal_id ? String(anime.mal_id) : '';
-    if (!malId) return null;
-    if (animeResolveCache.has(malId)) return animeResolveCache.get(malId);
-
-    const preferredType = anime.type === 'Movie' ? 'movie' : 'tv';
-    const typeOrder = preferredType === 'movie' ? ['movie', 'tv'] : ['tv', 'movie'];
-    const aliases = getAnimeAliases(anime);
-    if (!aliases.length) {
-        animeResolveCache.set(malId, null);
-        return null;
-    }
-
-    for (const alias of aliases) {
-        for (const mediaType of typeOrder) {
-            try {
-                const r = await fetch(`/api/tmdb-proxy/search/${mediaType}?query=${encodeURIComponent(alias)}&language=en-US&page=1`);
-                if (!r.ok) continue;
-                const d = await r.json();
-                const results = (d && d.results ? d.results : []).slice(0, 5);
-
-                for (const hit of results) {
-                    if (!hit || !hit.id) continue;
-                    const mappedMal = await getMalIdForTmdb(hit.id);
-                    if (mappedMal && mappedMal === malId) {
-                        const resolved = {
-                            id: hit.id,
-                            type: mediaType,
-                            poster: hit.poster_path ? `https://image.tmdb.org/t/p/w500${hit.poster_path}` : null
-                        };
-                        animeResolveCache.set(malId, resolved);
-                        return resolved;
-                    }
-                }
-            } catch (_) {}
-        }
-    }
-
-    animeResolveCache.set(malId, null);
-    return null;
-}
-
-async function fetchJikanAnimeCandidates() {
-    const query = getLibrarySearchQuery();
-    const page = String(currentPage);
-
-    if (query) {
-        const params = new URLSearchParams();
-        params.set('q', query);
-        params.set('page', page);
-        params.set('limit', '40');
-        params.set('sfw', 'true');
-        params.set('order_by', 'score');
-        params.set('sort', 'desc');
-        params.set('min_score', '6');
-
-        const r = await fetch(`https://api.jikan.moe/v4/anime?${params.toString()}`);
-        if (!r.ok) throw new Error('Jikan search failed');
-        const d = await r.json();
-        return d && d.data ? d.data : [];
-    }
-
-    if (activeFilters.sort === 'popularity.desc') {
-        const topParams = new URLSearchParams();
-        topParams.set('filter', 'bypopularity');
-        topParams.set('page', page);
-        topParams.set('limit', '25');
-        const r = await fetch(`https://api.jikan.moe/v4/top/anime?${topParams.toString()}`);
-        if (!r.ok) throw new Error('Jikan top popularity failed');
-        const d = await r.json();
-        return d && d.data ? d.data : [];
-    }
-
-    if (activeFilters.sort === 'vote_average.desc') {
-        const topParams = new URLSearchParams();
-        topParams.set('page', page);
-        topParams.set('limit', '25');
-        const r = await fetch(`https://api.jikan.moe/v4/top/anime?${topParams.toString()}`);
-        if (!r.ok) throw new Error('Jikan top rated failed');
-        const d = await r.json();
-        return d && d.data ? d.data : [];
-    }
-
-    const params = new URLSearchParams();
-    params.set('page', page);
-    params.set('limit', '40');
-    params.set('sfw', 'true');
-    params.set('order_by', activeFilters.sort === 'primary_release_date.desc' ? 'start_date' : 'popularity');
-    params.set('sort', 'desc');
-    params.set('start_date', `${activeFilters.minYear}-01-01`);
-    params.set('end_date', `${activeFilters.maxYear}-12-31`);
-    params.set('min_score', '6');
-
-    if (activeFilters.genre && activeFilters.genre !== 'Anime' && jikanGenreMap[activeFilters.genre]) {
-        params.set('genres', String(jikanGenreMap[activeFilters.genre]));
-    }
-
-    const r = await fetch(`https://api.jikan.moe/v4/anime?${params.toString()}`);
-    if (!r.ok) throw new Error('Jikan filtered anime failed');
-    const d = await r.json();
-    return d && d.data ? d.data : [];
 }
 
 async function resolveTmdbAnimeByTitle(title, preferredType) {
@@ -419,7 +243,7 @@ async function loadMovies() {
     }
 
     if (isAnimeLibraryMode()) {
-        await loadAnimeLibraryFromJikan(grid);
+        await loadAnimeLibraryDefault(grid);
         return;
     }
 
@@ -579,6 +403,7 @@ query (
     $page: Int
     $perPage: Int
     $sort: [MediaSort]
+    $search: String
     $genre: String
     $tag: String
     $format: MediaFormat
@@ -591,6 +416,7 @@ query (
         media(
             type: ANIME
             isAdult: false
+            search: $search
             genre: $genre
             tag: $tag
             format: $format
@@ -615,6 +441,7 @@ async function fetchAniListFilteredAnime(filters, page = 1, perPage = 30) {
         page,
         perPage,
         sort: [filters.sort || 'POPULARITY_DESC'],
+        search: filters.search || undefined,
         genre: filters.genre || undefined,
         tag: filters.tag || undefined,
         format: filters.format || undefined,
@@ -714,10 +541,32 @@ async function loadAnimeLibraryFromAniList(grid, filters) {
     }
 }
 
-async function loadAnimeLibraryFromJikan(grid) {
+// Powers the anime library's default (unfiltered) view -- initial page load and infinite
+// scroll -- via AniList instead of Jikan (Jikan's rate limiting made the very first load of
+// this page fail outright). Mirrors the server-cached row fetch used by indexBrowse's
+// specialVisibilityExpemption rows (/api/anime-row) so repeated page loads hit the cache
+// instead of hammering AniList directly; a live search query still goes straight to AniList
+// since per-query results aren't worth caching server-side.
+function getDefaultAnimeRowKey() {
+    if (activeFilters.sort === 'vote_average.desc') return 'TOP_SCORE';
+    return 'POPULAR';
+}
+
+async function loadAnimeLibraryDefault(grid) {
     try {
-        const candidates = await fetchJikanAnimeCandidates();
-        if (!candidates.length) {
+        const query = getLibrarySearchQuery();
+        let mediaList;
+        if (query) {
+            mediaList = await fetchAniListFilteredAnime({ sort: 'POPULARITY_DESC', search: query }, currentPage, 25);
+        } else {
+            const rowKey = getDefaultAnimeRowKey();
+            const res = await fetch(`/api/anime-row?rowKey=${encodeURIComponent(rowKey)}&page=${currentPage}&perPage=25`);
+            if (!res.ok) throw new Error('AniList row fetch failed');
+            const data = await res.json();
+            mediaList = Array.isArray(data) ? data : [];
+        }
+
+        if (!mediaList.length) {
             if (currentPage === 1) {
                 grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No anime match these filters.</p>';
             }
@@ -725,27 +574,29 @@ async function loadAnimeLibraryFromJikan(grid) {
             return;
         }
 
-        const verified = [];
-        const batchSize = 6;
-        for (let i = 0; i < candidates.length && verified.length < 24; i += batchSize) {
-            const chunk = candidates.slice(i, i + batchSize);
-            const resolvedChunk = await Promise.all(
-                chunk.map(async (anime) => {
-                    const resolved = await resolveTmdbAnimeForJikanEntry(anime);
-                    return resolved ? { anime, resolved } : null;
-                })
-            );
-
-            for (const hit of resolvedChunk) {
-                if (!hit) continue;
-                verified.push(hit);
-                if (verified.length >= 24) break;
+        const withTmdb = await Promise.all(mediaList.map(async (media) => {
+            const title = media.title?.english || media.title?.romaji;
+            if (!title) return null;
+            try {
+                const params = new URLSearchParams({
+                    anilistId: media.id,
+                    title,
+                    titleEnglish: media.title?.english || '',
+                    titleRomaji: media.title?.romaji || '',
+                    malId: media.idMal || ''
+                });
+                const r = await fetch(`/api/anime-tmdb-id?${params.toString()}`);
+                const d = await r.json().catch(() => ({}));
+                return d?.tmdb_id ? { media, tmdbId: d.tmdb_id } : null;
+            } catch {
+                return null;
             }
-        }
+        }));
 
-        if (!verified.length) {
+        const results = withTmdb.filter(Boolean);
+        if (!results.length) {
             if (currentPage === 1) {
-                grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No MAL anime could be matched to TMDB for this page.</p>';
+                grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Found matching anime, but couldn\'t link any to a TMDB entry.</p>';
             }
             isLoading = false;
             return;
@@ -756,14 +607,13 @@ async function loadAnimeLibraryFromJikan(grid) {
                 <path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="currentColor"/>
             </svg>`;
 
-        verified.forEach(({ anime, resolved }) => {
-            const title = getAnimeTitle(anime);
+        results.forEach(({ media, tmdbId }) => {
+            const title = media.title?.english || media.title?.romaji || 'Unknown';
             const safeName = title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-            const posterUrl = resolved.poster || getAnimePoster(anime);
-            const year = getAnimeYear(anime);
-            const inferredType = resolved.type;
-            const typeLabel = anime.type || 'Anime';
-            const tmdbId = resolved.id;
+            const posterUrl = media.coverImage?.large || media.coverImage?.extraLarge || '/img/default_poster.png';
+            const year = media.seasonYear || media.startDate?.year || '';
+            const inferredType = media.format === 'MOVIE' ? 'movie' : 'anime';
+            const typeLabel = media.format || 'Anime';
 
             const card = document.createElement('div');
             card.className = 'grid-card';

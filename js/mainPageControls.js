@@ -1102,54 +1102,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         });
     }
-
-    // ===============================================================
-    // RESULTS PAGE LOGIC (Search Grid with Overlays)
-    // ===============================================================
-    const fullResultsGrid = document.getElementById('fullResultsGrid');
-    
-    if (fullResultsGrid) {
-        const urlParams = new URLSearchParams(window.location.search);
-        const query = urlParams.get('q');
-        
-        if (query) {
-            const display = document.getElementById('queryDisplay');
-            if(display) display.innerText = query;
-            
-            try {
-                const baseUrl = `/search?q=${encodeURIComponent(query)}`;
-                const response = await fetch(window.withMovieSource ? window.withMovieSource(baseUrl) : baseUrl);
-                const movies = await response.json();
-                
-                // --- GENERATE HTML ---
-                fullResultsGrid.innerHTML = movies.map(movie => `
-                    <div class="movie-card" onclick="window.location.href='movieInfo.html?id=${movie.ID}&type=movie'">                        
-                        <div style="position: relative; width: 100%; height: 270px;">
-                            <img src="${movie.poster_full_url}" 
-                                    alt="${movie['Movie Name']}" 
-                                    style="width:100%; height:100%; object-fit:cover;"
-                                    onerror="this.src='/img/LOGO_Short.png'">
-                            
-                            <div class="card-overlay">
-                                <svg class="play-icon-svg" viewBox="0 0 24 24">
-                                    <path d="M8 5v14l11-7z"/> 
-                                </svg>
-                            </div>
-                        </div>
-
-                        <div class="movie-card-info">
-                            <h3>${movie['Movie Name']}</h3>
-                            <p>${movie.release_date ? movie.release_date.split('-')[0] : (movie.Year || 'N/A')} • ⭐ ${getMovieRating(movie)}</p>
-                        </div>
-                    </div>
-                `).join('');
-                
-            } catch (err) {
-                console.error("Failed to load results:", err);
-                fullResultsGrid.innerHTML = '<p style="color:red; text-align:center;">Could not connect to database.</p>';
-            }
-        }
-    }
 });
 
 // Helper Functions
