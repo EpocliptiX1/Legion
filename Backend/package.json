@@ -26,6 +26,7 @@
     "csv-parse": "^6.1.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
+    "got-scraping": "^4.2.1",
     "jsonwebtoken": "^9.0.2",
     "node-fetch": "^3.3.2",
     "puppeteer": "^25.1.0",

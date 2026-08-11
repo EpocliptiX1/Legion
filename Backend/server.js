@@ -5064,19 +5064,21 @@ app.delete('/playlists/:id/movies/:movieId', (req, res) => {
 //  9.5 FORUM ROUTES
 // =========================================
 
+// FORUM DISABLED, DEACTIVATED FEATURE
 // Get all forum movies
 app.get('/forum/movies', (req, res) => {
+    return res.json([]);
     try {
         const data = fs.readFileSync(forumMoviesPath, 'utf8');
         const movies = JSON.parse(data) || [];
         const threadsData = fs.readFileSync(forumThreadsPath, 'utf8');
         const threads = JSON.parse(threadsData) || [];
-        
+
         const moviesWithCounts = movies.map(movie => ({
             ...movie,
             threadCount: threads.filter(t => String(t.movieId) === String(movie.movieId)).length
         }));
-        
+
         res.json(moviesWithCounts);
     } catch (err) {
         console.error('Error reading forum movies:', err);
@@ -8194,18 +8196,25 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send('URL required');
 
+    // Most sources proxied here (KAA/Neko) are served off vidtube.site regardless of the
+    // actual CDN host, so that's the safe default Referer/Origin. Sources on their own
+    // CDN with their own Referer allowlist (e.g. aniboom.one) pass `ref` explicitly.
+    const refererOverride = req.query.ref;
+    const refererBase = refererOverride ? refererOverride.replace(/\/?$/, '/') : 'https://vidtube.site/';
+    const originBase = refererBase.replace(/\/$/, '');
+
     try {
         // 1. If it's a media chunk (.ts, .m4s, etc.) or playlist (.m3u8)
         const isM3u8 = targetUrl.includes('.m3u8');
-        
+
         const response = await axios({
             method: 'GET',
             url: targetUrl,
             responseType: isM3u8 ? 'text' : 'arraybuffer',
             headers: {
                 'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': 'https://vidtube.site/',
-                'Origin': 'https://vidtube.site',
+                'Referer': refererBase,
+                'Origin': originBase,
                 'Accept': '*/*',
                 'Accept-Language': 'en-US,en;q=0.9',
                 ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {})
@@ -8218,22 +8227,23 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         if (isM3u8) {
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
             const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
+            const refSuffix = refererOverride ? `&ref=${encodeURIComponent(refererOverride)}` : '';
 
             const rewrittenM3u8 = response.data.split('\n').map(line => {
                 const trimmed = line.trim();
                 if (!trimmed) return line;
 
-                if (trimmed.startsWith('#EXT-X-MAP:') || trimmed.startsWith('#EXT-X-KEY:')) {
+                if (trimmed.startsWith('#EXT-X-MAP:') || trimmed.startsWith('#EXT-X-KEY:') || trimmed.startsWith('#EXT-X-MEDIA:')) {
                     return line.replace(/URI="([^"]+)"/, (match, uri) => {
                         const absoluteUrl = uri.startsWith('http') ? uri : baseUrl + uri;
-                        return `URI="/api/m3u8-proxy?url=${encodeURIComponent(absoluteUrl)}"`;
+                        return `URI="/api/m3u8-proxy?url=${encodeURIComponent(absoluteUrl)}${refSuffix}"`;
                     });
                 }
 
                 if (trimmed.startsWith('#')) return line;
-                
+
                 const absoluteUrl = trimmed.startsWith('http') ? trimmed : baseUrl + trimmed;
-                return `/api/m3u8-proxy?url=${encodeURIComponent(absoluteUrl)}`;
+                return `/api/m3u8-proxy?url=${encodeURIComponent(absoluteUrl)}${refSuffix}`;
             }).join('\n');
 
             return res.send(rewrittenM3u8);
@@ -9406,6 +9416,385 @@ app.get('/api/anime-neko-log', async (req, res) => {
         return res.status(err.status || 500).json({ ok: false, error: err.message });
     }
 });
+// --- NewStream (animego.me -> aniboom.one) ---
+// animego.me is a Russian anime site; its "translations" are Russian fandub/fansub
+// GROUPS (not a sub/dub language toggle), and the HLS stream it points to only ever
+// carries one muxed Russian audio track. There's no English audio/subs available here,
+// so the frontend hides the SUB/DUB row entirely for this server and just plays whatever
+// the default (or first working) Russian translation resolves to.
+const NEWSTREAM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+function unescapeHtmlEntities(str) {
+    return String(str)
+        .replace(/&quot;/g, '"')
+        .replace(/&#0*39;/g, "'")
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&');
+}
+
+// One anime = one animego.me "slug" = one aniboom embed id. Episode/translation are
+// just query params layered on top of that id, so this only has to run once per title
+// (not once per episode).
+const animegoResolveCache = new Map(); // key -> { result, resolvedAt }
+const animegoResolveInFlight = new Map();
+const ANIMEGO_RESOLVE_CACHE_TTL_MS = 30 * 60 * 1000;
+
+async function resolveAnimegoAniboom(rawTitle, season) {
+    const headers = { 'User-Agent': NEWSTREAM_UA, 'Referer': 'https://animego.me/' };
+
+    const searchRes = await axios.get(`https://animego.me/search/all?q=${encodeURIComponent(rawTitle)}`, { headers, timeout: 15000 });
+    const $search = cheerio.load(searchRes.data);
+    const candidates = [];
+    $search('a[href^="/anime/"]').each((i, el) => {
+        const href = $search(el).attr('href') || '';
+        const title = $search(el).attr('title') || $search(el).text().trim();
+        const slug = href.replace(/^\/anime\//, '');
+        // Real anime detail pages are "{slug}-{numericId}" with no further slashes;
+        // category/nav links like "/anime/status/ongoing" or "/anime/season/2026" aren't.
+        if (!title || !/^[a-z0-9-]+-\d+$/i.test(slug)) return;
+        if (!candidates.some(c => c.slug === slug)) candidates.push({ slug, title });
+    });
+    if (candidates.length === 0) throw new Error(`No animego.me results for: "${rawTitle}"`);
+
+    // Sequel seasons are usually distinct catalog entries (e.g. "... 2", "Part 2").
+    // Default to the first (best-ranked) result; for season > 1 prefer a candidate
+    // whose title looks like that season, falling back to positional index, then #1.
+    let chosen = candidates[0];
+    if (season > 1) {
+        chosen = candidates.find(c => new RegExp(`(^|\\s)(${season}|part\\s*${season}|${season}\\s*сезон)(\\s|$)`, 'i').test(c.title))
+            || candidates[season - 1]
+            || candidates[0];
+    }
+
+    // The anime detail page itself only server-renders a shell -- the actual episode
+    // list + provider/translation buttons are loaded client-side via this XHR endpoint
+    // (animeId is the numeric suffix on the slug, e.g. "...-1684" -> 1684).
+    const animeIdMatch = chosen.slug.match(/-(\d+)$/);
+    if (!animeIdMatch) throw new Error(`Could not extract animego anime id from slug: ${chosen.slug}`);
+    const animeId = animeIdMatch[1];
+    const parentUrl = `https://animego.me/anime/${chosen.slug}`;
+
+    const playerRes = await axios.get(`https://animego.me/player/${animeId}`, {
+        headers: { ...headers, 'Referer': parentUrl, 'X-Requested-With': 'XMLHttpRequest' },
+        timeout: 15000
+    });
+    const playerHtml = playerRes.data?.data?.content || '';
+    const $page = cheerio.load(playerHtml);
+
+    const translations = [];
+    let aniboomId = null;
+    let parentEncoded = null;
+    $page('button[data-player*="aniboom.one/embed/"]').each((i, el) => {
+        const $el = $page(el);
+        const player = $el.attr('data-player') || '';
+        const m = player.match(/aniboom\.one\/embed\/([^?]+)\?/);
+        const parentM = player.match(/parent=([^&]+)/);
+        // The AniBoom-native translation id embedded in data-player's `translation=`
+        // query param is NOT the same as animego's own site-wide data-ptranslation id
+        // (each provider has its own numbering for the same fansub group) -- pull the
+        // id straight out of the URL animego already built rather than re-deriving it.
+        const translationM = player.match(/[?&]translation=([^&]+)/);
+        if (!m || !translationM) return;
+        if (!aniboomId) {
+            aniboomId = m[1];
+            parentEncoded = parentM ? parentM[1] : encodeURIComponent(parentUrl);
+        }
+        translations.push({
+            id: translationM[1],
+            title: $el.attr('data-translation-title') || '',
+            active: $el.hasClass('active')
+        });
+    });
+
+    if (!aniboomId) throw new Error(`No AniBoom player found on animego.me page: ${chosen.slug}`);
+
+    translations.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+
+    return { slug: chosen.slug, aniboomId, parentEncoded, translations };
+}
+
+function resolveAnimegoAniboomCached(rawTitle, season) {
+    const key = `${String(rawTitle).toLowerCase().trim()}::${season}`;
+    const cached = animegoResolveCache.get(key);
+    if (cached && (Date.now() - cached.resolvedAt) < ANIMEGO_RESOLVE_CACHE_TTL_MS) {
+        return Promise.resolve(cached.result);
+    }
+    if (animegoResolveInFlight.has(key)) return animegoResolveInFlight.get(key);
+    const p = resolveAnimegoAniboom(rawTitle, season)
+        .then(result => {
+            animegoResolveCache.set(key, { result, resolvedAt: Date.now() });
+            return result;
+        })
+        .finally(() => animegoResolveInFlight.delete(key));
+    animegoResolveInFlight.set(key, p);
+    return p;
+}
+
+async function fetchAniboomStream(aniboomId, parentEncoded, episode, translationId) {
+    const embedUrl = `https://aniboom.one/embed/${aniboomId}?episode=${encodeURIComponent(episode)}&translation=${encodeURIComponent(translationId)}&parent=${parentEncoded}`;
+    const embedRes = await axios.get(embedUrl, {
+        headers: { 'User-Agent': NEWSTREAM_UA, 'Referer': 'https://animego.me/' },
+        timeout: 15000
+    });
+    const m = embedRes.data.match(/data-parameters="([^"]+)"/);
+    if (!m) throw new Error('AniBoom returned no player parameters (episode/translation unavailable)');
+    const params = JSON.parse(unescapeHtmlEntities(m[1]));
+    if (!params.hls) throw new Error('AniBoom player has no HLS source');
+    const hls = JSON.parse(params.hls);
+    if (!hls.src) throw new Error('AniBoom HLS source missing');
+    return hls.src;
+}
+
+app.get('/api/anime-new-log', async (req, res) => {
+    const rawTitle = req.query.title || '';
+    const episode = req.query.ep || req.query.episode || '1';
+    const season = parseInt(req.query.season || req.query.s || '1', 10);
+    const requestedTranslation = req.query.translation || null;
+    const malId = req.query.malId || null;
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+
+    if (!rawTitle) {
+        return res.status(400).json({ ok: false, error: 'Title is required' });
+    }
+
+    try {
+        if (tmdbId) {
+            const cached = await episodeLoadCacheGet(tmdbId, season, episode, 'ru', 'newstream');
+            if (cached && cached.sources && cached.sources[0]) {
+                const meta = cached.subtitles || {};
+                return res.json({
+                    ok: true,
+                    stream: cached.sources[0],
+                    proxyRef: 'https://aniboom.one/',
+                    translationId: meta.translationId || null,
+                    translationTitle: meta.translationTitle || 'RU'
+                });
+            }
+        }
+
+        const { aniboomId, parentEncoded, translations } = await resolveAnimegoAniboomCached(rawTitle, season);
+        if (translations.length === 0) throw new Error('No Russian translations available for this title');
+
+        const orderedTranslations = requestedTranslation
+            ? [translations.find(t => t.id === requestedTranslation), ...translations.filter(t => t.id !== requestedTranslation)].filter(Boolean)
+            : translations;
+
+        let lastErr = null;
+        for (const translation of orderedTranslations.slice(0, 4)) {
+            try {
+                const streamUrl = await fetchAniboomStream(aniboomId, parentEncoded, episode, translation.id);
+
+                if (tmdbId) {
+                    episodeLoadCacheSet(tmdbId, malId, season, episode, 'ru', 'newstream',
+                        null, rawTitle, [streamUrl], { translationId: translation.id, translationTitle: translation.title }
+                    ).catch(err => console.warn('[NewStream] Cache write failed:', err.message));
+                }
+
+                return res.json({
+                    ok: true,
+                    stream: streamUrl,
+                    proxyRef: 'https://aniboom.one/',
+                    translationId: translation.id,
+                    translationTitle: translation.title
+                });
+            } catch (err) {
+                lastErr = err;
+            }
+        }
+        throw lastErr || new Error('No working translation found for this episode');
+    } catch (err) {
+        console.error('[NewStream] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: err.message });
+    }
+});
+
+// --- RU Movie (kinogo.mu -> cinemar.cc) ---
+// Same idea as NewStream but for movies: kinogo.mu embeds a cinemar.cc iframe whose
+// "file" field is a custom-obfuscated (not encrypted) playlist. Reverse-engineered from
+// cinemar's own player.js: strip the "#2" prefix, the next 2 digits are a char code used
+// as a delimiter to split the rest into chunks, each oversized chunk has its last digit
+// undo a rotate-like shuffle, then the rejoined result is base64 -> UTF8 JSON.
+// kinogo.mu sits behind Cloudflare bot management that fingerprints the TLS client, not
+// just headers -- plain axios (and even Windows' own curl.exe) gets served a JS challenge
+// page instead of real content. got-scraping mimics a real browser's TLS/HTTP2 fingerprint
+// and gets through; cinemar.cc/cinemap.cc (the actual embed + CDN) have no such protection,
+// so only the kinogo.mu resolution step needs this. It's ESM-only, so it's loaded via a
+// cached dynamic import from this CommonJS file.
+let _gotScrapingPromise = null;
+function getGotScraping() {
+    if (!_gotScrapingPromise) {
+        _gotScrapingPromise = import('got-scraping').then(mod => mod.gotScraping);
+    }
+    return _gotScrapingPromise;
+}
+
+// Plain UA for cinemar.cc/cinemap.cc requests -- those aren't behind the same protection,
+// so regular axios is fine for them (no need for got-scraping's heavier fingerprinting).
+const KINOGO_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+function decodeCinemarFile(raw) {
+    if (typeof raw !== 'string' || !raw.startsWith('#2')) {
+        throw new Error('Unexpected Cinemar file format');
+    }
+    const s = raw.substr(2);
+    const dm = s.substr(0, 2);
+    const delim = String.fromCharCode(parseInt(dm, 10));
+    const payload = s.substr(2);
+    const CHUNK_THRESHOLD = 32; // Math.pow(2,5) in cinemar's player.js
+    const chunks = payload.split(delim).map(chunk => {
+        const t = parseInt(chunk.slice(-1), 10);
+        if (chunk.length > CHUNK_THRESHOLD) {
+            return chunk.substr(2 * t, chunk.length - 3 * t - 1) + chunk.substr(0, t);
+        }
+        return chunk;
+    });
+    let val = chunks.join('');
+    const padding = val.length % 4;
+    if (padding) val += '='.repeat(4 - padding);
+    return JSON.parse(Buffer.from(val, 'base64').toString('utf8'));
+}
+
+const kinogoResolveCache = new Map(); // key -> { result, resolvedAt }
+const kinogoResolveInFlight = new Map();
+const KINOGO_RESOLVE_CACHE_TTL_MS = 30 * 60 * 1000;
+
+async function resolveKinogoMovie(rawTitle) {
+    const gotScraping = await getGotScraping();
+
+    const searchRes = await gotScraping.post('https://user.kinogo.mu/engine/ajax/controller.php?mod=lightsearch', {
+        form: { q: rawTitle, method: '', user_hash: '', skin: 'Kinogo' },
+        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Referer': 'https://user.kinogo.mu/' },
+        timeout: { request: 15000 }
+    });
+    const searchData = JSON.parse(searchRes.body);
+    const html = searchData?.html || '';
+    // kinogo.mu's slug separator isn't consistent -- some ids use a double dash
+    // ("12493--chelovek-...") and others a single dash ("53495-chelovek-...").
+    const m = html.match(/href="(\/\d+-{1,2}[^"]+\.html)"/);
+    if (!m) throw new Error(`No kinogo.mu results for: "${rawTitle}"`);
+    const moviePageUrl = `https://user.kinogo.mu${m[1]}`;
+
+    const pageRes = await gotScraping.get(moviePageUrl, { timeout: { request: 15000 } });
+    const embedM = pageRes.body.match(/data-src="(https:\/\/cinemar\.cc\/embed\/[^"]+)"/);
+    if (!embedM) throw new Error('No Cinemar embed found on kinogo.mu page');
+    return { moviePageUrl, embedUrl: embedM[1] };
+}
+
+function resolveKinogoMovieCached(rawTitle) {
+    const key = String(rawTitle).toLowerCase().trim();
+    const cached = kinogoResolveCache.get(key);
+    if (cached && (Date.now() - cached.resolvedAt) < KINOGO_RESOLVE_CACHE_TTL_MS) {
+        return Promise.resolve(cached.result);
+    }
+    if (kinogoResolveInFlight.has(key)) return kinogoResolveInFlight.get(key);
+    const p = resolveKinogoMovie(rawTitle)
+        .then(result => {
+            kinogoResolveCache.set(key, { result, resolvedAt: Date.now() });
+            return result;
+        })
+        .finally(() => kinogoResolveInFlight.delete(key));
+    kinogoResolveInFlight.set(key, p);
+    return p;
+}
+
+async function fetchCinemarStream(embedUrl, moviePageUrl) {
+    const embedRes = await axios.get(embedUrl, {
+        headers: { 'User-Agent': KINOGO_UA, 'Referer': moviePageUrl },
+        timeout: 15000
+    });
+    const m = embedRes.data.match(/"file":\s*"([^"]+)"/);
+    if (!m) throw new Error('Cinemar returned no player file data');
+    const tracks = decodeCinemarFile(m[1]);
+    if (!Array.isArray(tracks) || tracks.length === 0) throw new Error('Cinemar playlist is empty');
+    // First track is consistently the default Russian dub in practice (site's own
+    // default selection) -- other entries are alt dubs/subs (Ukrainian, English, etc).
+    const track = tracks[0];
+    if (!track.file) throw new Error('Cinemar track has no file URL');
+    const streamUrl = track.file.startsWith('http') ? track.file : `https:${track.file}`;
+    const translationTitle = String(track.title || '').replace(/<[^>]+>/g, '').trim();
+    return { streamUrl, translationTitle, dlink: track.dlink || null };
+}
+
+// Mirrors the player's own download button: window.download() calls
+// download.open(playlist.getCurrentItem().dlink), which POSTs that dlink blob
+// to cinemar.cc's own downPage endpoint and gets back a plain array of direct,
+// per-quality progressive MP4 URLs -- no need to decode dlink ourselves.
+async function fetchCinemarDownloadLinks(dlink) {
+    const res = await axios.post('https://cinemar.cc/api/player/downPage',
+        { link: dlink, fhq: true },
+        { headers: { 'Content-Type': 'application/json', 'User-Agent': KINOGO_UA, 'Referer': 'https://cinemar.cc/' }, timeout: 15000 }
+    );
+    if (!Array.isArray(res.data)) throw new Error('Cinemar downPage returned no links');
+    return res.data.map(item => ({
+        quality: item.title || '',
+        hint: item.hint || '',
+        url: item.href.startsWith('http') ? item.href : `https:${item.href}`
+    }));
+}
+
+// Cache-aside resolve shared by playback and download -- both need the same
+// kinogo/cinemar scrape, so a request to one warms the cache for the other.
+async function resolveMovieRuData(rawTitle, tmdbId) {
+    if (tmdbId) {
+        const cached = await episodeLoadCacheGet(tmdbId, 1, 1, 'ru', 'kinogo');
+        // Entries cached before the download feature existed only have
+        // translationTitle, no dlink -- treat those as a miss and re-scrape
+        // rather than serving a permanently-broken download for up to 24h.
+        if (cached && cached.sources && cached.sources[0] && cached.subtitles?.dlink) {
+            const meta = cached.subtitles;
+            return { streamUrl: cached.sources[0], translationTitle: meta.translationTitle || 'RU', dlink: meta.dlink };
+        }
+    }
+
+    const { moviePageUrl, embedUrl } = await resolveKinogoMovieCached(rawTitle);
+    const result = await fetchCinemarStream(embedUrl, moviePageUrl);
+
+    if (tmdbId) {
+        episodeLoadCacheSet(tmdbId, null, 1, 1, 'ru', 'kinogo',
+            null, rawTitle, [result.streamUrl], { translationTitle: result.translationTitle, dlink: result.dlink }
+        ).catch(err => console.warn('[RU Movie] Cache write failed:', err.message));
+    }
+
+    return result;
+}
+
+app.get('/api/movie-ru-log', async (req, res) => {
+    const rawTitle = req.query.title || '';
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+
+    if (!rawTitle) {
+        return res.status(400).json({ ok: false, error: 'Title is required' });
+    }
+
+    try {
+        const { streamUrl, translationTitle } = await resolveMovieRuData(rawTitle, tmdbId);
+        return res.json({ ok: true, stream: streamUrl, proxyRef: 'https://cinemar.cc/', translationTitle });
+    } catch (err) {
+        console.error('[RU Movie] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: err.message });
+    }
+});
+
+app.get('/api/movie-ru-download', async (req, res) => {
+    const rawTitle = req.query.title || '';
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+
+    if (!rawTitle) {
+        return res.status(400).json({ ok: false, error: 'Title is required' });
+    }
+
+    try {
+        const { dlink, translationTitle } = await resolveMovieRuData(rawTitle, tmdbId);
+        if (!dlink) throw new Error('No download link available for this movie');
+        const links = await fetchCinemarDownloadLinks(dlink);
+        return res.json({ ok: true, translationTitle, links });
+    } catch (err) {
+        console.error('[RU Movie Download] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: err.message });
+    }
+});
+
 app.get('/api/anime-kaa-servers', async (req, res) => {
     try {
         let malId = req.query.malId;

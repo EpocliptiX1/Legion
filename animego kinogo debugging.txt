@@ -1,0 +1,589 @@
+================================================================================
+ANIMEGO / KINOGO DEBUGGING LOG
+New Russian-audio sources: "RU - MV" (anime) and "RU - MV" (movies)
+================================================================================
+
+This is a step-by-step account of how two new streaming sources were reverse-
+engineered and wired into the site:
+
+  1. Anime source:  animego.me  ->  aniboom.one          (button: srvNew1)
+  2. Movie source:  kinogo.mu   ->  cinemar.cc/cinemap.cc (button: srvRuMovie)
+
+Both are Russian-language sites. Neither exposes a public API, so everything
+below was worked out from raw HTTP traffic and the sites' own obfuscated
+front-end JS. No credentials, paywalls, or DRM were involved in either case --
+just non-obvious encoding schemes and (in kinogo's case) bot-detection.
+
+Files touched:
+  Backend/server.js   - all backend endpoints, decoders, caching
+  js/moviePlayer.js   - UI buttons, playback wiring
+  Backend/package.json - added "got-scraping" dependency (kinogo only)
+
+
+================================================================================
+PART 1: ANIME SOURCE (animego.me -> aniboom.one)
+================================================================================
+
+--------------------------------------------------------------------------------
+1.1  Starting point
+--------------------------------------------------------------------------------
+User supplied one captured request from their browser's dev tools while
+watching an episode on animego.me:
+
+  Page:  https://animego.me/anime/da-ya-pauk-i-chto-zhe-1684
+  Iframe request:
+    GET https://aniboom.one/embed/ZJ9dEQgd3Dj?episode=1&translation=24&parent=https%3A%2F%2Fanimego.me%2Fanime%2Fda-ya-pauk-i-chto-zhe-1684
+    Referer: https://animego.me/
+
+  Response HTML contained a single tag:
+    <video id="video" ... data-parameters="{&quot;id&quot;:&quot;JQxdawelMA4&quot;,
+      ...,&quot;hls&quot;:&quot;{\&quot;src\&quot;:\&quot;https:\/\/graham.ya-ligt.com\/jq\/JQxdawelMA4\/master.m3u8\&quot;,...}&quot;,...}">
+
+  Then playback hit .m4s (fragmented MP4) segments on graham.ya-ligt.com, and
+  the user reported the segment body looked "garbled / encrypted".
+
+--------------------------------------------------------------------------------
+1.2  First check: is it actually encrypted?
+--------------------------------------------------------------------------------
+Fetched the master playlist and a media segment directly with curl, spoofing
+only a Referer header:
+
+  curl -H "Referer: https://aniboom.one/" \
+    https://graham.ya-ligt.com/jq/JQxdawelMA4/master.m3u8
+  -> HTTP 200, plain #EXTM3U playlist, no #EXT-X-KEY line anywhere.
+
+  curl -H "Referer: https://aniboom.one/" \
+    https://graham.ya-ligt.com/jq/JQxdawelMA4/604261df0351e_chunk_4_00001.m4s
+  -> HTTP 200, Content-Type: video/mp4, 908943 bytes.
+  -> First bytes: 00000000: 0000 0018 7374 7970 6d73 6468 ...
+     ("styp"/"sidx" -- a completely standard fragmented-MP4 box header)
+
+Conclusion: no encryption, no DRM, no DDoS-Guard JS challenge on the CDN or
+the embed endpoint. What looked "garbled" was just binary video data viewed
+as text -- normal. Access only needed a Referer header pointing at
+aniboom.one, same shape as the existing KAA/Neko m3u8-proxy already used.
+
+--------------------------------------------------------------------------------
+1.3  The three unknowns
+--------------------------------------------------------------------------------
+Before writing any code, three things needed answering:
+
+  (a) How do we go from an anime TITLE to an animego.me URL?
+  (b) What is the "ZJ9dEQgd3Dj" id in /embed/{id}?
+  (c) What does the "translation=24" query param actually select?
+
+(a) Title -> slug
+    animego.me has a search endpoint that (surprisingly) matches on English/
+    romaji titles even though the site's own titles are Russian:
+
+      GET https://animego.me/search/all?q=Kumo%20Desu%20ga%2C%20Nani%20ka%3F
+      -> <a title="Да, я паук, и что?" href="/anime/da-ya-pauk-i-chto-zhe-1684">
+
+    Verified with 3 unrelated titles ("spy x family", the romaji title above,
+    and "Frieren") -- the correct show came back as result #1 every time.
+    Result links look like /anime/{slug}-{numericId}; nav/category links like
+    /anime/status/ongoing or /anime/season/2026 use the same href prefix but
+    don't end in "-{digits}", so they're filtered out with a slug regex:
+      /^[a-z0-9-]+-\d+$/
+
+(b) What "ZJ9dEQgd3Dj" is
+    Initially guessed it might be embedded directly in the plain anime page
+    HTML (https://animego.me/anime/{slug}). It is NOT -- a fresh curl fetch
+    of that page has ZERO <button data-player=...> elements. The site
+    renders the episode/player list client-side via a separate XHR:
+
+      GET https://animego.me/player/{animeId}
+      Headers: X-Requested-With: XMLHttpRequest, Referer: <anime page URL>
+      -> JSON: { "data": { "content": "<div class='player-video ...'>...HTML..." } }
+
+    {animeId} is just the trailing number on the slug (e.g. slug
+    "da-ya-pauk-i-chto-zhe-1684" -> animeId 1684).
+
+    Inside that returned HTML are buttons like:
+      <button data-player="//aniboom.one/embed/ZJ9dEQgd3Dj?episode=1&translation=24&parent=..."
+              data-provider="24" data-ptranslation="71"
+              data-translation-title="Профессиональный многоголосый">
+
+    So "ZJ9dEQgd3Dj" is aniboom's internal id for that whole anime "season" --
+    it does NOT change per episode. Confirmed by manually swapping
+    episode=1 -> episode=2 on the exact same id and getting back a different
+    video (different internal aniboom video id in the response), proving
+    episode number is just a query param layered on one fixed id.
+
+(c) What "translation=24" is (this one had a nasty trap)
+    First guess: translation= must be data-ptranslation from the button.
+    WRONG -- caused every second request to 404.
+
+    The actual data on the button above has THREE different numbers that
+    look related but aren't the same thing:
+      data-provider="24"        <- constant meaning "this uses the AniBoom host"
+                                    (as opposed to Kodik/CVH, other providers
+                                    animego also lists)
+      data-ptranslation="71"    <- animego's OWN site-wide id for this
+                                    translation/fandub GROUP (used to dedupe
+                                    "same group, different provider" buttons)
+      translation=24 (in the URL itself) <- AniBoom's OWN internal id for
+                                    that same group, which is a DIFFERENT
+                                    numbering scheme than animego's ptranslation
+
+    Proof this matters: for one button, ptranslation=71 but the embedded URL
+    already says translation=24. For a different button ptranslation=2 and
+    the URL also happens to say translation=2 (coincidence -- same number in
+    both schemes for that one group, which is what caused the initial
+    confusion). Using ptranslation as the query param gave a working URL
+    only by accident, and 404s otherwise.
+
+    Fix: don't compute the translation id at all. Just regex it straight out
+    of the data-player URL animego already built:
+      /[?&]translation=([^&]+)/
+    Use data-ptranslation only for de-duplication and data-translation-title
+    only as a human-readable label.
+
+    "translation" here is not a sub/dub toggle -- it's literally "which
+    Russian fandub/fansub studio's release do you want" (examples seen:
+    "Профессиональный многоголосый" = pro multi-voice dub, "AniLibria",
+    "AniLibria", "Dream Cast", "Студийная Банда", "Субтитры" = subs). All
+    audio is Russian (or Japanese+Russian subs for the "Субтитры" entries).
+    There is no English audio or English subs anywhere in this source.
+
+--------------------------------------------------------------------------------
+1.4  What "Russian only" means for this site's UI
+--------------------------------------------------------------------------------
+This source cannot slot into the existing SUB/DUB toggle (which the rest of
+the site uses to mean Japanese-sub vs English-dub). Decision made with the
+user: keep it as its own server button, hide the SUB/DUB row entirely when
+it's selected, and just play whichever translation group resolves first
+(falls back through up to 4 groups if the "default" one 404s for a given
+episode -- some fandub groups don't cover every episode of a show).
+
+--------------------------------------------------------------------------------
+1.5  Backend implementation (Backend/server.js)
+--------------------------------------------------------------------------------
+resolveAnimegoAniboom(rawTitle, season)
+  1. POST-less GET search -> parse first valid slug (regex filter above).
+  2. For season > 1: try to find a candidate whose Russian title contains
+     "2" / "Part 2" / "2 сезон" (sequel seasons are usually separate catalog
+     entries on animego, e.g. "Семья шпиона" vs "Семья шпиона 2"); falls back
+     to positional index, then #1. This is a best-effort heuristic, not
+     guaranteed for every show's naming -- flagged to the user as worth
+     spot-checking on a real season-2 title.
+  3. GET /player/{animeId} (animeId = trailing digits of slug).
+  4. Parse every <button data-player*="aniboom.one/embed/"> in the returned
+     HTML fragment; pull aniboomId + parentEncoded from the first one, and
+     translation id (from the URL, per 1.3c above) + label from every one.
+
+resolveAnimegoAniboomCached(rawTitle, season)
+  In-memory Map cache, 30 minute TTL, with in-flight de-duplication so two
+  concurrent requests for the same title don't both scrape. This only caches
+  the aniboom id + translation list (one scrape covers every episode of a
+  season), not the actual video stream.
+
+fetchAniboomStream(aniboomId, parentEncoded, episode, translationId)
+  GET https://aniboom.one/embed/{aniboomId}?episode={n}&translation={id}&parent={parentEncoded}
+  Regex out data-parameters="...", HTML-unescape it, JSON.parse it. The
+  "hls" field inside that object is ITSELF a JSON-encoded string (not a
+  plain object), so it needs a second JSON.parse:
+    params.hls = '{"src":"https://.../master.m3u8","type":"application/x-mpegURL"}'
+    hls = JSON.parse(params.hls); use hls.src
+
+GET /api/anime-new-log
+  Query: title, season, ep, malId, tmdbId, translation (optional).
+  1. If tmdbId given, check episode_load_cache (animeCache.db) first --
+     key: (tmdb_id, season, episode, audio_type='ru', provider='newstream'),
+     24h TTL, same table/pattern already used for KAA/Neko.
+  2. On cache miss: resolve aniboom id + translations, try up to 4
+     translations in order (requested one first if the caller specified
+     one) until fetchAniboomStream succeeds, write the winning result back
+     to episode_load_cache.
+  3. Response: { ok, stream, proxyRef: "https://aniboom.one/",
+                 translationId, translationTitle }
+
+--------------------------------------------------------------------------------
+1.6  A real bug found during live testing: HLS audio track never loaded
+--------------------------------------------------------------------------------
+After wiring the frontend, playback loaded video but audio silently failed
+(hls.js fatal error "audioTrackLoadError", browser console showed a request
+to /api/media_1.m3u8 -- clearly wrong, should have been proxied).
+
+Root cause: aniboom's master.m3u8 splits audio into its own track:
+  #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_A1",NAME="audio_1",DEFAULT=YES,URI="media_1.m3u8"
+
+The existing /api/m3u8-proxy playlist-rewriter only rewrote URIs on
+"#EXT-X-MAP:" and "#EXT-X-KEY:" lines (plus plain segment/playlist lines).
+It had never seen a "#EXT-X-MEDIA:" line with its own URI= before, because
+KAA/Neko's playlists don't split audio into a separate track. That relative
+"media_1.m3u8" reached the browser unrewritten, hls.js resolved it against
+the proxy's own URL, got a 404, and hls.js treated a missing audio track as
+fatal.
+
+Fix (Backend/server.js, in /api/m3u8-proxy): added "#EXT-X-MEDIA:" to the
+set of line-prefixes whose URI="..." gets rewritten through the proxy, same
+as the other two tag types. Re-verified live: the rewritten master playlist
+now correctly proxies the audio URI too, and playback works with sound.
+
+This bug would affect ANY future source whose HLS splits audio into its own
+track (i.e. worth remembering for kinogo/cinemar or any source after that).
+
+--------------------------------------------------------------------------------
+1.7  Frontend implementation (js/moviePlayer.js)
+--------------------------------------------------------------------------------
+- New button in the "Anime Sub/Dub" server group, id="srvNew1".
+- loadNewStreamVideo(episode, season): calls /api/anime-new-log, builds
+  /api/m3u8-proxy?url={stream}&ref={proxyRef}, plays via the existing
+  showVideoPlayer() HLS pipeline.
+- updateSource(): early-return branch for srvNew1 that hides the SUB/DUB
+  row (#subDubToggleRow) instead of leaving it visible-but-meaningless; the
+  row is unconditionally shown again for every other server so switching
+  back to KAA/Neko/etc. restores it.
+- Borrowed captions: same trick Neko already uses -- this source has no
+  caption tracks of its own, so it asks KAA for English subs on the same
+  episode (fetchKaaSubtitlesForEpisode) and attaches them if KAA has any.
+  Purely additive; if KAA has nothing, playback is just silently caption-free
+  like before.
+
+--------------------------------------------------------------------------------
+1.8  Rename / UI polish (user request, after initial "works")
+--------------------------------------------------------------------------------
+- Button/label text changed from "NewStream" to "RU - MV" (initial idea of
+  using a 🇷🇺 flag EMOJI was dropped -- Windows doesn't render regional-
+  indicator flag emoji as an actual flag, it just shows literal "RU" text,
+  so it looked broken). Replaced with an actual flag image instead:
+    https://upload.wikimedia.org/wikipedia/commons/f/f3/Flag_of_Russia.svg
+  rendered as a real <img> next to the button text. Status-line messages
+  (serverInfoText) still use plain "RU - MV" text with no image, because
+  that element is set via .textContent, which can't render HTML/images at
+  all -- only the button markup itself (raw innerHTML) can show the flag.
+
+
+================================================================================
+PART 2: MOVIE SOURCE (kinogo.mu -> cinemar.cc -> cinemap.cc)
+================================================================================
+
+--------------------------------------------------------------------------------
+2.1  Starting point
+--------------------------------------------------------------------------------
+User captured a full session watching Spider-Man: Homecoming (2017) on
+kinogo.mu, including a saved copy of the page (View Source -> Save As) in a
+"kinogo" folder for offline analysis:
+
+  Movie page: https://user.kinogo.mu/12493--chelovek-pauk-vozvraschenie-domoj-2017.html
+  Iframe:     https://cinemar.cc/embed/80877/+ZWMyOTJi...(long token)
+  Playback:   https://v206.cinemap.cc/md5(...)/movies/{hash}/{hash2}:{ts}/720.mp4:hls:seg-7-v1-a2.ts
+
+  The user described the segment body as "garbled, encrypted maybe" and
+  flagged the embed page's inline JS blob (a huge base64-ish "file" string
+  inside a `Cinemar({...})` call) as looking deliberately obfuscated, with
+  what looked like random junk spliced into the middle of it.
+
+--------------------------------------------------------------------------------
+2.2  Where the embed URL comes from
+--------------------------------------------------------------------------------
+Good news first: unlike animego, kinogo.mu's cinemar embed URL (including its
+one-time token) is statically present in the plain movie-page HTML, no
+client-side JS computation needed:
+
+  <iframe data-src="https://cinemar.cc/embed/80877/+NjYyYjU5..." ...></iframe>
+
+Confirmed the token is per-request/session (re-fetching the same movie page
+returns a different token each time), so it can never be cached long-term --
+only the final resolved video stream URL gets cached, same as every other
+source on this site.
+
+--------------------------------------------------------------------------------
+2.3  Decoding the "file" field (this was the real puzzle)
+--------------------------------------------------------------------------------
+The embed page's script contains:
+  const player = Cinemar({ "cuid": "...", "vid": 80877,
+    "file": "#237JqblhPOHh81510af5eW3siaWQiOiIz...(9500+ chars)...",
+    "host": "kinogo.mu", ... })
+
+Tried the obvious things first and they all failed:
+  - Straight atob() of the whole string / various byte offsets -> garbage.
+  - The "%CJ9XQ81510" looking mid-string junk the user flagged is NOT random
+    corruption -- it turned out to be a literal delimiter character plus a
+    small "how much noise to strip" marker, i.e. part of the actual scheme,
+    not an artifact of copy-pasting.
+
+Instead of guessing, pulled cinemar's own player bundle
+(player.19a740662c40249d.js, saved in the kinogo folder, ~950KB minified)
+and traced the exact code path that consumes options.file:
+
+  playlist.load(options.file, options.hidePlaylist)
+
+  load(e,t){
+    return "object"==typeof e ? e
+      : e.indexOf("/@x")>=0 ? this.loadFromUrl(e)
+      : 0===e.indexOf("#2") ? this.loadFromString(e.substr(2))
+      : ""
+  }
+
+  loadFromString(e){
+    this.dm = e.substr(0,2);          // next 2 chars = a "delimiter code"
+    this._ml = Math.pow(2,5);          // 32 -- chunk-length threshold
+    return this.readString(this.slice(e.substr(2)), 1, 5, 15, 12)
+  }
+
+  slice(e){
+    return e.split(String.fromCharCode(this.dm))   // split on the delimiter char
+      .map(e => {
+        let t = parseInt(e.slice(-1));               // last digit of the chunk
+        return e.length > this._ml                    // only "long" chunks were shuffled
+          ? e.substr(2*t, e.length-3*t-1) + e.substr(0,t)   // undo the shuffle
+          : e;                                         // short chunks are untouched
+      })
+      .join(this.ex[17])   // this.ex[17] is an empty string -> plain concatenation
+  }
+
+  readString(val, ...actions){
+    const padding = val.length % 4;
+    if (padding) val += "=".repeat(4-padding);   // base64 padding fixup
+    actions.forEach(v => eval(`val = ${this.ex[v]}(val)`));   // run named actions
+    return val;
+  }
+
+  this.ex = ["slice","atob","substr","salt","temp","escape","push","this",
+             "btoa","pop","JSON.stringify","length","JSON.parse","forEach",
+             "splice","decodeURIComponent","unshift","","clone","insert"]
+
+  readString(..., 1, 5, 15, 12) means: this.ex[1]=atob, this.ex[5]=escape,
+  this.ex[15]=decodeURIComponent, this.ex[12]=JSON.parse -- run in that
+  order: atob -> escape -> decodeURIComponent -> JSON.parse.
+  (atob+escape+decodeURIComponent is the classic browser trick for
+  correctly turning a base64-decoded Latin1 "binary string" back into a
+  proper UTF-8 JS string; in Node, Buffer.from(val,'base64').toString('utf8')
+  does the same job in one step.)
+
+So the full algorithm, reimplemented in server.js as decodeCinemarFile():
+  1. String must start with "#2" -- strip it.
+  2. Next 2 characters are a decimal char code (e.g. "37"); the delimiter
+     to split on is String.fromCharCode(that number) (37 -> '%', which is
+     exactly the mystery "%..." junk the user spotted mid-string).
+  3. Split the remaining payload on that delimiter character.
+  4. For each resulting chunk: if its length is > 32, read its LAST
+     character as a digit t, then rebuild the chunk as
+       chunk.substr(2*t, chunk.length - 3*t - 1) + chunk.substr(0, t)
+     (undoes a rotate-style shuffle the site applies per chunk). Chunks of
+     length <= 32 are left as-is.
+  5. Join every (fixed-up) chunk back together with no separator.
+  6. Pad the result to a multiple of 4 with "=" (base64 padding).
+  7. Base64-decode -> UTF-8 string -> JSON.parse.
+
+Verified against the real captured data: decoded to a 5-entry JSON array of
+audio tracks, e.g.:
+  [ "Дубляж (CineLab SoundMix)"           (Russian dub, CineLab studio)
+  , "Живов Юрий (одноголосый)"            (Russian single-voice dub)
+  , "Украинский (дубляж)"                  (Ukrainian dub)
+  , "English (Original)"                   (original English audio!)
+  , "Португальский (Дубляж)"               (Portuguese dub) ]
+each with its own .file (an HLS master.m3u8 URL) and .subtitle (a list of
+per-language .srt URLs, including English ones -- not currently wired up,
+noted as a possible future addition).
+
+No encryption anywhere in this -- confirmed by fetching one of the decoded
+.file URLs and its first segment directly: HTTP 200, Content-Type: video/mp2t,
+normal MPEG-TS bytes. This "obfuscation" only exists to make casual copy-
+pasting/reading of the embed page confusing, not to actually secure the
+stream -- same spirit as aniboom's data-parameters attribute, just a more
+elaborate scramble.
+
+Default track picked: entries[0], which was consistently the Russian dub in
+testing (matches the site's own default selection) -- this is what "RU - MV"
+plays. No per-track picker was built (kept scope to what was asked: a
+Russian-audio movie source, not a full multi-language selector).
+
+--------------------------------------------------------------------------------
+2.4  The real blocker: kinogo.mu is behind Cloudflare TLS fingerprinting
+--------------------------------------------------------------------------------
+With the decode algorithm working, the last piece was: title -> kinogo.mu
+slug. Found the site's own live-search AJAX call by reading its front-end JS
+(ca1522f9ba.js, DataLife Engine's standard "lightsearch" module):
+
+  POST https://user.kinogo.mu/engine/ajax/controller.php?mod=lightsearch
+  Body: q={title}&method=&user_hash=&skin=Kinogo
+  -> { "html": "...<a href=\"/12493--chelovek-pauk-vozvraschenie-domoj-2017.html\">..." }
+
+Confirmed with curl: searching the ENGLISH title "Spider-Man Homecoming"
+correctly returns the Russian movie page as the #1 (only) result -- same
+alt-title matching behavior as animego's search.
+
+Then tried to call the exact same endpoint from Node (axios) and it failed:
+  403, body = a Cloudflare "Just a moment..." JS-challenge page.
+
+This was surprising because curl worked. Spent real effort isolating why:
+  - Re-ran the exact same curl command again immediately after -> still 200.
+    Ruled out: IP-based rate limiting / temporary block (would affect both
+    curl and axios equally and consistently).
+  - Tried Windows' own built-in curl.exe (C:\Windows\System32\curl.exe,
+    version 8.21.0, Schannel backend) with identical headers -> ALSO 403.
+  - The curl that worked was specifically git-bash's bundled build
+    (/mingw64/bin/curl, version 8.17.0, also Schannel backend).
+  - Same machine, same IP, same headers, same User-Agent string, same TLS
+    backend NAME (Schannel) on both curl builds -- yet one passes and one
+    is challenged.
+
+Conclusion: this is TLS fingerprinting (JA3/JA4-style), not a header or
+User-Agent check. Cloudflare's bot-management product looks at the exact
+shape of the TLS ClientHello (cipher suite list/order, extensions, ALPN
+offer) sent by the underlying TLS library, independent of anything the
+application sets in its HTTP headers. Two different curl point-releases
+apparently produce different-enough ClientHellos that one gets waved through
+and the other doesn't; Node's own TLS stack (used by axios/undici/fetch) has
+its own recognizable fingerprint that gets challenged outright.
+
+Rejected the "just shell out to git-bash's curl.exe" fix as unsafe to build
+on: it happened to work today by coincidence of exactly which curl build is
+installed, isn't guaranteed to keep working (a curl update, or Cloudflare
+tightening its rules, could break it silently), and wouldn't be portable if
+the backend ever ran somewhere other than this exact dev machine.
+
+Important scoping note: cinemar.cc and cinemap.cc (the actual embed page and
+video CDN) are NOT behind this protection -- confirmed axios talks to both
+of them completely normally. The Cloudflare wall is specifically in front of
+kinogo.mu's search + movie-page endpoints, nothing else in the chain.
+
+--------------------------------------------------------------------------------
+2.5  The fix: got-scraping
+--------------------------------------------------------------------------------
+User suggested looking for a TLS-client-impersonation library instead of a
+full headless browser (Puppeteer ruled out as too heavy for this). Found and
+tested "got-scraping" (Apify's HTTP client, built specifically to mimic a
+real browser's TLS/HTTP2 fingerprint + realistic header ordering/Client
+Hints, without launching an actual browser):
+
+  npm view got-scraping version   -> 4.2.1, actively maintained.
+
+  import { gotScraping } from 'got-scraping';
+  await gotScraping.get('https://user.kinogo.mu/12493--...html')
+  -> HTTP 200, real content, cinemar embed link present.
+
+  await gotScraping.post('.../engine/ajax/controller.php?mod=lightsearch', {
+    form: { q: 'Spider-Man Homecoming', method:'', user_hash:'', skin:'Kinogo' },
+    headers: { 'X-Requested-With': 'XMLHttpRequest', Referer: '...' }
+  })
+  -> HTTP 200, correct search result.
+
+Both passed cleanly and repeatably. Installed as a real dependency
+(Backend/package.json). It's ESM-only, while server.js is CommonJS, so it's
+loaded via a cached dynamic import() (confirmed this works fine from a .js
+CommonJS file, not just .mjs):
+
+  let _gotScrapingPromise = null;
+  function getGotScraping() {
+    if (!_gotScrapingPromise) {
+      _gotScrapingPromise = import('got-scraping').then(mod => mod.gotScraping);
+    }
+    return _gotScrapingPromise;
+  }
+
+Only the two kinogo.mu calls (search + movie page) go through
+getGotScraping(); the cinemar.cc embed fetch stays on plain axios, since
+that domain was never blocked in the first place -- no need to pay
+got-scraping's extra overhead where it isn't needed.
+
+--------------------------------------------------------------------------------
+2.6  Backend implementation (Backend/server.js)
+--------------------------------------------------------------------------------
+decodeCinemarFile(raw)        - the algorithm from section 2.3, verbatim.
+resolveKinogoMovie(rawTitle)  - search (got-scraping) -> movie page
+                                 (got-scraping) -> regex out the cinemar
+                                 embed URL.
+resolveKinogoMovieCached      - in-memory cache, 30 min TTL, in-flight
+                                 de-dupe (same pattern as animego's resolver).
+fetchCinemarStream(embedUrl, moviePageUrl)
+                               - plain axios GET on the embed URL (Referer =
+                                 the movie page URL) -> regex out "file":"..."
+                                 -> decodeCinemarFile() -> pick entries[0] ->
+                                 build absolute stream URL (source gives a
+                                 protocol-relative "//v206.cinemap.cc/..."
+                                 URL, prefixed with "https:").
+
+GET /api/movie-ru-log
+  Query: title, tmdbId.
+  Movies have no season/episode, so this reuses the SAME episode_load_cache
+  table as everything else with season=1, episode=1, audio_type='ru',
+  provider='kinogo' as a fixed cache key per tmdbId -- consistent with how
+  the anime RU source and KAA/Neko already use that table, just repurposing
+  the season/episode columns as constants for a movie.
+  Response: { ok, stream, proxyRef: "https://cinemar.cc/", translationTitle }
+
+/api/m3u8-proxy needed no further changes for this source -- cinemap.cc's
+playlists are simple single-track variant playlists (BANDWIDTH/RESOLUTION
+only, no separate #EXT-X-MEDIA audio group), so the audio-track bug from
+section 1.6 doesn't apply here. Confirmed by inspecting a real sub-playlist
+before wiring anything up.
+
+Note: cinemap.cc segment/playlist paths contain literal colons in what look
+like filenames (e.g. ".../720.mp4:hls:seg-7-v1-a2.ts") -- unusual but not a
+problem; the existing proxy's relative-URL resolution (plain string
+concatenation + encodeURIComponent) handles it correctly with no special
+casing needed. Verified end-to-end: master playlist -> quality-specific
+playlist -> a real segment (250KB, video/mp2t, HTTP 200) all through the
+proxy chain.
+
+--------------------------------------------------------------------------------
+2.7  Frontend implementation (js/moviePlayer.js)
+--------------------------------------------------------------------------------
+- New button in the "Movies" server group (next to 2Embed/MegaCloud/etc.),
+  id="srvRuMovie", label "RU - MV" + the same Wikimedia Russian flag SVG
+  used on the anime RU button.
+- loadRuMovieVideo(): guarded by `isSeries` -- shows "Not available for TV
+  shows yet." and bails if clicked while watching a TV show, since this
+  source is movies-only. Otherwise calls /api/movie-ru-log, proxies the
+  result the same way as the anime source.
+- updateSource(): early-return branch for srvRuMovie, same shape as the
+  anime srvNew1 branch.
+
+--------------------------------------------------------------------------------
+2.8  Testing methodology (both sources)
+--------------------------------------------------------------------------------
+Every endpoint above was hit with real, live HTTP requests during
+development -- not just read/reviewed as code:
+  - curl against the real upstream sites (animego.me, aniboom.one,
+    kinogo.mu, cinemar.cc, cinemap.cc) to verify each assumption before
+    writing the corresponding backend code.
+  - Standalone Node scripts (outside Express) to test the resolver/decoder
+    logic in isolation against live data before wiring it into server.js.
+  - The full backend was started on an ISOLATED port (BACKEND_PORT=4099,
+    server.js already supports this env var) specifically so testing never
+    touched the developer's actual running dev server on port 4000 -- every
+    /api/anime-new-log, /api/movie-ru-log, and /api/m3u8-proxy call in this
+    log was verified against that separate instance, then the instance was
+    torn down.
+  - Followed the proxy chain all the way down for both sources: master
+    playlist -> quality-specific playlist -> one real media segment fetched
+    and byte-counted, for both aniboom and cinemap, to make sure the fix
+    wasn't just "the JSON response looks right" but that a browser would
+    actually get playable bytes.
+
+
+================================================================================
+KNOWN LIMITATIONS / THINGS A DEV SHOULD KNOW
+================================================================================
+
+1. Both sources are Russian-audio only. Neither has an English track (aniboom
+   has none at all; cinemar/kinogo DOES have an "English (Original)" track
+   available per-movie, but it's not selectable in this integration -- only
+   entries[0], the default Russian dub, is used).
+
+2. Season-2+ matching on animego.me (section 1.3a "season" handling) is a
+   regex heuristic against Russian titles, not a guaranteed-correct mapping.
+   Should be spot-checked against a real multi-season show before being
+   trusted broadly.
+
+3. kinogo.mu's Cloudflare protection could change at any time (rule updates,
+   got-scraping's fingerprint being specifically targeted, etc.). If
+   /api/movie-ru-log starts failing consistently, check for a Cloudflare
+   challenge page in the error first before assuming the decode algorithm
+   broke.
+
+4. Neither source's embed token is reusable/cacheable -- both regenerate a
+   fresh token per page load. Only the final resolved video stream URL is
+   cached (24h TTL, same as the rest of the site), not the intermediate
+   scrape results beyond a short 30-minute in-memory cache used purely to
+   avoid re-scraping on every single episode/request burst.
+
+5. Available but not wired up: cinemar's decoded playlist includes .srt
+   subtitle URLs per language (including English) for every track. Could be
+   added the same way the anime side borrows KAA's captions, but would need
+   an SRT-to-WebVTT conversion step first since HTML5 <track> only accepts
+   WebVTT, not SRT directly.
