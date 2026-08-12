@@ -5227,6 +5227,41 @@ app.post('/forum/threads/:id/vote', (req, res) => {
     }
 });
 
+// Get a user's own comments across every thread (home page "Community Pulse"
+// widget -- was showing top forum threads generally, now shows the signed-in
+// user's own recent comments instead). Comments live nested inside each
+// thread's own JSON record, not in a separate indexed collection, so this
+// just flattens across all threads and filters -- fine at this data size.
+app.get('/forum/comments/by-user', (req, res) => {
+    try {
+        const uid = parseInt(req.query.userUID, 10);
+        if (!uid) return res.status(400).json({ error: 'userUID required' });
+        const limit = Math.min(parseInt(req.query.limit, 10) || 5, 20);
+
+        const data = fs.readFileSync(forumThreadsPath, 'utf8');
+        const threads = JSON.parse(data) || [];
+
+        const comments = [];
+        for (const thread of threads) {
+            for (const comment of (thread.comments || [])) {
+                if (comment.userUID === uid) {
+                    comments.push({
+                        ...comment,
+                        threadId: thread.id,
+                        threadTitle: thread.title
+                    });
+                }
+            }
+        }
+        comments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+        res.json(comments.slice(0, limit));
+    } catch (err) {
+        console.error('Error reading user comments:', err);
+        res.status(500).json({ error: 'Could not read comments' });
+    }
+});
+
 // Get comments for a thread
 app.get('/forum/threads/:id/comments', (req, res) => {
     try {

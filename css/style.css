@@ -2527,16 +2527,25 @@ body {
 
 /* --- HERO BANNER --- */
 .hero {
-    height: clamp(45vh, 70vh, 800px);
+    /* min-height, not height: the box used to be pinned to a pure vh guess
+       with its content layer pulled out of flow (position:absolute;inset:0
+       on .hero-main-body below) so the two had zero relationship -- on a
+       short/landscape viewport vh shrinks the box while the title/meta/desc
+       stay full size, and overflow:hidden below just chops off whatever
+       doesn't fit. min-height + height:auto + an in-flow content layer lets
+       the box grow to whatever its content actually needs, using vh only as
+       a floor for how tall it looks when content doesn't need the room. */
+    min-height: clamp(420px, 65vh, 760px);
+    height: auto;
     width: 100%;
-    background: linear-gradient(rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.5)), 
+    background: linear-gradient(rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.5)),
                 url('https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?q=80&w=2070&auto=format&fit=crop') center/cover;
     position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 0;
-    user-select: none; 
+    user-select: none;
     -webkit-user-select: none;
     -webkit-tap-highlight-color: transparent;
 }
@@ -2588,15 +2597,20 @@ body {
     pointer-events: none;
 }
 
-/* Content sits above overlays */
+/* Content sits above overlays. In-flow (not position:absolute;inset:0) on
+   purpose -- this is what actually drives .hero's height now (see .hero's
+   min-height/height:auto comment above). The background layers
+   (.hero-bg-trailer/.hero-overlay/.hero-left-fade, still inset:0 on .hero)
+   stretch to cover whatever height this content ends up needing. */
 .hero-main-body {
-    position: absolute;
-    inset: 0;
+    position: relative;
     z-index: 5;
+    width: 100%;
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 5% 0 6%;
+    padding: 40px 5% 40px 6%;
 }
 
 .hero-main-left {
@@ -2664,11 +2678,16 @@ body {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    align-self: flex-end;
+    /* Always vertically centered between the top and bottom of
+       .hero-main-body (its flex parent) -- no per-breakpoint top/bottom
+       offsets or margins, those are exactly what fought this before
+       (a broken clamp() permanently stuck at 259px, then a media-query
+       bottom/right/scale hack). No hardcoded offsets, so nothing to
+       conflict with center as .hero-main-body's height changes. */
+    align-self: center;
     gap: 0;
     flex-shrink: 0;
     margin-right: 2.2%;
-    margin-bottom: clamp(259px, 6vh, 156px);
     isolation: isolate;
     pointer-events: none;
 }
@@ -2720,6 +2739,32 @@ body {
     display: none;
 }
 
+/* .hero's height is now content-driven (min-height + height:auto, see
+   above) so this no longer needs to force a box height for landscape phones
+   -- the box already grows to fit. This just keeps proportions sane
+   (smaller title/desc/poster) when there isn't much vertical room to work
+   with, purely cosmetic. 
+@media (max-height: 500px) and (orientation: landscape) {
+    .hero.hero-main-page .hero-title {
+        font-size: clamp(1.5rem, 3.6vw, 2.2rem);
+    }
+    .hero.hero-main-page .hero-desc {
+        -webkit-line-clamp: 2;
+        font-size: 0.8rem;
+        line-height: 1.4;
+    }
+    .hero-main-left {
+        gap: 8px;
+    }
+    .hero-meta-row {
+        font-size: 0.8rem;
+    }
+    .hero-main-poster img {
+        width: 110px;
+        height: 165px;
+    }
+}
+*/
 /* ─── Two-panel discovery section (Trending + Schedule) ─── */
 /* ── Discovery panels ──────────────────────────────────────────────── */
 .discovery-two-col {
@@ -8452,10 +8497,6 @@ body.blur-active {
     .action-buttons{
         flex-direction: column;
     }
-    .slider-arrow{
-        display: none;
-    }
-   
 
     .logo-imgS {
         height: 20px;
@@ -9020,8 +9061,7 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
         display: block;
     }
     .hero{
-        /* height: clamp(32vh, 50vh, 650px);     */
-        height: clamp(32vh, 52vh, 650px);    
+        min-height: clamp(32vh, 52vh, 650px);
     }
     .browse-page .hero {
         height: auto;
@@ -9203,9 +9243,8 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
         padding: 15px;
         font-size: 1rem;
     }
-    .hero-main-poster {
-        display: none;
-    }
+
+
     .discovery-two-col {
         display: block;
     }
@@ -9243,16 +9282,22 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
         width: 100%;
         margin: 0;
     }
-
+    .hero-main-poster{
+            transform: scale(0.9);
+    }
 }
 
 @media (max-width: 850px) {
     .personal-sections-flex > .personal-left-stack {
         display: block;
     }
-           .search-box{
+    .search-box{
         width: 80%;
        }
+               .sidebar-nav-list {
+        padding: 10px 8px;
+        align-items: center;
+    }
     .navbar{
         width: 90%;
         left: 69px;
@@ -9280,7 +9325,9 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     body.personal-list-page {
         padding-left: max(70px, calc(50vw - 890px));
     }
-
+    .slider-indicators{
+        bottom: 20px;
+    }
 /* Personal List Specific Styles */
 body.personal-list-page .grid-card {
     width: 110px !important;
@@ -9307,10 +9354,10 @@ body.personal-list-page .grid-card {
         justify-content: center;
         padding: 14px 10px 16px;
     } */
-    .sidebar-nav-list {
+    /* .sidebar-nav-list {
         padding: 10px 8px;
         align-items: center;
-    }
+    } */
     .sidebar-nav-list li {
         width: 100%;
     }
@@ -9337,10 +9384,23 @@ body.personal-list-page .grid-card {
         grid-template-columns: repeat(2, 1fr);
     }
     .hero{
-        height: clamp(32vh, 50vh, 640px);    
+        min-height: clamp(32vh, 50vh, 640px);
     }
 }
 
+@media (max-width: 770px) {
+    .hero-main-poster{
+            transform: scale(0.7);
+    }
+    .hero-buttons .btn-play, .hero-buttons .btn-info {
+        transform: scale(0.8);
+    }
+    .hero-buttons{
+        gap: 0;
+        padding: 0;
+        /* padding: 15px 25px; */
+    }
+}
 @media (max-width: 730px) {
         /* 4 download buttons in a single nowrap row (forced by the 1000px breakpoint's
        flex-wrap:nowrap !important) get cramped/overflow at this width -- switch to a
@@ -9420,7 +9480,7 @@ body.personal-list-page .grid-card {
         flex: 0 0 50% !important;
     }
     .hero{
-        height: clamp(28vh, 50vh, 470px);    
+        min-height: clamp(28vh, 50vh, 470px);
     }
     /* .slider-arrow{
         display: none;
@@ -9434,13 +9494,21 @@ body.personal-list-page .grid-card {
     .qs-strip{
         flex-direction: column;
     }
+           .slider-arrow{
+        display: none;
+    }
 }
 
 @media (max-width: 620px) {
     /* Logo clone injected into nav.navbar on mobile (js/mainPageControls.js
        injectLogoIntoNavbar) -- was previously a pile of inline styles set from
        JS on every clone; centralized here so it can be tuned in one place. */
-    .mobile-navbar-logo {
+        .hero-main-poster{
+            display: none;
+        }
+   
+
+       .mobile-navbar-logo {
         display: flex;
         position: static;
         top: auto;
@@ -9531,7 +9599,7 @@ body.personal-list-page .grid-card {
         max-width: 200px;
     }
     .hero{
-        height: clamp(28vh, 50vh, 470px);    
+        min-height: clamp(28vh, 39vh, 470px);
     }
     
     /* Mobile Bottom Sidebar */
@@ -9810,6 +9878,9 @@ body.personal-list-page .grid-card {
         font-size: 0.8rem;
         
     }
+    .slider-indicators{
+        bottom: 50px;
+    }
 }
 @media (max-width: 510px) {
 .logo-img{
@@ -9839,7 +9910,7 @@ body.personal-list-page .grid-card {
         margin-bottom: 10px;
     }
     .hero {
-        height: clamp(28vh, 50vh, 470px);
+        min-height: clamp(28vh, 50vh, 470px);
     }
     .disc-card{
         width: 85px;

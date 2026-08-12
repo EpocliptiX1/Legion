@@ -281,7 +281,7 @@
                 </p>
                 <div class="hero-buttons">
                     <button class="btn btn-play" onclick="triggerPlay()">▶ <span data-i18n="hero_play">Watch Now</span></button>
-                    <button class="btn btn-info" onclick="openRedirectModal()">+ <span data-i18n="hero_more_info">My List</span></button>
+                    <button class="btn btn-info" onclick="toggleHeroMyList()">+ <span data-i18n="hero_more_info">My List</span></button>
                 </div>
             </div>
             <div class="hero-main-poster">
@@ -362,7 +362,7 @@
                 <!-- Community Pulse -->
                 <div class="home-widget-panel cp-panel">
                     <div class="home-widget-header">
-                        <div class="home-widget-title"><span class="discovery-accent">◎</span> Community Pulse</div>
+                        <div class="home-widget-title"><span class="discovery-accent">◎</span> Your Comments</div>
                         <a href="/html/forum.html" class="view-all-link">Forum →</a>
                     </div>
                     <div class="cp-list" id="communityPulseList">
@@ -395,6 +395,7 @@
             </div>
         </div>
 
+        <!--
         <section class="intro-section" id="introSection">
             <div class="intro-grid">
                 <div class="intro-copy">
@@ -521,6 +522,7 @@
                 </ul>
             </div>
         </section>
+        -->
 
         <div id="movieOverlay" class="movie-detail-overlay">
             <div class="overlay-close" onclick="closeMovie()">

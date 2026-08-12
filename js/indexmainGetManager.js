@@ -608,7 +608,11 @@
             </div>`;
     }
 
-    /* ── Community Pulse ─────────────────────────────── */
+    /* ── OLD: Community Pulse (top forum threads, site-wide) ──────────
+       Kept for reference, not deleted. Replaced below by a version that
+       shows the signed-in user's own recent comments instead of general
+       top threads -- re-enable this and swap the call site back if the
+       site-wide version is wanted again.
     async function loadCommunityPulse() {
         const list = document.getElementById('communityPulseList');
         if (!list) return;
@@ -636,6 +640,43 @@
             }).join('');
         } catch {
             list.innerHTML = '<div class="cp-empty">Could not load threads.</div>';
+        }
+    }
+    */
+
+    /* ── Community Pulse (now: your recent comments) ───────────────── */
+    async function loadCommunityPulse() {
+        const list = document.getElementById('communityPulseList');
+        if (!list) return;
+        const userUID = localStorage.getItem('userUID');
+        if (!userUID) {
+            list.innerHTML = '<div class="cp-empty">Sign in to see your comments here.</div>';
+            return;
+        }
+        try {
+            const res = await fetch(`/forum/comments/by-user?userUID=${encodeURIComponent(userUID)}&limit=5`);
+            if (!res.ok) throw new Error(res.status);
+            const comments = await res.json();
+            if (!comments.length) {
+                list.innerHTML = '<div class="cp-empty">You haven\'t commented yet. <a href="/html/forum.html" style="color:#f96d00">Join a thread →</a></div>';
+                return;
+            }
+            list.innerHTML = comments.map(c => {
+                const safeText = (c.text || '').replace(/</g, '&lt;');
+                const safeThread = (c.threadTitle || 'Untitled thread').replace(/</g, '&lt;');
+                const ago = timeAgo(c.createdAt);
+                return `<a class="cp-thread" href="/html/forum.html">
+                    <div class="cp-thread-title">${safeText}</div>
+                    <div class="cp-thread-meta">
+                        <span>on “${safeThread}”</span>
+                        <span class="cp-dot">·</span>
+                        <span>▲ ${c.upvotes || 0}</span>
+                        ${ago ? `<span class="cp-dot">·</span><span>${ago}</span>` : ''}
+                    </div>
+                </a>`;
+            }).join('');
+        } catch {
+            list.innerHTML = '<div class="cp-empty">Could not load your comments.</div>';
         }
     }
 

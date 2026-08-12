@@ -999,11 +999,52 @@ window.closeRedirectModal = function() {
 
 window.proceedToIMDb = function() {
     const movie = heroMovies[currentSlide];
-    const url = movie.imdbId 
-        ? `https://www.imdb.com/title/${movie.imdbId}/` 
+    const url = movie.imdbId
+        ? `https://www.imdb.com/title/${movie.imdbId}/`
         : `https://www.imdb.com/find?q=${encodeURIComponent(movie.title)}`;
     window.open(url, "_blank");
     closeRedirectModal();
+};
+
+// allMovies.js defines the real toggleMyList (same localStorage 'myList'
+// schema, same DB persistence via recommendationsSystem), but it isn't
+// loaded on this page -- only mainPageControls.js is. Mirrored here rather
+// than pulling in the whole of allMovies.js (browse-grid/anime-filter code
+// this page has no use for) just for one function.
+window.toggleMyList = window.toggleMyList || function(id, name, type) {
+    id = String(id);
+    type = type || 'movie';
+    const raw = JSON.parse(localStorage.getItem('myList')) || [];
+    const list = raw.map(item => (typeof item === 'string' ? { id: item, type: 'movie' } : item));
+    let message = '';
+
+    const idx = list.findIndex(item => item.id === id);
+    if (idx !== -1) {
+        list.splice(idx, 1);
+        message = `Removed ${name}`;
+        if (window.recommendationsSystem?.persistMyListChange) {
+            window.recommendationsSystem.persistMyListChange(id, type, 'remove');
+        }
+    } else {
+        list.push({ id, type });
+        message = `Added ${name} to My List`;
+        if (window.recommendationsSystem?.persistMyListChange) {
+            window.recommendationsSystem.persistMyListChange(id, type, 'add');
+        }
+    }
+
+    localStorage.setItem('myList', JSON.stringify(list));
+    window.showLimitToast?.(message);
+};
+
+// Button was labeled "My List" but wired to openRedirectModal() (the IMDb
+// redirect confirmation) -- looks like a copy-paste of the old "More Info"
+// button (its data-i18n key is still literally "hero_more_info") that got
+// relabeled without rewiring the click handler.
+window.toggleHeroMyList = function() {
+    const movie = heroMovies[currentSlide];
+    if (!movie) return;
+    window.toggleMyList(movie.id, movie.title);
 };
  
 
