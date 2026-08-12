@@ -2850,6 +2850,34 @@ body {
 }
 .view-all-link:hover { color: #f96d00; }
 
+/* Your Comments widget: anime/movie mode switch, replaces the old "Forum →"
+   link now that the panel shows the user's own comments instead of forum
+   threads. */
+.cp-mode-switch {
+    display: flex;
+    gap: 2px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 999px;
+    padding: 2px;
+    flex-shrink: 0;
+}
+.cp-mode-btn {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: rgba(255,255,255,0.45);
+    background: none;
+    border: none;
+    border-radius: 999px;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: background 0.18s, color 0.18s;
+}
+.cp-mode-btn:hover { color: #fff; }
+.cp-mode-btn.active {
+    background: #f96d00;
+    color: #0c0c0c;
+}
+
 /* ── Disc cards — shared by trending + schedule ─────────────────────── */
 .trending-cards-row,
 .schedule-cards-row {

@@ -644,31 +644,56 @@
     }
     */
 
-    /* ── Community Pulse (now: your recent comments) ───────────────── */
-    async function loadCommunityPulse() {
+    /* ── Community Pulse (now: your recent comments, anime or movies) ──
+       Anime and movie comments are two separate systems (anime_comments in
+       animeCache.db vs movie_comments in activity.db -- forum threads are a
+       third, unrelated one and no longer shown here at all). Defaults to
+       whichever the user's animeMode preference points at, with a manual
+       switch to flip either way. */
+    let cpMode = null;
+
+    async function loadCommunityPulse(mode) {
         const list = document.getElementById('communityPulseList');
         if (!list) return;
+        if (mode) cpMode = mode;
+        if (!cpMode) cpMode = localStorage.getItem('animeMode') === 'true' ? 'anime' : 'movie';
+
+        document.querySelectorAll('.cp-mode-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.cpMode === cpMode);
+        });
+
         const userUID = localStorage.getItem('userUID');
         if (!userUID) {
             list.innerHTML = '<div class="cp-empty">Sign in to see your comments here.</div>';
             return;
         }
+
+        list.innerHTML = '<p style="color:#444;font-size:.8rem;padding:10px">Loading...</p>';
         try {
-            const res = await fetch(`/forum/comments/by-user?userUID=${encodeURIComponent(userUID)}&limit=5`);
+            const endpoint = cpMode === 'anime' ? '/api/anime-comments/by-user' : '/movie-comments/by-user';
+            const res = await fetch(`${endpoint}?userUID=${encodeURIComponent(userUID)}&limit=5`);
             if (!res.ok) throw new Error(res.status);
             const comments = await res.json();
+
             if (!comments.length) {
-                list.innerHTML = '<div class="cp-empty">You haven\'t commented yet. <a href="/html/forum.html" style="color:#f96d00">Join a thread →</a></div>';
+                const hint = cpMode === 'anime' ? 'No anime comments yet.' : 'No movie comments yet.';
+                list.innerHTML = `<div class="cp-empty">${hint}</div>`;
                 return;
             }
+
             list.innerHTML = comments.map(c => {
                 const safeText = (c.text || '').replace(/</g, '&lt;');
-                const safeThread = (c.threadTitle || 'Untitled thread').replace(/</g, '&lt;');
-                const ago = timeAgo(c.createdAt);
-                return `<a class="cp-thread" href="/html/forum.html">
+                const ago = timeAgo((c.created_at || 0) * 1000);
+                const onLabel = cpMode === 'anime'
+                    ? `Ep ${c.episode_number}${c.animeTitle ? ` · ${(c.animeTitle).replace(/</g, '&lt;')}` : ''}`
+                    : (c.movieTitle ? c.movieTitle.replace(/</g, '&lt;') : 'Untitled');
+                const href = cpMode === 'anime'
+                    ? (c.tmdbId ? `/html/movieInfo.html?id=${c.tmdbId}&type=anime` : '#')
+                    : `/html/movieInfo.html?id=${encodeURIComponent(c.movie_id)}&type=movie`;
+                return `<a class="cp-thread" href="${href}">
                     <div class="cp-thread-title">${safeText}</div>
                     <div class="cp-thread-meta">
-                        <span>on “${safeThread}”</span>
+                        <span>on “${onLabel}”</span>
                         <span class="cp-dot">·</span>
                         <span>▲ ${c.upvotes || 0}</span>
                         ${ago ? `<span class="cp-dot">·</span><span>${ago}</span>` : ''}
@@ -679,6 +704,12 @@
             list.innerHTML = '<div class="cp-empty">Could not load your comments.</div>';
         }
     }
+
+    document.getElementById('cpModeSwitch')?.addEventListener('click', (e) => {
+        const btn = e.target.closest('.cp-mode-btn');
+        if (!btn) return;
+        loadCommunityPulse(btn.dataset.cpMode);
+    });
 
     /* ── Platform Announcements ──────────────────────── */
     function renderAnnouncements() {

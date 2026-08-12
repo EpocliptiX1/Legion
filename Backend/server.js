@@ -4284,6 +4284,43 @@ function attachProfilePics(rows, callback) {
     });
 }
 
+// A user's own comments across every movie/TV title (home page "Your
+// Comments" widget's movie-mode). movie_comments.movie_id is just the raw
+// ?id= from movieInfo.html, which for non-anime titles can be either a
+// movie or a TV tmdbId -- try /movie/ first, fall back to /tv/ for a title.
+app.get('/movie-comments/by-user', (req, res) => {
+    const uid = String(req.query.userUID || '');
+    if (!uid) return res.status(400).json({ error: 'userUID required' });
+    const limit = Math.min(parseInt(req.query.limit, 10) || 5, 20);
+
+    activityDb.all(
+        `SELECT * FROM movie_comments WHERE user_uid = ? ORDER BY created_at DESC LIMIT ?`,
+        [uid, limit],
+        async (err, rows) => {
+            if (err) return res.status(500).json({ error: 'Could not load comments' });
+            if (!rows.length) return res.json([]);
+
+            const withTitles = await Promise.all(rows.map(async row => {
+                for (const kind of ['movie', 'tv']) {
+                    try {
+                        const tmdbRes = await axios.get(`${TMDB_BASE_URL}/${kind}/${row.movie_id}`, {
+                            params: { api_key: TMDB_API_KEY },
+                            timeout: 5000
+                        });
+                        const title = tmdbRes.data?.title || tmdbRes.data?.name;
+                        if (title) return { ...row, movieTitle: title };
+                    } catch {
+                        // try the next kind
+                    }
+                }
+                return { ...row, movieTitle: null };
+            }));
+
+            res.json(withTitles);
+        }
+    );
+});
+
 // Top-level comments for a movie, with reply counts. Sort: top (score desc), newest, oldest.
 app.get('/movie-comments', (req, res) => {
     const movieId = String(req.query.movieId || '').trim();
@@ -9110,6 +9147,41 @@ function resolveAnikotoEpisodeCached(rawTitle, season, episode) {
     anikotoEpisodeResolveInFlight.set(key, p);
     return p;
 }
+
+// A user's own comments across every anime (home page "Your Comments"
+// widget's anime-mode). source='user' excludes the anikoto-imported ones --
+// those never belong to a real site user_uid anyway, this is just explicit.
+// Anime title isn't stored on the comment row itself, so it's resolved
+// best-effort from episode_load_cache (same db, populated whenever anyone
+// streamed that anime through KAA/Neko/etc) -- comment still shows with no
+// title if that anime was never cached.
+app.get('/api/anime-comments/by-user', (req, res) => {
+    const uid = String(req.query.userUID || '');
+    if (!uid) return res.status(400).json({ error: 'userUID required' });
+    const limit = Math.min(parseInt(req.query.limit, 10) || 5, 20);
+
+    animeCacheDb.all(
+        `SELECT * FROM anime_comments WHERE user_uid = ? AND source = 'user' ORDER BY created_at DESC LIMIT ?`,
+        [uid, limit],
+        async (err, rows) => {
+            if (err) return res.status(500).json({ error: 'Could not load comments' });
+            if (!rows.length) return res.json([]);
+
+            const withTitles = await Promise.all(rows.map(row => new Promise(resolve => {
+                animeCacheDb.get(
+                    `SELECT tmdb_id, anime_title FROM episode_load_cache
+                     WHERE mal_id = ? AND anime_title IS NOT NULL ORDER BY cached_at DESC LIMIT 1`,
+                    [row.mal_id],
+                    (lookupErr, match) => {
+                        resolve({ ...row, animeTitle: match?.anime_title || null, tmdbId: match?.tmdb_id || null });
+                    }
+                );
+            })));
+
+            res.json(withTitles);
+        }
+    );
+});
 
 // Self-sufficient comments endpoint - doesn't depend on the user ever hitting the Neko
 // stream pipeline (KAA is the default anime server, so that pipeline may never run).
