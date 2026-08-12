@@ -638,6 +638,16 @@ function notifyDownloadCompleteForEpisode(video) {
 }
 
 async function downloadKAAEpisode() {
+    // downloadInProgress was only ever set here, never checked -- a second call
+    // (double-click, stray repeat event) would race a second FFmpeg() instance
+    // against the first's segment fetches/FS writes, which is a plausible source
+    // of otherwise-unexplained ErrnoError "FS error" crashes.
+    if (downloadInProgress) {
+        if (typeof window.showLimitToast === 'function') {
+            window.showLimitToast('A download is already in progress. Please wait for it to finish.');
+        }
+        return;
+    }
     downloadedBytes = 0;
     downloadInProgress = true;
     const video = window.currentVideo;

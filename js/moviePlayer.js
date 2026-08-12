@@ -619,6 +619,26 @@ document.addEventListener('DOMContentLoaded', function() {
             event.preventDefault();
             window.downloadRuMovie?.(target);
         }
+
+        if (target.id === 'btnDownloadRuTv') {
+            event.preventDefault();
+            window.downloadRuTv?.(target);
+        }
+
+        if (target.id === 'btnDownloadRuAnime') {
+            event.preventDefault();
+            if (window.currentServer !== 'srvNew1') {
+                if (typeof window.showLimitToast === 'function') {
+                    window.showLimitToast('Please switch to the RU - MV server and wait for it to load before downloading.');
+                }
+                return;
+            }
+            // Reuses the exact same KAA muxing/subtitle-burn pipeline unchanged --
+            // it only ever reads window.currentVideo/currentAudioType, both of which
+            // the RU - MV source populates the same way KAA does (aniboom's HLS also
+            // splits audio into its own #EXT-X-MEDIA track, same shape KAA produces).
+            downloadKAAEpisode();
+        }
     });
 
     // Background preload function for anime episodes
@@ -764,6 +784,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 .audio-btn { background:#222; color:#fff; padding:6px 18px; border:none; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.95rem; margin:0 6px; transition:background 0.2s; box-shadow:0 2px 8px #ff800033; }
                 .audio-btn.active { background:#ff8000; color:#fff; }
                 .player-layout { width:100%; display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:14px; margin-top:10px; align-items:start; }
+                .player-layout.is-plain-movie { display:block; }
                 .player-main-pane { min-width:0; }
                 .episode-list-section { width:100%; background:#0c0c0c; border-radius:12px; box-shadow:0 2px 16px #0004; padding:12px 0; display:none; border:1px solid #202020; box-sizing:border-box; flex-direction:column; position:relative; z-index:25; pointer-events:auto; }
                 .episode-list-title { color:#ff8000; font-size:1.05rem; font-weight:700; margin:0 14px 8px 14px; }
@@ -812,12 +833,19 @@ document.addEventListener('DOMContentLoaded', function() {
                                                         <button id="btnDownloadDub" class="audio-btn" style="margin:0;padding:6px 12px;">Download DUB (Internal KickAA)</button>
                                                         <button id="btnDownloadSub2" class="audio-btn" style="margin:0;padding:6px 12px;">Download SUB (External Neko)</button>
                                                         <button id="btnDownloadDub2" class="audio-btn" style="margin:0;padding:6px 12px;">Download DUB (External Neko)</button>
+                                                        <button id="btnDownloadRuAnime" class="audio-btn" style="margin:0;padding:6px 12px;">Download (RU - MV)</button>
                                                     </div>
                                                 </div>
                                                 <div id="movieDownloadWrap" style="display:none;margin-top:auto;padding-top:10px;">
                                                     <div class="downloadTextNextoBtn" style="font-size:0.85rem;color:#ffb366;margin-bottom:6px;">Movie Downloads</div>
                                                     <div class="downloadButtonMovieInfoParent">
                                                         <button id="btnDownloadRuMovie" class="audio-btn" style="margin:0;padding:6px 12px;">Download (RU - MV)</button>
+                                                    </div>
+                                                </div>
+                                                <div id="tvDownloadWrap" style="display:none;margin-top:auto;padding-top:10px;">
+                                                    <div class="downloadTextNextoBtn" style="font-size:0.85rem;color:#ffb366;margin-bottom:6px;">TV Downloads</div>
+                                                    <div class="downloadButtonMovieInfoParent">
+                                                        <button id="btnDownloadRuTv" class="audio-btn" style="margin:0;padding:6px 12px;">Download Episode (RU - MV)</button>
                                                     </div>
                                                 </div>
                                             </div>
@@ -842,6 +870,9 @@ document.addEventListener('DOMContentLoaded', function() {
                         <div class="player-label" id="labelAnimeTV" style="cursor:pointer;" title="Click for info">TV Shows: <span style="font-size:0.75rem;opacity:0.5;font-weight:400;">ⓘ</span></div>
                         <div class="server-group">
                             <button id="srvMegaTV" class="server-btn">MegaCloud (S1)</button>
+                            <button id="srvRuTv" class="server-btn">
+                                RU - MV <img src="https://upload.wikimedia.org/wikipedia/commons/f/f3/Flag_of_Russia.svg" alt="RU" style="width:16px;height:11px;vertical-align:middle;margin-left:2px;">
+                            </button>
                             <button id="srvUpTV" class="server-btn">UpCloud (S2)</button>
                             <button id="srvTTV" class="server-btn">T-Cloud (S3)</button>
                             <button id="srvMoviesApi" class="server-btn">MoviesAPI</button>
@@ -995,10 +1026,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const animeDownloadWrap = document.getElementById('animeDownloadWrap');
         const movieDownloadWrap = document.getElementById('movieDownloadWrap');
+        const tvDownloadWrap = document.getElementById('tvDownloadWrap');
+        const playerLayoutEl = document.querySelector('.player-layout');
         const syncDownloadVisibility = () => {
-            if (animeDownloadWrap) animeDownloadWrap.style.display = 'block';
+            // KAA/Neko-based downloads only work for anime (srvPahe1/srvNeko1 are
+            // anime-only servers) -- plain TV shows get the RU kinogo download instead.
+            if (animeDownloadWrap) animeDownloadWrap.style.display = (isSeries && isAnime) ? 'block' : 'none';
             // RU movie downloads only exist for non-series titles (kinogo/cinemar is movies-only).
-            if (movieDownloadWrap) movieDownloadWrap.style.display = isSeries ? 'none' : 'block';
+            if (movieDownloadWrap) movieDownloadWrap.style.display = (!isSeries && !isAnime) ? 'block' : 'none';
+            // RU TV downloads only exist for non-anime series (kinogo/cinemar again).
+            if (tvDownloadWrap) tvDownloadWrap.style.display = (isSeries && !isAnime) ? 'block' : 'none';
+            // Plain (non-anime) movies get a single-column layout -- TV shows and anime
+            // (movies included) keep the video+episode-list grid.
+            if (playerLayoutEl) playerLayoutEl.classList.toggle('is-plain-movie', !isSeries && !isAnime);
         };
         syncDownloadVisibility();
 
@@ -1013,6 +1053,7 @@ document.addEventListener('DOMContentLoaded', function() {
             srvT: 'T-Cloud (S3): Reliable Backup',
             serverSuperembed: 'SuperEmbed: Multi-source aggregator',
             srvMegaTV: 'MegaCloud TV: Fast Streaming',
+            srvRuTv: 'RU - MV: HLS stream, Russian audio only, TV shows only',
             srvUpTV: 'UpCloud TV: Stable Mirror',
             srvTTV: 'T-Cloud TV: Reliable Backup',
             srvMoviesApi: 'MoviesAPI: Extra Source',
@@ -1883,6 +1924,100 @@ document.addEventListener('DOMContentLoaded', function() {
         // reach this function, same pattern as window.downloadKAAEpisode.
         window.downloadRuMovie = downloadRuMovie;
 
+        // RU TV (kinogo/cinemar series tree) -- same "one Russian track, no sub/dub
+        // toggle" deal as the anime and movie RU sources.
+        async function loadRuTvVideo(episode, season) {
+            const infoDiv = document.getElementById('serverInfoText');
+            if (!isSeries) {
+                if (infoDiv) infoDiv.textContent = 'RU - MV: Not available for movies.';
+                return false;
+            }
+            if (infoDiv) infoDiv.textContent = 'RU - MV: Loading stream...';
+
+            try {
+                const title = document.getElementById('title')?.textContent.trim() || '';
+                const query = new URLSearchParams({
+                    tmdbId: tmdbId || '',
+                    title,
+                    season: season || 1,
+                    episode: episode || 1
+                });
+
+                const res = await fetch(`/api/tv-ru-log?${query.toString()}`);
+                const data = await res.json().catch(() => ({}));
+
+                if (!res.ok || !data?.stream) {
+                    if (infoDiv) infoDiv.textContent = `RU - MV: ${data?.error || 'Not available yet.'}`;
+                    return false;
+                }
+
+                const proxiedStreamUrl = `/api/m3u8-proxy?url=${encodeURIComponent(data.stream)}&ref=${encodeURIComponent(data.proxyRef || '')}`;
+                const ok = showVideoPlayer(
+                    proxiedStreamUrl,
+                    [],
+                    {
+                        provider: 'kinogotv',
+                        title,
+                        season,
+                        episode,
+                        audio: 'ru'
+                    }
+                );
+
+                if (infoDiv) {
+                    infoDiv.textContent = ok
+                        ? `RU - MV: Loaded HLS [${data.translationTitle || 'RU'}]`
+                        : 'RU - MV: HLS playback is not supported in this browser.';
+                }
+                return ok;
+            } catch (err) {
+                console.error('[RU TV] playback error:', err);
+                if (infoDiv) infoDiv.textContent = 'RU - MV: Failed to load stream.';
+                return false;
+            }
+        }
+
+        async function downloadRuTv(btn) {
+            if (!isSeries) {
+                if (typeof window.showLimitToast === 'function') {
+                    window.showLimitToast('RU TV downloads are not available for movies.');
+                }
+                return;
+            }
+            const originalLabel = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Resolving...';
+            try {
+                const title = document.getElementById('title')?.textContent.trim() || '';
+                const seasonSelectEl = document.getElementById('seasonSelect');
+                const selectedSeason = seasonSelectEl?.value === 'all'
+                    ? (seasonSelectEl?.dataset.playSeason || 1)
+                    : (seasonSelectEl?.value || 1);
+                const episode = document.getElementById('episodeSelect')?.value || 1;
+                const query = new URLSearchParams({ tmdbId: tmdbId || '', title, season: selectedSeason, episode });
+                const res = await fetch(`/api/tv-ru-download?${query.toString()}`);
+                const data = await res.json().catch(() => ({}));
+
+                if (!res.ok || !Array.isArray(data?.links) || data.links.length === 0) {
+                    if (typeof window.showLimitToast === 'function') {
+                        window.showLimitToast(data?.error || 'No download link available for this episode.');
+                    }
+                    return;
+                }
+
+                window.open(data.links[0].url, '_blank', 'noopener,noreferrer');
+            } catch (err) {
+                console.error('[RU TV Download] error:', err);
+                if (typeof window.showLimitToast === 'function') {
+                    window.showLimitToast('Failed to resolve a download link.');
+                }
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            }
+        }
+        window.downloadRuTv = downloadRuTv;
+
         // 4. Update Source Logic
         function updateSource(server) {
             currentServer = server; 
@@ -1957,6 +2092,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
                 showServerInfo(server);
                 loadRuMovieVideo();
+                return;
+            }
+            if (server === 'srvRuTv') {
+                document.querySelectorAll('.server-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.id === server);
+                });
+                showServerInfo(server);
+                loadRuTvVideo(e, s);
                 return;
             }
             if (server === 'srvPahe1') {
@@ -2180,7 +2323,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const btnDownloadDub = document.getElementById('btnDownloadDub');
 
         const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvNontonGoM', 'srvRuMovie']);
-        const animeTVBtns = new Set(['srvMegaTV', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvNontonGo']);
+        const animeTVBtns = new Set(['srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvNontonGo']);
         const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1']);
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',

@@ -9795,6 +9795,128 @@ app.get('/api/movie-ru-download', async (req, res) => {
     }
 });
 
+// --- RU TV Series (kinogo.mu -> cinemar.cc, nested season/episode tree) ---
+// Unlike a movie embed (a flat array of audio tracks), a series embed's decoded
+// "file" is a NESTED playlist: an array of season "folder" objects, each holding
+// episode "folder" objects, each holding one or more audio-track entries (same
+// shape as a movie track, just nested two levels deeper). Confirmed live against
+// "Кухня" (6 seasons) before writing any of this. Resolving the title (search +
+// page fetch + embed decode) pulls the WHOLE tree in one shot, so unlike movies
+// there's no need to touch kinogo.mu again per-episode -- only the initial
+// resolve goes through resolveKinogoMovieCached (shared with the movie path,
+// name aside -- the search/page-fetch logic is identical for both).
+const kinogoTreeCache = new Map(); // key -> { result, resolvedAt }
+const kinogoTreeInFlight = new Map();
+const KINOGO_TREE_CACHE_TTL_MS = 30 * 60 * 1000;
+
+async function fetchCinemarSeriesTree(embedUrl, pageUrl) {
+    const embedRes = await axios.get(embedUrl, {
+        headers: { 'User-Agent': KINOGO_UA, 'Referer': pageUrl },
+        timeout: 15000
+    });
+    const m = embedRes.data.match(/"file":\s*"([^"]+)"/);
+    if (!m) throw new Error('Cinemar returned no player file data');
+    const tree = decodeCinemarFile(m[1]);
+    if (!Array.isArray(tree) || tree.length === 0) throw new Error('Cinemar series playlist is empty');
+    return tree;
+}
+
+function resolveKinogoSeriesTreeCached(rawTitle) {
+    const key = String(rawTitle).toLowerCase().trim();
+    const cached = kinogoTreeCache.get(key);
+    if (cached && (Date.now() - cached.resolvedAt) < KINOGO_TREE_CACHE_TTL_MS) {
+        return Promise.resolve(cached.result);
+    }
+    if (kinogoTreeInFlight.has(key)) return kinogoTreeInFlight.get(key);
+    const p = resolveKinogoMovieCached(rawTitle)
+        .then(({ moviePageUrl, embedUrl }) => fetchCinemarSeriesTree(embedUrl, moviePageUrl))
+        .then(result => {
+            kinogoTreeCache.set(key, { result, resolvedAt: Date.now() });
+            return result;
+        })
+        .finally(() => kinogoTreeInFlight.delete(key));
+    kinogoTreeInFlight.set(key, p);
+    return p;
+}
+
+function getKinogoEpisodeTrack(tree, season, episode) {
+    const seasonNode = tree[season - 1];
+    if (!seasonNode || !Array.isArray(seasonNode.folder)) {
+        throw new Error(`Season ${season} not found (title only has ${tree.length} season(s) on kinogo.mu)`);
+    }
+    const episodeNode = seasonNode.folder[episode - 1];
+    if (!episodeNode || !Array.isArray(episodeNode.folder) || episodeNode.folder.length === 0) {
+        throw new Error(`Episode ${episode} not found in season ${season} (kinogo.mu has ${seasonNode.folder.length} episode(s))`);
+    }
+    // Same "first entry is the default Russian track" assumption as movies.
+    const track = episodeNode.folder[0];
+    if (!track.file) throw new Error('Cinemar episode track has no file URL');
+    const streamUrl = track.file.startsWith('http') ? track.file : `https:${track.file}`;
+    const translationTitle = String(track.title || '').replace(/<[^>]+>/g, '').trim();
+    return { streamUrl, translationTitle, dlink: track.dlink || null };
+}
+
+async function resolveTvRuData(rawTitle, tmdbId, season, episode) {
+    if (tmdbId) {
+        const cached = await episodeLoadCacheGet(tmdbId, season, episode, 'ru', 'kinogotv');
+        if (cached && cached.sources && cached.sources[0] && cached.subtitles?.dlink) {
+            const meta = cached.subtitles;
+            return { streamUrl: cached.sources[0], translationTitle: meta.translationTitle || 'RU', dlink: meta.dlink };
+        }
+    }
+
+    const tree = await resolveKinogoSeriesTreeCached(rawTitle);
+    const result = getKinogoEpisodeTrack(tree, season, episode);
+
+    if (tmdbId) {
+        episodeLoadCacheSet(tmdbId, null, season, episode, 'ru', 'kinogotv',
+            null, rawTitle, [result.streamUrl], { translationTitle: result.translationTitle, dlink: result.dlink }
+        ).catch(err => console.warn('[RU TV] Cache write failed:', err.message));
+    }
+
+    return result;
+}
+
+app.get('/api/tv-ru-log', async (req, res) => {
+    const rawTitle = req.query.title || '';
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    const season = parseInt(req.query.season || '1', 10);
+    const episode = parseInt(req.query.episode || req.query.ep || '1', 10);
+
+    if (!rawTitle) {
+        return res.status(400).json({ ok: false, error: 'Title is required' });
+    }
+
+    try {
+        const { streamUrl, translationTitle } = await resolveTvRuData(rawTitle, tmdbId, season, episode);
+        return res.json({ ok: true, stream: streamUrl, proxyRef: 'https://cinemar.cc/', translationTitle });
+    } catch (err) {
+        console.error('[RU TV] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: err.message });
+    }
+});
+
+app.get('/api/tv-ru-download', async (req, res) => {
+    const rawTitle = req.query.title || '';
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    const season = parseInt(req.query.season || '1', 10);
+    const episode = parseInt(req.query.episode || req.query.ep || '1', 10);
+
+    if (!rawTitle) {
+        return res.status(400).json({ ok: false, error: 'Title is required' });
+    }
+
+    try {
+        const { dlink, translationTitle } = await resolveTvRuData(rawTitle, tmdbId, season, episode);
+        if (!dlink) throw new Error('No download link available for this episode');
+        const links = await fetchCinemarDownloadLinks(dlink);
+        return res.json({ ok: true, translationTitle, links });
+    } catch (err) {
+        console.error('[RU TV Download] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: err.message });
+    }
+});
+
 app.get('/api/anime-kaa-servers', async (req, res) => {
     try {
         let malId = req.query.malId;
