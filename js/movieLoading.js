@@ -313,12 +313,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 updateMovieTitleHyphens();
                 window.addEventListener('resize', updateMovieTitleHyphens);
-        // --- Plot Read More/Less Logic (fixed infinite loop, now mobile-only) ---
+        // --- Plot Read More/Less Logic (mobile-only) ---
+        // Previously watched for the real plot text arriving via a
+        // MutationObserver on #plot, reacting to the setText('plot', ...)
+        // side effect instead of the actual event. That's the classic setup
+        // for exactly the bug reported here: an indirect, async-microtask-
+        // delayed link between "data arrived" and "reset + redisplay" that a
+        // click landing in the same window can race against. Replaced with a
+        // direct call (window.__setMoviePlotText, invoked synchronously by
+        // both setText('plot', ...) call sites below) -- no observer, no gap
+        // for a click to land in.
         let isPlotExpanded = false;
         let fullPlotText = '';
         const plotEl = document.getElementById('plot');
         const plotBtn = document.getElementById('plotReadMoreBtn');
-        let plotObserver;
 
         function truncateWords(text, wordLimit) {
             const words = text.split(/\s+/);
@@ -337,8 +345,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else {
                 wordLimit = null;
             }
-            // Disconnect observer before mutating DOM
-            if (plotObserver) plotObserver.disconnect();
             if (wordLimit) {
                 const {truncated, isTruncated} = truncateWords(text, wordLimit);
                 if (!isPlotExpanded && isTruncated) {
@@ -350,8 +356,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // On desktop, always show full plot and hide button
                 plotEl.innerHTML = text;
             }
-            // Reconnect observer after mutation
-            if (plotObserver) plotObserver.observe(plotEl, { childList: true, characterData: true, subtree: true });
 
             // Attach event listener to the new link (if present)
             const readMoreLink = document.getElementById('plotReadMoreLink');
@@ -372,17 +376,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         }
 
-        if (plotEl) {
-            plotObserver = new MutationObserver(() => {
-                fullPlotText = plotEl.innerText;
-                isPlotExpanded = false;
-                updatePlotDisplay();
-            });
-            plotObserver.observe(plotEl, { childList: true, characterData: true, subtree: true });
-            // Initial setup
-            fullPlotText = plotEl.innerText;
+        // Called directly (synchronously) by the code that fetches the real
+        // movie/show overview, instead of being inferred after the fact.
+        window.__setMoviePlotText = function(text) {
+            fullPlotText = text;
+            isPlotExpanded = false;
             updatePlotDisplay();
-        }
+        };
+
+        // Initial setup (placeholder text until the real fetch resolves)
+        updatePlotDisplay();
 
         // Re-apply truncation logic on resize
         window.addEventListener('resize', () => {
@@ -617,7 +620,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
         
         setText('imdbId', `MAL ${anime.idMal}`);
 
-        if (anime.description) setText('plot', anime.description);
+        if (anime.description) window.__setMoviePlotText(anime.description);
         if (anime.averageScore != null) setText('rating', (anime.averageScore / 10).toFixed(1));
         if (anime.duration) setText('runtime', `${anime.duration} min`);  
         if (anime.seasonYear) setText('year', anime.seasonYear);
@@ -671,7 +674,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             setText('title', movie.name || movie.original_name || 'Unknown');
             setText('rating', movie.vote_average ? movie.vote_average.toFixed(1) : '--');
             setText('runtime', movie.episode_run_time?.[0] ? `${movie.episode_run_time[0]} min` : 'N/A');
-            setText('plot', movie.overview || 'No description available.');
+            window.__setMoviePlotText(movie.overview || 'No description available.');
             setText('genre', movie.genres?.map(g => g.name).join(', ') || 'N/A');
             setText('votes', movie.vote_count || '0');
             setText('year', movieYear || '----');
@@ -1041,8 +1044,20 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                             .then(r => r.json())
                             .then(d => {
                                 actorRow.innerHTML = '';
-                                // Use d.cast for TV credits
-                                const tvResults = (d.cast || []).sort((a, b) => b.popularity - a.popularity).slice(0, 20);
+                                // Use d.cast for TV credits. A recurring guest role (e.g. voicing
+                                // several one-off characters on the same show) comes back from
+                                // TMDB as one cast entry per appearance, all sharing the same show
+                                // id -- dedupe on id so the row doesn't fill up with repeats of one
+                                // show, keeping the highest-popularity entry via the sort above.
+                                const seenShowIds = new Set();
+                                const tvResults = (d.cast || [])
+                                    .sort((a, b) => b.popularity - a.popularity)
+                                    .filter(item => {
+                                        if (seenShowIds.has(item.id)) return false;
+                                        seenShowIds.add(item.id);
+                                        return true;
+                                    })
+                                    .slice(0, 20);
                                 tvResults.forEach(item => {
                                     if (item.id === movie.id) return;
                                     const displayName = item.name || item.title || 'Unknown';
@@ -1189,7 +1204,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             setText('title', movie['Movie Name']);
             setText('rating', movie.vote_average ? movie.vote_average.toFixed(1) : "--");
             setText('runtime', movie.runtime ? `${movie.runtime} min` : 'N/A');
-            setText('plot', movie.overview || 'No description available.');
+            window.__setMoviePlotText(movie.overview || 'No description available.');
             setText('genre', movie.Genre || 'N/A');
             setText('votes', movie.vote_count || '0');
             setText('year', movieYear || '----');

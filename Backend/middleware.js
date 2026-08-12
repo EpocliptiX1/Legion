@@ -72,7 +72,18 @@ const authLimiter = rateLimit({
 
 // ── Static files ──────────────────────────────────────────────────────────────
 // Serve everything in the project root (html/, css/, js/, img/, etc.)
-app.use(express.static(path.join(__dirname, '..')));
+// no-cache (not no-store) forces the browser to revalidate via ETag/
+// Last-Modified on every load instead of guessing its own freshness window
+// (the default with no Cache-Control header at all) -- unmodified files still
+// come back as a cheap 304, but a page reload after a CSS/JS edit can never
+// silently serve a stale cached copy. Without this, a background tab getting
+// reloaded by the browser (memory-saver tab discarding, etc.) could load
+// against whatever the browser last decided was "still fresh enough".
+app.use(express.static(path.join(__dirname, '..'), {
+    setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'no-cache');
+    }
+}));
 app.use(
     "/node_modules",
     express.static(path.join(__dirname, "node_modules"))

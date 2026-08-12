@@ -2523,20 +2523,11 @@ function injectLogoIntoNavbar() {
     const isMobile = window.innerWidth <= 620;
 
     if (isMobile && !existingNavLogo) {
-        // Clone the logo and insert it into navbar
+        // Clone the logo and insert it into navbar. Styling lives in
+        // css/style.css (.mobile-navbar-logo, @media max-width:620px) instead
+        // of inline here, so it only needs editing in one place.
         const logoClone = logoWrap.cloneNode(true);
         logoClone.classList.add('mobile-navbar-logo');
-        logoClone.style.display = 'flex';
-        logoClone.style.position = 'static';
-        logoClone.style.top = 'auto';
-        logoClone.style.left = 'auto';
-        logoClone.style.zIndex = 'auto';
-        logoClone.style.width = 'auto';
-        logoClone.style.height = 'auto';
-        logoClone.style.padding = '12px 16px';
-        logoClone.style.border = 'none';
-        logoClone.style.background = 'transparent';
-        logoClone.style.flexShrink = '0';
         navbar.insertBefore(logoClone, navbar.firstChild);
     } else if (!isMobile && existingNavLogo) {
         // Remove logo from navbar when viewport > 620px
@@ -2544,9 +2535,106 @@ function injectLogoIntoNavbar() {
     }
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+   MOBILE BOTTOM NAV OVERFLOW MENU: on the 620px bottom-bar layout, only
+   AnimeMode/Browse/Movies/My List/Watch2Gether show directly -- Home,
+   Playlists, Forum and Calendar (marked data-nav-overflow="true" on their
+   <li> in every page's .sidebar-nav-list) get collapsed into a "More"
+   popup instead, since 8 buttons in one row was too cramped. The popup is
+   built by cloning those (still-present, just CSS-hidden) <li> links, so
+   nothing has to be duplicated in each HTML file beyond the data attribute.
+   ───────────────────────────────────────────────────────────────────── */
+function setupMobileNavOverflow() {
+    const bottomSidebar = document.querySelector('.left-sidebar.bottom-sidebar');
+    if (!bottomSidebar) return;
+    const navList = bottomSidebar.querySelector('.sidebar-nav-list');
+    if (!navList) return;
+
+    const isMobile = window.innerWidth <= 620;
+    let moreBtn = bottomSidebar.querySelector('.mobile-nav-more-btn');
+    let panel = bottomSidebar.querySelector('.mobile-nav-overflow-panel');
+
+    if (!isMobile) {
+        if (moreBtn) moreBtn.remove();
+        if (panel) panel.remove();
+        return;
+    }
+    if (moreBtn && panel) return; // already set up for this page load
+
+    const overflowItems = navList.querySelectorAll('li[data-nav-overflow="true"]');
+    if (!overflowItems.length) return;
+
+    moreBtn = document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.className = 'mobile-nav-more-btn';
+    moreBtn.setAttribute('aria-label', 'More navigation options');
+    moreBtn.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="sidebar-nav-icon">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM12.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM18.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z" />
+        </svg>
+        <span>More</span>
+    `;
+
+    panel = document.createElement('div');
+    panel.className = 'mobile-nav-overflow-panel';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'mobile-nav-overflow-close';
+    closeBtn.setAttribute('aria-label', 'Close menu');
+    closeBtn.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+          <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+        </svg>
+    `;
+    panel.appendChild(closeBtn);
+
+    const list = document.createElement('div');
+    list.className = 'mobile-nav-overflow-list';
+    overflowItems.forEach(li => {
+        const link = li.querySelector('a');
+        if (link) list.appendChild(link.cloneNode(true));
+    });
+    panel.appendChild(list);
+
+    const closePanel = () => panel.classList.remove('open');
+    const openPanel = () => panel.classList.add('open');
+
+    moreBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (panel.classList.contains('open')) closePanel();
+        else openPanel();
+    });
+    closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closePanel();
+    });
+    document.addEventListener('click', (e) => {
+        if (!panel.classList.contains('open')) return;
+        if (panel.contains(e.target) || moreBtn.contains(e.target)) return;
+        closePanel();
+    });
+    // A link inside the popup navigates away, but close it first so it
+    // doesn't linger open if the next page is reached via bfcache restore.
+    list.addEventListener('click', (e) => {
+        if (e.target.closest('a')) closePanel();
+    });
+
+    bottomSidebar.appendChild(panel);
+    // Goes inside .sidebar-nav-list (its own <li>), not as a direct sibling
+    // of the list -- as a sibling it competed 1-for-1 against the whole
+    // 4-item list's flex:1 and ended up ~4x too wide. Inside the list it
+    // picks up the same "li { flex:1 }" per-item sizing as Browse/Movies/etc.
+    const moreLi = document.createElement('li');
+    moreLi.appendChild(moreBtn);
+    navList.appendChild(moreLi);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     injectLogoIntoNavbar();
     window.addEventListener('resize', injectLogoIntoNavbar);
+    setupMobileNavOverflow();
+    window.addEventListener('resize', setupMobileNavOverflow);
 });
 
 function bindHeroClickToPlay() {
