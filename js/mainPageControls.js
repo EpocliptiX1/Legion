@@ -2393,7 +2393,7 @@ function ensureSignupModal() {
     modal.innerHTML = `
         <div class="signup-box">
             <div class="signup-close" onclick="closeSignupModal()"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg></div>
-            <h2>Welcome to Legion Space</h2>
+            <h2>Welcome to AniKino</h2>
             <p class="signup-subtitle">Create your free account to start watching.</p>
             <form onsubmit="handleSignup(event)">
                 <div class="input-group">
@@ -2593,10 +2593,17 @@ function setupMobileNavOverflow() {
 
     const isMobile = window.innerWidth <= 620;
     let moreBtn = bottomSidebar.querySelector('.mobile-nav-more-btn');
-    let panel = bottomSidebar.querySelector('.mobile-nav-overflow-panel');
+    // Lives on <body>, not inside .bottom-sidebar (see the appendChild comment below) --
+    // querying it scoped to bottomSidebar always misses, which made the "already set up"
+    // guard below never trigger and re-ran this whole function (re-appending a fresh
+    // <li>+panel every time) on EVERY resize event.
+    let panel = document.querySelector('.mobile-nav-overflow-panel');
 
     if (!isMobile) {
-        if (moreBtn) moreBtn.remove();
+        // Remove the whole <li> wrapper, not just the button inside it -- removing
+        // only the button left an empty <li> behind on every mobile->desktop
+        // transition, which piled up over repeated resizing.
+        if (moreBtn) (moreBtn.closest('li') || moreBtn).remove();
         if (panel) panel.remove();
         return;
     }
@@ -2661,7 +2668,16 @@ function setupMobileNavOverflow() {
         if (e.target.closest('a')) closePanel();
     });
 
-    bottomSidebar.appendChild(panel);
+    // Appended to <body>, NOT .bottom-sidebar -- .bottom-sidebar has its own
+    // position:fixed + z-index:1300, which creates a stacking context. A
+    // position:fixed child still escapes that ancestor's LAYOUT box (that's
+    // why it can visually render outside it at all), but it can never escape
+    // its ancestor's STACKING context -- no z-index on the panel, however
+    // large, could beat .w2g-hostbar's z-index:23000 while trapped inside a
+    // parent capped at 1300. Living directly under <body> like the host bar
+    // does puts them in the same context, where the panel's own z-index
+    // (see .mobile-nav-overflow-panel.open, > 23000) actually applies.
+    document.body.appendChild(panel);
     // Goes inside .sidebar-nav-list (its own <li>), not as a direct sibling
     // of the list -- as a sibling it competed 1-for-1 against the whole
     // 4-item list's flex:1 and ended up ~4x too wide. Inside the list it
@@ -2866,6 +2882,18 @@ async function _w2gGetActiveSessionInfo() {
     if (!sessionId || !token) return null;
     try {
         const res = await fetch(`/watch2gether/session/${sessionId}/state`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (res.status === 404) {
+            // Session genuinely doesn't exist anymore server-side (expired, or
+            // the tab that was hosting closed/crashed without ever calling
+            // stopWatch2GetherHosting to clear this). Every caller here was
+            // gating purely on this localStorage key existing, with nothing
+            // that ever cleared it on its own -- that's what left the host bar
+            // permanently stuck showing "0" forever. A definite 404 is safe to
+            // self-heal on; other failures (network blip, 5xx) are left alone
+            // so a brief hiccup doesn't kick someone out of an active session.
+            localStorage.removeItem('w2gHostingSessionId');
+            return null;
+        }
         if (!res.ok) return null;
         const data = await res.json();
         return { sessionId, participants: data.participants || [], controlOwner: data.controlOwner };
@@ -2947,9 +2975,17 @@ async function _w2gRenderHostBar() {
         if (_w2gHostBarEl) { _w2gHostBarEl.remove(); _w2gHostBarEl = null; }
         return;
     }
-    _w2gEnsureHostBar();
+    // Check the session is actually still alive BEFORE creating the bar --
+    // _w2gGetActiveSessionInfo() clears the stale localStorage key itself on
+    // a 404, but that alone doesn't remove a bar this same call already
+    // created. Tear it down immediately instead of waiting for that cleared
+    // key to be noticed on the next 5s tick.
     const info = await _w2gGetActiveSessionInfo();
-    if (!info) return;
+    if (!info) {
+        if (_w2gHostBarEl) { _w2gHostBarEl.remove(); _w2gHostBarEl = null; }
+        return;
+    }
+    _w2gEnsureHostBar();
 
     const countEl = document.getElementById('w2gHostBarCount');
     if (countEl) countEl.textContent = String(info.participants.length);

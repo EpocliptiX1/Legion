@@ -125,26 +125,44 @@ document.addEventListener('DOMContentLoaded', function() {
     const applyBtn = document.getElementById('applyFilters');
     const minSel = document.getElementById('yearPickerMin');
     const maxSel = document.getElementById('yearPickerMax');
+    let skipDefaultLoad = false;
 
     if (animeMode) {
         const titleEl = document.querySelector('.list-title');
         if (titleEl) titleEl.textContent = 'Anime Library';
 
-        const applyBtnAnime = document.getElementById('applyFiltersAnime');
-        if (applyBtnAnime) {
-            applyBtnAnime.onclick = async () => {
-                const filters = {
-                    sort: document.getElementById('animeSortBy')?.value || 'POPULARITY_DESC',
-                    genre: document.getElementById('animeGenreInput')?.value || '',
-                    tag: document.getElementById('animeTagInput')?.value || '',
-                    format: document.getElementById('animeFormatInput')?.value || '',
-                    status: document.getElementById('animeStatusInput')?.value || '',
-                    yearMin: document.getElementById('animeYearPickerMin')?.value || '',
-                    yearMax: document.getElementById('animeYearPickerMax')?.value || ''
-                };
-                anilistFilteredViewActive = true;
-                await loadAnimeLibraryFromAniList(grid, filters);
+        const applyAnimeFilters = async () => {
+            const filters = {
+                sort: document.getElementById('animeSortBy')?.value || 'POPULARITY_DESC',
+                genre: document.getElementById('animeGenreInput')?.value || '',
+                tag: document.getElementById('animeTagInput')?.value || '',
+                format: document.getElementById('animeFormatInput')?.value || '',
+                status: document.getElementById('animeStatusInput')?.value || '',
+                yearMin: document.getElementById('animeYearPickerMin')?.value || '',
+                yearMax: document.getElementById('animeYearPickerMax')?.value || ''
             };
+            anilistFilteredViewActive = true;
+            await loadAnimeLibraryFromAniList(grid, filters);
+        };
+
+        const applyBtnAnime = document.getElementById('applyFiltersAnime');
+        if (applyBtnAnime) applyBtnAnime.onclick = applyAnimeFilters;
+
+        // Footer category quick-links (e.g. "Isekai", "Popular") land here with
+        // ?animeTag=/?animeSort= instead of just dumping the default library --
+        // pre-select the matching filter, open the panel so the choice is visible,
+        // and apply it immediately.
+        const urlParams = new URLSearchParams(window.location.search);
+        const paramTag = urlParams.get('animeTag');
+        const paramSort = urlParams.get('animeSort');
+        if (paramTag || paramSort) {
+            const tagSel = document.getElementById('animeTagInput');
+            const sortSel = document.getElementById('animeSortBy');
+            if (paramTag && tagSel) tagSel.value = paramTag;
+            if (paramSort && sortSel) sortSel.value = paramSort;
+            if (activePanel) activePanel.classList.add('open');
+            applyAnimeFilters();
+            skipDefaultLoad = true;
         }
     }
 
@@ -224,8 +242,8 @@ document.addEventListener('DOMContentLoaded', function() {
         activeFilters.minYear = parseInt(minSel.value) || 1930;
         activeFilters.maxYear = parseInt(maxSel.value) || 2026;
     }
-    
-    loadMovies();
+
+    if (!skipDefaultLoad) loadMovies();
 
     window.onscroll = function() {
         if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 500) {
@@ -394,72 +412,33 @@ window.toggleMyList = function(id, name, type) {
     if (typeof updateInfoButtonUI === 'function') updateInfoButtonUI(id);
 }
 
-// Powers the anime filter panel's Apply Filters button. Every argument is optional --
-// GraphQL just drops an omitted variable, so leaving a dropdown on "All"/"Any" naturally
-// removes that filter with no branching needed here. Verified live against the real API
-// with every field combined at once before wiring this in.
-const ANILIST_FILTER_QUERY = `
-query (
-    $page: Int
-    $perPage: Int
-    $sort: [MediaSort]
-    $search: String
-    $genre: String
-    $tag: String
-    $format: MediaFormat
-    $status: MediaStatus
-    $yearMin: FuzzyDateInt
-    $yearMax: FuzzyDateInt
-) {
-    Page(page: $page, perPage: $perPage) {
-        pageInfo { total hasNextPage }
-        media(
-            type: ANIME
-            isAdult: false
-            search: $search
-            genre: $genre
-            tag: $tag
-            format: $format
-            status: $status
-            startDate_greater: $yearMin
-            startDate_lesser: $yearMax
-            sort: $sort
-        ) {
-            id
-            idMal
-            title { romaji english }
-            format
-            seasonYear
-            coverImage { large }
-        }
-    }
-}`;
-
+// Powers the anime filter panel's Apply Filters button. Used to hit AniList
+// directly from the browser on every single request -- no caching at all, and
+// every result still needed its own separate /api/anime-tmdb-id round trip
+// afterward just to be clickable. Now goes through /api/anime-library, which
+// caches the whole result set server-side (keyed by sort + every active
+// filter, same anime_row_cache/anime_cache tables the homepage's curated rows
+// already use) and resolves+embeds tmdbId server-side too, so a cache hit
+// needs zero extra requests per item. Genres/tags/full airdate/format/status
+// all come back on every item now as well (see ANIME_LIBRARY_QUERY server-side).
 async function fetchAniListFilteredAnime(filters, page = 1, perPage = 30) {
-    // FuzzyDateInt is YYYYMMDD as a plain integer, not a real date type.
-    const variables = {
+    const params = new URLSearchParams({
+        sort: filters.sort || 'POPULARITY_DESC',
         page,
-        perPage,
-        sort: [filters.sort || 'POPULARITY_DESC'],
-        search: filters.search || undefined,
-        genre: filters.genre || undefined,
-        tag: filters.tag || undefined,
-        format: filters.format || undefined,
-        status: filters.status || undefined,
-        yearMin: filters.yearMin ? Number(`${filters.yearMin}0101`) : undefined,
-        yearMax: filters.yearMax ? Number(`${filters.yearMax}1231`) : undefined
-    };
-
-    const res = await fetch('https://graphql.anilist.co', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ query: ANILIST_FILTER_QUERY, variables })
+        perPage
     });
-    const data = await res.json();
-    if (data?.errors) {
-        throw new Error(data.errors.map(e => e.message).join('; '));
-    }
-    return data?.data?.Page?.media || [];
+    if (filters.search) params.set('search', filters.search);
+    if (filters.genre) params.set('genre', filters.genre);
+    if (filters.tag) params.set('tag', filters.tag);
+    if (filters.format) params.set('format', filters.format);
+    if (filters.status) params.set('status', filters.status);
+    if (filters.yearMin) params.set('yearMin', filters.yearMin);
+    if (filters.yearMax) params.set('yearMax', filters.yearMax);
+
+    const res = await fetch(`/api/anime-library?${params.toString()}`);
+    if (!res.ok) throw new Error(`Anime library fetch failed (${res.status})`);
+    const items = await res.json();
+    return Array.isArray(items) ? items : [];
 }
 
 async function loadAnimeLibraryFromAniList(grid, filters) {
@@ -473,29 +452,9 @@ async function loadAnimeLibraryFromAniList(grid, filters) {
             return;
         }
 
-        // The site's own pages are TMDB-id-based (movieInfo.html?id=<tmdbId>), so every
-        // result still needs a TMDB match -- same resolver already used by the anime
-        // recommendations feature (cached after the first lookup, not a cold search each time).
-        const withTmdb = await Promise.all(mediaList.map(async (media) => {
-            const title = media.title?.english || media.title?.romaji;
-            if (!title) return null;
-            try {
-                const params = new URLSearchParams({
-                    anilistId: media.id,
-                    title,
-                    titleEnglish: media.title?.english || '',
-                    titleRomaji: media.title?.romaji || '',
-                    malId: media.idMal || ''
-                });
-                const res = await fetch(`/api/anime-tmdb-id?${params.toString()}`);
-                const data = await res.json().catch(() => ({}));
-                return data?.tmdb_id ? { media, tmdbId: data.tmdb_id } : null;
-            } catch {
-                return null;
-            }
-        }));
-
-        const results = withTmdb.filter(Boolean);
+        // tmdbId is already resolved+embedded server-side (/api/anime-library) --
+        // no more per-item /api/anime-tmdb-id round trip needed here at all.
+        const results = mediaList.filter(media => media.tmdbId);
         if (!results.length) {
             grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Found matching anime, but couldn\'t link any to a TMDB entry.</p>';
             return;
@@ -507,11 +466,12 @@ async function loadAnimeLibraryFromAniList(grid, filters) {
             </svg>`;
 
         grid.innerHTML = '';
-        results.forEach(({ media, tmdbId }) => {
+        results.forEach((media) => {
+            const tmdbId = media.tmdbId;
             const title = media.title?.english || media.title?.romaji || 'Unknown';
             const safeName = title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-            const posterUrl = media.coverImage?.large || '/img/default_poster.png';
-            const year = media.seasonYear || '';
+            const posterUrl = media.coverImage?.extraLarge || media.coverImage?.large || '/img/default_poster.png';
+            const year = media.startDate?.year || media.seasonYear || '';
             const inferredType = media.format === 'MOVIE' ? 'movie' : 'anime';
             const typeLabel = media.format || 'Anime';
 
@@ -542,29 +502,29 @@ async function loadAnimeLibraryFromAniList(grid, filters) {
 }
 
 // Powers the anime library's default (unfiltered) view -- initial page load and infinite
-// scroll -- via AniList instead of Jikan (Jikan's rate limiting made the very first load of
-// this page fail outright). Mirrors the server-cached row fetch used by indexBrowse's
-// specialVisibilityExpemption rows (/api/anime-row) so repeated page loads hit the cache
-// instead of hammering AniList directly; a live search query still goes straight to AniList
-// since per-query results aren't worth caching server-side.
-function getDefaultAnimeRowKey() {
-    if (activeFilters.sort === 'vote_average.desc') return 'TOP_SCORE';
-    return 'POPULAR';
+// scroll. Both this and the filtered path above now go through the same
+// /api/anime-library cache, keyed primarily by sort (this file's #sortBy
+// dropdown uses TMDB-style values since it's shared with the movie library
+// UI -- mapped to AniList's own sort enum here so both paths land on
+// identical, shareable cache entries instead of two different keys for the
+// same underlying result set).
+const ANIME_DEFAULT_SORT_MAP = {
+    'popularity.desc': 'POPULARITY_DESC',
+    'vote_average.desc': 'SCORE_DESC',
+    'primary_release_date.desc': 'START_DATE_DESC'
+};
+function getDefaultAnimeSort() {
+    return ANIME_DEFAULT_SORT_MAP[activeFilters.sort] || 'POPULARITY_DESC';
 }
 
 async function loadAnimeLibraryDefault(grid) {
     try {
         const query = getLibrarySearchQuery();
-        let mediaList;
-        if (query) {
-            mediaList = await fetchAniListFilteredAnime({ sort: 'POPULARITY_DESC', search: query }, currentPage, 25);
-        } else {
-            const rowKey = getDefaultAnimeRowKey();
-            const res = await fetch(`/api/anime-row?rowKey=${encodeURIComponent(rowKey)}&page=${currentPage}&perPage=25`);
-            if (!res.ok) throw new Error('AniList row fetch failed');
-            const data = await res.json();
-            mediaList = Array.isArray(data) ? data : [];
-        }
+        const mediaList = await fetchAniListFilteredAnime(
+            { sort: getDefaultAnimeSort(), search: query || undefined },
+            currentPage,
+            25
+        );
 
         if (!mediaList.length) {
             if (currentPage === 1) {
@@ -574,26 +534,9 @@ async function loadAnimeLibraryDefault(grid) {
             return;
         }
 
-        const withTmdb = await Promise.all(mediaList.map(async (media) => {
-            const title = media.title?.english || media.title?.romaji;
-            if (!title) return null;
-            try {
-                const params = new URLSearchParams({
-                    anilistId: media.id,
-                    title,
-                    titleEnglish: media.title?.english || '',
-                    titleRomaji: media.title?.romaji || '',
-                    malId: media.idMal || ''
-                });
-                const r = await fetch(`/api/anime-tmdb-id?${params.toString()}`);
-                const d = await r.json().catch(() => ({}));
-                return d?.tmdb_id ? { media, tmdbId: d.tmdb_id } : null;
-            } catch {
-                return null;
-            }
-        }));
-
-        const results = withTmdb.filter(Boolean);
+        // tmdbId is already resolved+embedded server-side (/api/anime-library) --
+        // no more per-item /api/anime-tmdb-id round trip needed here at all.
+        const results = mediaList.filter(media => media.tmdbId);
         if (!results.length) {
             if (currentPage === 1) {
                 grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Found matching anime, but couldn\'t link any to a TMDB entry.</p>';
@@ -607,11 +550,12 @@ async function loadAnimeLibraryDefault(grid) {
                 <path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="currentColor"/>
             </svg>`;
 
-        results.forEach(({ media, tmdbId }) => {
+        results.forEach((media) => {
+            const tmdbId = media.tmdbId;
             const title = media.title?.english || media.title?.romaji || 'Unknown';
             const safeName = title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-            const posterUrl = media.coverImage?.large || media.coverImage?.extraLarge || '/img/default_poster.png';
-            const year = media.seasonYear || media.startDate?.year || '';
+            const posterUrl = media.coverImage?.extraLarge || media.coverImage?.large || '/img/default_poster.png';
+            const year = media.startDate?.year || media.seasonYear || '';
             const inferredType = media.format === 'MOVIE' ? 'movie' : 'anime';
             const typeLabel = media.format || 'Anime';
 

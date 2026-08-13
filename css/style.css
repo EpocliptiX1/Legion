@@ -2558,6 +2558,25 @@ body {
     overflow: hidden;
 }
 
+/* Raising the .hero-left-fade gradient to fully opaque at its bottom stop wasn't
+   enough -- the line survived, so it's not the video content showing through a
+   translucent overlay. More likely a GPU compositing seam where the scaled/
+   transformed trailer iframe layer meets this box's overflow:hidden clip edge
+   (a known hairline-seam issue with transformed layers on a clipped boundary).
+   A solid mask pinned exactly to the bottom edge, above every other hero layer,
+   hides it regardless of which of those it actually is. */
+.hero.hero-main-page::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 4px;
+    background: #000;
+    z-index: 25;
+    pointer-events: none;
+}
+
 /* Trailer iframe covers entire hero */
 .hero-bg-trailer {
     position: absolute;
@@ -2586,14 +2605,19 @@ body {
     opacity: 1;
 }
 
-/* Gradient overlays: left-heavy for readability + bottom fade */
+/* Gradient overlays: left-heavy for readability + bottom fade.
+   The bottom fade used to start at only 75% black (0% stop), which let a sliver
+   of whatever the trailer iframe's own bottom edge looked like -- a bright video
+   frame, or just a compositing seam from the scaled/inset iframe -- show through
+   as a thin light line right at the hero's bottom border. Fully opaque for the
+   first stretch, then fading up, guarantees nothing behind it can show there. */
 .hero-left-fade {
     position: absolute;
     inset: 0;
     z-index: 2;
     background:
         linear-gradient(to right, rgba(0,0,0,0.94) 0%, rgba(0,0,0,0.6) 42%, rgba(0,0,0,0.1) 68%, transparent 100%),
-        linear-gradient(to top, rgba(0,0,0,0.75) 0%, transparent 45%);
+        linear-gradient(to top, rgba(0,0,0,1) 0%, rgba(0,0,0,0.75) 10%, transparent 45%);
     pointer-events: none;
 }
 
@@ -7616,8 +7640,12 @@ body.blur-active {
 /* --- FOOTER --- */
 .site-footer {
     background-color: #050505;
+    background-image: linear-gradient(180deg, rgba(5,5,5,0.86), rgba(5,5,5,0.94)), url('/img/footer.jpg');
+    background-size: cover;
+    background-position: center 30%;
+    background-repeat: no-repeat;
     border-top: 1px solid #222;
-    padding: 70px 0 30px;
+    padding: 36px 0 24px;
     margin-top: auto;
     font-size: 0.95rem;
     color: #999;
@@ -7626,7 +7654,7 @@ body.blur-active {
 .footer-content {
     width: 90%;
     max-width: 1200px;
-    margin: 0 auto;
+    margin: 0 24px;
 }
 
 .footer-grid {
@@ -7737,6 +7765,280 @@ body.blur-active {
 
 .legal-links a:hover {
     color: #fff;
+}
+
+/* --- FOOTER v2 (redesigned footer content, indexMain.html first) --- */
+.footer-categories {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 10px;
+    margin-bottom: 24px;
+}
+
+.footer-cat-btn {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #ccc;
+    font-size: 0.82rem;
+    font-weight: 700;
+    padding: 8px 18px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.footer-cat-btn:hover {
+    background: rgba(249,109,0,0.15);
+    border-color: rgba(249,109,0,0.5);
+    color: #f96d00;
+}
+
+.footer-brand-logo-link {
+    display: flex;
+    justify-content: flex-start;
+    margin: 4px 0 20px;
+}
+.footer-brand-logo-svg {
+    width: 160px;
+    height: auto;
+}
+
+.footer-help-row {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+}
+.footer-help-link {
+    color: #999;
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: color 0.2s ease;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+}
+.footer-help-link:hover { color: #f96d00; }
+.footer-help-dot { color: #444; }
+
+.footer-friends-section {
+    max-width: 480px;
+    margin: 0 0 24px;
+    text-align: left;
+}
+.footer-friends-title {
+    color: #fff;
+    font-size: 0.95rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+}
+.footer-friends-list {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 10px;
+}
+.footer-friend-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 999px;
+    padding: 5px 12px 5px 6px;
+    font-size: 0.8rem;
+    color: #ccc;
+}
+.footer-friend-avatar {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #333 center/cover;
+    flex-shrink: 0;
+    position: relative;
+}
+.footer-friend-status-dot {
+    position: absolute;
+    bottom: -1px;
+    right: -1px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 2px solid #050505;
+    background: #555;
+}
+.footer-friend-chip.online .footer-friend-status-dot { background: #34c759; }
+.footer-friend-chip.offline { opacity: 0.55; }
+.footer-friends-empty {
+    color: #666;
+    font-size: 0.85rem;
+}
+
+/* --- FOOTER FORM MODALS (Report a Bug / Request Anime / Contact Us) --- */
+.footer-form-content {
+    max-width: 520px;
+}
+.footer-form-body {
+    padding: 24px 26px 26px;
+    overflow-y: auto;
+}
+.footer-form-field {
+    margin-bottom: 16px;
+}
+.footer-form-field label {
+    display: block;
+    font-size: 13px;
+    color: #999;
+    margin-bottom: 6px;
+}
+.footer-form-field input[type="text"],
+.footer-form-field input[type="email"],
+.footer-form-field select,
+.footer-form-field textarea {
+    width: 100%;
+    background: #222;
+    border: 1px solid #444;
+    padding: 10px;
+    color: #fff;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    font-family: inherit;
+    box-sizing: border-box;
+}
+.footer-form-field input:focus,
+.footer-form-field select:focus,
+.footer-form-field textarea:focus {
+    outline: none;
+    border-color: #f96d00;
+}
+.footer-form-field textarea {
+    resize: vertical;
+    min-height: 90px;
+}
+.footer-form-category {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 18px;
+}
+.footer-form-category-btn {
+    flex: 1;
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid #444;
+    background: #1a1a1a;
+    color: #999;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+}
+.footer-form-category-btn.active {
+    border-color: #f96d00;
+    color: #f96d00;
+    background: rgba(249,109,0,0.1);
+}
+.footer-media-picker {
+    position: relative;
+    margin-bottom: 16px;
+}
+.footer-media-picker-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: #1a1a1a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    max-height: 260px;
+    overflow-y: auto;
+    z-index: 5;
+    display: none;
+}
+.footer-media-picker-results.active { display: block; }
+.footer-media-picker-item {
+    display: flex;
+    gap: 10px;
+    padding: 8px 10px;
+    cursor: pointer;
+    align-items: center;
+}
+.footer-media-picker-item:hover { background: rgba(249,109,0,0.1); }
+.footer-media-picker-item img {
+    width: 36px;
+    height: 52px;
+    object-fit: cover;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+.footer-media-picker-item-info {
+    font-size: 0.82rem;
+    color: #ccc;
+}
+.footer-media-selected {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    background: rgba(249,109,0,0.08);
+    border: 1px solid rgba(249,109,0,0.3);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-top: 10px;
+    font-size: 0.85rem;
+    color: #fff;
+}
+.footer-media-selected.active { display: flex; }
+.footer-media-selected img {
+    width: 32px;
+    height: 46px;
+    object-fit: cover;
+    border-radius: 3px;
+}
+.footer-media-selected-clear {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: #999;
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+}
+.footer-id-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+}
+.footer-form-submit {
+    width: 100%;
+    background: #f96d00;
+    border: none;
+    color: #fff;
+    font-weight: 800;
+    padding: 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    margin-top: 6px;
+    transition: background 0.2s ease;
+}
+.footer-form-submit:hover { background: #ff8420; }
+.footer-form-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+.footer-form-status {
+    font-size: 0.82rem;
+    margin-top: 10px;
+    text-align: center;
+}
+.footer-form-status.success { color: #34c759; }
+.footer-form-status.error { color: #e5534b; }
+
+@media (max-width: 600px) {
+    .footer-id-row { grid-template-columns: 1fr; }
+    .footer-form-category { flex-direction: column; }
 }
 
 /* --- PRIVATE LIST LOCK --- */

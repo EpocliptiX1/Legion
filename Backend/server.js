@@ -7,6 +7,7 @@
 // --- TMDB Multi-Search API: Movies & TV Series ---
 // (MUST be after const app = express)
 const express = require('express');
+const stringSimilarity = require('string-similarity');
 const cheerio = require('cheerio');
 const https = require('https');
 const sqlite3 = require('sqlite3').verbose();
@@ -2286,6 +2287,37 @@ activityDb.serialize(() => {
             });
         }
     );
+});
+
+// Footer forms (Report a Bug / Request Anime / Contact Us) -- kept in its own db file
+// rather than folded into activity.db since it's an unrelated, low-traffic feedback
+// inbox rather than core app state. One denormalized table covers all three form
+// types (form_type distinguishes them) since they're small, simple, and mostly just
+// need to sit in an inbox for manual review -- not worth three separate schemas.
+const footerFormsDbPath = path.join(__dirname, 'FooterForms.db');
+const footerFormsDb = new sqlite3.Database(footerFormsDbPath, (err) => {
+    if (err) console.error('FooterForms DB error:', err.message);
+    else console.log('✅ Connected to footer forms database');
+});
+footerFormsDb.serialize(() => {
+    footerFormsDb.run(`CREATE TABLE IF NOT EXISTS footer_submissions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        form_type   TEXT    NOT NULL,
+        category    TEXT,
+        tmdb_id     TEXT,
+        mal_id      TEXT,
+        anilist_id  TEXT,
+        media_title TEXT,
+        message     TEXT,
+        name        TEXT,
+        email       TEXT,
+        subject     TEXT,
+        user_uid    TEXT,
+        username    TEXT,
+        status      TEXT    NOT NULL DEFAULT 'open',
+        created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    )`);
+    footerFormsDb.run(`CREATE INDEX IF NOT EXISTS idx_footer_submissions_type ON footer_submissions(form_type, created_at)`);
 });
 
 // POST /activity/watch — record a movie view
@@ -6689,6 +6721,45 @@ function animeTmdbMappingGetByAniListId(anilistId) {
     });
 }
 
+function animeTmdbMappingGetByMalId(malId) {
+    return new Promise((resolve, reject) => {
+        animeCacheDb.get(
+            `SELECT tmdb_id, anilist_id FROM anime_tmdb_mapping WHERE mal_id = ?`,
+            [malId],
+            (err, row) => {
+                if (err) return reject(err);
+                resolve(row || null);
+            }
+        );
+    });
+}
+
+// Minimal AniList Media lookup by either its own id or its MAL id -- just enough
+// (title variants + cover) to search TMDB with when neither Fribb's list nor the
+// anime_tmdb_mapping cache already has a tmdb_id for that id.
+async function aniListGetMediaBasic({ anilistId, malId }) {
+    const query = `
+        query ($id: Int, $idMal: Int) {
+            Media(id: $id, idMal: $idMal, type: ANIME) {
+                id
+                idMal
+                title { romaji english native }
+                coverImage { extraLarge large }
+            }
+        }
+    `;
+    const variables = {};
+    if (anilistId) variables.id = anilistId;
+    if (malId) variables.idMal = malId;
+
+    const response = await axios.post(
+        'https://graphql.anilist.co',
+        { query, variables },
+        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
+    );
+    return response.data?.data?.Media || null;
+}
+
 function animeTmdbMappingUpsert({ tmdbId, malId = null, anilistId = null, title = null }) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
@@ -9456,6 +9527,191 @@ app.get('/api/anime-comments/by-user', (req, res) => {
     );
 });
 
+// Lets the footer's media picker resolve a manually-typed TMDB/MAL/AniList id the
+// same way picking a title from search does: whichever one id was typed gets
+// turned into a tmdb_id (via Fribb's mapping list, then the anime_tmdb_mapping
+// cache, then a live AniList lookup + title search as a last resort), and the
+// other two ids plus a title/poster get filled in around it.
+app.get('/api/footer/resolve-media', async (req, res) => {
+    const tmdbIdParam = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    let malId = req.query.malId ? parseInt(req.query.malId, 10) : null;
+    let anilistId = req.query.anilistId ? parseInt(req.query.anilistId, 10) : null;
+    let tmdbId = tmdbIdParam;
+
+    if (!tmdbId && !malId && !anilistId) {
+        return res.status(400).json({ error: 'Provide tmdbId, malId, or anilistId' });
+    }
+
+    try {
+        if (!tmdbId) {
+            await ensureAnimeMalListLoaded();
+            const fribbEntry = _animeMalList.find(item =>
+                (malId && Number(item.mal_id) === malId) ||
+                (anilistId && Number(item.anilist_id) === anilistId)
+            );
+            if (fribbEntry?.themoviedb_id) {
+                const mapped = getMappedTmdbIdAndType(fribbEntry.themoviedb_id);
+                if (mapped?.id) tmdbId = mapped.id;
+                if (!malId && fribbEntry.mal_id) malId = fribbEntry.mal_id;
+                if (!anilistId && fribbEntry.anilist_id) anilistId = fribbEntry.anilist_id;
+            }
+        }
+
+        if (!tmdbId && anilistId) {
+            const cached = await animeTmdbMappingGetByAniListId(anilistId);
+            if (cached?.tmdb_id) {
+                tmdbId = cached.tmdb_id;
+                if (!malId && cached.mal_id) malId = cached.mal_id;
+            }
+        }
+        if (!tmdbId && malId) {
+            const cached = await animeTmdbMappingGetByMalId(malId);
+            if (cached?.tmdb_id) {
+                tmdbId = cached.tmdb_id;
+                if (!anilistId && cached.anilist_id) anilistId = cached.anilist_id;
+            }
+        }
+
+        if (!tmdbId && (anilistId || malId)) {
+            const media = await aniListGetMediaBasic({ anilistId, malId });
+            if (media) {
+                if (!anilistId) anilistId = media.id;
+                if (!malId) malId = media.idMal || null;
+                const resolvedTmdbId = await getTmdbIdForAniList(
+                    media.id,
+                    media.title?.english || media.title?.romaji,
+                    media.idMal,
+                    media.title?.english,
+                    media.title?.romaji,
+                    media.title?.native
+                );
+                if (resolvedTmdbId) tmdbId = resolvedTmdbId;
+            }
+        }
+
+        if (!tmdbId) {
+            return res.status(404).json({ error: 'Could not resolve this ID to a TMDB entry' });
+        }
+
+        if (!malId || !anilistId) {
+            const ids = await resolveAnimeIds(tmdbId, 1);
+            if (ids) {
+                if (!malId) malId = ids.malId;
+                if (!anilistId) anilistId = ids.anilistId;
+            }
+        }
+
+        let title = null, poster = null, mediaType = 'tv';
+        for (const type of ['tv', 'movie']) {
+            try {
+                const r = await axios.get(`https://api.themoviedb.org/3/${type}/${tmdbId}`, {
+                    params: { api_key: TMDB_API_KEY, language: 'en-US' },
+                    timeout: 8000
+                });
+                if (r.data) {
+                    title = r.data.title || r.data.name || null;
+                    poster = r.data.poster_path || null;
+                    mediaType = type;
+                    break;
+                }
+            } catch (_) { /* try the other media type */ }
+        }
+
+        if (!title) {
+            return res.status(404).json({ error: 'TMDB id not found' });
+        }
+
+        res.json({ tmdbId, malId: malId || null, anilistId: anilistId || null, title, poster, mediaType });
+    } catch (err) {
+        console.error('[Footer Resolve Media] Error:', err.message || err);
+        res.status(500).json({ error: 'Resolution failed' });
+    }
+});
+
+// ── Footer forms (Report a Bug / Request Anime / Contact Us) ──────────────────
+// All three just insert into the same footer_submissions table (FooterForms.db);
+// form_type/category distinguish what they are for whoever reviews the inbox.
+function insertFooterSubmission(row, res) {
+    footerFormsDb.run(
+        `INSERT INTO footer_submissions
+            (form_type, category, tmdb_id, mal_id, anilist_id, media_title, message, name, email, subject, user_uid, username)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            row.form_type, row.category || null, row.tmdb_id || null, row.mal_id || null, row.anilist_id || null,
+            row.media_title || null, row.message || null, row.name || null, row.email || null, row.subject || null,
+            row.user_uid || null, row.username || null
+        ],
+        function (err) {
+            if (err) {
+                console.error(`[Footer Forms] Insert failed (${row.form_type}):`, err.message);
+                return res.status(500).json({ error: 'Could not submit form' });
+            }
+            res.json({ success: true, id: this.lastID });
+        }
+    );
+}
+
+app.post('/api/footer/report-bug', (req, res) => {
+    const { category, tmdbId, malId, anilistId, mediaTitle, message, userUID, username } = req.body || {};
+    if (category !== 'general' && category !== 'specific') {
+        return res.status(400).json({ error: 'category must be "general" or "specific"' });
+    }
+    const text = String(message || '').trim();
+    if (!text) return res.status(400).json({ error: 'message is required' });
+    if (category === 'specific' && !tmdbId && !malId && !anilistId && !mediaTitle) {
+        return res.status(400).json({ error: 'A media selection or ID is required for a specific-media report' });
+    }
+
+    insertFooterSubmission({
+        form_type: 'bug_report',
+        category,
+        tmdb_id: tmdbId, mal_id: malId, anilist_id: anilistId, media_title: mediaTitle,
+        message: text.slice(0, 4000),
+        user_uid: userUID, username
+    }, res);
+});
+
+app.post('/api/footer/request-anime', (req, res) => {
+    const { category, tmdbId, malId, anilistId, title, message, userUID, username } = req.body || {};
+    if (category !== 'no_source' && category !== 'not_found') {
+        return res.status(400).json({ error: 'category must be "no_source" or "not_found"' });
+    }
+    if (!tmdbId && !malId && !anilistId && !String(title || '').trim()) {
+        return res.status(400).json({ error: 'A title, or a TMDB/MAL/AniList ID, is required' });
+    }
+
+    insertFooterSubmission({
+        form_type: 'anime_request',
+        category,
+        tmdb_id: tmdbId, mal_id: malId, anilist_id: anilistId, media_title: title,
+        message: String(message || '').trim().slice(0, 4000),
+        user_uid: userUID, username
+    }, res);
+});
+
+app.post('/api/footer/contact', (req, res) => {
+    const { name, email, subject, message, userUID, username } = req.body || {};
+    const safeName = String(name || '').trim();
+    const safeEmail = String(email || '').trim();
+    const safeSubject = String(subject || '').trim();
+    const safeMessage = String(message || '').trim();
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!safeName || !safeEmail || !safeSubject || !safeMessage) {
+        return res.status(400).json({ error: 'Name, email, subject, and message are all required' });
+    }
+    if (!emailPattern.test(safeEmail)) {
+        return res.status(400).json({ error: 'Invalid email address' });
+    }
+
+    insertFooterSubmission({
+        form_type: 'contact',
+        name: safeName.slice(0, 200), email: safeEmail.slice(0, 200), subject: safeSubject.slice(0, 200),
+        message: safeMessage.slice(0, 4000),
+        user_uid: userUID, username
+    }, res);
+});
+
 // Self-sufficient comments endpoint - doesn't depend on the user ever hitting the Neko
 // stream pipeline (KAA is the default anime server, so that pipeline may never run).
 // Cache-aside: serves from anime_comments if fresh, otherwise resolves the Anikoto
@@ -9827,24 +10083,62 @@ async function resolveAnimegoAniboom(rawTitle, season) {
     const $search = cheerio.load(searchRes.data);
     const candidates = [];
     $search('a[href^="/anime/"]').each((i, el) => {
-        const href = $search(el).attr('href') || '';
-        const title = $search(el).attr('title') || $search(el).text().trim();
+        const $el = $search(el);
+        const href = $el.attr('href') || '';
+        const title = $el.attr('title') || $el.text().trim();
         const slug = href.replace(/^\/anime\//, '');
         // Real anime detail pages are "{slug}-{numericId}" with no further slashes;
         // category/nav links like "/anime/status/ongoing" or "/anime/season/2026" aren't.
         if (!title || !/^[a-z0-9-]+-\d+$/i.test(slug)) return;
-        if (!candidates.some(c => c.slug === slug)) candidates.push({ slug, title });
+        if (candidates.some(c => c.slug === slug)) return;
+
+        // The card's English title (when animego has one) is NOT inside this <a> at
+        // all -- it's a sibling line above it: .ani-grid__item-body > div.fw-lighter.
+        // Without this, matching a query like "Hellsing" against the Russian-only
+        // "Хеллсинг: Война с нечистью" scores ~0% and gets wrongly rejected as "not found".
+        const titleEnglish = $el.closest('.ani-grid__item-body')
+            .find('> div.fw-lighter').first().text().trim() || null;
+
+        candidates.push({ slug, title, titleEnglish });
     });
     if (candidates.length === 0) throw new Error(`No animego.me results for: "${rawTitle}"`);
 
+    // animego's own search ranking isn't trustworthy for cross-language queries --
+    // it happily returns loosely-related results (a "Reincarnation" title for a
+    // "Jobless Reincarnation" query) with no signal that it's NOT actually a match.
+    // Score every candidate against the requested title and refuse to proceed if
+    // even the best one isn't a plausible match, rather than silently playing
+    // whatever animego ranked #1.
+    // Empirically calibrated: a genuine match (query "hellsing" vs its actual English
+    // title "Hellsing") scores 1.0, while an unrelated title sharing one common word
+    // (query "Jobless Reincarnation" vs "Dies Irae: To the Ring Reincarnation") still
+    // scores 0.53 from bigram overlap on "reincarnation" alone -- 0.4 let that false
+    // positive through, 0.6 cleanly separates the two.
+    const NEWSTREAM_MIN_TITLE_SIMILARITY = 0.6;
+    const queryLower = rawTitle.toLowerCase();
+    const scored = candidates.map(c => {
+        const ruScore = stringSimilarity.compareTwoStrings(queryLower, c.title.toLowerCase());
+        const enScore = c.titleEnglish ? stringSimilarity.compareTwoStrings(queryLower, c.titleEnglish.toLowerCase()) : 0;
+        return { ...c, similarity: Math.max(ruScore, enScore) };
+    });
+    scored.sort((a, b) => b.similarity - a.similarity);
+    console.log(`[NewStream] title match scores for "${rawTitle}":`, scored.map(c => `${c.titleEnglish ? `${c.titleEnglish} / ` : ''}${c.title} (${c.similarity.toFixed(2)})`).join(', '));
+
+    if (scored[0].similarity < NEWSTREAM_MIN_TITLE_SIMILARITY) {
+        const err = new Error(`Not available on RU - MV: no close match for "${rawTitle}" (closest: "${scored[0].title}", ${Math.round(scored[0].similarity * 100)}% match)`);
+        err.status = 404;
+        throw err;
+    }
+
     // Sequel seasons are usually distinct catalog entries (e.g. "... 2", "Part 2").
-    // Default to the first (best-ranked) result; for season > 1 prefer a candidate
-    // whose title looks like that season, falling back to positional index, then #1.
-    let chosen = candidates[0];
+    // Default to the best title match; for season > 1 prefer a well-matching
+    // candidate whose title also looks like that season.
+    let chosen = scored[0];
     if (season > 1) {
-        chosen = candidates.find(c => new RegExp(`(^|\\s)(${season}|part\\s*${season}|${season}\\s*сезон)(\\s|$)`, 'i').test(c.title))
-            || candidates[season - 1]
-            || candidates[0];
+        const wellMatched = scored.filter(c => c.similarity >= NEWSTREAM_MIN_TITLE_SIMILARITY);
+        chosen = wellMatched.find(c => new RegExp(`(^|\\s)(${season}|part\\s*${season}|${season}\\s*сезон)(\\s|$)`, 'i').test(c.title))
+            || wellMatched[season - 1]
+            || scored[0];
     }
 
     // The anime detail page itself only server-renders a shell -- the actual episode

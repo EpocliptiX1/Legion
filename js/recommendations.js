@@ -159,7 +159,7 @@ function trackMovieClick(movieId, genre, year, rating, title, itemType) {
 // Track movie click on server (global click count + personal activity history)
 async function trackMovieClickOnServer(movieId, title, genre, rating, itemType, continueFrom = null, finished = null) {
     try {
-        // Global click counter (for "Popular on Legion Space" sort)
+        // Global click counter (for "Popular on AniKino" sort)
         await fetch(`${API_BASE_URL}/movie/${movieId}/click`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' }

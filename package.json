@@ -1,14 +1,8 @@
 {
-  "scripts": {
-    "forum:sync-posters": "node scripts/sync-forum-posters.js"
-  },
-  "devDependencies": {
-    "javascript-obfuscator": "^5.4.2"
-  },
   "dependencies": {
     "@ffmpeg.wasm/core-mt": "^0.13.2",
     "@ffmpeg.wasm/main": "^0.13.1",
-    "axios": "^1.16.0",
+    "axios": "^1.19.0",
     "cheerio": "^1.2.0",
     "plyr": "^3.8.4"
   }

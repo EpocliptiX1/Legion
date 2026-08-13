@@ -23,7 +23,7 @@ const translations = {
         hero_play: "Play",
         hero_more_info: "More Info",
         hero_loading: "Loading...",
-        hero_connecting: "Connecting to Legion Space database...",
+        hero_connecting: "Connecting to AniKino database...",
         hero_tooltip: "Left click to interact",
         
         // Sections
@@ -50,8 +50,8 @@ const translations = {
         movie_description: "Description...",
         
         // About Section
-        about_title: "About Legion Space",
-        about_text: "Founded in the heart of Astana, Legion Space Cinema is a recently founded startup oriented towards cinematography. Our goal is to make cinema accessible to everyone and to provide safe, affordable and secure streaming/research experiences. We currently host a library of over 10,000 movies, ranging from the era of black and white to modern works of art. Want to witness the magic of accessible and modern experience? Legion Space is your go-to destination for all things film.",
+        about_title: "About AniKino",
+        about_text: "Founded in the heart of Astana, AniKino is a recently founded startup oriented towards cinematography. Our goal is to make cinema accessible to everyone and to provide safe, affordable and secure streaming/research experiences. We currently host a library of over 10,000 movies, ranging from the era of black and white to modern works of art. Want to witness the magic of accessible and modern experience? AniKino is your go-to destination for all things film.",
         about_available: "Available On",
         device_phone: "Phone",
         device_tablet: "Tablet",
@@ -75,13 +75,13 @@ const translations = {
         footer_subscription: "Subscription",
         footer_gift: "Redeem Gift",
         footer_signout: "Sign Out",
-        footer_rights: "© 2026 Legion Space Cinema. All rights reserved.",
+        footer_rights: "© 2026 AniKino. All rights reserved.",
         footer_privacy: "Privacy Policy",
         footer_terms: "Terms of Use",
         footer_cookies: "Cookie Preferences",
         
         // Signup Modal
-        signup_welcome: "Welcome to Legion Space",
+        signup_welcome: "Welcome to AniKino",
         signup_subtitle: "Create your free account to start watching.",
         signup_username: "Username",
         signup_email: "Email Address",
@@ -102,7 +102,7 @@ const translations = {
         settings_profile: "Profile Picture",
         settings_upload: "Upload New Image (1MB)",
         settings_beta: "BETA v0.9",
-        settings_beta_text: "You are currently using the Cinematography Preview build of Legion Space.",
+        settings_beta_text: "You are currently using the Cinematography Preview build of AniKino.",
         settings_beta_4k: "Experimental 4K Metadata mapping enabled.",
         settings_beta_local: "Localized database: Astana/Kazakhstan Region.",
         settings_beta_readonly: "Some settings are read-only during the hackathon phase.",
@@ -120,7 +120,7 @@ const translations = {
         settings_language: "Language / Тіл / Язык",
         
         // Redirect Modal
-        redirect_title: "Leaving Legion Space?",
+        redirect_title: "Leaving AniKino?",
         redirect_text: "You are about to be redirected to the official IMDb page for more details on this title.",
         redirect_continue: "Continue to IMDb",
         redirect_cancel: "Cancel",
@@ -191,7 +191,7 @@ const translations = {
         hero_play: "Смотреть",
         hero_more_info: "Подробнее",
         hero_loading: "Загрузка...",
-        hero_connecting: "Подключение к базе данных Legion Space...",
+        hero_connecting: "Подключение к базе данных AniKino...",
         hero_tooltip: "Нажмите для взаимодействия",
         
         // Sections
@@ -218,8 +218,8 @@ const translations = {
         movie_description: "Описание...",
         
         // About Section
-        about_title: "О Legion Space",
-        about_text: "Основанный в самом сердце Астаны, Legion Space Cinema — это недавно созданный стартап, ориентированный на кинематографию. Наша цель — сделать кино доступным для всех и обеспечить безопасный, доступный и надёжный опыт потоковой передачи и исследования. В настоящее время мы располагаем библиотекой из более чем 10 000 фильмов, от эпохи чёрно-белого кино до современных произведений искусства. Хотите стать свидетелем магии доступного и современного опыта? Legion Space — ваше место для всего, что связано с кино.",
+        about_title: "О AniKino",
+        about_text: "Основанный в самом сердце Астаны, AniKino — это недавно созданный стартап, ориентированный на кинематографию. Наша цель — сделать кино доступным для всех и обеспечить безопасный, доступный и надёжный опыт потоковой передачи и исследования. В настоящее время мы располагаем библиотекой из более чем 10 000 фильмов, от эпохи чёрно-белого кино до современных произведений искусства. Хотите стать свидетелем магии доступного и современного опыта? AniKino — ваше место для всего, что связано с кино.",
         about_available: "Доступно на",
         device_phone: "Телефон",
         device_tablet: "Планшет",
@@ -243,13 +243,13 @@ const translations = {
         footer_subscription: "Подписка",
         footer_gift: "Использовать подарок",
         footer_signout: "Выйти",
-        footer_rights: "© 2026 Legion Space Cinema. Все права защищены.",
+        footer_rights: "© 2026 AniKino. Все права защищены.",
         footer_privacy: "Политика конфиденциальности",
         footer_terms: "Условия использования",
         footer_cookies: "Настройки файлов cookie",
         
         // Signup Modal
-        signup_welcome: "Добро пожаловать в Legion Space",
+        signup_welcome: "Добро пожаловать в AniKino",
         signup_subtitle: "Создайте бесплатный аккаунт, чтобы начать просмотр.",
         signup_username: "Имя пользователя",
         signup_email: "Адрес электронной почты",
@@ -270,7 +270,7 @@ const translations = {
         settings_profile: "Изображение профиля",
         settings_upload: "Загрузить новое изображение (1МБ)",
         settings_beta: "БЕТА v0.9",
-        settings_beta_text: "Вы используете превью-версию Cinematography от Legion Space.",
+        settings_beta_text: "Вы используете превью-версию Cinematography от AniKino.",
         settings_beta_4k: "Экспериментальное сопоставление метаданных 4K включено.",
         settings_beta_local: "Локализованная база данных: регион Астана/Казахстан.",
         settings_beta_readonly: "Некоторые настройки доступны только для чтения во время фазы хакатона.",
@@ -288,7 +288,7 @@ const translations = {
         settings_language: "Language / Тіл / Язык",
         
         // Redirect Modal
-        redirect_title: "Покидаете Legion Space?",
+        redirect_title: "Покидаете AniKino?",
         redirect_text: "Вы будете перенаправлены на официальную страницу IMDb для получения дополнительной информации об этом фильме.",
         redirect_continue: "Перейти на IMDb",
         redirect_cancel: "Отмена",
@@ -359,7 +359,7 @@ const translations = {
         hero_play: "Қарау",
         hero_more_info: "Толығырақ",
         hero_loading: "Жүктелуде...",
-        hero_connecting: "Legion Space дерекқорына қосылу...",
+        hero_connecting: "AniKino дерекқорына қосылу...",
         hero_tooltip: "Өзара әрекет үшін басыңыз",
         
         // Sections
@@ -386,8 +386,8 @@ const translations = {
         movie_description: "Сипаттама...",
         
         // About Section
-        about_title: "Legion Space туралы",
-        about_text: "Астананың жүрегінде құрылған Legion Space Cinema — кинематографияға бағытталған жақында құрылған стартап. Біздің мақсатымыз кинематографты барлығына қолжетімді ету және қауіпсіз, қолжетімді және сенімді трансляция/зерттеу тәжірибесін қамтамасыз ету. Біз қазір 10,000-нан астам фильмді, ақ-қара дәуірінен бастап қазіргі заманғы өнер туындыларына дейін ұсынамыз. Қолжетімді және заманауи тәжірибенің сиқырына куә болғыңыз келе ме? Legion Space — сіздің кино туралы барлық нәрсеге арналған орныңыз.",
+        about_title: "AniKino туралы",
+        about_text: "Астананың жүрегінде құрылған AniKino — кинематографияға бағытталған жақында құрылған стартап. Біздің мақсатымыз кинематографты барлығына қолжетімді ету және қауіпсіз, қолжетімді және сенімді трансляция/зерттеу тәжірибесін қамтамасыз ету. Біз қазір 10,000-нан астам фильмді, ақ-қара дәуірінен бастап қазіргі заманғы өнер туындыларына дейін ұсынамыз. Қолжетімді және заманауи тәжірибенің сиқырына куә болғыңыз келе ме? AniKino — сіздің кино туралы барлық нәрсеге арналған орныңыз.",
         about_available: "Қолжетімді",
         device_phone: "Телефон",
         device_tablet: "Планшет",
@@ -411,13 +411,13 @@ const translations = {
         footer_subscription: "Жазылым",
         footer_gift: "Сыйлықты пайдалану",
         footer_signout: "Шығу",
-        footer_rights: "© 2026 Legion Space Cinema. Барлық құқықтар қорғалған.",
+        footer_rights: "© 2026 AniKino. Барлық құқықтар қорғалған.",
         footer_privacy: "Құпиялылық саясаты",
         footer_terms: "Пайдалану шарттары",
         footer_cookies: "Cookie параметрлері",
         
         // Signup Modal
-        signup_welcome: "Legion Space-ке қош келдіңіз",
+        signup_welcome: "AniKino-ке қош келдіңіз",
         signup_subtitle: "Қарауды бастау үшін тегін тіркелгі жасаңыз.",
         signup_username: "Пайдаланушы аты",
         signup_email: "Электрондық пошта мекенжайы",
@@ -438,7 +438,7 @@ const translations = {
         settings_profile: "Профиль суреті",
         settings_upload: "Жаңа сурет жүктеу (1МБ)",
         settings_beta: "БЕТА v0.9",
-        settings_beta_text: "Сіз Legion Space Cinematography Preview нұсқасын пайдаланып жатырсыз.",
+        settings_beta_text: "Сіз AniKinotography Preview нұсқасын пайдаланып жатырсыз.",
         settings_beta_4k: "Эксперименттік 4K метадеректерді сәйкестендіру қосылған.",
         settings_beta_local: "Жергілікті дерекқор: Астана/Қазақстан аймағы.",
         settings_beta_readonly: "Хакатон кезеңінде кейбір параметрлер тек оқуға арналған.",
@@ -456,7 +456,7 @@ const translations = {
         settings_language: "Language / Тіл / Язык",
         
         // Redirect Modal
-        redirect_title: "Legion Space-тен шығасыз ба?",
+        redirect_title: "AniKino-тен шығасыз ба?",
         redirect_text: "Сіз осы фильм туралы қосымша ақпарат алу үшін IMDb ресми бетіне бағытталасыз.",
         redirect_continue: "IMDb-ге өту",
         redirect_cancel: "Болдырмау",

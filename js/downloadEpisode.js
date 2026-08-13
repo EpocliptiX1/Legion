@@ -678,14 +678,19 @@ async function downloadKAAEpisode() {
     showDownloadModal();
     try {
         const subtitleCount = Array.isArray(video?.subtitles) ? video.subtitles.length : 0;
-        console.log('[Download] subtitleCount=', subtitleCount, 'video=', video);
+        console.log('[Download][1/8] start', { provider: video?.provider, playlistUrl: video?.playlist, subtitleCount, video });
 
-        const playlist = await fetch(video.playlist).then(r => r.text());
-        console.log('playlists u asked for:\n', playlist);
+        const masterRes = await fetch(video.playlist);
+        console.log('[Download][2/8] master playlist fetch', { status: masterRes.status, ok: masterRes.ok, url: video.playlist });
+        if (!masterRes.ok) throw new Error(`Master playlist fetch failed (HTTP ${masterRes.status}) for ${video.playlist}`);
+        const playlist = await masterRes.text();
+        console.log('[Download] master playlist body:\n', playlist);
         const master = parseMasterPlaylist(playlist);
+        console.log('[Download][3/8] parsed master', { videoVariants: master.videos.length, audioTracks: master.audios, videos: master.videos });
 
         const selectedVideo = master.videos[0];
-        console.log("currentAudioType =", window.currentAudioType);
+        if (!selectedVideo) throw new Error('Master playlist had no #EXT-X-STREAM-INF video variants');
+        console.log('[Download] selectedVideo=', selectedVideo, "currentAudioType =", window.currentAudioType);
 
         let selectedAudio = window.currentAudioType === "dub"
             ? master.audios.find(a => {
@@ -720,14 +725,27 @@ async function downloadKAAEpisode() {
         }
 
         if (!selectedAudio) {
+            console.error('[Download] no audio track matched', { audioTracks: master.audios, currentAudioType: window.currentAudioType });
             throw new Error("No matching audio playlist found.");
         }
+        console.log('[Download] selectedAudio=', selectedAudio);
 
-        const videoPlaylist = await fetch(selectedVideo.url).then(r => r.text());
-        const videoSegments = parseMediaPlaylist(videoPlaylist);
+        const videoPlaylistRes = await fetch(selectedVideo.url);
+        console.log('[Download][4/8] video media playlist fetch', { status: videoPlaylistRes.status, ok: videoPlaylistRes.ok, url: selectedVideo.url });
+        if (!videoPlaylistRes.ok) throw new Error(`Video media playlist fetch failed (HTTP ${videoPlaylistRes.status})`);
+        const videoPlaylist = await videoPlaylistRes.text();
+        const { segments: videoSegments, initSegmentUrl: videoInitUrl } = parseMediaPlaylist(videoPlaylist);
+        console.log('[Download] video segments parsed', { count: videoSegments.length, initSegmentUrl: videoInitUrl, firstSegment: videoSegments[0] });
 
-        const audioPlaylist = await fetch(selectedAudio.url).then(r => r.text());
-        const audioSegments = parseMediaPlaylist(audioPlaylist);
+        const audioPlaylistRes = await fetch(selectedAudio.url);
+        console.log('[Download][5/8] audio media playlist fetch', { status: audioPlaylistRes.status, ok: audioPlaylistRes.ok, url: selectedAudio.url });
+        if (!audioPlaylistRes.ok) throw new Error(`Audio media playlist fetch failed (HTTP ${audioPlaylistRes.status})`);
+        const audioPlaylist = await audioPlaylistRes.text();
+        const { segments: audioSegments, initSegmentUrl: audioInitUrl } = parseMediaPlaylist(audioPlaylist);
+        console.log('[Download] audio segments parsed', { count: audioSegments.length, initSegmentUrl: audioInitUrl, firstSegment: audioSegments[0] });
+
+        const isFmp4 = Boolean(videoInitUrl || audioInitUrl);
+        console.log('[Download] container detection', { isFmp4, videoInitUrl, audioInitUrl });
 
         const subtitleTracks = Array.isArray(video.subtitles)
             ? video.subtitles.filter(track => track?.url)
@@ -771,6 +789,7 @@ async function downloadKAAEpisode() {
         updateDownloadProgress();
 
         // 2. Download files with tracking callback
+        console.log('[Download][6/8] downloading segments', { videoSegmentCount: videoSegments.length, audioSegmentCount: audioSegments.length });
         const downloadedVideo = await downloadSegments(
             videoSegments,
             () => {
@@ -779,6 +798,7 @@ async function downloadKAAEpisode() {
                 setTaskCombinedProgress(percent);
             }
         );
+        console.log('[Download] video segments downloaded', { count: downloadedVideo.length, totalBytes: downloadedVideo.reduce((s, b) => s + (b?.byteLength || 0), 0) });
 
         const downloadedAudio = await downloadSegments(
             audioSegments,
@@ -788,12 +808,37 @@ async function downloadKAAEpisode() {
                 setTaskCombinedProgress(percent);
             }
         );
+        console.log('[Download] audio segments downloaded', { count: downloadedAudio.length, totalBytes: downloadedAudio.reduce((s, b) => s + (b?.byteLength || 0), 0) });
+
+        // fMP4 media segments are meaningless without the init (moov) segment they were
+        // built against -- prepend it to the byte stream before concatenation so the
+        // merged file is actually a valid, standalone fragmented MP4 ffmpeg can read.
+        if (videoInitUrl) {
+            console.log('[Download] fetching video init segment', videoInitUrl);
+            const initRes = await fetch(videoInitUrl);
+            console.log('[Download] video init segment fetch', { status: initRes.status, ok: initRes.ok });
+            if (!initRes.ok) throw new Error(`Video init segment fetch failed (HTTP ${initRes.status}) for ${videoInitUrl}`);
+            const initBytes = new Uint8Array(await initRes.arrayBuffer());
+            console.log('[Download] video init segment bytes=', initBytes.byteLength);
+            downloadedVideo.unshift(initBytes);
+        }
+        if (audioInitUrl) {
+            console.log('[Download] fetching audio init segment', audioInitUrl);
+            const initRes = await fetch(audioInitUrl);
+            console.log('[Download] audio init segment fetch', { status: initRes.status, ok: initRes.ok });
+            if (!initRes.ok) throw new Error(`Audio init segment fetch failed (HTTP ${initRes.status}) for ${audioInitUrl}`);
+            const initBytes = new Uint8Array(await initRes.arrayBuffer());
+            console.log('[Download] audio init segment bytes=', initBytes.byteLength);
+            downloadedAudio.unshift(initBytes);
+        }
 
         const mergedVideo = mergeSegments(downloadedVideo);
         const mergedAudio = mergeSegments(downloadedAudio);
+        console.log('[Download][7/8] merged buffers', { mergedVideoBytes: mergedVideo.byteLength, mergedAudioBytes: mergedAudio.byteLength, isFmp4 });
 
         // 3. Init FFmpeg
         setTaskStatus("Loading FFmpeg...");
+        console.log('[Download] loading ffmpeg.wasm...');
         const ffmpeg = new FFmpeg();
         ffmpeg.on?.('log', ({ message }) => {
             if (!message) return;
@@ -812,9 +857,18 @@ async function downloadKAAEpisode() {
             coreURL: "/node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.js",
             wasmURL: "/node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.wasm"
         });
+        console.log('[Download] ffmpeg.wasm loaded OK');
 
-        await ffmpeg.writeFile("video.ts", mergedVideo);
-        await ffmpeg.writeFile("audio.ts", mergedAudio);
+        // ffmpeg.wasm has no container to sniff from a bare filename the way a real
+        // CLI build with libavformat probing does -- it goes by extension, so an fMP4
+        // byte stream written as "video.ts" gets demuxed as MPEG-TS and fails/produces
+        // garbage. KAA's plain-TS segments are unaffected (isFmp4 stays false for them).
+        const videoInputName = isFmp4 ? "video.mp4" : "video.ts";
+        const audioInputName = isFmp4 ? "audio.mp4" : "audio.ts";
+        console.log('[Download] writing ffmpeg FS inputs', { videoInputName, audioInputName, videoBytes: mergedVideo.byteLength, audioBytes: mergedAudio.byteLength });
+        await ffmpeg.writeFile(videoInputName, mergedVideo);
+        await ffmpeg.writeFile(audioInputName, mergedAudio);
+        console.log('[Download] ffmpeg FS inputs written OK');
         if (subtitleText && subtitleFilename) {
             const subtitleDownloadName = `${video.title} - S${video.season}E${video.episode}.txt`;
             triggerBrowserDownload(subtitleDownloadName, subtitleText, 'text/plain;charset=utf-8');
@@ -842,7 +896,7 @@ async function downloadKAAEpisode() {
         setTaskSubtitleProgress('Subtitle Burn: queued', 0);
 
         const outputFilename = "output.mp4";
-        const muxArgs = ["-i", "video.ts", "-i", "audio.ts"];
+        const muxArgs = ["-i", videoInputName, "-i", audioInputName];
 
         if (hasSubtitle) {
             muxArgs.push("-c:v", "copy");
@@ -862,14 +916,18 @@ async function downloadKAAEpisode() {
 
         let finalOutput = outputFilename;
         try {
+            console.log('[Download][8/8] running ffmpeg mux', muxArgs);
             await ffmpeg.exec(muxArgs);
             console.log('[Download] ffmpeg mux complete for', finalOutput);
         } catch (muxError) {
+            console.error('[Download] primary mux failed', { muxArgs, name: muxError?.name, message: muxError?.message, stack: muxError?.stack });
             if (hasSubtitle) {
                 console.warn('Subtitle burn-in failed, falling back to audio/video-only MP4:', muxError);
                 setDownloadStatus("Subtitle burn-in failed. Downloading video/audio only...");
                 finalOutput = "output.mp4";
-                await ffmpeg.exec(["-i", "video.ts", "-i", "audio.ts", "-c", "copy", finalOutput]);
+                const fallbackArgs = ["-i", videoInputName, "-i", audioInputName, "-c", "copy", finalOutput];
+                console.log('[Download] running ffmpeg fallback mux', fallbackArgs);
+                await ffmpeg.exec(fallbackArgs);
                 console.log('[Download] ffmpeg fallback mux complete for', finalOutput);
             } else {
                 throw muxError;
@@ -883,6 +941,9 @@ async function downloadKAAEpisode() {
             finalOutput,
             bytes: data?.byteLength || data?.length || 0
         });
+        if (!data || (data.byteLength || data.length || 0) === 0) {
+            console.error('[Download] final output file is EMPTY -- mux silently produced nothing readable', { finalOutput, muxArgs, isFmp4, videoInputName, audioInputName });
+        }
         let blob = new Blob([data.buffer], { type: "video/mp4" });
         let downloadExt = "mp4";
         if (hasSubtitle) {
@@ -926,9 +987,20 @@ async function downloadKAAEpisode() {
         }, 1000);
 
     } catch (err) {
-        // 7. Error Handling
-        console.error(err);
-        setTaskStatus("Download failed.");
+        // 7. Error Handling -- log everything we have so a failed run is diagnosable
+        // from console output alone instead of needing to reproduce it live.
+        console.error('[Download] FAILED', {
+            name: err?.name,
+            message: err?.message,
+            stack: err?.stack,
+            provider: video?.provider,
+            playlistUrl: video?.playlist,
+            audioType: window.currentAudioType
+        });
+        setTaskStatus(`Download failed: ${err?.message || 'unknown error'}`);
+        if (typeof window.showLimitToast === 'function') {
+            window.showLimitToast(`Download failed: ${err?.message || 'unknown error'}`);
+        }
         downloadInProgress = false;
         task.finish(false);
         setTimeout(hideDownloadModal, 2000);
@@ -971,14 +1043,25 @@ function parseMasterPlaylist(text) {
     return { videos, audios };
 }
 
+// fMP4/CMAF HLS streams (e.g. aniboom) split a "moov" init segment out via
+// #EXT-X-MAP, which every media segment after it depends on to be a valid
+// standalone file -- KAA's plain-MPEG-TS segments never have this tag, so
+// initSegmentUrl stays null and nothing downstream changes for that path.
 function parseMediaPlaylist(text) {
     const segments = [];
+    let initSegmentUrl = null;
     for (const line of text.split("\n")) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
+        if (!trimmed) continue;
+        if (trimmed.startsWith('#EXT-X-MAP:')) {
+            const m = trimmed.match(/URI="([^"]+)"/);
+            if (m) initSegmentUrl = m[1];
+            continue;
+        }
+        if (trimmed.startsWith("#")) continue;
         segments.push(trimmed);
     }
-    return segments;
+    return { segments, initSegmentUrl };
 }
 
 // Added progressCallback to signature

@@ -789,7 +789,7 @@
 
     // ── Main anime mode loader ────────────────────────────────────
     async function loadAnimeMode() {
-        document.title = 'Legion Space | Anime Hub';
+        document.title = 'AniKino | Anime Hub';
 
         // Hero tag
         const heroTag = document.getElementById('heroTag');
@@ -942,7 +942,7 @@
 
     // ── Browse-page anime loader (uses existing indexBrowse row IDs) ──────
     async function loadAnimeBrowse() {
-        document.title = 'Legion Space | Anime Browse';
+        document.title = 'AniKino | Anime Browse';
 
         const heroTag = document.getElementById('heroTag');
         if (heroTag) heroTag.textContent = '⛩ Anime Picks';

@@ -726,9 +726,9 @@
         const list = document.getElementById('announcementsList');
         if (!list) return;
         const ANNOUNCEMENTS = [
-            { date: 'May 3, 2026', title: 'Legion Space v2 Home Page', body: 'Rebuilt home with trending panels, anime schedule, and this dashboard.' },
-            { date: 'Apr 28, 2026', title: 'TMDB Global Catalog live', body: 'Millions of titles now browsable with full metadata from TMDB.' },
-            { date: 'Apr 20, 2026', title: 'Forum & Reviews', body: 'Community threads, upvotes, and per-movie ratings are fully live.' }
+            { date: 'August 12, 2026', title: 'AniKino v2', body: 'Frontend revamp, specifically older pages' },
+            { date: 'July 28, 2026', title: 'Transitioning', body: 'Jikan proves to be unreliable, implemented constant cache and a hybrid anilist-tmdb core' },
+            { date: 'June 20, 2026', title: 'Anime Enhancement', body: 'Finaly implementing extra sources for info/storage (jikan)' }
         ];
         list.innerHTML = ANNOUNCEMENTS.map(a => `
             <div class="ann-item">
