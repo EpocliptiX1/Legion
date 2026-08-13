@@ -267,7 +267,13 @@ function createDiscoveryCardHTML(record, index, kind) {
         <div class="disc-card personal-disc-card" data-item-id="${safeId}" onclick="window.location.href='movieInfo.html?id=${navId}&type=${navType}'">
             <img class="disc-card-img" src="${poster}" alt="${safeTitleAttr}" loading="lazy" onerror="this.src='/img/LOGO_Short.png'">
             <span class="disc-card-num">${number}</span>
-            <button class="disc-card-remove-btn hover-delete-btn" title="${removeTitle}" onclick="event.stopPropagation(); ${removeFn}('${safeId}', event)">🗑</button>
+            <button class="disc-card-remove-btn hover-delete-btn" title="${removeTitle}" onclick="event.stopPropagation(); ${removeFn}('${safeId}', event)"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
+  <g transform="translate(3.6 3.6) scale(0.7)">
+    <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+  </g>
+</svg>
+
+</button>
             <div class="disc-card-info">
                 <div class="disc-card-title">${safeTitle}</div>
                 <div class="disc-card-meta">${metaText}</div>
@@ -542,71 +548,87 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadRecentPosts(userUID);
 });
 
-// Load recent forum posts for the user
-async function loadRecentPosts(userUID) {
-    const container = document.getElementById('recentPostsContainer');
-    if (!container || userUID === 0) return;
+// Your Comments (anime/movie switch) -- was "Recent Posts", pulling from the
+// forum via an N+1 fetch (every forum movie, then every one of ITS threads,
+// filtered client-side by userUID). Forum threads are a separate, unrelated
+// system from anime_comments/movie_comments anyway (see indexMain.html's
+// "Your Comments" widget, same idea, ported here). One request per mode via
+// the same /api/anime-comments/by-user and /movie-comments/by-user used there.
+let plCommentsMode = null;
 
-    const API_BASE = window.location.origin.includes('localhost')
-        ? ''
-        : window.location.origin;
+// A raw gif link is one unbroken "word" with no spaces, so it stretches the
+// whole comment block sideways instead of wrapping -- render it as an actual
+// thumbnail (and let any other text wrap normally) instead of raw text.
+const GIF_URL_RE = /(https?:\/\/\S+\.gif(?:\?\S*)?)/i;
+function renderCommentBody(text) {
+    const raw = String(text || '');
+    const textHtml = `<p style="margin: 0 0 6px 0; font-size: 0.9rem; color: var(--text-primary); overflow-wrap: anywhere; word-break: break-word; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">${escapeHtml(raw)}</p>`;
+    const match = raw.match(GIF_URL_RE);
+    if (!match) return textHtml;
+    const gifImg = `<img src="${escapeHtml(match[1])}" alt="gif" loading="lazy" style="max-width: 100%; max-height: 160px; border-radius: 8px; display: block; margin-top: 4px;">`;
+    return raw.trim() === match[1] ? gifImg : textHtml + gifImg;
+}
+
+async function loadRecentPosts(userUID, mode) {
+    const container = document.getElementById('recentPostsContainer');
+    if (!container || !userUID) return;
+    if (mode) plCommentsMode = mode;
+    if (!plCommentsMode) plCommentsMode = localStorage.getItem('animeMode') === 'true' ? 'anime' : 'movie';
+
+    document.querySelectorAll('#plCommentsModeSwitch .cp-mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.cpMode === plCommentsMode);
+    });
+
+    container.innerHTML = '<p style="color: var(--text-muted); padding: 20px; text-align: center;">Loading...</p>';
 
     try {
-        const response = await fetch(`${API_BASE}/forum/movies`);
-        const forumMovies = await response.json();
+        const endpoint = plCommentsMode === 'anime' ? '/api/anime-comments/by-user' : '/movie-comments/by-user';
+        const res = await fetch(`${endpoint}?userUID=${encodeURIComponent(userUID)}&limit=5`);
+        if (!res.ok) throw new Error(res.status);
+        const comments = await res.json();
 
-        const threadPromises = forumMovies.map(async (movie) => {
-            try {
-                const threadsRes = await fetch(`${API_BASE}/forum/threads?movieId=${movie.movieId}`);
-                const threads = await threadsRes.json();
-
-                return threads
-                    .filter(t => parseInt(t.userUID, 10) === userUID)
-                    .map(t => ({ ...t, movieTitle: movie.movieTitle, movieId: movie.movieId }));
-            } catch (err) {
-                console.error(`Error fetching threads for movie ${movie.movieId}:`, err);
-                return [];
-            }
-        });
-
-        const threadArrays = await Promise.all(threadPromises);
-        const userThreads = threadArrays.flat();
-
-        userThreads.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        const recentThreads = userThreads.slice(0, 5);
-
-        if (recentThreads.length === 0) {
-            container.innerHTML = '<p style="color: var(--text-muted); padding: 20px; text-align: center;">No forum posts yet. Share your thoughts on the forum!</p>';
+        if (!comments.length) {
+            const hint = plCommentsMode === 'anime' ? 'No anime comments yet.' : 'No movie comments yet.';
+            container.innerHTML = `<p style="color: var(--text-muted); padding: 20px; text-align: center;">${hint}</p>`;
             return;
         }
 
-        container.innerHTML = recentThreads.map(thread => {
-            const timeAgo = formatTimeAgo(thread.createdAt);
+        container.innerHTML = comments.map(c => {
+            const timeAgo = formatTimeAgo((c.created_at || 0) * 1000);
+            const onLabel = plCommentsMode === 'anime'
+                ? `Ep ${c.episode_number}${c.animeTitle ? ` · ${escapeHtml(c.animeTitle)}` : ''}`
+                : escapeHtml(c.movieTitle || 'Untitled');
+            const href = plCommentsMode === 'anime'
+                ? (c.tmdbId ? `/html/movieInfo.html?id=${c.tmdbId}&type=anime` : '#')
+                : `/html/movieInfo.html?id=${encodeURIComponent(c.movie_id)}&type=movie`;
             return `
-                <div class="post-item" onclick="window.location.href='/html/forum.html'" style="padding: 12px; background: var(--bg-tertiary); border-radius: 8px; cursor: pointer; transition: all 0.3s ease; border: 1px solid var(--border-color);">
-                    <div style="display: flex; align-items: start; gap: 10px; margin-bottom: 8px;">
+                <div class="post-item" onclick="window.location.href='${href}'" style="padding: 12px; background: var(--bg-tertiary); border-radius: 8px; cursor: pointer; transition: all 0.3s ease; border: 1px solid var(--border-color);">
+                    <div style="display: flex; align-items: start; gap: 10px;">
                         <span style="font-size: 1.2rem;">💬</span>
-                        <div style="flex: 1;">
-                            <h4 style="margin: 0 0 4px 0; font-size: 0.95rem; color: var(--text-primary); font-weight: 600;">${escapeHtml(thread.title)}</h4>
-                            <p style="margin: 0 0 6px 0; font-size: 0.85rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">
-                                ${escapeHtml(thread.description || '').substring(0, 100)}${thread.description && thread.description.length > 100 ? '...' : ''}
-                            </p>
+                        <div style="flex: 1; min-width: 0;">
+                            ${renderCommentBody(c.text)}
                             <div style="display: flex; gap: 12px; font-size: 0.8rem; color: var(--text-muted);">
-                                <span>🎬 ${escapeHtml(thread.movieTitle)}</span>
-                                <span>📅 ${timeAgo}</span>
-                                <span>💬 ${thread.commentCount || 0} comments</span>
+                                <span>on “${onLabel}”</span>
+                                <span>▲ ${c.upvotes || 0}</span>
+                                ${timeAgo ? `<span>📅 ${timeAgo}</span>` : ''}
                             </div>
                         </div>
                     </div>
                 </div>
             `;
         }).join('');
-
     } catch (err) {
-        console.error('Error loading recent posts:', err);
-        container.innerHTML = '<p style="color: var(--text-muted); padding: 20px; text-align: center;">Could not load recent posts.</p>';
+        console.error('Error loading comments:', err);
+        container.innerHTML = '<p style="color: var(--text-muted); padding: 20px; text-align: center;">Could not load your comments.</p>';
     }
 }
+
+document.getElementById('plCommentsModeSwitch')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.cp-mode-btn');
+    if (!btn) return;
+    const userUID = parseInt(localStorage.getItem('userUID'), 10) || 0;
+    loadRecentPosts(userUID, btn.dataset.cpMode);
+});
 
 // Format time ago
 function formatTimeAgo(dateString) {

@@ -1,13 +1,20 @@
-/* Full release calendar page — anime (recurring weekly simulcast schedule via Jikan)
-   and movie (TMDB release-date discover, navigable by week) modes. */
+/* Full release calendar page — anime (per-date simulcast schedule via AniList)
+   and movie (TMDB release-date discover) modes. Renders a real month grid;
+   clicking a date with releases opens a popup listing everything for that day
+   instead of dumping every card on the page at once. */
 (function () {
-    const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
     const DAY_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const MAX_PER_DAY = 20;
 
     const animeScheduleCache = {};
-    const movieWeekCache = {};
-    let weekIdx = 0;
+    const animeCardCache = {};
+    const movieMonthCache = {};
+    let releaseBuckets = {};
+
+    const now = new Date();
+    let viewYear = now.getFullYear();
+    let viewMonth = now.getMonth();
 
     function isAnimeMode() {
         return window.__animeMode === true;
@@ -16,29 +23,6 @@
     function toIsoDateLocal(date) {
         const d = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
         return d.toISOString().slice(0, 10);
-    }
-
-    function getWeekStartMonday(date) {
-        const d = new Date(date);
-        const day = d.getDay(); // 0=Sun
-        const diff = day === 0 ? -6 : 1 - day;
-        d.setDate(d.getDate() + diff);
-        d.setHours(0, 0, 0, 0);
-        return d;
-    }
-
-    function getWeekRange(weekIdx) {
-        const baseMonday = getWeekStartMonday(new Date());
-        const start = new Date(baseMonday);
-        start.setDate(baseMonday.getDate() + (weekIdx * 7));
-        const end = new Date(start);
-        end.setDate(start.getDate() + 6);
-        return { start, end };
-    }
-
-    function getTodayDayIndex() {
-        const d = new Date().getDay(); // 0=Sun
-        return d === 0 ? 6 : d - 1; // 0=Mon..6=Sun
     }
 
     function escapeHtml(text) {
@@ -58,7 +42,7 @@
     }
 
     // Primitive fallback candidates for titles TMDB doesn't index under their exact
-    // Jikan/AniList name -- strips season/part/cour markers and roman-numeral or
+    // AniList name -- strips season/part/cour markers and roman-numeral or
     // trailing-number sequels one layer at a time, most-specific strip first.
     function buildTitleCandidates(title) {
         const candidates = [title];
@@ -141,149 +125,86 @@
         </a>`;
     }
 
-    async function loadAnimeDay(dateIso, colEl) {
-        colEl.innerHTML = '<p class="calendar-day-loading">Loading...</p>';
-
-        if (!(dateIso in animeScheduleCache)) {
-            try {
-                const res = await fetch(`/api/anime-schedule?date=${encodeURIComponent(dateIso)}`);
-                if (!res.ok) throw new Error(String(res.status));
-                const payload = await res.json();
-                animeScheduleCache[dateIso] = payload.data || [];
-            } catch (e) {
-                colEl.innerHTML = '<p class="calendar-day-empty">Could not load.</p>';
-                return;
-            }
+    // Monday-start 6-week (42 cell) grid covering the given month plus enough
+    // lead/trail days from the adjacent months to fill whole weeks.
+    function getMonthGridDates(year, month) {
+        const firstOfMonth = new Date(year, month, 1);
+        const firstDow = firstOfMonth.getDay(); // 0=Sun..6=Sat
+        const leadDays = firstDow === 0 ? 6 : firstDow - 1;
+        const gridStart = new Date(year, month, 1 - leadDays);
+        const dates = [];
+        for (let i = 0; i < 42; i++) {
+            const d = new Date(gridStart);
+            d.setDate(gridStart.getDate() + i);
+            dates.push(d);
         }
-
-        const animes = animeScheduleCache[dateIso];
-        if (!animes.length) {
-            colEl.innerHTML = '<p class="calendar-day-empty">Nothing airing.</p>';
-            return;
-        }
-
-        const slice = animes
-            .slice()
-            .sort((a, b) => parseScheduleTime(a.broadcast?.time) - parseScheduleTime(b.broadcast?.time))
-            .slice(0, MAX_PER_DAY);
-
-        const tmdbIds = await Promise.all(
-            slice.map(a => tmdbTitleSearch(a.title_english || a.title || ''))
-        );
-
-        const cards = slice.map((a, idx) => ({ html: renderAnimeCard(a, tmdbIds[idx]), unavailable: !tmdbIds[idx] }));
-        const available = cards.filter(c => !c.unavailable);
-        const unavailable = cards.filter(c => c.unavailable);
-
-        colEl.innerHTML = [...available, ...unavailable].map(c => c.html).join('') || '<p class="calendar-day-empty">Nothing airing.</p>';
+        return dates;
     }
 
     // NOTE: TMDB's `release_date.gte/lte` filters against ANY regional release-date entry
     // attached to a movie (re-releases, digital releases, festival premieres, etc.), not just
     // its real release -- that's what was pulling decades-old films into "this week" results.
     // `primary_release_date.gte/lte` filters against the single canonical release date instead.
-    async function fetchWeekReleases(weekIdx, mediaType) {
-        const { start, end } = getWeekRange(weekIdx);
-        const weekStart = toIsoDateLocal(start);
-        const weekEnd = toIsoDateLocal(end);
-        const cacheKey = `${mediaType}-week-${weekStart}`;
-        if (movieWeekCache[cacheKey]) return movieWeekCache[cacheKey];
+    async function fetchMonthReleaseBuckets(startDate, endDate) {
+        const startIso = toIsoDateLocal(startDate);
+        const endIso = toIsoDateLocal(endDate);
+        const cacheKey = `${startIso}_${endIso}`;
+        if (movieMonthCache[cacheKey]) return movieMonthCache[cacheKey];
 
-        const isMovie = mediaType === 'movie';
-        const path = isMovie ? 'discover/movie' : 'discover/tv';
-        const dateField = isMovie ? 'primary_release_date' : 'first_air_date';
-
-        const queries = [1, 2, 3].map(page =>
-            `/api/tmdb-proxy/${path}?language=en-US&sort_by=popularity.desc&include_adult=false&${dateField}.gte=${weekStart}&${dateField}.lte=${weekEnd}&page=${page}`
-        );
-
-        const responses = await Promise.allSettled(queries.map(q => fetch(q)));
-        const payloads = await Promise.all(
-            responses.map(async (r) => {
+        const PAGES = 8;
+        const fetchType = async (mediaType) => {
+            const isMovie = mediaType === 'movie';
+            const path = isMovie ? 'discover/movie' : 'discover/tv';
+            const dateField = isMovie ? 'primary_release_date' : 'first_air_date';
+            const queries = Array.from({ length: PAGES }, (_, i) =>
+                `/api/tmdb-proxy/${path}?language=en-US&sort_by=popularity.desc&include_adult=false&${dateField}.gte=${startIso}&${dateField}.lte=${endIso}&page=${i + 1}`
+            );
+            const responses = await Promise.allSettled(queries.map(q => fetch(q)));
+            const payloads = await Promise.all(responses.map(async (r) => {
                 if (r.status !== 'fulfilled' || !r.value.ok) return { results: [] };
                 try { return await r.value.json(); } catch { return { results: [] }; }
-            })
-        );
-
-        const merged = payloads.flatMap(p => p.results || []);
-        const uniq = [];
-        const seen = new Set();
-        for (const item of merged) {
-            // No poster means it's almost always obscure homemade/unreleasable filler with
-            // nothing to actually watch -- not worth showing on a release calendar.
-            if (!item || !item.id || !item.poster_path || seen.has(item.id)) continue;
-            seen.add(item.id);
-            uniq.push({ ...item, _mediaType: mediaType });
-        }
-        movieWeekCache[cacheKey] = uniq;
-        return uniq;
-    }
-
-    async function renderReleaseWeek() {
-        const grid = document.getElementById('calendarGrid');
-        const { start } = getWeekRange(weekIdx);
-        Array.from(grid.children).forEach(col => {
-            col.querySelector('.calendar-day-list').innerHTML = '<p class="calendar-day-loading">Loading...</p>';
-        });
-
-        let movies, series;
-        try {
-            [movies, series] = await Promise.all([
-                fetchWeekReleases(weekIdx, 'movie'),
-                fetchWeekReleases(weekIdx, 'tv')
-            ]);
-        } catch (e) {
-            Array.from(grid.children).forEach(col => {
-                col.querySelector('.calendar-day-list').innerHTML = '<p class="calendar-day-empty">Could not load.</p>';
-            });
-            return;
-        }
-
-        const byDay = Array.from({ length: 7 }, () => []);
-        const bucket = (item, dateField) => {
-            const d = (item[dateField] || '').slice(0, 10);
-            if (!d) return;
-            const dt = new Date(`${d}T00:00:00`);
-            const diffDays = Math.round((dt - start) / 86400000);
-            if (diffDays >= 0 && diffDays <= 6) byDay[diffDays].push(item);
+            }));
+            return payloads.flatMap(p => p.results || []).map(item => ({ ...item, _mediaType: mediaType }));
         };
-        movies.forEach(m => bucket(m, 'release_date'));
-        series.forEach(s => bucket(s, 'first_air_date'));
 
-        byDay.forEach((list, i) => {
-            const listEl = grid.children[i].querySelector('.calendar-day-list');
-            const sorted = list.sort((a, b) => (b.popularity || 0) - (a.popularity || 0)).slice(0, MAX_PER_DAY);
-            listEl.innerHTML = sorted.length
-                ? sorted.map(renderReleaseCard).join('')
-                : '<p class="calendar-day-empty">No releases.</p>';
-        });
+        const [movies, series] = await Promise.all([fetchType('movie'), fetchType('tv')]);
+        const buckets = {};
+        const seen = new Set();
+        for (const item of [...movies, ...series]) {
+            const seenKey = `${item._mediaType}-${item.id}`;
+            if (!item || !item.id || !item.poster_path || seen.has(seenKey)) continue;
+            seen.add(seenKey);
+            const dateField = item._mediaType === 'movie' ? 'release_date' : 'first_air_date';
+            const dateStr = (item[dateField] || '').slice(0, 10);
+            if (!dateStr || dateStr < startIso || dateStr > endIso) continue;
+            if (!buckets[dateStr]) buckets[dateStr] = [];
+            if (buckets[dateStr].length < MAX_PER_DAY) buckets[dateStr].push(item);
+        }
+        Object.values(buckets).forEach(list => list.sort((a, b) => (b.popularity || 0) - (a.popularity || 0)));
+
+        movieMonthCache[cacheKey] = buckets;
+        return buckets;
     }
 
-    function updateRangeLabel(start, end) {
-        const label = document.getElementById('calendarRangeLabel');
-        if (!label) return;
-        const fmt = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
-        label.textContent = `${fmt(start)} – ${fmt(end)}`;
-    }
-
-    function buildDayColumns() {
+    function renderMonthGrid(dates, counts) {
         const grid = document.getElementById('calendarGrid');
-        const todayIdx = getTodayDayIndex();
-        const { start } = getWeekRange(weekIdx);
-
-        grid.innerHTML = DAY_LABELS.map((label, i) => {
-            const isToday = weekIdx === 0 && i === todayIdx;
-            const dateForCol = new Date(start);
-            dateForCol.setDate(start.getDate() + i);
-            const dateLabel = `${dateForCol.getMonth() + 1}/${dateForCol.getDate()}`;
-            return `<div class="calendar-day-col${isToday ? ' cal-today' : ''}">
-                <div class="calendar-day-header">
-                    <div class="calendar-day-name">${label}</div>
-                    <div class="calendar-day-date">${dateLabel}</div>
-                </div>
-                <div class="calendar-day-list"><p class="calendar-day-loading">Loading...</p></div>
+        const todayIso = toIsoDateLocal(new Date());
+        grid.innerHTML = dates.map(d => {
+            const iso = toIsoDateLocal(d);
+            const otherMonth = d.getMonth() !== viewMonth;
+            const isToday = iso === todayIso;
+            const count = counts[iso] || 0;
+            return `<div class="cal-month-cell${otherMonth ? ' other-month' : ''}${isToday ? ' today' : ''}${count ? ' has-items' : ''}" data-date="${iso}">
+                <span class="cal-month-daynum">${d.getDate()}</span>
+                ${count ? `<span class="cal-month-badge">${count}</span>` : ''}
             </div>`;
         }).join('');
+    }
+
+    function renderWeekdayHeader() {
+        const el = document.getElementById('calMonthWeekdays');
+        if (!el) return;
+        el.innerHTML = DAY_LABELS.map(l => `<div class="cal-month-weekday">${l.slice(0, 3)}</div>`).join('');
     }
 
     function renderControls() {
@@ -293,48 +214,130 @@
 
         if (isAnimeMode()) {
             title.textContent = 'Anime Release Calendar';
-            subtitle.textContent = 'Browse past and upcoming simulcast airings by week';
+            subtitle.textContent = "Click a date to see what's airing";
         } else {
             title.textContent = 'Movie & Series Release Calendar';
-            subtitle.textContent = 'Browse upcoming and past movie and TV series releases by week';
+            subtitle.textContent = "Click a date to see what's releasing";
         }
 
         controls.innerHTML = `
-            <button class="calendar-nav-btn" id="calPrevWeek">&#8249; Prev</button>
-            <span class="calendar-range-label" id="calendarRangeLabel"></span>
-            <button class="calendar-nav-btn" id="calNextWeek">Next &#8250;</button>
+            <button class="calendar-nav-btn" id="calPrevMonth">&#8249; Prev</button>
+            <span class="calendar-range-label" id="calendarRangeLabel">${MONTH_NAMES[viewMonth]} ${viewYear}</span>
+            <button class="calendar-nav-btn" id="calNextMonth">Next &#8250;</button>
             <button class="calendar-nav-btn" id="calToday">Today</button>
         `;
 
-        const { start, end } = getWeekRange(weekIdx);
-        updateRangeLabel(start, end);
-
-        document.getElementById('calPrevWeek').onclick = () => shiftWeek(-1);
-        document.getElementById('calNextWeek').onclick = () => shiftWeek(1);
-        document.getElementById('calToday').onclick = () => { weekIdx = 0; refresh(); };
+        document.getElementById('calPrevMonth').onclick = () => shiftMonth(-1);
+        document.getElementById('calNextMonth').onclick = () => shiftMonth(1);
+        document.getElementById('calToday').onclick = () => {
+            const today = new Date();
+            viewYear = today.getFullYear();
+            viewMonth = today.getMonth();
+            refresh();
+        };
     }
 
-    function shiftWeek(delta) {
-        weekIdx += delta;
+    function shiftMonth(delta) {
+        viewMonth += delta;
+        if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+        if (viewMonth > 11) { viewMonth = 0; viewYear++; }
         refresh();
     }
 
     async function refresh() {
         renderControls();
-        buildDayColumns();
+        const grid = document.getElementById('calendarGrid');
+        grid.innerHTML = '<p class="calendar-day-loading" style="grid-column:1/-1;text-align:center;padding:40px 0;">Loading…</p>';
+
+        const dates = getMonthGridDates(viewYear, viewMonth);
+        const counts = {};
 
         if (isAnimeMode()) {
-            const grid = document.getElementById('calendarGrid');
-            const { start } = getWeekRange(weekIdx);
-            await Promise.all(DAYS.map((_, i) => {
-                const dateForDay = new Date(start);
-                dateForDay.setDate(start.getDate() + i);
-                return loadAnimeDay(toIsoDateLocal(dateForDay), grid.children[i]);
+            await Promise.all(dates.map(async (d) => {
+                const iso = toIsoDateLocal(d);
+                if (!(iso in animeScheduleCache)) {
+                    try {
+                        const res = await fetch(`/api/anime-schedule?date=${encodeURIComponent(iso)}`);
+                        const payload = res.ok ? await res.json() : { data: [] };
+                        animeScheduleCache[iso] = payload.data || [];
+                    } catch {
+                        animeScheduleCache[iso] = [];
+                    }
+                }
+                counts[iso] = animeScheduleCache[iso].length;
             }));
         } else {
-            await renderReleaseWeek();
+            releaseBuckets = await fetchMonthReleaseBuckets(dates[0], dates[41]);
+            dates.forEach(d => {
+                const iso = toIsoDateLocal(d);
+                counts[iso] = (releaseBuckets[iso] || []).length;
+            });
+        }
+
+        renderMonthGrid(dates, counts);
+    }
+
+    async function openDayPopup(iso, dateObj) {
+        const overlay = document.getElementById('calDayPopupOverlay');
+        const title = document.getElementById('calDayPopupTitle');
+        const body = document.getElementById('calDayPopupBody');
+        if (!overlay || !title || !body) return;
+
+        title.textContent = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+        body.innerHTML = '<p class="calendar-day-loading">Loading...</p>';
+        overlay.classList.add('open');
+
+        if (isAnimeMode()) {
+            const animes = (animeScheduleCache[iso] || [])
+                .slice()
+                .sort((a, b) => parseScheduleTime(a.broadcast?.time) - parseScheduleTime(b.broadcast?.time))
+                .slice(0, MAX_PER_DAY);
+
+            if (!animes.length) {
+                body.innerHTML = '<p class="calendar-day-empty">Nothing airing.</p>';
+                return;
+            }
+
+            if (!animeCardCache[iso]) {
+                const tmdbIds = await Promise.all(animes.map(a => tmdbTitleSearch(a.title_english || a.title || '')));
+                const cards = animes.map((a, idx) => ({ html: renderAnimeCard(a, tmdbIds[idx]), unavailable: !tmdbIds[idx] }));
+                animeCardCache[iso] = [...cards.filter(c => !c.unavailable), ...cards.filter(c => c.unavailable)].map(c => c.html);
+            }
+
+            // Bail if the user already navigated to a different date while this resolved.
+            if (overlay.dataset.activeDate !== iso) return;
+            body.innerHTML = animeCardCache[iso].join('') || '<p class="calendar-day-empty">Nothing airing.</p>';
+        } else {
+            const items = releaseBuckets[iso] || [];
+            body.innerHTML = items.length ? items.map(renderReleaseCard).join('') : '<p class="calendar-day-empty">No releases.</p>';
         }
     }
 
-    document.addEventListener('DOMContentLoaded', refresh);
+    function closeDayPopup() {
+        const overlay = document.getElementById('calDayPopupOverlay');
+        if (overlay) overlay.classList.remove('open');
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        renderWeekdayHeader();
+        refresh();
+
+        document.getElementById('calendarGrid')?.addEventListener('click', (e) => {
+            const cell = e.target.closest('.cal-month-cell.has-items');
+            if (!cell) return;
+            const iso = cell.dataset.date;
+            const overlay = document.getElementById('calDayPopupOverlay');
+            if (overlay) overlay.dataset.activeDate = iso;
+            const [y, m, dd] = iso.split('-').map(Number);
+            openDayPopup(iso, new Date(y, m - 1, dd));
+        });
+
+        document.getElementById('calDayPopupOverlay')?.addEventListener('click', (e) => {
+            if (e.target.id === 'calDayPopupOverlay') closeDayPopup();
+        });
+        document.getElementById('calDayPopupClose')?.addEventListener('click', closeDayPopup);
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeDayPopup();
+        });
+    });
 })();

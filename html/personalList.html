@@ -338,13 +338,21 @@
                 </div>
             </div>
 
-            <!-- Right Column: Recent Forum Posts -->
+            <!-- Right Column: Your Comments (anime/movie, same as the Your Comments
+                 widget on indexMain.html -- was "Recent Posts" pulling from the forum,
+                 a separate, unrelated system) -->
             <div class="recent-posts-column" style="background: var(--bg-card); padding: 25px; border-radius: 12px; box-shadow: var(--shadow-md);">
-                <h2 class="list-title" style="margin: 0 0 20px 0; font-size: 1.6rem; color: var(--text-primary); border-bottom: 2px solid var(--accent-primary); padding-bottom: 10px;">
-                    💬 My Recent Posts
-                </h2>
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;border-bottom: 2px solid var(--accent-primary); padding-bottom: 10px;">
+                    <h2 class="list-title" style="margin:0;font-size: 1.6rem; color: var(--text-primary);">
+                        💬 Your Comments
+                    </h2>
+                    <div class="cp-mode-switch" id="plCommentsModeSwitch">
+                        <button type="button" class="cp-mode-btn" data-cp-mode="anime">Anime</button>
+                        <button type="button" class="cp-mode-btn" data-cp-mode="movie">Movies</button>
+                    </div>
+                </div>
                 <div id="recentPostsContainer" style="display: flex; flex-direction: column; gap: 12px;">
-                    <!-- Recent posts will be loaded here -->
+                    <!-- Comments will be loaded here -->
                 </div>
             </div>
         </div>

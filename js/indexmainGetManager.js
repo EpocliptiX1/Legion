@@ -681,8 +681,18 @@
                 return;
             }
 
+            // A raw gif link is one unbroken "word" with no spaces -- render it as
+            // an actual thumbnail instead of raw text so it can't stretch the row.
+            const GIF_URL_RE = /(https?:\/\/\S+\.gif(?:\?\S*)?)/i;
             list.innerHTML = comments.map(c => {
-                const safeText = (c.text || '').replace(/</g, '&lt;');
+                const rawText = c.text || '';
+                const safeText = rawText.replace(/</g, '&lt;');
+                const gifMatch = rawText.match(GIF_URL_RE);
+                let titleHtml = `<div class="cp-thread-title">${safeText}</div>`;
+                if (gifMatch) {
+                    const gifImg = `<img class="cp-thread-gif" src="${gifMatch[1].replace(/</g, '&lt;')}" alt="gif" loading="lazy">`;
+                    titleHtml = rawText.trim() === gifMatch[1] ? gifImg : titleHtml + gifImg;
+                }
                 const ago = timeAgo((c.created_at || 0) * 1000);
                 const onLabel = cpMode === 'anime'
                     ? `Ep ${c.episode_number}${c.animeTitle ? ` · ${(c.animeTitle).replace(/</g, '&lt;')}` : ''}`
@@ -691,7 +701,7 @@
                     ? (c.tmdbId ? `/html/movieInfo.html?id=${c.tmdbId}&type=anime` : '#')
                     : `/html/movieInfo.html?id=${encodeURIComponent(c.movie_id)}&type=movie`;
                 return `<a class="cp-thread" href="${href}">
-                    <div class="cp-thread-title">${safeText}</div>
+                    ${titleHtml}
                     <div class="cp-thread-meta">
                         <span>on “${onLabel}”</span>
                         <span class="cp-dot">·</span>
