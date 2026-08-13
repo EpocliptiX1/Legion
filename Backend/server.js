@@ -6420,6 +6420,171 @@ app.get('/api/anime-row', async (req, res) => {
     }
 });
 
+// --- Anime library cache (allMovies.html anime mode) ---
+// /api/anime-row above only serves a fixed set of curated homepage rows
+// (POPULAR, TRENDING, ACTION, etc, via a switch statement) -- allMovies.html's
+// filter panel needs arbitrary sort+genre+tag+format+status+year combos, which
+// doesn't fit that shape. This reuses the exact same underlying cache tables
+// (anime_row_cache for "which AniList ids are in this result set", anime_cache
+// for "full metadata for one AniList id", both already keyed generically
+// enough) instead of building new ones -- a cache key is just a canonical
+// string built from whichever filters are active, sort included, and the
+// per-anime metadata query is expanded to also pull genres/tags/full airdate
+// so those get captured in anime_cache.json for free.
+function buildAnimeLibraryCacheKey(filters) {
+    // Order-independent: two requests with the same filters (however the
+    // frontend happened to construct the query string) always hash to the
+    // same cache row.
+    return 'LIB:' + JSON.stringify({
+        sort: filters.sort || 'POPULARITY_DESC',
+        genre: filters.genre || '',
+        tag: filters.tag || '',
+        format: filters.format || '',
+        status: filters.status || '',
+        yearMin: filters.yearMin || '',
+        yearMax: filters.yearMax || ''
+    });
+}
+
+const ANIME_LIBRARY_QUERY = `
+query (
+    $page: Int
+    $perPage: Int
+    $sort: [MediaSort]
+    $search: String
+    $genre: String
+    $tag: String
+    $format: MediaFormat
+    $status: MediaStatus
+    $yearMin: FuzzyDateInt
+    $yearMax: FuzzyDateInt
+) {
+    Page(page: $page, perPage: $perPage) {
+        media(
+            type: ANIME
+            isAdult: false
+            search: $search
+            genre: $genre
+            tag: $tag
+            format: $format
+            status: $status
+            startDate_greater: $yearMin
+            startDate_lesser: $yearMax
+            sort: $sort
+        ) {
+            id
+            idMal
+            title { romaji english native }
+            coverImage { extraLarge }
+            bannerImage
+            averageScore
+            popularity
+            favourites
+            description(asHtml: false)
+            startDate { year month day }
+            episodes
+            format
+            status
+            genres
+            tags { name }
+        }
+    }
+}`;
+
+async function fetchAnimeLibraryFromAniList(filters, page, perPage) {
+    const variables = {
+        page,
+        perPage,
+        sort: [filters.sort || 'POPULARITY_DESC'],
+        search: filters.search || undefined,
+        genre: filters.genre || undefined,
+        tag: filters.tag || undefined,
+        format: filters.format || undefined,
+        status: filters.status || undefined,
+        // FuzzyDateInt is YYYYMMDD as a plain integer, not a real date type.
+        yearMin: filters.yearMin ? Number(`${filters.yearMin}0101`) : undefined,
+        yearMax: filters.yearMax ? Number(`${filters.yearMax}1231`) : undefined
+    };
+    const response = await axios.post(
+        'https://graphql.anilist.co',
+        { query: ANIME_LIBRARY_QUERY, variables },
+        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' } }
+    );
+    if (response.data?.errors) {
+        throw new Error(response.data.errors.map(e => e.message).join('; '));
+    }
+    const items = response.data?.data?.Page?.media || [];
+    return Array.isArray(items) ? items : [];
+}
+
+app.get('/api/anime-library', async (req, res) => {
+    const filters = {
+        sort: req.query.sort || 'POPULARITY_DESC',
+        search: req.query.search || '',
+        genre: req.query.genre || '',
+        tag: req.query.tag || '',
+        format: req.query.format || '',
+        status: req.query.status || '',
+        yearMin: req.query.yearMin || '',
+        yearMax: req.query.yearMax || ''
+    };
+    const page = parseInt(req.query.page, 10) || 1;
+    const perPage = parseInt(req.query.perPage, 10) || 25;
+
+    // Live text search isn't cached -- same call already made for the curated
+    // rows above, a free-text query is rarely repeated verbatim so caching it
+    // wouldn't pay off, and it'd bloat the cache table with one-off keys.
+    if (filters.search) {
+        try {
+            const items = await fetchAnimeLibraryFromAniList(filters, page, perPage);
+            return res.json(items);
+        } catch (err) {
+            console.error('[Anime Library] search fetch failed:', err.message || err);
+            return res.status(500).json({ error: 'Failed to fetch anime' });
+        }
+    }
+
+    const cacheKey = buildAnimeLibraryCacheKey(filters);
+    try {
+        const ids = await animeRowCacheGet(cacheKey, page, perPage);
+        if (ids && ids.length) {
+            const cached = await animeCacheGetByAniListIds(ids);
+            if (cached.length === ids.length) {
+                console.log(`[Anime Library] cache hit for ${cacheKey} page=${page}`);
+                return res.json(cached);
+            }
+        }
+
+        console.log(`[Anime Library] cache miss for ${cacheKey} page=${page}, fetching AniList`);
+        const items = await fetchAnimeLibraryFromAniList(filters, page, perPage);
+        if (!items.length) return res.json([]);
+
+        const idsToCache = [];
+        for (const item of items) {
+            idsToCache.push(item.id);
+            try {
+                const tmdbId = await getTmdbIdForAniList(
+                    item.id,
+                    item.title?.english || item.title?.romaji,
+                    item.idMal,
+                    item.title?.english,
+                    item.title?.romaji,
+                    item.title?.native
+                );
+                if (tmdbId) item.tmdbId = tmdbId;
+            } catch (e) {
+                // No TMDB match -- still cache the AniList metadata, just without a tmdbId.
+            }
+            await animeCacheUpsertFromAniListItem(item);
+        }
+        await animeRowCacheUpsert(cacheKey, page, perPage, idsToCache);
+        res.json(items);
+    } catch (err) {
+        console.error('[Anime Library] Error:', err.message || err, { cacheKey, page, perPage });
+        res.status(500).json({ error: 'Failed to fetch anime library' });
+    }
+});
+
 async function resolveAnimeIds(tmdbId, season = 1) {
     await ensureAnimeMalListLoaded();
 
@@ -7016,59 +7181,99 @@ function isoDateUTC(d) {
 // AniList's airingSchedules query is genuinely date-specific (it's a real per-episode airing
 // timestamp, not a recurring day-of-week snapshot), so it's what actually makes a real
 // multi-week calendar possible instead of an artificial "only the current week" wall.
+const ANILIST_AIRING_SCHEDULE_QUERY = `
+    query ($page: Int, $from: Int, $to: Int) {
+        Page(page: $page, perPage: 50) {
+            pageInfo { hasNextPage }
+            airingSchedules(airingAt_greater: $from, airingAt_lesser: $to, sort: TIME) {
+                airingAt
+                episode
+                media {
+                    id
+                    idMal
+                    title { romaji english native }
+                    coverImage { large extraLarge }
+                    averageScore
+                    episodes
+                    format
+                }
+            }
+        }
+    }
+`;
+
+function transformAniListAiringSchedule(s) {
+    const airDate = new Date(s.airingAt * 1000);
+    const hh = String(airDate.getUTCHours()).padStart(2, '0');
+    const mm = String(airDate.getUTCMinutes()).padStart(2, '0');
+    return {
+        title: s.media.title?.romaji || s.media.title?.native || '',
+        title_english: s.media.title?.english || null,
+        images: {
+            jpg: {
+                image_url: s.media.coverImage?.large || '',
+                large_image_url: s.media.coverImage?.extraLarge || s.media.coverImage?.large || ''
+            }
+        },
+        broadcast: { time: `${hh}:${mm}` },
+        score: s.media.averageScore ? (s.media.averageScore / 10) : null,
+        episodes: s.media.episodes || null,
+        idMal: s.media.idMal || null,
+        episode: s.episode || null
+    };
+}
+
 async function fetchAniListDaySchedule(dateIso) {
     const dayStartSec = Math.floor(new Date(`${dateIso}T00:00:00Z`).getTime() / 1000);
     const dayEndSec = dayStartSec + 86400 - 1;
 
-    const query = `
-        query ($from: Int, $to: Int) {
-            Page(page: 1, perPage: 50) {
-                airingSchedules(airingAt_greater: $from, airingAt_lesser: $to, sort: TIME) {
-                    airingAt
-                    episode
-                    media {
-                        id
-                        idMal
-                        title { romaji english native }
-                        coverImage { large extraLarge }
-                        averageScore
-                        episodes
-                        format
-                    }
-                }
-            }
-        }
-    `;
-
     const response = await axios.post(
         'https://graphql.anilist.co',
-        { query, variables: { from: dayStartSec, to: dayEndSec } },
+        { query: ANILIST_AIRING_SCHEDULE_QUERY, variables: { page: 1, from: dayStartSec, to: dayEndSec } },
         { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
     );
 
     const schedules = response.data?.data?.Page?.airingSchedules || [];
     return schedules
         .filter(s => s.media && s.media.format !== 'MOVIE')
-        .map(s => {
-            const airDate = new Date(s.airingAt * 1000);
-            const hh = String(airDate.getUTCHours()).padStart(2, '0');
-            const mm = String(airDate.getUTCMinutes()).padStart(2, '0');
-            return {
-                title: s.media.title?.romaji || s.media.title?.native || '',
-                title_english: s.media.title?.english || null,
-                images: {
-                    jpg: {
-                        image_url: s.media.coverImage?.large || '',
-                        large_image_url: s.media.coverImage?.extraLarge || s.media.coverImage?.large || ''
-                    }
-                },
-                broadcast: { time: `${hh}:${mm}` },
-                score: s.media.averageScore ? (s.media.averageScore / 10) : null,
-                episodes: s.media.episodes || null,
-                idMal: s.media.idMal || null,
-                episode: s.episode || null
-            };
-        });
+        .map(transformAniListAiringSchedule);
+}
+
+// Same query as fetchAniListDaySchedule but spanning an arbitrary [startIso, endIso]
+// range in as few AniList requests as possible (one per 50-result page instead of
+// one per calendar day) -- a 42-day month grid was firing up to 42 parallel AniList
+// calls from the same server IP, which is exactly the kind of burst that trips their
+// per-IP rate limit. Returns items grouped by the UTC date they air on.
+async function fetchAniListRangeScheduleByDate(startIso, endIso) {
+    const fromSec = Math.floor(new Date(`${startIso}T00:00:00Z`).getTime() / 1000);
+    const toSec = Math.floor(new Date(`${endIso}T00:00:00Z`).getTime() / 1000) + 86400 - 1;
+
+    const grouped = {};
+    let page = 1;
+    // Safety cap: a 6-week grid during peak simulcast season is realistically a
+    // handful of pages; this just guards against an unbounded loop if AniList's
+    // pageInfo ever misbehaves.
+    while (page <= 20) {
+        const response = await axios.post(
+            'https://graphql.anilist.co',
+            { query: ANILIST_AIRING_SCHEDULE_QUERY, variables: { page, from: fromSec, to: toSec } },
+            { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
+        );
+
+        const pageData = response.data?.data?.Page;
+        const schedules = pageData?.airingSchedules || [];
+        for (const s of schedules) {
+            if (!s.media || s.media.format === 'MOVIE') continue;
+            const dateIso = new Date(s.airingAt * 1000).toISOString().slice(0, 10);
+            if (!grouped[dateIso]) grouped[dateIso] = [];
+            grouped[dateIso].push(transformAniListAiringSchedule(s));
+        }
+
+        if (!pageData?.pageInfo?.hasNextPage) break;
+        page++;
+    }
+
+    return grouped;
 }
 
 app.get('/api/anime-schedule', async (req, res) => {
@@ -7113,6 +7318,74 @@ app.get('/api/anime-schedule', async (req, res) => {
         }
         return res.status(502).json({ error: 'AniList schedule fetch failed' });
     }
+});
+
+// Same data as /api/anime-schedule but for an entire [start, end] range in one shot --
+// used by the calendar's month grid, which used to fire one /api/anime-schedule call
+// per visible date (up to 42 in parallel) and was tripping AniList's per-IP rate limit.
+// Per-date cache rows are still read/written individually (so a date visited via the
+// single-date endpoint elsewhere, e.g. the homepage widget, is shared), only the
+// AniList round trip itself is batched for whichever dates in the range are missing
+// or stale.
+app.get('/api/anime-schedule-range', async (req, res) => {
+    const startParam = String(req.query.start || '').trim();
+    const endParam = String(req.query.end || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startParam) || !/^\d{4}-\d{2}-\d{2}$/.test(endParam)) {
+        return res.status(400).json({ error: 'start and end are required (expected YYYY-MM-DD)' });
+    }
+
+    const dates = [];
+    for (let d = new Date(`${startParam}T00:00:00Z`); d.toISOString().slice(0, 10) <= endParam; d.setUTCDate(d.getUTCDate() + 1)) {
+        dates.push(d.toISOString().slice(0, 10));
+    }
+    if (!dates.length || dates.length > 60) {
+        return res.status(400).json({ error: 'Invalid or excessive date range' });
+    }
+
+    const todayIso = isoDateUTC(new Date());
+    const refreshWindowMs = getAnimeScheduleRefreshWindowDays() * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const result = {};
+    const missing = [];
+    for (const iso of dates) {
+        let cached = null;
+        try {
+            cached = await animeScheduleGet(iso);
+        } catch (err) {
+            console.warn('[Anime Schedule Range] cache read failed', iso, err.message || err);
+        }
+        const isPast = iso < todayIso;
+        if (cached && cached.data && (isPast || (now - cached.cached_at) < refreshWindowMs)) {
+            // animeScheduleGet's cached.data is the raw parsed row -- {data: items} --
+            // not the items array itself (that's what animeScheduleUpsert stores).
+            result[iso] = cached.data.data || [];
+        } else {
+            missing.push(iso);
+        }
+    }
+
+    if (missing.length) {
+        try {
+            const grouped = await fetchAniListRangeScheduleByDate(missing[0], missing[missing.length - 1]);
+            for (const iso of missing) {
+                const items = grouped[iso] || [];
+                result[iso] = items;
+                try {
+                    await animeScheduleUpsert(iso, dayNameFromDate(iso), JSON.stringify({ data: items }));
+                } catch (err) {
+                    console.warn('[Anime Schedule Range] cache write failed', iso, err.message || err);
+                }
+            }
+        } catch (err) {
+            console.error('[Anime Schedule Range] AniList fetch failed', err.message || err);
+            for (const iso of missing) {
+                if (!(iso in result)) result[iso] = [];
+            }
+        }
+    }
+
+    res.json(result);
 });
 
 app.get('/api/anime-mal-id', async (req, res) => {

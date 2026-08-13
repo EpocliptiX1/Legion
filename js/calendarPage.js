@@ -253,19 +253,30 @@
         const counts = {};
 
         if (isAnimeMode()) {
-            await Promise.all(dates.map(async (d) => {
-                const iso = toIsoDateLocal(d);
-                if (!(iso in animeScheduleCache)) {
-                    try {
-                        const res = await fetch(`/api/anime-schedule?date=${encodeURIComponent(iso)}`);
-                        const payload = res.ok ? await res.json() : { data: [] };
-                        animeScheduleCache[iso] = payload.data || [];
-                    } catch {
+            // One batched request for the whole visible grid instead of up to 42
+            // parallel per-date calls -- that burst was tripping AniList's per-IP
+            // rate limit. The backend still only hits AniList for whichever dates
+            // in the range aren't already cached server-side.
+            const isoDates = dates.map(toIsoDateLocal);
+            const missingDates = isoDates.filter(iso => !(iso in animeScheduleCache));
+            if (missingDates.length) {
+                try {
+                    const startIso = isoDates[0];
+                    const endIso = isoDates[isoDates.length - 1];
+                    const res = await fetch(`/api/anime-schedule-range?start=${encodeURIComponent(startIso)}&end=${encodeURIComponent(endIso)}`);
+                    const payload = res.ok ? await res.json() : {};
+                    missingDates.forEach(iso => {
+                        animeScheduleCache[iso] = payload[iso] || [];
+                    });
+                } catch {
+                    missingDates.forEach(iso => {
                         animeScheduleCache[iso] = [];
-                    }
+                    });
                 }
-                counts[iso] = animeScheduleCache[iso].length;
-            }));
+            }
+            isoDates.forEach(iso => {
+                counts[iso] = (animeScheduleCache[iso] || []).length;
+            });
         } else {
             releaseBuckets = await fetchMonthReleaseBuckets(dates[0], dates[41]);
             dates.forEach(d => {
