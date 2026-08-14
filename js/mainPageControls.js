@@ -46,7 +46,7 @@ let heroMovies = [];
 let currentSlide = 0;
 let _heroInitStarted = false;
 
-const HERO_TRAILER_CUTOFF_RATIO = 0.8;
+const HERO_TRAILER_CUTOFF_RATIO = 0.9;
 const HERO_AUDIO_FADE_MS = 3000;
 const HERO_AUDIO_TARGET_VOLUME = 100;
 let heroYouTubeApiPromise = null;
@@ -899,6 +899,7 @@ async function updateHero(_skipCount = 0) {
         if (document.getElementById('statRuntime')) document.getElementById('statRuntime').innerText = movie.runtime || "-- min";
         if (document.getElementById('heroDesc')) document.getElementById('heroDesc').innerText = movie.plot;
         clampHeroTitleHeight();
+        window.syncHeroMyListButton?.(movie.id);
 
         // Poster card (indexMain hero-main-poster)
         const heroPosterImg = document.getElementById('heroPosterImg');
@@ -972,7 +973,24 @@ window.openMovie = async function() {
     document.body.style.overflow = 'hidden';
 };
 
+// "Watch Now" button -- always navigates straight to the info page. Previously
+// this called openMovie() (the overlay popup) unconditionally, which only
+// looked correct in anime mode because animePage.js was separately
+// overriding window.openMovie itself to navigate instead of opening the
+// popup -- in movie mode, where nothing overrides it, the button just opened
+// the popup instead of ever navigating anywhere.
 window.triggerPlay = function() {
+    if (window.__animeMode && typeof window.__animeWatchNow === 'function') {
+        window.__animeWatchNow();
+        return;
+    }
+    const movie = heroMovies[currentSlide];
+    if (movie && movie.id) {
+        window.location.href = `/html/movieInfo.html?id=${movie.id}&type=movie`;
+        return;
+    }
+    // No navigable id available for this entry -- fall back to the popup
+    // rather than navigating to a broken URL.
     openMovie();
     setTimeout(() => {
         const plot = document.getElementById('statPlot');
@@ -1041,10 +1059,36 @@ window.toggleMyList = window.toggleMyList || function(id, name, type) {
 // redirect confirmation) -- looks like a copy-paste of the old "More Info"
 // button (its data-i18n key is still literally "hero_more_info") that got
 // relabeled without rewiring the click handler.
+//
+// Also always read from heroMovies regardless of mode -- in anime mode that
+// array is empty (anime uses its own animeHeroList, private to animePage.js),
+// so `movie` was always undefined and the button silently did nothing.
 window.toggleHeroMyList = function() {
+    if (window.__animeMode && typeof window.__animeGetCurrentHero === 'function') {
+        const show = window.__animeGetCurrentHero();
+        if (!show) return;
+        window.toggleMyList(show.id, show.name, show.type);
+        window.syncHeroMyListButton(show.id);
+        return;
+    }
     const movie = heroMovies[currentSlide];
     if (!movie) return;
-    window.toggleMyList(movie.id, movie.title);
+    window.toggleMyList(movie.id, movie.title, 'movie');
+    window.syncHeroMyListButton(movie.id);
+};
+
+// Reflects whether the hero's current item is already in My List by toggling
+// a CSS class on the button -- called on every hero render/slide-change AND
+// right after toggling, so the button never shows a stale state.
+window.syncHeroMyListButton = function(id) {
+    const btn = document.getElementById('heroMyListBtn');
+    if (!btn) return;
+    const raw = JSON.parse(localStorage.getItem('myList')) || [];
+    const list = raw.map(item => (typeof item === 'string' ? { id: item, type: 'movie' } : item));
+    const inList = list.some(item => String(item.id) === String(id));
+    btn.classList.toggle('in-my-list', inList);
+    const icon = btn.querySelector('.hero-mylist-icon');
+    if (icon) icon.textContent = inList ? '✓' : '+';
 };
  
 
@@ -1201,6 +1245,7 @@ function updateHeroUI() {
         document.getElementById('statRuntime').innerText = movie.runtime;
         document.getElementById('heroDesc').innerText = movie.plot;
         clampHeroTitleHeight();
+        window.syncHeroMyListButton?.(movie.id);
         const trailerFrame = document.getElementById('heroTrailerFrame');
         if (trailerFrame) {
             setHeroTrailerSource(trailerFrame, movie.trailerId, () => {
@@ -2517,7 +2562,7 @@ function ensureSignInModal() {
                 </div>
                 <div class="divider">──────── OR ────────</div>
                 <div class="input-group">
-                    <input type="text" id="signInCode" placeholder="Enter your 10-character login code">
+                    <input type="text" id="signInCode" placeholder=" ">
                     <label>Login Code</label>
                 </div>
                 <button type="submit" class="btn-signup">Sign In</button>
@@ -2701,8 +2746,13 @@ function bindHeroClickToPlay() {
     hero.addEventListener('click', (event) => {
         const blocked = event.target.closest('.slider-arrow, .slider-indicators, .dot, #heroTag, #heroPrefPanel, .hero-pref-chip, .btn-info, .btn-play, .hero-trailer-side, a');
         if (blocked) return;
-        if (typeof window.triggerPlay === 'function') {
-            window.triggerPlay();
+        // Clicking the hero background (not a button) opens the info popup,
+        // same in both modes -- window.openMovie is whichever popup-opener
+        // is currently active (movie's own definition here, or anime mode's
+        // override in animePage.js), unlike triggerPlay which now always
+        // navigates straight away for the Watch Now button specifically.
+        if (typeof window.openMovie === 'function') {
+            window.openMovie();
         }
     });
 }
@@ -3224,34 +3274,10 @@ window.toggleFriendsOverlay = function (force) {
     }
 };
 
-function _ensureShortcutsHelper() {
-    if (document.getElementById('w2gShortcutsHelper')) return;
-    const el = document.createElement('div');
-    el.id = 'w2gShortcutsHelper';
-    el.className = 'w2g-shortcuts-overlay';
-    el.innerHTML = `
-        <div class="w2g-shortcuts-box">
-            <div class="w2g-shortcuts-head">
-                <span>Keyboard Shortcuts</span>
-                <button class="w2g-float-close" onclick="toggleShortcutsHelper(false)"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg></button>
-            </div>
-            <div class="w2g-shortcuts-list">
-                <div class="w2g-shortcut-row"><span class="w2g-shortcut-keys"><kbd>Shift</kbd> + <kbd>Tab</kbd></span><span>Toggle the Friends panel</span></div>
-                <div class="w2g-shortcut-row"><span class="w2g-shortcut-keys"><kbd>Shift</kbd> + <kbd>?</kbd></span><span>Show this help</span></div>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(el);
-    el.addEventListener('click', (e) => { if (e.target === el) toggleShortcutsHelper(false); });
-}
-
-window.toggleShortcutsHelper = function (force) {
-    _ensureShortcutsHelper();
-    const el = document.getElementById('w2gShortcutsHelper');
-    const show = force !== undefined ? force : !el.classList.contains('active');
-    el.classList.toggle('active', show);
-};
-
+// Removed: a small "Keyboard Shortcuts" popup that only ever listed 2 items
+// and opened on Shift+? -- the exact same key that also opens
+// keyboardShortcuts.js's full shortcuts list, so pressing it spawned both at
+// once. That one (the full list) is the one meant to show; this one is gone.
 document.addEventListener('keydown', (e) => {
     const tag = document.activeElement?.tagName;
     const typing = tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable;
@@ -3260,12 +3286,8 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Tab' && e.shiftKey) {
         e.preventDefault();
         toggleFriendsOverlay();
-    } else if (e.key === '?' && e.shiftKey) {
-        e.preventDefault();
-        toggleShortcutsHelper();
     } else if (e.key === 'Escape') {
         toggleFriendsOverlay(false);
-        toggleShortcutsHelper(false);
     }
 });
 

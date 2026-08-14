@@ -239,7 +239,11 @@
             if (body.status !== 'ready' || !Array.isArray(body.recommendations)) return [];
             const shows = [];
             const seen = new Set();
-            for (const rec of body.recommendations.slice(0, 12)) {
+            // Was slicing to only 12 raw candidates before resolving each to a TMDB
+            // id -- some of those inevitably fail to resolve (fetchTmdbItemById
+            // miss, dupes), so the hero consistently landed on ~4 instead of the
+            // intended 8. More raw candidates to draw from before giving up.
+            for (const rec of body.recommendations.slice(0, 24)) {
                 const tmdbId = rec?.ID || rec?.tmdb_id || null;
                 if (!tmdbId || seen.has(String(tmdbId))) continue;
                 const show = await fetchTmdbItemById(tmdbId, 'tv');
@@ -256,7 +260,11 @@
 
     async function buildAnimeHeroFromMostPopularRow() {
         try {
-            const items = await fetchAniListRow('MOST_POPULAR', 1, 8);
+            // Same deal as buildAnimeHeroFromRecommendations -- requesting exactly 8
+            // raw AniList items left no headroom for ones that fail to resolve a
+            // TMDB id (getTmdbIdForAniList miss, or the TMDB search fallback below
+            // also missing), so the hero rarely actually reached 8.
+            const items = await fetchAniListRow('MOST_POPULAR', 1, 20);
             if (!items.length) return [];
 
             const shows = [];
@@ -676,6 +684,7 @@
             if (dateEl)    dateEl.innerText     = year;
             if (runtimeEl) runtimeEl.innerText = 'TV Series';
             if (descEl)    descEl.innerText     = show.overview || '';
+            window.syncHeroMyListButton?.(show.id);
 
             const heroPosterImg = document.getElementById('heroPosterImg');
             if (heroPosterImg) {
@@ -774,16 +783,66 @@
             renderAnimeHero(animeHeroList[animeHeroIdx]);
         };
 
-        // Play button → go to anime info page
-        window.openMovie = async function () {
+        // Watch Now button → go straight to the anime info page (unchanged).
+        window.__animeWatchNow = function () {
             const show = animeHeroList[animeHeroIdx];
             if (show) window.location.href = `/html/movieInfo.html?id=${show.id}&type=${show.type || 'tv'}`;
         };
 
-        // "More Info" button → also go to anime info page
-        window.openRedirectModal = function () {
+        // animeHeroList/animeHeroIdx are private to this closure -- exposes just
+        // enough for mainPageControls.js's toggleHeroMyList to read the current
+        // anime item (id/name/type) without needing direct access to them.
+        window.__animeGetCurrentHero = function () {
             const show = animeHeroList[animeHeroIdx];
-            if (show) window.location.href = `/html/movieInfo.html?id=${show.id}&type=${show.type || 'tv'}`;
+            if (!show) return null;
+            return { id: show.id, name: show.name || show.original_name || '', type: show.type || 'tv' };
+        };
+
+        // Clicking the hero background (not a button) → open the same
+        // #movieOverlay popup movie mode uses, populated from anime data,
+        // instead of navigating away. Mirrors mainPageControls.js's
+        // window.openMovie (movie mode's version of this same popup).
+        window.openMovie = async function () {
+            const show = animeHeroList[animeHeroIdx];
+            const overlay = document.getElementById('movieOverlay');
+            if (!overlay || !show) return;
+
+            const title = show.name || show.original_name || '';
+            const rating = show.vote_average ? show.vote_average.toFixed(1) : '--';
+            const year = (show.first_air_date || '----').slice(0, 4);
+
+            const titleEl = document.getElementById('statTitle');
+            const ratingEl = document.getElementById('statRatingOverlay');
+            const dateEl = document.getElementById('statDateOverlay');
+            const runtimeEl = document.getElementById('statRuntimeOverlay');
+            const plotEl = document.getElementById('statPlot');
+            const castList = document.getElementById('castListOverlay');
+
+            if (titleEl) titleEl.innerText = title;
+            if (ratingEl) ratingEl.innerText = rating;
+            if (dateEl) dateEl.innerText = year;
+            if (runtimeEl) runtimeEl.innerText = 'TV Series';
+            if (plotEl) plotEl.innerText = show.overview || 'No plot summary available for this title.';
+            // TMDB's discover/tv results (what animeHeroList is built from) don't
+            // include cast credits -- nothing to show here, unlike the movie
+            // popup which already has Stars on hand.
+            if (castList) castList.innerHTML = '';
+
+            const maxTrailer = document.getElementById('maxTrailer');
+            if (maxTrailer) {
+                maxTrailer.src = '';
+                try {
+                    const data = await fetch(`/api/tmdb-proxy/tv/${show.id}/videos?language=en-US`).then(r => r.json());
+                    const trailer = (data.results || []).find(v => v.site === 'YouTube' && v.type === 'Trailer')
+                        || (data.results || []).find(v => v.site === 'YouTube');
+                    if (trailer) {
+                        maxTrailer.src = `https://www.youtube.com/embed/${trailer.key}?autoplay=1&rel=0&enablejsapi=1`;
+                    }
+                } catch (_) { /* no trailer available -- popup still shows title/plot */ }
+            }
+
+            overlay.classList.add('active');
+            document.body.style.overflow = 'hidden';
         };
     }
 

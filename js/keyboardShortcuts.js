@@ -31,20 +31,6 @@ const KeyboardShortcuts = {
             }
         },
         
-        // Theme toggle
-        't': () => {
-            if (window.toggleSiteTheme) window.toggleSiteTheme();
-        },
-        
-        // Language toggle
-        'Shift+L': () => {
-            const langs = ['en', 'ru', 'kz'];
-            const currentLang = window.i18n.getCurrentLanguage();
-            const currentIndex = langs.indexOf(currentLang);
-            const nextLang = langs[(currentIndex + 1) % langs.length];
-            if (window.selectLanguage) window.selectLanguage(nextLang);
-        },
-        
         // Hero slider navigation
         'ArrowLeft': () => {
             if (window.prevSlide && !isInputFocused()) window.prevSlide();
@@ -169,12 +155,8 @@ function showKeyboardShortcuts() {
                         <span>Close Modal/Unfocus</span>
                     </div>
                     <div class="shortcut-item">
-                        <kbd>T</kbd>
-                        <span>Toggle Theme</span>
-                    </div>
-                    <div class="shortcut-item">
-                        <kbd>Shift+L</kbd>
-                        <span>Cycle Language</span>
+                        <kbd>Shift+Tab</kbd>
+                        <span>Toggle Friends List</span>
                     </div>
                 </div>
                 
@@ -250,8 +232,7 @@ function showShortcutToast() {
             <li><span class="shortcut-key">P</span> <span>Playlists</span></li>
             <li><span class="shortcut-key">/</span> <span>Search</span></li>
             <li><span class="shortcut-key">Esc</span> <span>Close</span></li>
-            <li><span class="shortcut-key">T</span> <span>Theme</span></li>
-            <li><span class="shortcut-key">Shift+L</span> <span>Language</span></li>
+            <li><span class="shortcut-key">Shift+Tab</span> <span>Friends</span></li>
             <li><span class="shortcut-key">←/→</span> <span>Hero</span></li>
             <li><span class="shortcut-key">A</span> <span>Account</span></li>
             <li><span class="shortcut-key">,</span> <span>Settings</span></li>

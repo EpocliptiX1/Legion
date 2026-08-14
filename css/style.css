@@ -3340,8 +3340,12 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
     min-height: 255px;
 }
 
+/* My List / My History no longer filter by mode (applyModeFilter is now a
+   no-op in myList.js), so this switcher has nothing left to actually
+   control -- hidden rather than left as a clickable control that does
+   nothing when pressed. */
 .personal-mode-pill {
-    display: inline-flex;
+    display: none;
     align-items: center;
     margin-left: 8px;
     padding: 2px 7px;
@@ -4089,6 +4093,12 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
     background-color: rgba(255,255,255,0.1);
     color: #fff;
     backdrop-filter: blur(10px);
+    transition: background-color 0.2s ease, transform 0.2s;
+}
+
+.btn-info.in-my-list {
+    background-color: #2ecc40;
+    color: #fff;
 }
 
 .btn:hover {
@@ -5896,7 +5906,7 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    padding: 80px 20px;
+    padding: 40px 20px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     box-shadow: 0 10px 30px -10px rgba(0,0,0,0.8);
 }
@@ -7652,8 +7662,8 @@ body.blur-active {
 }
 
 .footer-content {
-    width: 90%;
-    max-width: 1200px;
+    width: 96%;
+    max-width: 2000px;
     margin: 0 24px;
 }
 

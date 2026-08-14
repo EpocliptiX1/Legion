@@ -99,16 +99,12 @@ function modeLabel() {
     return 'MOVIE MODE';
 }
 
+// My List / My History show everything regardless of the site's anime/movie
+// mode toggle -- these are the user's own saved items/watch history, not a
+// content-discovery row, so filtering them by mode just hid things the user
+// deliberately saved.
 function applyModeFilter(records) {
-    if (!Array.isArray(records)) return [];
-    const mode = getEffectiveMode();
-    if (mode === 'all') {
-        return records;
-    }
-    if (mode === 'anime') {
-        return records.filter(r => r.type === 'tv' || r.type === 'anime');
-    }
-    return records.filter(r => r.type === 'movie');
+    return Array.isArray(records) ? records : [];
 }
 
 function updateModePills() {
@@ -477,7 +473,11 @@ async function renderPersonalDiscoveryPanels() {
     const rawList = JSON.parse(localStorage.getItem('myList')) || [];
     const historyRows = await getHistoryRows(50);
     const historyTypeMap = Object.fromEntries(historyRows.map(h => [String(h.movie_id), h.item_type || 'movie']));
-    const savedItems = normalizeSavedItems(rawList, historyTypeMap);
+    // toggleMyList() appends newly-added items to the end of the array, so
+    // reading it in storage order put the OLDEST addition first (leftmost) and
+    // the newest last -- reversed here so it reads newest-first, same
+    // direction as the History panel next to it.
+    const savedItems = normalizeSavedItems(rawList, historyTypeMap).reverse();
 
     const [listRecords, historyRecords] = await Promise.all([
         resolveMyListRecords(savedItems),
