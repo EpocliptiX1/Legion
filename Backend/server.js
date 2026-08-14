@@ -1238,9 +1238,17 @@ const generalLimiter = rateLimit({
 });
 
 const strictLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, 
-    max: 20, 
+    windowMs: 15 * 60 * 1000,
+    max: 20,
     message: { error: 'Too many requests from this IP, please try again later.' }
+});
+
+// Report a Bug / Request Anime / Contact Us -- no auth required to submit, so
+// nothing else was stopping someone from scripting hundreds of these.
+const footerFormLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: { error: 'Too many submissions. Please try again later.' }
 });
 
 // Apply rate limiting to all routes
@@ -9651,7 +9659,7 @@ function insertFooterSubmission(row, res) {
     );
 }
 
-app.post('/api/footer/report-bug', (req, res) => {
+app.post('/api/footer/report-bug', footerFormLimiter, (req, res) => {
     const { category, tmdbId, malId, anilistId, mediaTitle, message, userUID, username } = req.body || {};
     if (category !== 'general' && category !== 'specific') {
         return res.status(400).json({ error: 'category must be "general" or "specific"' });
@@ -9671,7 +9679,7 @@ app.post('/api/footer/report-bug', (req, res) => {
     }, res);
 });
 
-app.post('/api/footer/request-anime', (req, res) => {
+app.post('/api/footer/request-anime', footerFormLimiter, (req, res) => {
     const { category, tmdbId, malId, anilistId, title, message, userUID, username } = req.body || {};
     if (category !== 'no_source' && category !== 'not_found') {
         return res.status(400).json({ error: 'category must be "no_source" or "not_found"' });
@@ -9689,7 +9697,7 @@ app.post('/api/footer/request-anime', (req, res) => {
     }, res);
 });
 
-app.post('/api/footer/contact', (req, res) => {
+app.post('/api/footer/contact', footerFormLimiter, (req, res) => {
     const { name, email, subject, message, userUID, username } = req.body || {};
     const safeName = String(name || '').trim();
     const safeEmail = String(email || '').trim();
@@ -10076,10 +10084,9 @@ const animegoResolveCache = new Map(); // key -> { result, resolvedAt }
 const animegoResolveInFlight = new Map();
 const ANIMEGO_RESOLVE_CACHE_TTL_MS = 30 * 60 * 1000;
 
-async function resolveAnimegoAniboom(rawTitle, season) {
+async function searchAnimegoCandidates(query) {
     const headers = { 'User-Agent': NEWSTREAM_UA, 'Referer': 'https://animego.me/' };
-
-    const searchRes = await axios.get(`https://animego.me/search/all?q=${encodeURIComponent(rawTitle)}`, { headers, timeout: 15000 });
+    const searchRes = await axios.get(`https://animego.me/search/all?q=${encodeURIComponent(query)}`, { headers, timeout: 15000 });
     const $search = cheerio.load(searchRes.data);
     const candidates = [];
     $search('a[href^="/anime/"]').each((i, el) => {
@@ -10092,16 +10099,23 @@ async function resolveAnimegoAniboom(rawTitle, season) {
         if (!title || !/^[a-z0-9-]+-\d+$/i.test(slug)) return;
         if (candidates.some(c => c.slug === slug)) return;
 
-        // The card's English title (when animego has one) is NOT inside this <a> at
-        // all -- it's a sibling line above it: .ani-grid__item-body > div.fw-lighter.
-        // Without this, matching a query like "Hellsing" against the Russian-only
-        // "Хеллсинг: Война с нечистью" scores ~0% and gets wrongly rejected as "not found".
-        const titleEnglish = $el.closest('.ani-grid__item-body')
+        // The card's secondary title (English if animego has one, otherwise often
+        // the romaji) is NOT inside this <a> at all -- it's a sibling line above
+        // it: .ani-grid__item-body > div.fw-lighter. Without this, matching a
+        // query like "Hellsing" against the Russian-only "Хеллсинг: Война с
+        // нечистью" scores ~0% and gets wrongly rejected as "not found".
+        const secondaryTitle = $el.closest('.ani-grid__item-body')
             .find('> div.fw-lighter').first().text().trim() || null;
 
-        candidates.push({ slug, title, titleEnglish });
+        candidates.push({ slug, title, secondaryTitle });
     });
-    if (candidates.length === 0) throw new Error(`No animego.me results for: "${rawTitle}"`);
+    return candidates;
+}
+
+async function resolveAnimegoAniboom(rawTitle, season, { malId = null, tmdbId = null } = {}) {
+    const headers = { 'User-Agent': NEWSTREAM_UA, 'Referer': 'https://animego.me/' };
+
+    let candidates = await searchAnimegoCandidates(rawTitle);
 
     // animego's own search ranking isn't trustworthy for cross-language queries --
     // it happily returns loosely-related results (a "Reincarnation" title for a
@@ -10115,14 +10129,63 @@ async function resolveAnimegoAniboom(rawTitle, season) {
     // scores 0.53 from bigram overlap on "reincarnation" alone -- 0.4 let that false
     // positive through, 0.6 cleanly separates the two.
     const NEWSTREAM_MIN_TITLE_SIMILARITY = 0.6;
-    const queryLower = rawTitle.toLowerCase();
-    const scored = candidates.map(c => {
-        const ruScore = stringSimilarity.compareTwoStrings(queryLower, c.title.toLowerCase());
-        const enScore = c.titleEnglish ? stringSimilarity.compareTwoStrings(queryLower, c.titleEnglish.toLowerCase()) : 0;
-        return { ...c, similarity: Math.max(ruScore, enScore) };
-    });
-    scored.sort((a, b) => b.similarity - a.similarity);
-    console.log(`[NewStream] title match scores for "${rawTitle}":`, scored.map(c => `${c.titleEnglish ? `${c.titleEnglish} / ` : ''}${c.title} (${c.similarity.toFixed(2)})`).join(', '));
+    const titleVariants = [rawTitle];
+
+    const scoreCandidates = (list, variants) => {
+        const lowerVariants = variants.map(v => v.toLowerCase());
+        return list.map(c => {
+            const candidateTitles = [c.title, c.secondaryTitle].filter(Boolean).map(t => t.toLowerCase());
+            let best = 0;
+            for (const v of lowerVariants) {
+                for (const t of candidateTitles) {
+                    best = Math.max(best, stringSimilarity.compareTwoStrings(v, t));
+                }
+            }
+            return { ...c, similarity: best };
+        }).sort((a, b) => b.similarity - a.similarity);
+    };
+
+    let scored = scoreCandidates(candidates, titleVariants);
+
+    // Not every anime has an English localization on animego -- some cards only
+    // show the Russian title plus the raw Japanese romaji as the secondary line
+    // (e.g. "Koko wa Ore ni Makasete..." instead of "I Became a Legend After My
+    // 10 Year-Long Last Stand"). An English TMDB/query title has near-zero
+    // overlap with that romaji, so it fails here even though the show genuinely
+    // exists. Fetch the real romaji/native title from AniList (same id lookup
+    // used elsewhere) and retry with that as an additional search query + match
+    // target before giving up.
+    if (scored[0].similarity < NEWSTREAM_MIN_TITLE_SIMILARITY && (malId || tmdbId)) {
+        try {
+            let anilistId = null, resolvedMalId = malId ? Number(malId) : null;
+            if (tmdbId) {
+                const ids = await resolveAnimeIds(tmdbId, season);
+                if (ids) {
+                    anilistId = ids.anilistId || null;
+                    resolvedMalId = resolvedMalId || ids.malId || null;
+                }
+            }
+            const media = await aniListGetMediaBasic({ anilistId, malId: resolvedMalId });
+            const altTitles = [media?.title?.romaji, media?.title?.native, media?.title?.english].filter(Boolean);
+            if (altTitles.length) {
+                console.log(`[NewStream] "${rawTitle}" scored low, retrying with AniList titles:`, altTitles);
+                for (const alt of altTitles) {
+                    if (titleVariants.includes(alt)) continue;
+                    titleVariants.push(alt);
+                    const altCandidates = await searchAnimegoCandidates(alt);
+                    for (const c of altCandidates) {
+                        if (!candidates.some(existing => existing.slug === c.slug)) candidates.push(c);
+                    }
+                }
+                scored = scoreCandidates(candidates, titleVariants);
+            }
+        } catch (err) {
+            console.warn('[NewStream] AniList title fallback failed:', err.message || err);
+        }
+    }
+
+    if (candidates.length === 0) throw new Error(`No animego.me results for: "${rawTitle}"`);
+    console.log(`[NewStream] title match scores for "${rawTitle}" (variants: ${titleVariants.join(' | ')}):`, scored.map(c => `${c.secondaryTitle ? `${c.secondaryTitle} / ` : ''}${c.title} (${c.similarity.toFixed(2)})`).join(', '));
 
     if (scored[0].similarity < NEWSTREAM_MIN_TITLE_SIMILARITY) {
         const err = new Error(`Not available on RU - MV: no close match for "${rawTitle}" (closest: "${scored[0].title}", ${Math.round(scored[0].similarity * 100)}% match)`);
@@ -10188,14 +10251,14 @@ async function resolveAnimegoAniboom(rawTitle, season) {
     return { slug: chosen.slug, aniboomId, parentEncoded, translations };
 }
 
-function resolveAnimegoAniboomCached(rawTitle, season) {
+function resolveAnimegoAniboomCached(rawTitle, season, ids = {}) {
     const key = `${String(rawTitle).toLowerCase().trim()}::${season}`;
     const cached = animegoResolveCache.get(key);
     if (cached && (Date.now() - cached.resolvedAt) < ANIMEGO_RESOLVE_CACHE_TTL_MS) {
         return Promise.resolve(cached.result);
     }
     if (animegoResolveInFlight.has(key)) return animegoResolveInFlight.get(key);
-    const p = resolveAnimegoAniboom(rawTitle, season)
+    const p = resolveAnimegoAniboom(rawTitle, season, ids)
         .then(result => {
             animegoResolveCache.set(key, { result, resolvedAt: Date.now() });
             return result;
@@ -10247,7 +10310,7 @@ app.get('/api/anime-new-log', async (req, res) => {
             }
         }
 
-        const { aniboomId, parentEncoded, translations } = await resolveAnimegoAniboomCached(rawTitle, season);
+        const { aniboomId, parentEncoded, translations } = await resolveAnimegoAniboomCached(rawTitle, season, { malId, tmdbId });
         if (translations.length === 0) throw new Error('No Russian translations available for this title');
 
         const orderedTranslations = requestedTranslation
