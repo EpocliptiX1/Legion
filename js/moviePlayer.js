@@ -1819,12 +1819,55 @@ document.addEventListener('DOMContentLoaded', function() {
                     const seasonMatch = seasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
                     const megaplayMalId = seasonMatch?.malId || malId;
                     try {
+                        // Prefer the extracted stream in OUR player (subs + skip markers, no
+                        // megaplay ads) - same treatment the MegaVid button itself now gets.
+                        // The iframe embed stays as the last resort below.
+                        const exRes = await fetch(`/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalId)}&episode=${encodeURIComponent(episode)}&lang=${encodeURIComponent(audioType)}`);
+                        const ex = exRes.ok ? await exRes.json().catch(() => null) : null;
+                        if (ex?.ok && ex.stream) {
+                            console.log('[Megaplay fallback] KAA had no sources, using extracted Megaplay stream');
+                            document.querySelectorAll('.server-btn').forEach(btn => btn.classList.toggle('active', btn.id === 'srvMega1'));
+                            window.currentServer = 'srvMega1';
+
+                            const marks = [];
+                            if (ex.intro && (ex.intro.end || 0) > 0) marks.push({ type: 'intro', start: ex.intro.start || 0, end: ex.intro.end });
+                            if (ex.outro && (ex.outro.end || 0) > 0) marks.push({ type: 'outro', start: ex.outro.start || 0, end: ex.outro.end });
+                            currentKaaSkipMarkers = marks;
+                            currentKaaSkipSegments = buildKaaPlaybackSegments(currentKaaSkipMarkers, 0);
+                            window.currentKaaSkipSegments = currentKaaSkipSegments;
+                            renderKaaSkipSegments();
+                            updateKaaSkipOverlay();
+
+                            const subs = (ex.tracks || [])
+                                .filter(t => t && t.file && (t.kind === 'captions' || t.kind === 'subtitles' || !t.kind))
+                                .map(t => ({ file: t.file, label: t.label || 'Subtitles', default: !!t.default }));
+                            const proxied = `/api/m3u8-proxy?url=${encodeURIComponent(ex.stream)}&ref=${encodeURIComponent(ex.proxyRef || '')}`;
+                            const okNative = showVideoPlayer(proxied, subs, {
+                                provider: 'megaplay',
+                                title: document.getElementById('title')?.textContent.trim() || 'Unknown Anime',
+                                season: selectedSeason,
+                                episode,
+                                audio: audioType
+                            });
+                            if (okNative !== false) {
+                                if (infoDiv) infoDiv.textContent = `Megaplay: Streaming.${marks.length ? ' · skip markers' : ''}`;
+                                return true;
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('[Megaplay fallback] extraction failed, trying iframe:', e.message);
+                    }
+                    try {
                         const mpRes = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(episode)}/${encodeURIComponent(audioType)}`);
                         const mpData = await mpRes.json().catch(() => ({}));
                         if (mpRes.ok && mpData?.embedUrl) {
-                            console.log('[Megaplay fallback] KAA had no sources, using Megaplay embed:', mpData.embedUrl);
+                            console.log('[Megaplay fallback] using Megaplay iframe embed:', mpData.embedUrl);
                             document.querySelectorAll('.server-btn').forEach(btn => btn.classList.toggle('active', btn.id === 'srvMega1'));
                             window.currentServer = 'srvMega1';
+                            currentKaaSkipMarkers = [];
+                            currentKaaSkipSegments = [];
+                            renderKaaSkipSegments();
+                            updateKaaSkipOverlay();
                             showIframePlayer(mpData.embedUrl);
                             if (infoDiv) infoDiv.textContent = 'Megaplay: Streaming.';
                             return true;

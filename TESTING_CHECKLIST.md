@@ -31,6 +31,8 @@ skip). Now extracted and played in *our* player, same as KAA/Neko.
 - [ ] 🔴 **Skip intro/outro buttons should appear** (AoT ep1: intro 138-215s,
       outro 1452-1542s) — this is the new per-episode skip data
 - [ ] Switch SUB ⇄ DUB on MegaVid — both should work
+- [ ] 🔴 KAA fallback: if KickAssAnime has no sources it auto-switches to MegaPlay —
+      that path is now native too (subs + skip), iframe only as last resort
 - [ ] If extraction fails it silently falls back to the old iframe — so if you see
       megaplay's own player, extraction failed (check console)
 
