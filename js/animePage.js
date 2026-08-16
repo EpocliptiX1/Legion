@@ -419,6 +419,31 @@
         }
     }
 
+    // Some anime cards (e.g. "Because You Watched", from /api/anime-recommendations) ship
+    // with no TMDB id baked in at render time - lazy by design, since resolving all of
+    // them up front is expensive (see the comment on /api/anime-recommendations). This is
+    // the actual lazy-resolve-on-click that comment always intended: figure out the real
+    // TMDB id right when the card is clicked, instead of baking a dead
+    // movieInfo.html?id=null link into the card. Falls back to a live title search
+    // (navigateToAnimeByTitle, same as an unmapped card elsewhere already does) if the
+    // precise AniList-id lookup comes up empty.
+    window.navigateToAnimeByAniListId = async function(anilistId, title, malId) {
+        try {
+            const params = new URLSearchParams({ anilistId: String(anilistId) });
+            if (title) params.set('title', String(title));
+            if (malId) params.set('malId', String(malId));
+            const res = await fetch(`/api/anime-tmdb-id?${params.toString()}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data?.tmdb_id) {
+                    window.location.href = `/html/movieInfo.html?id=${data.tmdb_id}&type=tv`;
+                    return;
+                }
+            }
+        } catch (e) {}
+        if (title) window.navigateToAnimeByTitle(title);
+    };
+
     function stripHtml(text) {
         return String(text || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
     }
@@ -434,6 +459,21 @@
             ? `/html/movieInfo.html?id=${tmdbId}&type=tv`
             : '#';
         const fallbackTitle = escapeHtml(item.title?.romaji || item.title?.english || item.title?.native || '');
+        // A handful of shows (usually obscure ones) are only listed on anikoto under
+        // their Japanese romaji/native title with no English alias at all - if the
+        // English title (used above) doesn't match anything, these get tried next.
+        // Synonyms (community-submitted alt titles) go first - for shows AniList itself
+        // has no official English title for, that field is often the only thing carrying
+        // the English name anikoto actually lists it under (e.g. AniList's romaji-only
+        // "Tantei wa mou, Shindeiru. Season 2" vs anikoto's "The Detective Is Already
+        // Dead", which a synonyms entry usually covers). Capped at 3 - some shows have a
+        // long list of fan-submitted synonyms and trying all of them would mean a lot of
+        // sequential anikoto requests for one badge.
+        const badgeAltTitles = [
+            ...(Array.isArray(item.synonyms) ? item.synonyms.slice(0, 3) : []),
+            item.title?.romaji,
+            item.title?.native
+        ].filter(t => t && t !== item.title?.english);
 
         return `
             <div class="grid-card"
@@ -449,6 +489,7 @@
                  onmouseleave="handleCardLeave(this)"
                  onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle.replace(/'/g, "\\'")}');`}">
                 ${rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${rating}</span>` : ''}
+                ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title, altTitles: badgeAltTitles, tmdbId }) : ''}
                 <img src="${poster}" loading="lazy" alt="${title}" onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle.replace(/'/g, "\\'")}');`}" onerror="this.src='/img/LOGO_Short.png'">
                 <div class="card-title-label">
                     <div class="card-title-name">${title}</div>
@@ -524,6 +565,7 @@
                  onmouseenter="handleCardHover(this)"
                  onmouseleave="handleCardLeave(this)">
                 ${rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${rating}</span>` : ''}
+                ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title: show.name || show.title || show.original_name || '', tmdbId: show.id }) : ''}
                 <img src="${poster}" loading="lazy"
                      onclick="window.location.href='${href}'"
                      onerror="this.src='/img/LOGO_Short.png'">
@@ -1586,6 +1628,10 @@
                  onmouseenter="handleCardHover(this)"
                  onmouseleave="handleCardLeave(this)">
                 ${rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${rating}</span>` : ''}
+                ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title: anime.title_english || anime.title || '', altTitles: [
+                    anime.title_japanese,
+                    ...(Array.isArray(anime.titles) ? anime.titles.filter(t => t?.type === 'Synonym' || t?.type === 'Japanese').map(t => t.title) : [])
+                ].filter(t => t && t !== (anime.title_english || anime.title)) }) : ''}
                 <img id="${uid}" src="${poster}" loading="lazy"
                      onclick="navigateToAnimeByTitle(this.closest('.grid-card').dataset.title)"
                      onerror="this.src='/img/LOGO_Short.png'">
@@ -1845,6 +1891,7 @@
             const start = state.page * state.pageSize;
             const chunk = state.cards.slice(start, start + state.pageSize);
             state.container.innerHTML = chunk.join('');
+            window.mountEpisodeCountBadges?.(state.container);
 
             if (dir !== 0 && typeof state.container.animate === 'function') {
                 state.container.animate(
@@ -1892,7 +1939,11 @@
         let historyIds = [];
         let animeHistoryRows = [];
         if (window.recommendationsSystem?.fetchActivityHistory) {
-            historyRows = await window.recommendationsSystem.fetchActivityHistory(20) || [];
+            // Deep enough to walk PAST a run of non-anime entries - watching a few movies
+            // used to push every anime out of the window, leaving no seed and silently
+            // hiding the whole "Because You Watched" row (see the same fix in
+            // mainPageControls.js for movie mode). Same single indexed query, bigger limit.
+            historyRows = await window.recommendationsSystem.fetchActivityHistory(40) || [];
             animeHistoryRows = historyRows.filter(h => {
                 const type = String(h?.item_type || '').toLowerCase();
                 const genre = String(h?.genre || '').toLowerCase();
@@ -1989,6 +2040,7 @@
                     if (filtered.length > 0) {
                         taSec.style.display = '';
                         taCon.innerHTML = filtered.map(jikanCard).join('');
+                        window.mountEpisodeCountBadges?.(taCon);
                         swapJikanPostersToTmdb(taCon);
                     } else {
                         console.warn('[TopAiring] Nothing passed filter — section stays hidden');
@@ -2037,6 +2089,7 @@
                     const histCardsWithMore = [...cards, historyMoreCard];
                     histSection.style.display = '';
                     histContainer.innerHTML = histCardsWithMore.join('');
+                    window.mountEpisodeCountBadges?.(histContainer);
 
                     const firstRenderedPoster = histContainer.querySelector('.grid-card img')?.src || '';
                     lastWatchedPoster = firstRenderedPoster;
@@ -2052,7 +2105,11 @@
         // ── 4. "Because You Watched X" — Anime recommendations from cache ──────
         const seedTmdbId = malEntries[0]?.tmdbId || historyIds[0] || null;
         const seedHistory = historyRows.find(h => String(h.movie_id) === String(seedTmdbId));
-        const seedTitle = seedHistory?.title || historyRows[0]?.title || 'a recent anime';
+        // Fall back to the ANIME-filtered history, never the raw history - seedTmdbId is
+        // always anime-filtered, so pulling the label from historyRows[0] meant that if the
+        // most recent watch was a movie, the row rendered anime recommendations under
+        // "Because you watched <that movie>" - right recommendations, wrong show named.
+        const seedTitle = seedHistory?.title || animeHistoryRows[0]?.title || 'a recent anime';
 
         if (seedTmdbId) {
             await loadAnimeBecauseYouWatchedRow(seedTmdbId, seedTitle);
@@ -2201,6 +2258,7 @@
                         signalBrowseRecommendationsReady();
                     } else {
                         recContainer.innerHTML = cardHtmls.join('');
+                        window.mountEpisodeCountBadges?.(recContainer);
                     }
                 } else if (typeof window.__browseRecommendedPageUpdate === 'function') {
                     window.__browseRecommendedPageUpdate(cardHtmls);
@@ -2333,8 +2391,12 @@
                 return;
             }
 
+            // _type: 'anime' (not 'tv') - this row is anime-only recommendations, and
+            // createCard's badge logic specifically checks for 'anime' to know to look
+            // the episode counts up on anikoto instead of trying a TMDB episode-count
+            // fetch (which these recs' broken/null tmdbId would fail anyway).
             const cards = body.recommendations
-                .map(rec => ({ ...rec, _type: 'tv' }))
+                .map(rec => ({ ...rec, _type: 'anime' }))
                 .map(createCard)
                 .join('');
 

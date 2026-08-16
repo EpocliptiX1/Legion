@@ -101,6 +101,19 @@
         const safeTitle = safeHtmlText(title);
         const safeTitleJs = escapeJsString(title);
         const meta = `${year}${rating !== '--' ? ` · ★ ${rating}` : ''}`;
+        // Some shows have no English title on AniList at all, and animego's own search
+        // often only carries a Russian title + Japanese romaji (no English), so a plain
+        // English query can fail to match anything there even when the show is really
+        // listed - the romaji/native/synonyms give the anikoto and animego lookups a real
+        // shot at finding it under whatever name they actually use.
+        const badgeAltTitles = [
+            ...(Array.isArray(item.synonyms) ? item.synonyms.slice(0, 3) : []),
+            item.title?.romaji,
+            item.title?.native
+        ].filter(t => t && t !== title);
+        const badgePlaceholder = window.buildEpisodeCountBadgesPlaceholder
+            ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title, altTitles: badgeAltTitles, tmdbId, inline: true })
+            : '';
 
         if (tmdbId) {
             const href = `/html/movieInfo.html?id=${tmdbId}&type=tv`;
@@ -109,7 +122,7 @@
                 <span class="disc-card-num">${num}</span>
                 <div class="disc-card-info">
                     <div class="disc-card-title">${safeTitle}</div>
-                    <div class="disc-card-meta">${meta}</div>
+                    <div class="disc-card-meta">${meta} ${badgePlaceholder}</div>
                 </div>
             </a>`;
         }
@@ -119,7 +132,7 @@
             <span class="disc-card-num">${num}</span>
             <div class="disc-card-info">
                 <div class="disc-card-title">${safeTitle}</div>
-                <div class="disc-card-meta">${meta}</div>
+                <div class="disc-card-meta">${meta} ${badgePlaceholder}</div>
             </div>
         </a>`;
     }
@@ -150,6 +163,7 @@
 
         const tmdbIds = await Promise.all(items.map(item => resolveAniListItemTmdbId(item)));
         list.innerHTML = items.map((item, i) => renderAnimeTrendingCard(item, tmdbIds[i], i)).join('');
+        window.mountEpisodeCountBadges?.(list);
     }
 
     /* ── Trending Now: TMDB weekly trending (anime-mode aware) ── */
@@ -207,15 +221,19 @@
                 const num = String(i + 1).padStart(2, '0');
                 const rankClass = i < 3 ? `rank-top-${i + 1}` : '';
                 const title = (m.title || 'Unknown').replace(/'/g, '&#39;');
+                const badgePlaceholder = window.buildEpisodeCountBadgesPlaceholder
+                    ? window.buildEpisodeCountBadgesPlaceholder({ type: 'movie', title: m.title || '', tmdbId: m.id, inline: true })
+                    : '';
                 return `<a class="disc-card ${rankClass}" href="${href}">
                     <img class="disc-card-img" src="${poster}" alt="" loading="lazy">
                     <span class="disc-card-num">${num}</span>
                     <div class="disc-card-info">
                         <div class="disc-card-title">${title}</div>
-                        <div class="disc-card-meta">${year}${rating !== '--' ? ' · ★ ' + rating : ''}</div>
+                        <div class="disc-card-meta">${year}${rating !== '--' ? ' · ★ ' + rating : ''} ${badgePlaceholder}</div>
                     </div>
                 </a>`;
             }).join('');
+            window.mountEpisodeCountBadges?.(list);
         } catch (e) {
             list.innerHTML = '<p style="color:#555;font-size:.8rem;padding:10px">Could not load trending.</p>';
             if (pills) pills.innerHTML = '';

@@ -98,7 +98,16 @@
         }
 
         const href = `/html/movieInfo.html?id=${tmdbId}&type=tv`;
-        return `<a class="disc-card" href="${href}">
+        // a.title is AniList's romaji/native form (see transformAniListAiringSchedule in
+        // server.js) - falls back to it as the display title when there's no English one,
+        // but it's also worth trying as an alt title even when English IS available, since
+        // anikoto/animego sometimes only list a show under its romaji name.
+        const scheduleAltTitles = [a.title].filter(t => t && t !== (a.title_english || a.title));
+        const badgePlaceholder = window.buildEpisodeCountBadgesPlaceholder
+            ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title: a.title_english || a.title || '', altTitles: scheduleAltTitles, tmdbId })
+            : '';
+        return `<a class="disc-card" href="${href}" style="position:relative;">
+            ${badgePlaceholder}
             <img class="disc-card-img" src="${img}" alt="" loading="lazy">
             <div class="disc-card-info">
                 <span class="disc-card-time">${time}</span>
@@ -114,8 +123,12 @@
         const isTv = item._mediaType === 'tv';
         const title = escapeHtml(item.title || item.name || 'Unknown');
         const href = `/html/movieInfo.html?id=${item.id}&type=${isTv ? 'tv' : 'movie'}`;
+        const badgePlaceholder = window.buildEpisodeCountBadgesPlaceholder
+            ? window.buildEpisodeCountBadgesPlaceholder({ type: isTv ? 'tv' : 'movie', title: item.title || item.name || '', tmdbId: item.id })
+            : '';
 
         return `<a class="disc-card" href="${href}">
+            ${badgePlaceholder}
             <img class="disc-card-img" src="${img}" alt="" loading="lazy">
             <div class="disc-card-info">
                 <span class="disc-card-time">${isTv ? 'Series' : 'Movie'}</span>
@@ -318,9 +331,11 @@
             // Bail if the user already navigated to a different date while this resolved.
             if (overlay.dataset.activeDate !== iso) return;
             body.innerHTML = animeCardCache[iso].join('') || '<p class="calendar-day-empty">Nothing airing.</p>';
+            window.mountEpisodeCountBadges?.(body);
         } else {
             const items = releaseBuckets[iso] || [];
             body.innerHTML = items.length ? items.map(renderReleaseCard).join('') : '<p class="calendar-day-empty">No releases.</p>';
+            window.mountEpisodeCountBadges?.(body);
         }
     }
 

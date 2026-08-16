@@ -1615,6 +1615,7 @@ async function fetchRow(containerId, sortType, options = {}) {
             const data = await res.json();
             const movies = Array.isArray(data.results) ? data.results : [];
             container.innerHTML = movies.map(movie => createCard(normalizeTmdbForRow(movie))).join('');
+            window.mountEpisodeCountBadges?.(container);
             return;
         }
 
@@ -1636,6 +1637,7 @@ async function fetchRow(containerId, sortType, options = {}) {
         const movies = await res.json();
 
         container.innerHTML = movies.map(movie => createCard(movie)).join('');
+        window.mountEpisodeCountBadges?.(container);
     } catch (err) {
         console.error('Error fetching row:', err);
     }
@@ -1676,6 +1678,7 @@ async function loadMyListRow() {
 
     section.style.display = 'block';
     container.innerHTML = movies.map(movie => createCard(movie)).join('');
+    window.mountEpisodeCountBadges?.(container);
     applyBrowseRowBg('myListRowSection');
 }
 
@@ -1886,6 +1889,7 @@ async function loadRecommendedRow() {
         return;
     }
     container.innerHTML = movies.slice(0, 6).map(movie => createCard(movie)).join('');
+    window.mountEpisodeCountBadges?.(container);
     applyBrowseRowBg('recommendedSection');
 }
 
@@ -1925,6 +1929,7 @@ async function loadPersonalGenreRows() {
             if (!movies || movies.length === 0) continue;
             section.style.display = 'block';
             container.innerHTML = movies.slice(0, 15).map(movie => createCard(movie)).join('');
+            window.mountEpisodeCountBadges?.(container);
         } catch(e) {}
     }
 }
@@ -1974,6 +1979,7 @@ async function loadHistoryRow() {
     allCards.sort((a, b) => a.sortKey - b.sortKey);
     section.style.display = 'block';
     container.innerHTML = allCards.map(c => c.card).join('');
+    window.mountEpisodeCountBadges?.(container);
     applyBrowseRowBg('historyRowSection');
 }
 
@@ -1988,7 +1994,13 @@ async function loadBecauseYouWatchedRow() {
         return;
     }
 
-    const history = await window.recommendationsSystem.fetchActivityHistory(5);
+    // Deep enough to walk PAST a run of entries belonging to the other mode. This used to
+    // fetch only the 5 most recent, so watching a handful of anime would push every movie out
+    // of the window and the whole row silently vanished in movie mode (and vice versa in anime
+    // mode) - the seed below scans for the first entry matching the CURRENT mode, so it needs
+    // enough history to actually find one. Same single indexed query either way, just a bigger
+    // limit, so this costs nothing extra.
+    const history = await window.recommendationsSystem.fetchActivityHistory(40);
     if (!history || history.length === 0) {
         section.style.display = 'none';
         return;
@@ -2057,6 +2069,7 @@ async function loadBecauseYouWatchedRow() {
         if (movies.length === 0) { section.style.display = 'none'; return; }
         section.style.display = 'block';
         container.innerHTML = movies.slice(0, 15).map(movie => createCard(movie)).join('');
+        window.mountEpisodeCountBadges?.(container);
         applyBrowseRowBg('becauseYouWatchedSection');
     } catch (err) {
         section.style.display = 'none';
@@ -2172,14 +2185,26 @@ function createCard(movie) {
         : 'movie';
     const isTV = cardType === 'tv';
     const tagLabel = isTV ? 'Anime' : 'Movie';
-    const navUrl = isTV
-        ? `movieInfo.html?id=${movie.ID}&type=tv`
-        : `movieInfo.html?id=${movie.ID}&type=movie`;
+    // Some anime recs (loadAnimeBecauseYouWatchedRow) come with no TMDB id yet by design -
+    // resolving all of them up front is expensive, so it's deferred to click time instead.
+    // Those rows always carry anilistId; anything else with a real movie.ID just navigates
+    // directly like before.
+    const hasRealId = movie.ID != null && movie.ID !== '';
+    const safeTitleJs = String(movie['Movie Name'] || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const clickHandler = hasRealId
+        ? `window.location.href='movieInfo.html?id=${movie.ID}&type=${isTV ? 'tv' : 'movie'}'`
+        : `navigateToAnimeByAniListId('${movie.anilistId || ''}', '${safeTitleJs}', '${movie.malId || ''}')`;
+    // rawType still distinguishes real anime ('anime') from regular TV ('tv'/'TV'/2) even
+    // though cardType above collapses both into 'tv' for nav/labeling purposes - anime gets
+    // real sub/dub counts from anikoto, regular TV gets its TMDB episode count in all three
+    // badge slots, movies are always 1/1/1.
+    const badgeType = cardType === 'movie' ? 'movie' : (rawType === 'anime' ? 'anime' : 'tv');
 
     return `
-        <div class="grid-card" data-id="${movie.ID}" data-title="${movie['Movie Name'] || ''}" data-year="${year}" data-runtime="${runtime}" data-rating="${rating}" data-plot="${plot}" data-genre="${genre}" data-type="${cardType}" onmouseenter="handleCardHover(this)" onmouseleave="handleCardLeave(this)">
+        <div class="grid-card" data-id="${hasRealId ? movie.ID : ''}" data-title="${movie['Movie Name'] || ''}" data-year="${year}" data-runtime="${runtime}" data-rating="${rating}" data-plot="${plot}" data-genre="${genre}" data-type="${cardType}" onmouseenter="handleCardHover(this)" onmouseleave="handleCardLeave(this)">
             ${rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${rating}</span>` : ''}
-            <img src="${movie.poster_full_url || '/img/LOGO_Short.png'}" loading="lazy" onclick="window.location.href='${navUrl}'" onerror="this.src='/img/LOGO_Short.png'">
+            ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: movie['Movie Name'] || '', tmdbId: hasRealId ? movie.ID : null }) : ''}
+            <img src="${movie.poster_full_url || '/img/LOGO_Short.png'}" loading="lazy" onclick="${clickHandler}" onerror="this.src='/img/LOGO_Short.png'">
             <div class="card-title-label">
                 <div class="card-title-name">${movie['Movie Name'] || 'Unknown'}</div>
                 <div class="card-title-tag">${tagLabel}</div>
@@ -2197,8 +2222,8 @@ function createCard(movie) {
                     </div>
                     <p class="hover-meta-desc">${plot}</p>
                     <div class="hover-meta-actions">
-                        <button class="hover-play" onclick="window.location.href='${navUrl}'">▶</button>
-                        <a class="hover-info" href="${navUrl}">More Info</a>
+                        <button class="hover-play" onclick="${clickHandler}">▶</button>
+                        <a class="hover-info" href="${hasRealId ? `movieInfo.html?id=${movie.ID}&type=${isTV ? 'tv' : 'movie'}` : 'javascript:void(0)'}" onclick="${hasRealId ? '' : clickHandler}">More Info</a>
                     </div>
                 </div>
             </div>

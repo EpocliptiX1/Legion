@@ -3,7 +3,13 @@ const limit = 50;
 let isLoading = false;
 // While an AniList-filtered anime view is showing, the scroll-triggered loadMovies() (default
 // AniList row path) must not fire -- it would append unrelated, unfiltered results underneath.
+// Own pagination state instead, separate from currentPage (which belongs to the default/
+// unfiltered path) - this view used to just load one page and never continue on scroll at all.
 let anilistFilteredViewActive = false;
+let anilistFilteredPage = 1;
+let anilistFilteredHasMore = true;
+let anilistFilteredLoading = false;
+let anilistFilteredCurrentFilters = null;
 
 function isAnimeLibraryMode() {
     return localStorage.getItem('animeMode') === 'true';
@@ -142,7 +148,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 yearMax: document.getElementById('animeYearPickerMax')?.value || ''
             };
             anilistFilteredViewActive = true;
-            await loadAnimeLibraryFromAniList(grid, filters);
+            anilistFilteredCurrentFilters = filters;
+            anilistFilteredPage = 1;
+            anilistFilteredHasMore = true;
+            await loadAnimeLibraryFromAniList(grid, filters, true);
         };
 
         const applyBtnAnime = document.getElementById('applyFiltersAnime');
@@ -247,7 +256,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
     window.onscroll = function() {
         if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 500) {
-            if (!isLoading && !anilistFilteredViewActive) loadMovies();
+            if (anilistFilteredViewActive) {
+                if (!anilistFilteredLoading && anilistFilteredHasMore && anilistFilteredCurrentFilters) {
+                    loadAnimeLibraryFromAniList(grid, anilistFilteredCurrentFilters, false);
+                }
+            } else if (!isLoading) {
+                loadMovies();
+            }
         }
     };
 });
@@ -338,7 +353,9 @@ async function loadMovies() {
                     <path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="currentColor"/> 
                 </svg>`;
             
+            const badgeType = type === 'tv' ? 'tv' : 'movie';
             card.innerHTML = `
+                ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: title, tmdbId: id }) : ''}
                 <img src="${posterUrl}" loading="lazy" decoding="async" onclick="window.location.href='movieInfo.html?id=${id}&type=${type}'" alt="${safeName}">
                 <div class="card-hover-info">
                     <div class="hover-btns">
@@ -355,7 +372,8 @@ async function loadMovies() {
             `;
             grid.appendChild(card);
         });
-        
+        window.mountEpisodeCountBadges?.(grid);
+
         currentPage++;
         isLoading = false;
     } catch (err) {
@@ -441,14 +459,26 @@ async function fetchAniListFilteredAnime(filters, page = 1, perPage = 30) {
     return Array.isArray(items) ? items : [];
 }
 
-async function loadAnimeLibraryFromAniList(grid, filters) {
+async function loadAnimeLibraryFromAniList(grid, filters, isFreshLoad) {
     if (!grid) return;
-    grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Loading filtered anime…</p>';
+    if (anilistFilteredLoading) return;
+    anilistFilteredLoading = true;
+
+    if (isFreshLoad) {
+        grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Loading filtered anime…</p>';
+    }
 
     try {
-        const mediaList = await fetchAniListFilteredAnime(filters);
+        const perPage = 30;
+        const mediaList = await fetchAniListFilteredAnime(filters, anilistFilteredPage, perPage);
+        // Fewer than a full page back means AniList has nothing more for these filters -
+        // stop trying to load further pages on scroll.
+        anilistFilteredHasMore = mediaList.length >= perPage;
+
         if (!mediaList.length) {
-            grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No anime match these filters.</p>';
+            if (isFreshLoad) {
+                grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">No anime match these filters.</p>';
+            }
             return;
         }
 
@@ -456,7 +486,9 @@ async function loadAnimeLibraryFromAniList(grid, filters) {
         // no more per-item /api/anime-tmdb-id round trip needed here at all.
         const results = mediaList.filter(media => media.tmdbId);
         if (!results.length) {
-            grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Found matching anime, but couldn\'t link any to a TMDB entry.</p>';
+            if (isFreshLoad) {
+                grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Found matching anime, but couldn\'t link any to a TMDB entry.</p>';
+            }
             return;
         }
 
@@ -465,7 +497,7 @@ async function loadAnimeLibraryFromAniList(grid, filters) {
                 <path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z" fill="currentColor"/>
             </svg>`;
 
-        grid.innerHTML = '';
+        if (isFreshLoad) grid.innerHTML = '';
         results.forEach((media) => {
             const tmdbId = media.tmdbId;
             const title = media.title?.english || media.title?.romaji || 'Unknown';
@@ -475,10 +507,12 @@ async function loadAnimeLibraryFromAniList(grid, filters) {
             const inferredType = media.format === 'MOVIE' ? 'movie' : 'anime';
             const typeLabel = media.format || 'Anime';
 
+            const badgeType = inferredType === 'movie' ? 'movie' : 'anime';
             const card = document.createElement('div');
             card.className = 'grid-card';
             card.setAttribute('data-type', inferredType);
             card.innerHTML = `
+                ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: title, tmdbId: tmdbId }) : ''}
                 <img src="${posterUrl}" loading="lazy" decoding="async" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'" alt="${safeName}">
                 <div class="card-hover-info">
                     <div class="hover-btns">
@@ -495,9 +529,17 @@ async function loadAnimeLibraryFromAniList(grid, filters) {
             `;
             grid.appendChild(card);
         });
+        window.mountEpisodeCountBadges?.(grid);
+        anilistFilteredPage++;
     } catch (err) {
         console.error('AniList filtered anime library failed to load:', err);
-        grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Error loading filtered anime. Check console.</p>';
+        // A later page failing shouldn't wipe out cards that already loaded successfully -
+        // only show the error state on the initial load.
+        if (isFreshLoad) {
+            grid.innerHTML = '<p style="text-align:center; width:100%; padding:40px; color:#888;">Error loading filtered anime. Check console.</p>';
+        }
+    } finally {
+        anilistFilteredLoading = false;
     }
 }
 
@@ -559,11 +601,13 @@ async function loadAnimeLibraryDefault(grid) {
             const inferredType = media.format === 'MOVIE' ? 'movie' : 'anime';
             const typeLabel = media.format || 'Anime';
 
+            const badgeType = inferredType === 'movie' ? 'movie' : 'anime';
             const card = document.createElement('div');
             card.className = 'grid-card';
             card.setAttribute('data-type', inferredType);
 
             card.innerHTML = `
+                ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: title, tmdbId: tmdbId }) : ''}
                 <img src="${posterUrl}" loading="lazy" decoding="async" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'" alt="${safeName}">
                 <div class="card-hover-info">
                     <div class="hover-btns">
@@ -580,6 +624,7 @@ async function loadAnimeLibraryDefault(grid) {
             `;
             grid.appendChild(card);
         });
+        window.mountEpisodeCountBadges?.(grid);
 
         currentPage++;
         isLoading = false;

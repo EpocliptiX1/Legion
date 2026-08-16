@@ -24,6 +24,19 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { Kwik } = require('@consumet/extensions/dist/extractors');
 const { getAnimeSkipTimestamps } = require('./AnimeSkipService');
+const puppeteerExtra = require('puppeteer-extra');
+const puppeteerStealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteerExtra.use(puppeteerStealthPlugin());
+// runKinoExtractionViaBrowser (the only puppeteer.launch() call in this file, and now only a
+// fallback behind the plain-HTTP path in runKinoExtraction) needs this - vidsrcme.ru
+// started silently aborting plain Puppeteer's navigation request at the network level (before
+// any of our page JS even runs), while an identical curl request went through fine. That
+// pattern is a TLS/browser fingerprint check, not an IP block - the stealth plugin patches
+// the automation tells (navigator.webdriver, plugin/permission shapes, etc.) that expose a
+// vanilla Puppeteer session, and fixes it.
+const puppeteer = puppeteerExtra;
+const zlib = require('zlib');
+const iconv = require('iconv-lite');
 const app = express();
 app.set('trust proxy', 1);
 const KAA_DEBUG_LOG_PATH = path.join(__dirname, 'kaa-debug-log.txt');
@@ -62,6 +75,28 @@ function logNekoDebug(...parts) {
     const line = `[${stamp}] [NEKO] ${text}`;
     try {
         fs.appendFileSync(NEKO_DUB_DEBUG_LOG_PATH, line + '\n');
+    } catch (err) {
+        // Silent fail
+    }
+}
+
+// File-only (never stdout) - episode-count badge requests/matches against anikoto.cz.
+// Kept out of the terminal on purpose; a page load can fire enough of these to make the
+// console unreadable, this is for reviewing after the fact instead.
+const ANIKOTO_YOINK_LOG_PATH = path.join(__dirname, 'anikoto number yoinking.txt');
+function logAnikotoDebug(...parts) {
+    const stamp = new Date().toISOString();
+    const text = parts.map(part => {
+        if (typeof part === 'string') return part;
+        try {
+            return JSON.stringify(part, null, 2);
+        } catch (e) {
+            return String(part);
+        }
+    }).join(' ');
+    const line = `[${stamp}] ${text}`;
+    try {
+        fs.appendFileSync(ANIKOTO_YOINK_LOG_PATH, line + '\n');
     } catch (err) {
         // Silent fail
     }
@@ -111,7 +146,6 @@ app.use('/api/tmdb-proxy', async (req, res) => {
             const tmdbId = Number(seasonMatch[1]);
             const seasonNum = Number(seasonMatch[2]);
 
-            // Try to get from cache first
             const cached = await new Promise((resolve) => {
                 animeCacheDb.all(`
                     SELECT episode_number, title, air_date, overview, still_path, runtime
@@ -129,18 +163,20 @@ app.use('/api/tmdb-proxy', async (req, res) => {
             });
 
             logEpisodeCache(`Cache CHECK ${tmdbId} S${seasonNum}: ${cached ? cached.length : 0} rows found`);
-            if (cached && cached.length > 0) {
-                logEpisodeCache(`  └─ First ep: #${cached[0]?.episode_number} title="${cached[0]?.title}" air_date="${cached[0]?.air_date}" still_path="${cached[0]?.still_path}"`);
-                logEpisodeCache(`  └─ Last ep:  #${cached[cached.length-1]?.episode_number} title="${cached[cached.length-1]?.title}" air_date="${cached[cached.length-1]?.air_date}"`);
-            }
 
-            // STRICT: Cache is only valid if EVERY episode has complete data
-            const incompleteness = cached ? cached.filter(ep =>
-                !ep.episode_number || !ep.title || !ep.air_date === null || !ep.still_path
-            ) : [];
+            // "Settled" = every cached episode has actually aired (a real, non-future
+            // air_date) - once true, nothing about that season changes again (titles,
+            // stills, dates are all final), so it's safe to serve indefinitely. This
+            // replaces the old all-fields-non-null check, which meant a single episode
+            // missing just a thumbnail (extremely common for anything not yet aired)
+            // discarded caching for the ENTIRE season, every time -- in practice the
+            // cache almost never got used at all. Missing fields are fine now; only
+            // "hasn't aired yet" blocks serving from cache.
+            const today = new Date().toISOString().slice(0, 10);
+            const isSettled = !!cached && cached.length > 0 && cached.every(ep => ep.air_date && ep.air_date <= today);
 
-            if (cached && cached.length > 0 && incompleteness.length === 0) {
-                logEpisodeCache(`✓ Cache HIT ${tmdbId} S${seasonNum}: all ${cached.length} episodes complete`);
+            if (isSettled) {
+                logEpisodeCache(`✓ Cache HIT ${tmdbId} S${seasonNum}: serving ${cached.length} settled episodes`);
                 // Transform cached episodes: rename 'title' to 'name' to match TMDB API response format
                 const normalizedEpisodes = cached.map(ep => ({
                     episode_number: ep.episode_number,
@@ -154,31 +190,13 @@ app.use('/api/tmdb-proxy', async (req, res) => {
                     episodes: normalizedEpisodes,
                     _cached: true
                 });
-            } else if (cached && cached.length > 0) {
-                // Cache exists but has NULLs - log details and clear it
-                const nullEps = cached.filter(ep => !ep.title || !ep.air_date || !ep.still_path);
-                logEpisodeCache(`⚠️  Cache CORRUPT ${tmdbId} S${seasonNum}: ${nullEps.length}/${cached.length} episodes have NULLs`);
-                nullEps.slice(0, 5).forEach(ep => {
-                    const fields = [];
-                    if (!ep.title) fields.push('title=NULL');
-                    if (!ep.air_date) fields.push('air_date=NULL');
-                    if (!ep.still_path) fields.push('still_path=NULL');
-                    logEpisodeCache(`    └─ Ep ${ep.episode_number}: ${fields.join(', ')}`);
-                });
-
-                animeCacheDb.run(`DELETE FROM episode_cache WHERE tmdb_id = ? AND season_number = ?`,
-                    [tmdbId, seasonNum],
-                    (err) => {
-                        if (err) logEpisodeCache(`  └─ Delete error: ${err.message}`);
-                        else logEpisodeCache(`  └─ Deleted, fetching from TMDB...`);
-                    }
-                );
-            } else {
-                logEpisodeCache(`Cache MISS ${tmdbId} S${seasonNum} (0 rows)`);
             }
+            logEpisodeCache(cached && cached.length > 0
+                ? `Cache STALE ${tmdbId} S${seasonNum}: season still resolving (unaired/missing air_date episode present), refetching`
+                : `Cache MISS ${tmdbId} S${seasonNum} (0 rows)`);
         }
 
-        // Not cached, fetch from TMDB
+        // Not cached (or not settled yet), fetch from TMDB
         const tmdbRes  = await axios.get(`${TMDB_BASE_URL}${tmdbPath}`, {
             params:  query,
             headers: { Accept: 'application/json' },
@@ -190,64 +208,57 @@ app.use('/api/tmdb-proxy', async (req, res) => {
             const seasonNum = Number(seasonMatch[2]);
             const episodes = tmdbRes.data.episodes;
 
-            // Count missing data
-            const nullCount = episodes.filter(ep => !ep.name || !ep.air_date || !ep.still_path).length;
-            logEpisodeCache(`TMDB response ${tmdbId} S${seasonNum}: ${nullCount}/${episodes.length} episodes (ep1="${episodes[0]?.name || 'N/A'}", air_date="${episodes[0]?.air_date || 'N/A'}")`);
+            logEpisodeCache(`TMDB response ${tmdbId} S${seasonNum}: ${episodes.length} episodes (ep1="${episodes[0]?.name || 'N/A'}", air_date="${episodes[0]?.air_date || 'N/A'}")`);
+            logEpisodeCache(`Cache WRITE START ${tmdbId} S${seasonNum}: deleting old data...`);
 
-            // Only cache if data is complete
-            if (nullCount === 0) {
-                logEpisodeCache(`Cache WRITE START ${tmdbId} S${seasonNum}: deleting old data...`);
+            // Cache whatever TMDB actually returned, missing fields and all -- an
+            // episode without a still_path/air_date yet still gets cached, it just
+            // won't count as "settled" above, so it'll be refetched again next time
+            // instead of silently blocking the whole season from ever caching.
+            animeCacheDb.run(`
+                DELETE FROM episode_cache
+                WHERE tmdb_id = ? AND season_number = ?
+            `, [tmdbId, seasonNum], (deleteErr) => {
+                if (deleteErr) {
+                    logEpisodeCache(`Cache DELETE error: ${deleteErr.message}`);
+                    return;
+                }
 
-                // Delete old cache first (must complete before inserting)
-                animeCacheDb.run(`
-                    DELETE FROM episode_cache
-                    WHERE tmdb_id = ? AND season_number = ?
-                `, [tmdbId, seasonNum], (deleteErr) => {
-                    if (deleteErr) {
-                        logEpisodeCache(`Cache DELETE error: ${deleteErr.message}`);
+                logEpisodeCache(`Cache DELETE done for ${tmdbId} S${seasonNum}, inserting ${episodes.length} episodes...`);
+
+                let inserted = 0;
+                const insertNext = () => {
+                    if (inserted >= episodes.length) {
+                        logEpisodeCache(`Cache WRITE DONE ${tmdbId} S${seasonNum}: all ${episodes.length} episodes inserted ✓`);
                         return;
                     }
 
-                    logEpisodeCache(`Cache DELETE done for ${tmdbId} S${seasonNum}, inserting ${episodes.length} episodes...`);
-
-                    // Now insert all episodes sequentially after DELETE completes
-                    let inserted = 0;
-                    const insertNext = () => {
-                        if (inserted >= episodes.length) {
-                            logEpisodeCache(`Cache WRITE DONE ${tmdbId} S${seasonNum}: all ${episodes.length} episodes inserted ✓`);
-                            return;
+                    const ep = episodes[inserted];
+                    animeCacheDb.run(`
+                        INSERT INTO episode_cache
+                        (tmdb_id, season_number, episode_number, title, air_date, still_path, runtime, overview, cached_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    `, [
+                        tmdbId,
+                        seasonNum,
+                        ep.episode_number,
+                        ep.name || null,
+                        ep.air_date || null,
+                        ep.still_path || null,
+                        ep.runtime || 0,
+                        ep.overview || '',
+                        Date.now()
+                    ], (insertErr) => {
+                        if (insertErr) {
+                            logEpisodeCache(`Cache INSERT error ep${ep.episode_number}: ${insertErr.message}`);
                         }
+                        inserted++;
+                        insertNext();
+                    });
+                };
 
-                        const ep = episodes[inserted];
-                        animeCacheDb.run(`
-                            INSERT INTO episode_cache
-                            (tmdb_id, season_number, episode_number, title, air_date, still_path, runtime, overview, cached_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        `, [
-                            tmdbId,
-                            seasonNum,
-                            ep.episode_number,
-                            ep.name,
-                            ep.air_date,
-                            ep.still_path,
-                            ep.runtime || 0,
-                            ep.overview || '',
-                            Date.now()
-                        ], (insertErr) => {
-                            if (insertErr) {
-                                logEpisodeCache(`Cache INSERT error ep${ep.episode_number}: ${insertErr.message}`);
-                            }
-                            inserted++;
-                            insertNext();
-                        });
-                    };
-
-                    insertNext();
-                });
-            } else {
-                const incompleteSample = episodes.filter(ep => !ep.name || !ep.air_date || !ep.still_path).slice(0, 2);
-                logEpisodeCache(`Cache SKIP ${tmdbId} S${seasonNum}: ${nullCount}/${episodes.length} incomplete`);
-            }
+                insertNext();
+            });
         }
 
         res.json(tmdbRes.data);
@@ -526,31 +537,22 @@ app.get('/api/megacloud-download', (req, res) => {
     }
 });
 
-// 2. ADD the new Anime Downloader below it
+// Anime downloader (js/animeDownload.js calls this and expects { sourceUrl }).
+// This was previously a non-functional placeholder - it requested the literal string
+// "https://megaplay.buzz/api/v1/source/..." (ellipsis and all) left behind from a
+// "find the real endpoint in the Network tab" TODO, so every MegaPlay download attempt
+// threw and surfaced as "Download preparation failed". Now wired to the real two-step
+// extraction (see resolveMegaplaySourcesCached, section 9b0).
 app.get('/api/megaplay/extract/:malId/:ep/:type', async (req, res) => {
     try {
-        // Find the "real" API endpoint using the Network Tab
-        // Let's assume you found it is: https://megaplay.buzz/api/v1/source/....
-        const realApiUrl = `https://megaplay.buzz/api/v1/source/...`; 
-        
-        const response = await axios.get(realApiUrl, {
-            headers: { 
-                'Referer': 'https://megaplay.buzz/',
-                'User-Agent': 'Mozilla/5.0...' 
-            }
-        });
-
-        // If the API returns JSON, simply pull the link out
-        // e.g., if response.data = { sources: [{ file: "..." }] }
-        const sourceUrl = response.data.sources[0].file; 
-
-        if (sourceUrl) {
-            res.json({ sourceUrl: sourceUrl });
-        } else {
-            res.status(404).json({ error: 'Could not extract from API' });
-        }
+        const { malId, ep, type } = req.params;
+        const lang = String(type || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
+        const data = await resolveMegaplaySourcesCached(malId, ep, lang);
+        // proxyRef included so the caller can route through our proxy if it needs to -
+        // the CDN 403s the playlist without megaplay's Referer.
+        res.json({ sourceUrl: data.stream, proxyRef: data.proxyRef });
     } catch (err) {
-        console.error("API Fetch Error:", err.message);
+        console.error("[MegaPlay Extract] Error:", err.message);
         res.status(500).json({ error: 'Failed to fetch API' });
     }
 });
@@ -892,6 +894,75 @@ animeCacheDb.serialize(() => {
             UNIQUE(tmdb_id, season, episode, audio_type, provider)
         );
     `);
+    // TMDB per-episode metadata cache (title/air_date/still/runtime/overview), read by
+    // /api/tmdb-proxy's season-request special case above. This table only existed in
+    // the live DB by historical accident (created once, outside any code in this file) --
+    // adding it here defensively so a fresh deployment doesn't silently 500 on every
+    // "no such table" instead of just missing a cache.
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS episode_cache (
+            tmdb_id INTEGER NOT NULL,
+            season_number INTEGER NOT NULL,
+            episode_number INTEGER NOT NULL,
+            title TEXT,
+            air_date TEXT,
+            still_path TEXT,
+            runtime INTEGER,
+            overview TEXT,
+            cached_at INTEGER NOT NULL,
+            PRIMARY KEY(tmdb_id, season_number, episode_number)
+        )
+    `);
+    // Filler/canon status per episode (animefillerlist.com), keyed by normalized title
+    // rather than mal_id/tmdb_id -- the frontend needs to request this before malId has
+    // necessarily resolved (populateEpisodes() can render before lookupMalId() finishes),
+    // and animefillerlist's own lookup is title-search-based anyway, so there's no id to
+    // key on that wouldn't just be resolved from the title a second time regardless.
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS anime_episode_filler (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            cache_key       TEXT    NOT NULL,
+            episode_number  INTEGER NOT NULL,
+            type            TEXT    NOT NULL,
+            cached_at       INTEGER NOT NULL,
+            UNIQUE(cache_key, episode_number)
+        );
+    `);
+    animeCacheDb.run(`CREATE INDEX IF NOT EXISTS idx_anime_episode_filler_key ON anime_episode_filler(cache_key)`);
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS anikoto_episode_counts (
+            normalized_title TEXT    PRIMARY KEY,
+            sub_count        INTEGER,
+            dub_count        INTEGER,
+            total_count      INTEGER,
+            cached_at        INTEGER NOT NULL
+        );
+    `);
+    // is_finished: 1 = anikoto's own sub_count already caught up to total_count (show is done
+    // airing, these numbers won't change again), 0 = still airing, NULL = unknown (negative-
+    // cache rows, where nothing matched so there's no data to judge status from). Added after
+    // the table already had rows in production, so this is a migration, not part of the
+    // CREATE TABLE above - ALTER TABLE ADD COLUMN throws if the column already exists, so
+    // check first rather than re-running it every boot.
+    animeCacheDb.all(`PRAGMA table_info(anikoto_episode_counts)`, [], (err, columns) => {
+        if (err) return;
+        const names = new Set((columns || []).map(c => c.name));
+        if (!names.has('is_finished')) {
+            animeCacheDb.run(`ALTER TABLE anikoto_episode_counts ADD COLUMN is_finished INTEGER`, (alterErr) => {
+                if (alterErr) console.error('[AnikotoCounts] Failed to add is_finished column', alterErr.message);
+            });
+        }
+        // TMDB's own season count for this title at the moment it was cached - lets a
+        // "finished" row (which otherwise never re-checks anikoto) detect a real new season
+        // without blind time-based polling: if TMDB's CURRENT season count is ever higher than
+        // what was true when cached, that's concrete evidence something changed, worth an
+        // immediate fresh lookup regardless of how "finished" looked at the time.
+        if (!names.has('tmdb_season_count')) {
+            animeCacheDb.run(`ALTER TABLE anikoto_episode_counts ADD COLUMN tmdb_season_count INTEGER`, (alterErr) => {
+                if (alterErr) console.error('[AnikotoCounts] Failed to add tmdb_season_count column', alterErr.message);
+            });
+        }
+    });
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS anime_comments (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -924,6 +995,20 @@ animeCacheDb.serialize(() => {
             user_uid   TEXT    NOT NULL,
             vote       TEXT    NOT NULL,
             UNIQUE(comment_id, user_uid)
+        );
+    `);
+    // anime_comments.created_at holds the comment's real-world posted time (scraped from
+    // anikoto/animego), not when WE imported it - so MAX(created_at) is useless for judging
+    // scrape freshness (an anime with no brand-new comments in the last N hours looked
+    // permanently "stale" and re-scraped on every single request). This table tracks actual
+    // import run times separately, per (mal_id, episode_number, source).
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS anime_comment_scrape_log (
+            mal_id         INTEGER NOT NULL,
+            episode_number INTEGER NOT NULL,
+            source         TEXT    NOT NULL,
+            scraped_at     INTEGER NOT NULL,
+            PRIMARY KEY (mal_id, episode_number, source)
         );
     `);
 });
@@ -2243,11 +2328,29 @@ activityDb.serialize(() => {
     )`);
     activityDb.run(`CREATE INDEX IF NOT EXISTS idx_movie_comments_movie ON movie_comments(movie_id, parent_id)`);
     activityDb.run(`CREATE INDEX IF NOT EXISTS idx_movie_comments_parent ON movie_comments(parent_id)`);
+    // Scraped (kinogo) comments alongside real user ones -- 'user' rows keep
+    // source_comment_id NULL (SQLite treats every NULL as distinct, so the unique
+    // index below never collides real comments against each other), matching the
+    // anime_comments source/source_comment_id pattern used for Anikoto/animego.
+    // Without this, every re-scrape of a title would silently re-insert the exact
+    // same comments as fresh duplicate rows on every page view.
+    activityDb.run(`ALTER TABLE movie_comments ADD COLUMN source TEXT NOT NULL DEFAULT 'user'`, () => {});
+    activityDb.run(`ALTER TABLE movie_comments ADD COLUMN source_comment_id TEXT`, () => {});
+    activityDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_movie_comments_source_unique ON movie_comments(source, source_comment_id)`);
     activityDb.run(`CREATE TABLE IF NOT EXISTS movie_comment_votes (
         comment_id INTEGER NOT NULL,
         user_uid   TEXT    NOT NULL,
         vote       TEXT    NOT NULL,
         UNIQUE(comment_id, user_uid)
+    )`);
+    // movie_comments.created_at holds the comment's real-world posted time (scraped from
+    // kinogo), not when WE scraped it - same issue as anime_comment_scrape_log fixes for
+    // anime comments. Tracks actual import run times separately, per (movie_id, source).
+    activityDb.run(`CREATE TABLE IF NOT EXISTS movie_comment_scrape_log (
+        movie_id   TEXT    NOT NULL,
+        source     TEXT    NOT NULL,
+        scraped_at INTEGER NOT NULL,
+        PRIMARY KEY (movie_id, source)
     )`);
 
     // Repair legacy/broken watch_history schemas that used strftime(chr(...)) in default value.
@@ -4362,13 +4465,28 @@ app.get('/movie-comments/by-user', (req, res) => {
 });
 
 // Top-level comments for a movie, with reply counts. Sort: top (score desc), newest, oldest.
-app.get('/movie-comments', (req, res) => {
+app.get('/movie-comments', async (req, res) => {
     const movieId = String(req.query.movieId || '').trim();
+    const rawTitle = req.query.title || '';
+    const releaseYear = req.query.releaseYear ? parseInt(req.query.releaseYear, 10) : null;
     if (!movieId) return res.status(400).json({ error: 'movieId required' });
 
     const sort = req.query.sort === 'oldest' ? 'c.created_at ASC'
         : req.query.sort === 'top' ? '(c.upvotes - c.downvotes) DESC, c.created_at DESC'
         : 'c.created_at DESC';
+
+    // Best-effort join, same pattern as /api/anime-comments: awaited so a cold cache
+    // gets kinogo's RU comments mixed in on the very first load, but never fails the
+    // whole request if kinogo is down/blocked/rate-limited.
+    if (rawTitle) {
+        try {
+            await runKinogoCommentImportJob(movieId, rawTitle, releaseYear);
+        } catch (kinogoErr) {
+            logTempDebug('[OnDemand] Kinogo comment import failed, serving whatever is cached', {
+                movieId, error: kinogoErr.message || String(kinogoErr)
+            });
+        }
+    }
 
     activityDb.all(
         `SELECT c.*, (SELECT COUNT(*) FROM movie_comments r WHERE r.parent_id = c.id) AS reply_count
@@ -6375,6 +6493,7 @@ async function fetchAniListRowFromAniList(rowKey, page = 1, perPage = 18) {
                         english
                         native
                     }
+                    synonyms
                     coverImage {
                         extraLarge
                     }
@@ -8650,8 +8769,11 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         // Handle Master / Media Playlists (.m3u8)
         if (isM3u8) {
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
             const refSuffix = refererOverride ? `&ref=${encodeURIComponent(refererOverride)}` : '';
+            // Resolve against targetUrl (not just its directory) so domain-root-relative
+            // paths (e.g. vidsrcme's "/pl/<hash>/index.m3u8") resolve correctly instead
+            // of getting naively concatenated onto the directory prefix.
+            const resolveUri = (uri) => new URL(uri, targetUrl).href;
 
             const rewrittenM3u8 = response.data.split('\n').map(line => {
                 const trimmed = line.trim();
@@ -8659,15 +8781,13 @@ app.get('/api/m3u8-proxy', async (req, res) => {
 
                 if (trimmed.startsWith('#EXT-X-MAP:') || trimmed.startsWith('#EXT-X-KEY:') || trimmed.startsWith('#EXT-X-MEDIA:')) {
                     return line.replace(/URI="([^"]+)"/, (match, uri) => {
-                        const absoluteUrl = uri.startsWith('http') ? uri : baseUrl + uri;
-                        return `URI="/api/m3u8-proxy?url=${encodeURIComponent(absoluteUrl)}${refSuffix}"`;
+                        return `URI="/api/m3u8-proxy?url=${encodeURIComponent(resolveUri(uri))}${refSuffix}"`;
                     });
                 }
 
                 if (trimmed.startsWith('#')) return line;
 
-                const absoluteUrl = trimmed.startsWith('http') ? trimmed : baseUrl + trimmed;
-                return `/api/m3u8-proxy?url=${encodeURIComponent(absoluteUrl)}${refSuffix}`;
+                return `/api/m3u8-proxy?url=${encodeURIComponent(resolveUri(trimmed))}${refSuffix}`;
             }).join('\n');
 
             return res.send(rewrittenM3u8);
@@ -8999,25 +9119,30 @@ function parseAnikotoPostedTime(text, scrapedAtSeconds) {
     return matched ? scrapedAtSeconds - totalSeconds : scrapedAtSeconds;
 }
 
+// `source` and `createdAtOverride` are additive (both default to the original
+// anikoto-only behavior) so every existing anikoto call site is unaffected --
+// animego comments (see below) come with a precise ISO timestamp already, so
+// they pass createdAtOverride instead of a postedTimeText string to parse.
 function upsertAnimeComment(row) {
     return new Promise((resolve, reject) => {
+        const source = row.source || 'anikoto';
         const score = generateSyntheticScore(row.replyCount || 0);
-        const upvotes = score > 0 ? score : 0;
-        const downvotes = score < 0 ? -score : 0;
+        const upvotes = row.upvotesOverride != null ? row.upvotesOverride : (score > 0 ? score : 0);
+        const downvotes = row.downvotesOverride != null ? row.downvotesOverride : (score < 0 ? -score : 0);
         const now = Math.floor(Date.now() / 1000);
-        const createdAt = parseAnikotoPostedTime(row.postedTimeText, now);
+        const createdAt = row.createdAtOverride != null ? row.createdAtOverride : parseAnikotoPostedTime(row.postedTimeText, now);
         animeCacheDb.run(
             `INSERT INTO anime_comments
                 (mal_id, episode_number, source, source_comment_id, parent_source_id,
                  anikoto_anime_id, anikoto_episode_id, user_uid, username, avatar_url,
                  text, raw_text, upvotes, downvotes, reply_count, posted_time_text, created_at)
-             VALUES (?, ?, 'anikoto', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source, source_comment_id) DO UPDATE SET
                 text = excluded.text,
                 raw_text = excluded.raw_text,
                 reply_count = excluded.reply_count`,
             [
-                row.malId, row.episodeNumber, row.sourceCommentId, row.parentSourceId,
+                row.malId, row.episodeNumber, source, row.sourceCommentId, row.parentSourceId,
                 row.anikotoAnimeId, row.anikotoEpisodeId, row.userId, row.username, row.avatarUrl,
                 row.text, row.rawText, upvotes, downvotes, row.replyCount, row.postedTimeText, createdAt
             ],
@@ -9048,19 +9173,239 @@ function linkAnimeCommentParent(malId, episodeNumber, sourceCommentId, parentSou
     });
 }
 
-// Skip re-scraping if we already imported comments for this mal_id+episode recently.
-function hasRecentAnimeComments(malId, episodeNumber, maxAgeSeconds = 3600) {
+// --- Animego RU anime comments -----------------------------------------------------------
+// AniList/Anikoto give us English comments per-episode; animego.me's comment thread is
+// per-ANIME (one general discussion, not split per episode) - the whole page's
+// data-infinite-scroll-url-template-value points at the same /comment/{id}/__page__ no
+// matter which episode you're watching. Rather than force an artificial per-episode split
+// that doesn't exist on their end, these get stored under episode_number = 0 as a "applies
+// to every episode" sentinel, and the read query below unions that in alongside whichever
+// specific episode is actually being viewed - so they show up mixed into every episode's
+// list without duplicating rows per episode.
+//
+// Namespacing: animego user ids and anikoto user ids are both small integers from
+// unrelated sites, so reusing them directly as our own userUID (like Anikoto's importer
+// does) risks two different real people from two different sites colliding onto one
+// account. Real users.db ids currently top out around 640k, so an offset of 2 billion
+// keeps this source's synthetic accounts in their own lane with zero realistic collision
+// risk against real users, Anikoto-imported accounts, or (if this pattern gets reused for
+// kinogo movie comments later) whatever offset that source picks for itself.
+const ANIMEGO_USER_ID_OFFSET = 2_000_000_000;
+
+function hasRecentSourceComments(malId, episodeNumber, source, maxAgeSeconds = 3600) {
     return new Promise((resolve) => {
         animeCacheDb.get(
-            `SELECT MAX(created_at) as latest FROM anime_comments WHERE mal_id = ? AND episode_number = ? AND source = 'anikoto'`,
-            [malId, episodeNumber],
+            `SELECT scraped_at FROM anime_comment_scrape_log WHERE mal_id = ? AND episode_number = ? AND source = ?`,
+            [malId, episodeNumber, source],
             (err, row) => {
-                if (err || !row || !row.latest) return resolve(false);
-                const ageSeconds = Math.floor(Date.now() / 1000) - row.latest;
+                if (err || !row) return resolve(false);
+                const ageSeconds = Math.floor(Date.now() / 1000) - row.scraped_at;
                 resolve(ageSeconds < maxAgeSeconds);
             }
         );
     });
+}
+
+function recordCommentScrape(malId, episodeNumber, source) {
+    return new Promise((resolve) => {
+        animeCacheDb.run(
+            `INSERT INTO anime_comment_scrape_log (mal_id, episode_number, source, scraped_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(mal_id, episode_number, source) DO UPDATE SET scraped_at = excluded.scraped_at`,
+            [malId, episodeNumber, source, Math.floor(Date.now() / 1000)],
+            () => resolve()
+        );
+    });
+}
+
+async function resolveAnimegoCommentSectionId(slug) {
+    const pageRes = await axios.get(`https://animego.me/anime/${slug}`, {
+        headers: { 'User-Agent': NEWSTREAM_UA, 'Referer': 'https://animego.me/' },
+        timeout: 30000
+    });
+    const m = String(pageRes.data).match(/data-infinite-scroll-url-template-value="\/comment\/(\d+)\/__page__"/);
+    if (!m) throw new Error(`No animego comment section found on anime page: ${slug}`);
+    return m[1];
+}
+
+// The comment thread is a Turbo (Hotwire) endpoint -- it 404s without the
+// text/vnd.turbo-stream.html Accept header, even with X-Requested-With set.
+async function fetchAnimegoCommentPage(sectionId, page, refererUrl) {
+    const res = await axios.get(`https://animego.me/comment/${sectionId}/${page}`, {
+        headers: {
+            'User-Agent': NEWSTREAM_UA,
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'text/vnd.turbo-stream.html, text/html, application/xhtml+xml',
+            'Referer': refererUrl
+        },
+        timeout: 30000
+    });
+    const html = res.data?.data?.content || '';
+    const hasMore = /data-infinite-scroll-has-more-value="true"/.test(html);
+    const $ = cheerio.load(html);
+    const comments = [];
+    $('.comment__item').each((i, el) => {
+        const $el = $(el);
+        const authorLink = $el.find('.comment__author__name a').first();
+        const userHref = authorLink.attr('href') || '';
+        const userIdMatch = userHref.match(/\/user\/(\d+)/);
+        const username = authorLink.text().trim() || 'AnimeGO User';
+        // The <time datetime="..."> attribute is a precise ISO8601 timestamp -- no
+        // relative-text ("N hours ago") parsing needed, unlike Anikoto's format.
+        const datetimeAttr = $el.find('.comment__time time').first().attr('datetime');
+        const bodyText = $el.find('.comment__body').first().text().trim();
+        if (!bodyText) return;
+        const avatarSrc = $el.find('.comment__avatar__link img').first().attr('src') || '';
+        const parsedTs = datetimeAttr ? Math.floor(new Date(datetimeAttr).getTime() / 1000) : Math.floor(Date.now() / 1000);
+        // No explicit comment id is exposed in the markup -- userId + exact-second
+        // timestamp is unique enough in practice (same user posting twice in the
+        // same second is effectively impossible) and stable across re-scrapes.
+        const sourceCommentId = `${userIdMatch ? userIdMatch[1] : 'anon'}:${datetimeAttr || i}`;
+        comments.push({
+            sourceCommentId,
+            userId: userIdMatch ? userIdMatch[1] : null,
+            username,
+            avatarUrl: avatarSrc.startsWith('http') ? avatarSrc : (avatarSrc ? `https://animego.me${avatarSrc}` : null),
+            text: bodyText,
+            createdAt: parsedTs
+        });
+    });
+    return { comments, hasMore };
+}
+
+// Creates (or refreshes last_seen for) synthetic users.db accounts for imported
+// commenters, namespaced by `idOffset` so different scraped sources never collide with
+// each other or with real accounts. Generalized out of what was previously
+// ensureAnikotoCommentUserAccounts()'s anikoto-only logic so it can be reused here
+// without touching that function (or its own real-id, no-offset behavior) at all.
+async function ensureImportedCommentUserAccounts(commenterInfo, { idOffset = 0, usernamePrefix = 'ImportedUser', logPath = null } = {}) {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const logLines = [];
+    let created = 0;
+
+    await mapWithConcurrency([...commenterInfo.entries()], 5, async ([userIdStr, info]) => {
+        const userUID = parseInt(userIdStr, 10);
+        if (!Number.isFinite(userUID)) return;
+
+        try {
+            const existing = await usersDbGet(`SELECT userUID, last_seen FROM users WHERE userUID = ?`, [userUID]);
+            const candidateLastSeen = Math.min(nowSeconds, info.lastAt + randomIntInclusive(1, 20) * 86400);
+
+            if (existing) {
+                if (candidateLastSeen > (existing.last_seen || 0)) {
+                    await usersDbRun(`UPDATE users SET last_seen = ? WHERE userUID = ?`, [candidateLastSeen, userUID]);
+                }
+                return;
+            }
+
+            const username = (info.username || `${usernamePrefix}${userUID - idOffset}`).slice(0, 64);
+            const plainPassword = randomAnikotoPassword(10);
+            const hashedPassword = await bcrypt.hash(plainPassword, BCRYPT_SALT_ROUNDS);
+            const userEmail = `${randomAlnumForEmail(10)}${userUID}@gmail.com`;
+            const accountUID = String(userUID);
+            const createdAt = info.firstAt - randomIntInclusive(1, 20) * 86400;
+            const loginCode = generateLoginCode();
+            const loginCodeExpiresAt = nowSeconds + LOGIN_CODE_TTL_SECONDS;
+            const watch2getherCode = generateWatch2getherCode();
+
+            await usersDbRun(`
+                INSERT INTO users (
+                    userUID, accountUID, username, userEmail, userTier, userLanguage,
+                    searchCount, viewCount, allUIDs, userPassword, is_guest,
+                    login_code, login_code_expires_at, created_at, last_seen,
+                    profile_pic, watch2gether_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+                userUID, accountUID, username, userEmail, 'Free', 'en',
+                0, 0, JSON.stringify([accountUID]), hashedPassword, 0,
+                loginCode, loginCodeExpiresAt, createdAt, candidateLastSeen,
+                info.avatarUrl || null, watch2getherCode
+            ]);
+
+            logLines.push(`${username} | ${userUID} | ${userEmail} | ${plainPassword}`);
+            created++;
+        } catch (err) {
+            logTempDebug('[ImportedUsers] Failed for commenter', { userUID, error: err.message || String(err) });
+        }
+    });
+
+    if (logLines.length && logPath) {
+        fs.appendFileSync(
+            logPath,
+            [`# Generated ${new Date().toISOString()}`, ...logLines].join('\n') + '\n\n',
+            'utf8'
+        );
+    }
+    if (created > 0) {
+        logTempDebug('[ImportedUsers] Created new accounts', { created, totalSeen: commenterInfo.size, idOffset });
+    }
+}
+
+const ANIMEGO_USER_INFO_LOG_PATH = path.join(__dirname, 'AnimegoCommentUserInfo.txt');
+const animegoCommentJobsInFlight = new Map();
+
+function runAnimegoCommentImportJob(malId, rawTitle, season) {
+    const key = String(malId);
+    if (animegoCommentJobsInFlight.has(key)) return animegoCommentJobsInFlight.get(key);
+
+    const job = (async () => {
+        const alreadyFresh = await hasRecentSourceComments(malId, 0, 'animego', 24 * 3600);
+        if (alreadyFresh) return;
+        if (!rawTitle) return;
+        await recordCommentScrape(malId, 0, 'animego');
+
+        const resolved = await resolveAnimegoAniboomCached(rawTitle, season || 1, { malId });
+        const sectionId = await resolveAnimegoCommentSectionId(resolved.slug);
+        const refererUrl = `https://animego.me/anime/${resolved.slug}`;
+
+        const commenterInfo = new Map();
+        let page = 1;
+        let hasMore = true;
+        // Sanity cap - a runaway thread shouldn't turn one page load into dozens of
+        // sequential requests against animego.
+        while (hasMore && page <= 15) {
+            const result = await fetchAnimegoCommentPage(sectionId, page, refererUrl);
+            for (const c of result.comments) {
+                const userUID = c.userId ? ANIMEGO_USER_ID_OFFSET + Number(c.userId) : null;
+                try {
+                    await upsertAnimeComment({
+                        malId, episodeNumber: 0, source: 'animego',
+                        sourceCommentId: c.sourceCommentId, parentSourceId: null,
+                        anikotoAnimeId: null, anikotoEpisodeId: null,
+                        userId: userUID, username: c.username, avatarUrl: c.avatarUrl,
+                        text: c.text, rawText: c.text,
+                        replyCount: 0, postedTimeText: null, createdAtOverride: c.createdAt
+                    });
+                } catch (err) {
+                    logTempDebug('[Animego Import] Failed to upsert comment', { id: c.sourceCommentId, error: err.message });
+                }
+                if (userUID) {
+                    trackCommenter(commenterInfo, userUID, c.username, c.avatarUrl,
+                        null, c.createdAt);
+                }
+            }
+            hasMore = result.hasMore;
+            page++;
+        }
+
+        ensureImportedCommentUserAccounts(commenterInfo, {
+            idOffset: ANIMEGO_USER_ID_OFFSET,
+            usernamePrefix: 'AnimeGoUser',
+            logPath: ANIMEGO_USER_INFO_LOG_PATH
+        }).catch(err => logTempDebug('[Animego Import] User account sync failed', { error: err.message }));
+    })();
+
+    animegoCommentJobsInFlight.set(key, job);
+    job.catch(err => logTempDebug('[Animego Import] Job failed', { malId, error: err.message || String(err) }))
+        .finally(() => animegoCommentJobsInFlight.delete(key));
+    return job;
+}
+
+// Skip re-scraping if we already imported comments for this mal_id+episode recently.
+// 24h TTL, same as the kinogo movie-comments cache - new comments trickling in isn't
+// worth paying a full anikoto.to re-scrape on every single page visit for.
+function hasRecentAnimeComments(malId, episodeNumber, maxAgeSeconds = 24 * 3600) {
+    return hasRecentSourceComments(malId, episodeNumber, 'anikoto', maxAgeSeconds);
 }
 
 // Single-flight lock for comment imports, keyed by mal_id+episode. Without this, several
@@ -9084,6 +9429,7 @@ function runAnimeCommentImportJob(malId, episodeNumber, resolveIds) {
             logTempDebug('[Import] Skipped - already have recent comments', { malId, episodeNumber });
             return;
         }
+        await recordCommentScrape(malId, episodeNumber, 'anikoto');
         const ids = await resolveIds();
         if (!ids || !ids.anikotoAnimeId || !ids.anikotoEpisodeId) return;
         await importAnikotoComments({
@@ -9094,7 +9440,11 @@ function runAnimeCommentImportJob(malId, episodeNumber, resolveIds) {
     })();
 
     animeCommentJobsInFlight.set(key, job);
-    job.finally(() => animeCommentJobsInFlight.delete(key));
+    // Same unhandled-rejection hazard as resolveAnikotoEpisodeCountsCached above -
+    // job.finally() returns its own promise; if unreferenced and job rejects, that's an
+    // unhandled rejection (and a process crash) independent of whether callers of
+    // runAnimeCommentImportJob catch job's own rejection.
+    job.finally(() => animeCommentJobsInFlight.delete(key)).catch(() => {});
     return job;
 }
 
@@ -9500,6 +9850,841 @@ function resolveAnikotoEpisodeCached(rawTitle, season, episode) {
     return p;
 }
 
+// --- Anikoto episode-count badges (sub/dub/total, the "CC 13 / mic 13 / 13" chips shown
+// on anikoto.cz's own browse grid) ---------------------------------------------------
+// Turns out this data isn't exposed anywhere except baked directly into the HTML of
+// anikoto.cz's /filter?keyword= grid page - not their per-anime watch page (checked, it
+// only shows whether sub/dub icons apply, no counts), not their AJAX search-suggestions
+// endpoint (checked, only title/rating/year). So this scrapes the same grid page Anikoto's
+// own UI renders and reads it straight out of the card markup:
+//   <span class="ep-status sub"><span> 13</span></span>
+//   <span class="ep-status dub"><span> 13</span></span>
+//   <span class="ep-status total"><span>13</span></span>
+const ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+// A title that doesn't match anything on anikoto (genuinely not in their catalog, not a
+// bug - confirmed for several real titles) used to get re-searched from scratch on every
+// single page load, forever - up to ~30 anikoto requests apiece with the multi-candidate
+// matching below. Caching the miss too kills that, but negative results get a much longer
+// TTL than positive ones: with many concurrent users hitting the same trending titles, even
+// a short window doesn't save much (different sessions pile on within the same hour
+// regardless), so this trades "notice a newly-added anikoto title within 48h" for "stop
+// re-paying the full search cost on every reload."
+const ANIKOTO_NEGATIVE_CACHE_TTL_MS = 48 * 60 * 60 * 1000;
+// "Finished" only ever meant "finished as far as what we knew when we cached it" - a show
+// that looked done (sub_count caught up to total_count) can still get a genuine sequel season
+// announced later (confirmed real: "The Detective Is Already Dead" season 1 is cached as
+// finished, but season 2 airs Oct 2026). The primary defense against that going stale forever
+// is tmdb_season_count (below), not time - millions of truly-done shows would otherwise get
+// pointlessly re-scraped on a blind schedule for no reason. This TTL is just a generous
+// backstop for titles that never route through a TMDB season-count check at all (e.g. no
+// tmdbId resolved yet) - long enough to barely register as scrape load, short enough to
+// self-heal eventually even without the smarter signal.
+const ANIKOTO_FINISHED_CACHE_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+// ...but that long TTL is only safe when we actually HAVE the season-count signal to catch a
+// sequel with. A finished row with no recorded tmdb_season_count (every row cached before that
+// column existed, or any title that resolves without a tmdbId) has no way to notice a season 2
+// appearing, so it gets a much shorter TTL instead of sitting on stale numbers for half a year.
+// Rows graduate to the long TTL automatically once they refresh once and record a season count.
+const ANIKOTO_FINISHED_NO_SIGNAL_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const ANIKOTO_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+function normalizeAnikotoTitleKey(title) {
+    return String(title || '').toLowerCase().trim();
+}
+
+// Returns undefined for "no usable cache entry" (caller should do a fresh lookup),
+// or { sub, dub, total } (nulls throughout for a cached miss) for a cache hit.
+// tmdbSeasonCount, when the caller has it (threaded from the same TMDB fetch the frontend
+// already makes on every badge view), is the primary freshness signal for finished rows: if
+// TMDB's CURRENT season count is higher than what was true when this row was cached, that's
+// concrete evidence a new season exists, worth an immediate fresh lookup regardless of the
+// long TTL below - catches a real sequel the moment TMDB itself lists it (often before the
+// season even airs) instead of waiting out a blind polling window.
+function getCachedAnikotoEpisodeCounts(normalizedTitle, tmdbSeasonCount) {
+    return new Promise((resolve) => {
+        animeCacheDb.get(
+            `SELECT sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count FROM anikoto_episode_counts WHERE normalized_title = ?`,
+            [normalizedTitle],
+            (err, row) => {
+                if (err || !row) return resolve(undefined);
+                if (row.is_finished === 1 && Number.isFinite(tmdbSeasonCount) && Number.isFinite(row.tmdb_season_count) &&
+                    tmdbSeasonCount > row.tmdb_season_count) {
+                    logAnikotoDebug(`CACHE BUST "${normalizedTitle}" - TMDB season count grew (${row.tmdb_season_count} -> ${tmdbSeasonCount}) since this was cached as finished`);
+                    return resolve(undefined);
+                }
+                const isNegative = row.sub_count == null && row.dub_count == null && row.total_count == null;
+                const finishedTtl = Number.isFinite(row.tmdb_season_count)
+                    ? ANIKOTO_FINISHED_CACHE_TTL_MS
+                    : ANIKOTO_FINISHED_NO_SIGNAL_CACHE_TTL_MS;
+                const ttl = row.is_finished === 1 ? finishedTtl
+                    : (isNegative ? ANIKOTO_NEGATIVE_CACHE_TTL_MS : ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS);
+                const age = Date.now() - Number(row.cached_at || 0);
+                if (age > ttl) return resolve(undefined);
+                resolve({ sub: row.sub_count, dub: row.dub_count, total: row.total_count });
+            }
+        );
+    });
+}
+
+// counts may be null (caching a miss) or { sub, dub, total } (caching a match). A show counts
+// as finished once anikoto's own sub_count has caught up to its total_count - at that point
+// anikoto is reporting every episode as already released, so there's nothing left to change
+// (barring a future sequel season, which tmdb_season_count guards against separately).
+function setCachedAnikotoEpisodeCounts(normalizedTitle, counts, tmdbSeasonCount) {
+    const isFinished = counts?.sub != null && counts?.total != null && counts.sub >= counts.total ? 1 : 0;
+    animeCacheDb.run(
+        `INSERT INTO anikoto_episode_counts (normalized_title, sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(normalized_title) DO UPDATE SET
+            sub_count = excluded.sub_count, dub_count = excluded.dub_count,
+            total_count = excluded.total_count, cached_at = excluded.cached_at,
+            is_finished = excluded.is_finished, tmdb_season_count = excluded.tmdb_season_count`,
+        [normalizedTitle, counts?.sub ?? null, counts?.dub ?? null, counts?.total ?? null, Date.now(), counts ? isFinished : null,
+            Number.isFinite(tmdbSeasonCount) ? tmdbSeasonCount : null],
+        (err) => { if (err) logAnikotoDebug('Cache write failed', { error: err.message }); }
+    );
+}
+
+// Complex season/part titles (e.g. "Jujutsu Kaisen Season 3: The Culling Game Part 1")
+// often don't match anything useful in anikoto's own keyword search at all - it's a
+// simple site search, not fuzzy, so the results grid can come back with nothing close
+// enough for the fuzzy-match step below to work with. Stripping down to progressively
+// simpler variants (same approach already used for TMDB title search elsewhere in this
+// file) gives the search something it's actually more likely to find. Mirrors
+// buildTitleCandidates() in js/indexmainGetManager.js.
+function buildAnikotoTitleCandidates(title) {
+    const candidates = [title];
+    const add = (c) => { if (c && c !== title && !candidates.includes(c)) candidates.push(c); };
+
+    add(title.replace(/\s+(Season\s+\d+|\d+(st|nd|rd|th)\s+Season)$/i, '').trim());
+    add(title.replace(/\s+(Part\s+\d+|Cour\s+\d+|\d+(st|nd|rd|th)\s+Part)$/i, '').trim());
+    add(title.replace(/\s*[:\-–]\s*(Part|Season)?\s*(II|III|IV|V|VI|VII|VIII|IX|X)$/i, '').trim());
+    add(title.replace(/\s+(II|III|IV|VI{0,3}|IX|X)$/, '').trim());
+    add(title.replace(/\s+\d+$/, '').trim());
+    add(title.split(/[:\-–]/)[0].trim());
+
+    return candidates;
+}
+
+// A single episode-count lookup can fan out into several anikoto.cz requests (multiple
+// title candidates, then alt-title fallbacks), and a page full of anime cards resolving
+// badges at once can trigger many lookups concurrently - anikoto sits behind Cloudflare,
+// which rate-limited us (HTTP 429 "Error 1015") the first time this ran unthrottled on a
+// real page. Two guards against that happening again:
+//   1. A small concurrency queue - only ANIKOTO_MAX_CONCURRENT requests to anikoto.cz in
+//      flight at once, everything else queues instead of firing all at once.
+//   2. A cooldown flag - if Cloudflare rate-limits us anyway, stop sending any further
+//      anikoto requests until the cooldown (honoring their Retry-After header) expires,
+//      instead of hammering it while it's actively blocking us.
+const ANIKOTO_MAX_CONCURRENT = 2;
+let anikotoActiveRequests = 0;
+const anikotoRequestQueue = [];
+
+// anikototv.to is a live mirror of anikoto.cz - confirmed identical HTML structure (same
+// .ep-status.sub/dub/total, .ani.poster .meta .right, /watch/{slug}/ep-N link shape), so it's
+// a drop-in fallback with no scraper changes needed. Each host tracks its own rate-limit
+// cooldown independently - getting 429'd on the primary shouldn't also skip the mirror.
+const ANIKOTO_HOSTS = ['anikoto.cz', 'anikototv.to', 'anikoto.net'];
+const anikotoRateLimitedUntil = new Map(ANIKOTO_HOSTS.map(h => [h, 0]));
+
+// Proactive spacing on top of the concurrency cap above - the concurrency cap alone still lets
+// a page that resolves 20 badges at once fire request #3 the instant #1 finishes, which is
+// exactly the burst pattern that tripped a 429 and (before tonight's incomplete-lookup fix)
+// silently mis-cached a batch of real titles ("Tomodachi Game", "Corpse Party"...) as permanent
+// misses. This forces a minimum gap between successive request STARTS - reactive backoff
+// upon actually getting 429'd, but proactive spacing to make hitting one less likely in the
+// first place. Serialized through a promise chain rather than a per-task timestamp check so
+// the spacing is exact even with ANIKOTO_MAX_CONCURRENT requests racing to grab the next slot.
+const ANIKOTO_MIN_REQUEST_SPACING_MS = 400;
+let anikotoThrottleChain = Promise.resolve();
+let anikotoNextAllowedAt = 0;
+
+function acquireAnikotoSlot() {
+    const slot = anikotoThrottleChain.then(async () => {
+        const wait = Math.max(0, anikotoNextAllowedAt - Date.now());
+        if (wait > 0) await new Promise(r => setTimeout(r, wait));
+        anikotoNextAllowedAt = Date.now() + ANIKOTO_MIN_REQUEST_SPACING_MS;
+    });
+    // Keep the chain alive even if this link's fn() later rejects - the chain itself never
+    // throws (there's nothing awaited here that can), but guarding is cheap insurance against
+    // ever wedging every future request behind one bad link.
+    anikotoThrottleChain = slot.catch(() => {});
+    return slot;
+}
+
+function runAnikotoRequest(fn) {
+    return new Promise((resolve, reject) => {
+        const task = async () => {
+            anikotoActiveRequests++;
+            try {
+                await acquireAnikotoSlot();
+                resolve(await fn());
+            } catch (err) {
+                reject(err);
+            } finally {
+                anikotoActiveRequests--;
+                const next = anikotoRequestQueue.shift();
+                if (next) next();
+            }
+        };
+        if (anikotoActiveRequests < ANIKOTO_MAX_CONCURRENT) task();
+        else anikotoRequestQueue.push(task);
+    });
+}
+
+// Returns { candidates, incomplete }. `incomplete: true` means this ISN'T a genuine "anikoto
+// searched and found nothing" result - it means we never actually got a clean answer (every
+// host rate-limited, a 429 mid-request, a timeout/network error) and the empty candidate list
+// is just a side effect of that, not evidence the show doesn't exist. Distinguishing this
+// matters a lot: a batch of totally real, well-known titles ("Tomodachi Game", "Corpse Party",
+// "Kaguya-sama"...) got permanently cached as 48h negative misses during a burst of rapid
+// testing that tripped rate-limiting on every host at once - every one of those was actually
+// an incomplete lookup, not a real "not on anikoto" result, but got cached identically to one
+// before this fix existed.
+async function searchAnikotoGrid(query) {
+    const availableHost = ANIKOTO_HOSTS.find(h => Date.now() >= anikotoRateLimitedUntil.get(h));
+    if (!availableHost) {
+        logAnikotoDebug(`SKIP "${query}" - every anikoto host still in rate-limit cooldown`);
+        return { candidates: [], incomplete: true };
+    }
+
+    logAnikotoDebug(`GET ${availableHost}/filter?keyword=${query}`);
+    return runAnikotoRequest(async () => {
+        let res;
+        try {
+            res = await axios.get(`https://${availableHost}/filter?keyword=${encodeURIComponent(query)}`, {
+                headers: { 'User-Agent': ANIKOTO_UA, 'Referer': `https://${availableHost}/` },
+                timeout: 20000
+            });
+        } catch (err) {
+            if (err.response?.status === 429) {
+                const retryAfterSeconds = parseInt(err.response.headers?.['retry-after'], 10) || 30;
+                anikotoRateLimitedUntil.set(availableHost, Date.now() + (retryAfterSeconds * 1000));
+                logAnikotoDebug(`✗ RATE LIMITED (429) on ${availableHost} for "${query}" - backing off ${retryAfterSeconds}s on this host`);
+                return { candidates: [], incomplete: true };
+            }
+            logAnikotoDebug(`✗ FAILED "${query}" - ${err.message || String(err)}`);
+            return { candidates: [], incomplete: true };
+        }
+
+        const $ = cheerio.load(res.data);
+        const candidates = [];
+        $('#list-items.items .item, .ani.items .item').each((i, el) => {
+            const cardTitle = $(el).find('.info .name.d-title').first().text().trim();
+            if (!cardTitle) return;
+            const parseCount = (cls) => {
+                const raw = $(el).find(`.ep-status.${cls} span`).first().text().trim();
+                const n = parseInt(raw, 10);
+                return Number.isFinite(n) ? n : null;
+            };
+            candidates.push({
+                title: cardTitle,
+                sub: parseCount('sub'),
+                dub: parseCount('dub'),
+                total: parseCount('total'),
+                // TV/Movie/Special/OVA/ONA label from the poster corner (.meta .right).
+                mediaType: $(el).find('.ani.poster .meta .right').first().text().trim(),
+                // The /watch/{slug}/ep-N URL slug is anikoto's own internal identifier for the
+                // show - sometimes it matches the query even when the DISPLAYED title doesn't
+                // (confirmed live: "Chainsmoker Cat" displays as "Yani Neko", but its watch URL
+                // is literally /watch/chainsmoker-cat/ep-1 - anikoto knows the alias, its title
+                // text just doesn't show it).
+                href: $(el).find('.info .name.d-title').first().attr('href') || ''
+            });
+        });
+        logAnikotoDebug(`✓ "${query}" -> ${candidates.length} result(s)`);
+        return { candidates, incomplete: false };
+    });
+}
+
+// Strips punctuation that's cosmetic noise between title conventions (anikoto vs AniList vs
+// TMDB all punctuate colons/apostrophes/dashes differently for the same show) and collapses
+// whitespace, so "Devil's Crest" and "Devils Crest" or "Bleach: TYBW" and "Bleach - TYBW"
+// compare as equivalent instead of being penalized for it.
+function sanitizeAnikotoTitle(title) {
+    return String(title || '')
+        .toLowerCase()
+        .replace(/[:\-–—'",!?.]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// Turns a title into the same hyphenated form anikoto uses for its /watch/{slug}/ URLs, so it
+// can be compared directly against a candidate's real slug (see the `href` capture above).
+function slugifyForAnikoto(title) {
+    return String(title || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
+// anikoto appends a random 5-char suffix to a slug only when needed for uniqueness (confirmed
+// live: "download-devil-s-circuit-pwjnv", "record-of-grancrest-war-yuift" - always exactly 5
+// lowercase alnum chars). Stripped only when at least one other segment remains, so a genuinely
+// short single-word slug never gets mangled down to nothing.
+function extractAnikotoSlugBase(href) {
+    const match = String(href || '').match(/\/watch\/([^/]+)/);
+    if (!match) return '';
+    const segments = match[1].split('-');
+    if (segments.length > 1 && /^[a-z0-9]{5}$/.test(segments[segments.length - 1])) {
+        segments.pop();
+    }
+    return segments.join('-');
+}
+
+// Cardinal number words up to ninety-nine - anime titles that spell numbers out never go
+// higher in practice ("86 EIGHTY-SIX", "91 Days", episode-count-style titles).
+const ANIKOTO_NUMBER_WORDS = {
+    zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
+    ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,
+    seventeen: 17, eighteen: 18, nineteen: 19,
+    twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90
+};
+
+// Collapses spelled-out numbers into their digit form so "Eighty Six" and "86" compare as
+// equal ("86 EIGHTY-SIX" vs anikoto's "86" is the real case this exists for) - handles
+// compound tens+ones ("eighty six" -> "86") as well as plain singles ("six" -> "6").
+function collapseAnikotoNumberWords(tokens) {
+    const out = [];
+    let i = 0;
+    while (i < tokens.length) {
+        const t = tokens[i];
+        if (t in ANIKOTO_NUMBER_WORDS) {
+            let value = ANIKOTO_NUMBER_WORDS[t];
+            if (value >= 20 && value % 10 === 0 && i + 1 < tokens.length &&
+                tokens[i + 1] in ANIKOTO_NUMBER_WORDS && ANIKOTO_NUMBER_WORDS[tokens[i + 1]] < 10) {
+                value += ANIKOTO_NUMBER_WORDS[tokens[i + 1]];
+                i += 2;
+            } else {
+                i += 1;
+            }
+            out.push(String(value));
+            continue;
+        }
+        out.push(t);
+        i += 1;
+    }
+    return out;
+}
+
+// Titles that state a number both ways at once ("86 EIGHTY-SIX" = digit "86" + spelled "eighty
+// six" back to back) collapse to an adjacent duplicate ("86","86") rather than a single token -
+// squash those so the title still compares as just "86".
+function dedupeAdjacentAnikotoTokens(tokens) {
+    const out = [];
+    for (const t of tokens) {
+        if (out.length && out[out.length - 1] === t) continue;
+        out.push(t);
+    }
+    return out;
+}
+
+function sanitizeAnikotoTitleTokens(title) {
+    const raw = sanitizeAnikotoTitle(title).split(' ').filter(Boolean);
+    return dedupeAdjacentAnikotoTokens(collapseAnikotoNumberWords(raw));
+}
+
+// Best-of-two Dice score: the plain sanitized comparison, and a token-sort variant (each
+// title's words alphabetized before comparing) that catches word-order differences between
+// title conventions. Deliberately NOT doing token-subset/containment matching here - tested
+// against real cases and confirmed unsafe, since a bare season/type qualifier (e.g. "Jujutsu
+// Kaisen 0" the movie vs "Jujutsu Kaisen" the TV series) makes one title a "subset" of the
+// other while being genuinely different content, exactly like the correct case ("86 EIGHTY-SIX"
+// vs anikoto's "86") looks identical from a pure containment standpoint.
+function computeAnikotoMatchScore(query, candidateTitle) {
+    const queryTokens = sanitizeAnikotoTitleTokens(query);
+    const candidateTokens = sanitizeAnikotoTitleTokens(candidateTitle);
+    const sanitizedQuery = queryTokens.join(' ');
+    const sanitizedCandidate = candidateTokens.join(' ');
+    if (sanitizedQuery === sanitizedCandidate) return 1;
+
+    const sortedQuery = queryTokens.slice().sort().join(' ');
+    const sortedCandidate = candidateTokens.slice().sort().join(' ');
+    const plainScore = stringSimilarity.compareTwoStrings(sanitizedQuery, sanitizedCandidate);
+    const tokenSortScore = stringSimilarity.compareTwoStrings(sortedQuery, sortedCandidate);
+    return Math.max(plainScore, tokenSortScore);
+}
+
+// Season/cour/movie qualifier words - a trailing or embedded one of these is what turns "same
+// base title" into "different piece of content" (a movie isn't the TV series, "Final Season"
+// isn't the original season, different cour subtitles are different releases).
+const ANIKOTO_QUALIFIER_RE = /^(season|part|cour|movie|film|ova|ona|special|final|zero|first|second|third|fourth|fifth|\d+(st|nd|rd|th)?|\d+|[ivx]{1,4})$/i;
+const ANIKOTO_FILLER_RE = /^(the|a|an|of|and)$/i;
+
+function stripTrailingAnikotoQualifiers(tokensArr) {
+    const out = tokensArr.slice();
+    while (out.length > 1 && (ANIKOTO_QUALIFIER_RE.test(out[out.length - 1]) || ANIKOTO_FILLER_RE.test(out[out.length - 1]))) {
+        out.pop();
+    }
+    return out;
+}
+
+// Detects "same base title, different season/cour/movie variant" pairs that plain (even
+// sanitized/token-sorted) Dice scoring can't tell apart from a genuine match, since the
+// differing tokens are often few and short - e.g. "Jujutsu Kaisen 0" (a movie) vs "Jujutsu
+// Kaisen" (the TV series) scores 0.96, and "Bleach ... The Calamity" vs "Bleach ... The
+// Conflict" (different cours of the same franchise) scores 0.81, both well past the 0.6
+// high-confidence threshold. Verified against every known-good match this session (Yamada-kun,
+// Devil's Crest, 86, Chainsmoker Cat) to confirm none of them trip this check.
+function isAnikotoVariantDivergence(query, candidateTitle) {
+    const qTokens = sanitizeAnikotoTitleTokens(query);
+    const cTokens = sanitizeAnikotoTitleTokens(candidateTitle);
+
+    // Same base once trailing qualifier/filler words are stripped from either side.
+    const qBase = stripTrailingAnikotoQualifiers(qTokens).join(' ');
+    const cBase = stripTrailingAnikotoQualifiers(cTokens).join(' ');
+    if (qBase.length > 0 && qBase === cBase) return true;
+
+    let i = 0;
+    while (i < qTokens.length && i < cTokens.length && qTokens[i] === cTokens[i]) i++;
+    const qRemainder = qTokens.slice(i);
+    const cRemainder = cTokens.slice(i);
+
+    // Long shared prefix, then both sides diverge into a short, different trailing remainder
+    // (a subtitle swap - neither word is a generic qualifier, so the check above misses it).
+    if (i >= 3 && qRemainder.length > 0 && cRemainder.length > 0 &&
+        qRemainder.length <= 3 && cRemainder.length <= 3) {
+        return true;
+    }
+
+    // One side is a full prefix of the other, and the leftover has a qualifier marker
+    // anywhere in it, not just trailing - e.g. "One Piece" vs "One Piece Film: Red" ("Film"
+    // sits before "Red", so the trailing-only check above wouldn't catch it).
+    const minLen = Math.min(qTokens.length, cTokens.length);
+    if (minLen > 0 && i === minLen && qTokens.length !== cTokens.length) {
+        const longerRemainder = qTokens.length > cTokens.length ? qTokens.slice(minLen) : cTokens.slice(minLen);
+        if (longerRemainder.some(t => ANIKOTO_QUALIFIER_RE.test(t))) return true;
+    }
+
+    return false;
+}
+
+// A TMDB show id can combine multiple seasons into one entry (e.g. "Love, Chunibyo & Other
+// Delusions!" totals 24 episodes across two 12-episode seasons), while anikoto lists each
+// season as its own separate catalog entry. A single anikoto SEARCH already returns every
+// season alongside it though (confirmed live: searching the base title alone returned both
+// "Love, Chunibyo & Other Delusions!" and "...! 2nd Season: Heart Throb" in the same 30-result
+// grid, no extra query needed) - isAnikotoVariantDivergence already detects exactly this
+// "same base, different season/cour qualifier" relationship (built to REJECT it as a wrong
+// match; reused here as the grouping signal instead). Restricted to mediaType 'TV' so Movies/
+// OVAs/Specials sharing the franchise name never get summed in as if they were episodes.
+function sumAnikotoSeasonSiblings(primary, candidatePool) {
+    let sub = Number.isFinite(primary.sub) ? primary.sub : 0;
+    let dub = Number.isFinite(primary.dub) ? primary.dub : 0;
+    let total = Number.isFinite(primary.total) ? primary.total : 0;
+    let subKnown = Number.isFinite(primary.sub);
+    let dubKnown = Number.isFinite(primary.dub);
+    let totalKnown = Number.isFinite(primary.total);
+    const summedTitles = [primary.title];
+
+    for (const c of candidatePool) {
+        if (c === primary) continue;
+        if (c.mediaType?.toLowerCase() !== 'tv') continue;
+        if (!isAnikotoVariantDivergence(primary.title, c.title)) continue;
+        summedTitles.push(c.title);
+        if (Number.isFinite(c.sub)) sub += c.sub; else subKnown = false;
+        if (Number.isFinite(c.dub)) dub += c.dub; else dubKnown = false;
+        if (Number.isFinite(c.total)) total += c.total; else totalKnown = false;
+    }
+
+    if (summedTitles.length === 1) return primary; // no siblings found in this pool
+
+    logAnikotoDebug(`SEASON SUM grouped [${summedTitles.join(' + ')}] -> sub:${subKnown ? sub : null} dub:${dubKnown ? dub : null} total:${totalKnown ? total : null}`);
+    return {
+        title: primary.title,
+        sub: subKnown ? sub : null,
+        dub: dubKnown ? dub : null,
+        total: totalKnown ? total : null
+    };
+}
+
+// A bare Dice-coefficient score can't tell a real match from a coincidental one at the 0.5-0.6
+// boundary - confirmed live: "Devils' Crest" scored 0.526 against the real, unrelated anime
+// "Devils' Line" (wrong), essentially indistinguishable from "My Love Story with Yamada-kun at
+// Lv999" scoring 0.542 against its real match "Loving Yamada at Lv999" (right). AniList's own
+// episode count/status for the query title is a much sharper independent signal: "Devils'
+// Crest" turned out to be a real, announced show that's simply NOT_YET_RELEASED - no anikoto
+// listing could legitimately exist for it regardless of score - while Yamada-kun's AniList
+// episode count (13) exactly matches the candidate's total (13), positively corroborating it.
+// Defaults to reject (not accept) when AniList doesn't know the title either - a low-confidence
+// score with no way to corroborate it is exactly the unsafe case this whole check exists for.
+async function validateAnikotoFuzzyMatchAgainstAniList(title, candidateTotal) {
+    try {
+        const query = `query($search: String) { Media(search: $search, type: ANIME) { episodes status } }`;
+        const response = await axios.post(
+            'https://graphql.anilist.co',
+            { query, variables: { search: title } },
+            { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 8000 }
+        );
+        const media = response.data?.data?.Media;
+        if (!media) return { accept: false, reason: 'AniList has no entry for this title - cannot corroborate' };
+
+        if (media.status === 'NOT_YET_RELEASED') {
+            return { accept: false, reason: 'AniList says this show has not released yet' };
+        }
+        if (Number.isFinite(media.episodes) && Number.isFinite(candidateTotal)) {
+            if (media.episodes === candidateTotal) {
+                return { accept: true, reason: `AniList episode count matches candidate total (${candidateTotal})` };
+            }
+            return { accept: false, reason: `AniList episode count (${media.episodes}) doesn't match candidate total (${candidateTotal})` };
+        }
+        return { accept: false, reason: 'AniList entry has no usable episode count to corroborate with' };
+    } catch (err) {
+        logAnikotoDebug(`AniList validation check failed for "${title}"`, { error: err.message || String(err) });
+        // A failed REQUEST (network/timeout/rate-limit) is not the same as AniList actually
+        // answering "no corroboration" - same principle as the anikoto rate-limit fix above,
+        // this shouldn't get permanently cached as a genuine miss just because we couldn't
+        // ask the question at all this time.
+        return { accept: false, incomplete: true, reason: 'AniList validation request failed' };
+    }
+}
+
+async function fetchAnikotoEpisodeCounts(rawTitle) {
+    const title = String(rawTitle || '').trim();
+    if (!title) return null;
+
+    let overallBest = null;
+    let overallBestScore = 0;
+    let overallBestPool = null;
+    // True if ANY candidate query never got a clean answer (rate-limited, 429, network error) -
+    // an eventual "no match" is then NOT safe to cache negatively, since it might just mean we
+    // never actually got to ask anikoto, not that anikoto said no.
+    let anyIncomplete = false;
+
+    for (const query of buildAnikotoTitleCandidates(title)) {
+        const { candidates: rawCandidates, incomplete } = await searchAnikotoGrid(query);
+        if (incomplete) anyIncomplete = true;
+        if (!rawCandidates.length) continue;
+
+        // Specials/recaps get excluded from matching entirely - confirmed on a real case
+        // ("86 EIGHTY-SIX"): a "Season 2 Recap" Special scored 0.65 similarity (bigram
+        // scoring favors its longer, padded title) and won over the actual show entries,
+        // which score much lower purely for being shorter strings ("86" alone only scores
+        // 0.17 against the same query despite being exactly right). Our badge titles always
+        // come from a main show/season, never a query for a special specifically, so a
+        // Special is never the intended match - dropping it here lets the real season
+        // entries (or, failing that, the TMDB total-episode fallback) win instead.
+        const candidates = rawCandidates.filter(c => c.mediaType?.toLowerCase() !== 'special');
+        if (!candidates.length) continue;
+
+        // Exact-match against the CANDIDATE query just searched, not the original raw
+        // title - "Made in Abyss: Mezameru Shinpi" (AniList's romaji, no English subtitle
+        // available yet) will never literally equal anything in anikoto's catalog, but the
+        // stripped-down "Made in Abyss" candidate correctly finds anikoto's "Made in Abyss"
+        // entry - comparing that result against the untouched original title instead of
+        // the query that found it meant this exact match was never recognized as one.
+        const normalizedQuery = query.toLowerCase();
+        const sanitizedQuery = sanitizeAnikotoTitleTokens(query).join(' ');
+        const exact = candidates.find(c => c.title.toLowerCase() === normalizedQuery
+            || sanitizeAnikotoTitleTokens(c.title).join(' ') === sanitizedQuery);
+        if (exact) {
+            logAnikotoDebug(`MATCH "${title}" -> "${exact.title}" (sub:${exact.sub} dub:${exact.dub} total:${exact.total})`);
+            return sumAnikotoSeasonSiblings(exact, candidates);
+        }
+
+        // The DISPLAYED title can miss entirely while the URL SLUG still matches - confirmed
+        // live: "Chainsmoker Cat" displays as "Yani Neko" (zero shared characters), but its
+        // watch URL is literally /watch/chainsmoker-cat/ep-1. This used to only get caught by
+        // the single-result rule below, which depends on anikoto's search narrowing to exactly
+        // one candidate - it doesn't always (a broader "cat"-keyword search returns 30 unrelated
+        // results with this one merely ranked #1), so that's not reliable on its own. The slug
+        // is anikoto's own internal identifier, independent of whatever title it displays - a
+        // much stronger signal than title-text fuzzy scoring could ever be for these.
+        const slugQuery = slugifyForAnikoto(query);
+        const slugMatch = slugQuery && candidates.find(c => extractAnikotoSlugBase(c.href) === slugQuery);
+        if (slugMatch) {
+            logAnikotoDebug(`SLUG MATCH "${title}" -> "${slugMatch.title}" (sub:${slugMatch.sub} dub:${slugMatch.dub} total:${slugMatch.total})`);
+            return sumAnikotoSeasonSiblings(slugMatch, candidates);
+        }
+
+        // anikoto's own search sometimes resolves a query to a title that shares no
+        // characters with it at all - e.g. "Chainsmoker Cat" (our AniList-sourced title)
+        // correctly finds "Yani Neko" (anikoto's Japanese-only listing, no English alias)
+        // as the ONLY result. String-similarity scoring below would never recognize that
+        // as a match (there's nothing in common to compare), but anikoto's search engine
+        // already did whatever alias/translation matching got it there - a single result
+        // for a specific query is anikoto itself telling us it found exactly one thing and
+        // nothing else close, which is a stronger signal than our own fuzzy score.
+        if (candidates.length === 1) {
+            logAnikotoDebug(`SINGLE RESULT MATCH "${title}" (query "${query}") -> "${candidates[0].title}" (sub:${candidates[0].sub} dub:${candidates[0].dub} total:${candidates[0].total})`);
+            return candidates[0];
+        }
+
+        // (Tried trusting anikoto's own #1-ranked result here as a last-resort fallback -
+        // reverted. It correctly resolved "Chainsmoker Cat" -> "Yani Neko" [zero shared
+        // characters, but a genuine alias match on anikoto's end], but for titles that
+        // genuinely aren't on anikoto at all, it just as confidently attached a WRONG
+        // show's data - e.g. "Devil's Crest" -> "Download: Devil's Circuit", ranked #1
+        // for no better reason than sharing the word "Devil's". No way found yet to tell
+        // "genuine alias match" apart from "coincidental word-overlap ranking" from the
+        // response alone, and wrong data is worse than no badge - see the single-result
+        // rule above for the one case of this pattern that IS safe to trust.)
+
+        // No exact title match in this candidate's results grid - track the closest
+        // match seen across all candidate queries so far, but only ever return it if
+        // it's actually close. A low-confidence "best of a bad bunch" match would
+        // attach the wrong show's episode counts to this title. Scored against the
+        // original full title still, so a generic stripped-down query (e.g. just "Made in
+        // Abyss") doesn't loosely match some unrelated entry that happens to share that
+        // fragment.
+        for (const c of candidates) {
+            if (isAnikotoVariantDivergence(title, c.title)) continue;
+            const score = computeAnikotoMatchScore(title, c.title);
+            if (score > overallBestScore) { overallBestScore = score; overallBest = c; overallBestPool = candidates; }
+        }
+    }
+
+    if (overallBestScore >= 0.6) {
+        logAnikotoDebug(`FUZZY MATCH "${title}" -> "${overallBest.title}" (score:${overallBestScore.toFixed(2)}, sub:${overallBest.sub} dub:${overallBest.dub} total:${overallBest.total})`);
+        return sumAnikotoSeasonSiblings(overallBest, overallBestPool);
+    }
+
+    // A 0.5-0.6 tier lives here, gated on AniList corroboration (see
+    // validateAnikotoFuzzyMatchAgainstAniList above) instead of trusting the score alone -
+    // this range previously accepted any score >= 0.5 outright and that let a real false
+    // positive through ("Devils' Crest" -> "Devils' Line" at 0.526, indistinguishable in
+    // score from the genuine "Yamada-kun" match at 0.542). Only reachable at most once per
+    // title per cache miss - see resolveAnikotoEpisodeCountsCached's caching/dedup below.
+    if (overallBestScore >= 0.5) {
+        const validation = await validateAnikotoFuzzyMatchAgainstAniList(title, overallBest.total);
+        if (validation.accept) {
+            logAnikotoDebug(`LOW-CONFIDENCE FUZZY MATCH "${title}" -> "${overallBest.title}" (score:${overallBestScore.toFixed(2)}, AniList-corroborated: ${validation.reason}, sub:${overallBest.sub} dub:${overallBest.dub} total:${overallBest.total})`);
+            return sumAnikotoSeasonSiblings(overallBest, overallBestPool);
+        }
+        logAnikotoDebug(`✗ REJECTED low-confidence match "${title}" -> "${overallBest.title}" (score:${overallBestScore.toFixed(2)}) - ${validation.reason}`);
+        if (validation.incomplete) anyIncomplete = true;
+    }
+
+    if (anyIncomplete) {
+        logAnikotoDebug(`✗ INCOMPLETE LOOKUP for "${title}" - at least one candidate query never got a clean answer (rate-limited/network error), not caching this as a real miss`);
+        return undefined;
+    }
+
+    logAnikotoDebug(`✗ NO MATCH for "${title}"${overallBest ? ` (best guess "${overallBest.title}" only scored ${overallBestScore.toFixed(2)}, below 0.5 threshold)` : ' (no candidates found at all)'}`);
+    return null;
+}
+
+// Russian month name -> index, for parsing animego's schedule-table dates ("15 августа
+// 2026"). Genitive case forms only (how animego actually renders them).
+const RU_MONTH_INDEX = {
+    'января': 0, 'февраля': 1, 'марта': 2, 'апреля': 3, 'мая': 4, 'июня': 5,
+    'июля': 6, 'августа': 7, 'сентября': 8, 'октября': 9, 'ноября': 10, 'декабря': 11
+};
+
+// animego's summary "Эпизоды: N" field is just the PLANNED total for an ongoing show, not
+// how many have actually released - confirmed wrong on a real case (said "10" while only 3
+// had aired). Their per-episode release schedule table has real dates though, so this
+// counts episodes whose air date has already passed as of right now - the actual "released
+// so far" number, computed rather than trusted from a single field anikoto/animego might
+// not have updated. Reuses searchAnimegoCandidates (already built for the RU video server)
+// with the same 0.6 similarity gate so a loose/wrong match never gets used as a "source of
+// truth" total.
+async function findAnimegoSlug(title) {
+    let candidates;
+    try {
+        candidates = await searchAnimegoCandidates(title);
+    } catch (err) {
+        logAnikotoDebug(`ANIMEGO search failed for "${title}"`, { error: err.message || String(err) });
+        return null;
+    }
+    if (!candidates.length) return null;
+
+    const normalizedTarget = title.toLowerCase();
+    const scored = candidates.map(c => {
+        const candidateTitles = [c.title, c.secondaryTitle].filter(Boolean).map(t => t.toLowerCase());
+        let best = 0;
+        for (const t of candidateTitles) {
+            best = Math.max(best, stringSimilarity.compareTwoStrings(normalizedTarget, t));
+        }
+        return { ...c, similarity: best };
+    }).sort((a, b) => b.similarity - a.similarity);
+
+    if (scored[0].similarity < 0.6) {
+        logAnikotoDebug(`ANIMEGO no confident match for "${title}" (best guess "${scored[0].title}" / "${scored[0].secondaryTitle || ''}" only scored ${scored[0].similarity.toFixed(2)})`);
+        return null;
+    }
+    return scored[0].slug;
+}
+
+// animego's own search results often only carry a romaji-style secondary title for
+// cour/arc-specific entries (e.g. "Bleach: Sennen Kessen-hen - Kashin-tan" for what
+// AniList/we call "Bleach: Thousand-Year Blood War - The Calamity") - confirmed on a real
+// case where the English query correctly scored too low against that to trust. altTitles
+// (the same romaji/native/synonym candidates already tried against anikoto) gives this a
+// real shot at the ones anikoto's own English-first title search would also miss.
+async function findAnimegoSlugWithFallback(title, altTitles) {
+    const slug = await findAnimegoSlug(title);
+    if (slug) return slug;
+    for (const alt of (altTitles || [])) {
+        if (!alt || alt === title) continue;
+        const altSlug = await findAnimegoSlug(alt);
+        if (altSlug) return altSlug;
+    }
+    return null;
+}
+
+// animego's summary "Эпизоды: N" field is just the PLANNED total for an ongoing show, not
+// how many have actually released - confirmed wrong on a real case (said "10" while only 3
+// had aired). Their per-episode release schedule table has real dates though, so this
+// counts episodes whose air date has already passed as of right now - the actual "released
+// so far" number, computed rather than trusted from a single field anikoto/animego might
+// not have updated. Reuses searchAnimegoCandidates (already built for the RU video server)
+// with the same 0.6 similarity gate so a loose/wrong match never gets used as a "source of
+// truth" total.
+async function fetchAnimegoReleasedEpisodeCount(rawTitle, altTitles) {
+    const title = String(rawTitle || '').trim();
+    if (!title) return null;
+
+    const slug = await findAnimegoSlugWithFallback(title, altTitles);
+    if (!slug) return null;
+
+    let pageRes;
+    try {
+        pageRes = await axios.get(`https://animego.me/anime/${slug}`, {
+            headers: { 'User-Agent': NEWSTREAM_UA, 'Referer': 'https://animego.me/' },
+            timeout: 15000
+        });
+    } catch (err) {
+        logAnikotoDebug(`ANIMEGO page fetch failed for "${title}"`, { error: err.message || String(err) });
+        return null;
+    }
+
+    const $ = cheerio.load(pageRes.data);
+    const now = new Date();
+    let maxReleasedEpisode = null;
+
+    $('[data-episode][data-number]').each((i, el) => {
+        const num = parseInt($(el).attr('data-number'), 10);
+        if (!Number.isFinite(num)) return;
+        const dateText = $(el).find('span[data-label]').first().text().trim();
+        const m = dateText.match(/(\d{1,2})\s+([а-яё]+)\s+(\d{4})/i);
+        if (!m) return;
+        const month = RU_MONTH_INDEX[m[2].toLowerCase()];
+        if (month === undefined) return;
+        const epDate = new Date(parseInt(m[3], 10), month, parseInt(m[1], 10), 23, 59, 59);
+        if (epDate <= now && (maxReleasedEpisode === null || num > maxReleasedEpisode)) {
+            maxReleasedEpisode = num;
+        }
+    });
+
+    // The "Озвучка" (voicing) row links to /anime/dubbing/{studio} when a real RU dub studio
+    // covers the show, separate from subtitle-only listings - without this check, a
+    // subtitle-only show would get a fabricated dub count just because it has a release
+    // schedule at all (every show tracked on animego has one, dubbed or not).
+    const hasDub = $('a[href^="/anime/dubbing/"]').length > 0;
+
+    return { episodeCount: maxReleasedEpisode, hasDub };
+}
+
+const anikotoEpisodeCountsInFlight = new Map();
+
+// tmdbSeasonCount (optional) comes from the caller's own TMDB details fetch - it's what makes
+// a finished show's cache row self-invalidate when a real sequel season shows up, instead of
+// relying purely on the long TTL backstop. See getCachedAnikotoEpisodeCounts.
+function resolveAnikotoEpisodeCountsCached(rawTitle, altTitles, tmdbSeasonCount) {
+    const normalizedTitle = normalizeAnikotoTitleKey(rawTitle);
+    if (!normalizedTitle) return Promise.resolve(null);
+
+    if (anikotoEpisodeCountsInFlight.has(normalizedTitle)) {
+        return anikotoEpisodeCountsInFlight.get(normalizedTitle);
+    }
+
+    const p = (async () => {
+        const cached = await getCachedAnikotoEpisodeCounts(normalizedTitle, tmdbSeasonCount);
+        if (cached !== undefined) {
+            // A cache row with every field null is a cached MISS (see
+            // ANIKOTO_NEGATIVE_CACHE_TTL_MS above) - collapse it back to null so callers
+            // keep the simple "null = no match" contract regardless of which kind of
+            // cache hit this was.
+            const isNegative = cached.sub == null && cached.dub == null && cached.total == null;
+            return isNegative ? null : cached;
+        }
+
+        const fresh = await fetchAnikotoEpisodeCounts(rawTitle);
+
+        // A missing dub count is used as a signal that this anikoto entry might be
+        // low-quality/incomplete generally (confirmed on a real case: anikoto had two
+        // duplicate listings for the same show, one with dub missing AND a wrong total,
+        // the other complete and correct) - so when dub is missing, also cross-check
+        // against animego.me's actual per-episode release schedule (which we can
+        // date-compare precisely, unlike anikoto's single static number) and prefer that
+        // if we get one. Only counts as a `dub` backfill too when the page actually lists a
+        // real dub studio (not subtitle-only) - otherwise a subtitle-only show would get a
+        // fabricated dub number just because it has a release schedule at all (every show
+        // tracked on animego has one, dubbed or not).
+        if (fresh && fresh.dub == null) {
+            try {
+                const animegoResult = await fetchAnimegoReleasedEpisodeCount(rawTitle, altTitles);
+                if (animegoResult?.episodeCount != null) {
+                    const { episodeCount, hasDub } = animegoResult;
+                    logAnikotoDebug(`ANIMEGO BACKFILL "${rawTitle}" total ${fresh.total} -> ${episodeCount}${hasDub ? `, dub null -> ${episodeCount}` : ' (no dub studio listed, dub stays null)'}`);
+                    fresh.total = episodeCount;
+                    if (hasDub) fresh.dub = episodeCount;
+                }
+            } catch (err) {
+                logAnikotoDebug(`ANIMEGO BACKFILL failed for "${rawTitle}"`, { error: err.message || String(err) });
+            }
+        }
+
+        // fresh === undefined means the lookup was incomplete (rate-limited/network error
+        // partway through), not a genuine "anikoto has nothing" result - skip caching so the
+        // next request tries again fresh instead of being stuck with a false 48h negative.
+        if (fresh === undefined) return null;
+
+        setCachedAnikotoEpisodeCounts(normalizedTitle, fresh, tmdbSeasonCount);
+        return fresh;
+    })();
+
+    anikotoEpisodeCountsInFlight.set(normalizedTitle, p);
+    // .finally() returns its OWN new promise - if it's not caught, a rejection of `p`
+    // (e.g. anikoto/Cloudflare rate-limiting us) becomes an unhandled rejection on THIS
+    // chain even though the caller below awaits and catches `p` itself. Node crashes the
+    // whole process on unhandled rejections by default - this is what took the backend
+    // down. The .catch(() => {}) here is just to keep this cleanup-only chain from ever
+    // being "unhandled" - the real error still propagates to whoever awaits `p`.
+    p.finally(() => anikotoEpisodeCountsInFlight.delete(normalizedTitle)).catch(() => {});
+    return p;
+}
+
+// Attempted a "sum each season's own anikoto entry" feature here to properly combine
+// multi-season TMDB ids (e.g. "Love, Chunibyo & Other Delusions!" totals 24 across two
+// 12-episode seasons) - reverted. buildAnikotoTitleCandidates() strips " Season N" off every
+// query before searching (it broadens single-lookup searches on purpose), so "{title} Season
+// 1" and "{title} Season 2" both collapsed back to the same bare-title search and fuzzy-matched
+// to the SAME season-1 entry both times - confirmed live via the debug log, both queries
+// landing on the identical anikoto title. It looked like it worked at first only because
+// season 1 and season 2 happen to both have exactly 12 episodes for this specific show; for
+// any show where seasons differ in length, this would have confidently doubled the wrong
+// season's count instead of summing the real total. Anikoto's own season 2+ titling also
+// isn't predictable enough to target generically ("2nd Season: Heart Throb", not "Season 2"),
+// so doing this reliably needs real per-season alt titles (e.g. from AniList's relations data),
+// which nothing here currently fetches. Falling back to the TMDB-total override below instead.
+
+app.get('/api/anikoto-episode-counts', async (req, res) => {
+    const title = req.query.title || '';
+    if (!title) return res.status(400).json({ error: 'title is required' });
+    let altTitles = [];
+    if (req.query.altTitles) {
+        try {
+            const parsed = JSON.parse(req.query.altTitles);
+            if (Array.isArray(parsed)) altTitles = parsed.filter(t => typeof t === 'string');
+        } catch (e) { /* ignore malformed altTitles, just proceed without them */ }
+    }
+    // Optional - the caller (episodeCountBadges.js) already fetches TMDB details for this
+    // title anyway, so passing its season count along costs no extra request and lets a
+    // finished show's cache row self-invalidate the moment TMDB lists a new season.
+    const parsedSeasons = parseInt(req.query.numberOfSeasons, 10);
+    const tmdbSeasonCount = Number.isFinite(parsedSeasons) ? parsedSeasons : undefined;
+    try {
+        const counts = await resolveAnikotoEpisodeCountsCached(title, altTitles, tmdbSeasonCount);
+        if (!counts) return res.json({ ok: false });
+        res.json({ ok: true, sub: counts.sub, dub: counts.dub, total: counts.total });
+    } catch (err) {
+        logAnikotoDebug(`✗ Lookup threw for "${title}"`, { error: err.message || String(err) });
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
 // A user's own comments across every anime (home page "Your Comments"
 // widget's anime-mode). source='user' excludes the anikoto-imported ones --
 // those never belong to a real site user_uid anyway, this is just explicit.
@@ -9730,6 +10915,11 @@ app.get('/api/anime-comments', async (req, res) => {
     const rawTitle = req.query.title || '';
     const season = parseInt(req.query.season || '1', 10);
     const sort = req.query.sort === 'oldest' ? 'oldest' : req.query.sort === 'top' ? 'top' : 'newest';
+    // 'only' lets the frontend fire the anikoto (EN) and animego (RU) imports as two
+    // separate requests, so whichever source finishes first can render immediately
+    // instead of both being gated behind Promise.allSettled together. Omitted = both,
+    // preserving the original combined behavior for any other caller.
+    const only = req.query.only === 'anikoto' ? 'anikoto' : req.query.only === 'animego' ? 'animego' : null;
 
     if (!malId || !episodeNumber) {
         return res.status(400).json({ error: 'malId and episode are required' });
@@ -9737,7 +10927,10 @@ app.get('/api/anime-comments', async (req, res) => {
 
     const respondFromCache = () => new Promise((resolve, reject) => {
         animeCacheDb.all(
-            `SELECT * FROM anime_comments WHERE mal_id = ? AND episode_number = ? ORDER BY created_at ASC`,
+            // episode_number = 0 is the animego RU sentinel ("applies to every
+            // episode" - see the comment above ANIMEGO_USER_ID_OFFSET) mixed in
+            // alongside this specific episode's Anikoto/user rows.
+            `SELECT * FROM anime_comments WHERE mal_id = ? AND (episode_number = ? OR (source = 'animego' AND episode_number = 0)) ORDER BY created_at ASC`,
             [malId, episodeNumber],
             (err, rows) => {
                 if (err) return reject(err);
@@ -9767,25 +10960,48 @@ app.get('/api/anime-comments', async (req, res) => {
     });
 
     try {
+        // Run the Anikoto (English) and animego (Russian) imports concurrently, not
+        // sequentially - both are independent network-bound scrapes, and awaiting them
+        // back to back would double the cold-cache latency for no reason. Promise.allSettled
+        // so one being slow/down never blocks or fails the other; whichever succeeded is
+        // simply what respondFromCache() below picks up.
+        const jobs = [];
+
         // Always try to join an already-running import for this key, even if THIS request
         // has no title to start a fresh one with - otherwise a title-less request (e.g. a
         // second near-simultaneous call, or one that raced #title's population on the page)
         // skips waiting entirely and reads back whatever's committed mid-scrape, which can be
         // just a handful of rows instead of the full comment set.
-        if (rawTitle || animeCommentJobsInFlight.has(`${malId}:${episodeNumber}`)) {
-            try {
-                await runAnimeCommentImportJob(malId, episodeNumber, async () => {
+        if ((!only || only === 'anikoto') && (rawTitle || animeCommentJobsInFlight.has(`${malId}:${episodeNumber}`))) {
+            jobs.push(
+                runAnimeCommentImportJob(malId, episodeNumber, async () => {
                     if (!rawTitle) return null; // joining an existing job - resolveIds won't run for it anyway
                     const resolved = await resolveAnikotoEpisodeCached(rawTitle, season, episodeNumber);
                     if (!resolved.anikotoEpisodeId || !resolved.internalAnimeId) return null;
                     return { anikotoAnimeId: resolved.internalAnimeId, anikotoEpisodeId: resolved.anikotoEpisodeId };
-                });
-            } catch (resolveErr) {
-                logTempDebug('[OnDemand] Resolve/import failed, serving whatever is cached', {
-                    malId, episodeNumber, error: resolveErr.message || String(resolveErr)
-                });
-            }
+                }).catch(resolveErr => {
+                    logTempDebug('[OnDemand] Anikoto resolve/import failed, serving whatever is cached', {
+                        malId, episodeNumber, error: resolveErr.message || String(resolveErr)
+                    });
+                })
+            );
         }
+
+        // Same best-effort join for the RU (animego) side. Awaited (via allSettled below)
+        // so a cold cache gets both languages mixed in on the very first load, not just
+        // after a reload. Never fails the whole request: animego being down/rate-limited
+        // just means this episode's list is English-only until the next successful run.
+        if ((!only || only === 'animego') && rawTitle && malId) {
+            jobs.push(
+                runAnimegoCommentImportJob(malId, rawTitle, season).catch(animegoErr => {
+                    logTempDebug('[OnDemand] Animego import failed, serving whatever is cached', {
+                        malId, error: animegoErr.message || String(animegoErr)
+                    });
+                })
+            );
+        }
+
+        if (jobs.length) await Promise.allSettled(jobs);
 
         const comments = await respondFromCache();
         res.json({ comments });
@@ -9902,6 +11118,20 @@ app.get('/api/anime-neko-log', async (req, res) => {
         return res.status(400).json({ ok: false, error: 'Title is required' });
     }
 
+    // Skip-intro/outro data is keyed by (title, season, episode) on anime-skip.com's side,
+    // not by provider - the same OP/ED timestamps apply no matter which server resolves the
+    // actual video. getAnimeSkipTimestamps has its own DB-backed cache (see AnimeSkipService.js),
+    // so this doesn't re-hit anime-skip.com on every request regardless of the episodeLoadCache
+    // hit/miss below - same as KAA's /api/anime-kaa-servers.
+    let skipSegments = [];
+    try {
+        skipSegments = await getAnimeSkipTimestamps({ title: rawTitle, season, episode: parseInt(episode, 10) || 1 });
+    } catch (skipErr) {
+        logNekoDebug('[AnimeSkip] Neko skip lookup failed:', skipErr.message || skipErr);
+        skipSegments = [];
+    }
+    skipSegments = Array.isArray(skipSegments) ? skipSegments : [];
+
     try {
         // Check episode load cache first
         if (tmdbId) {
@@ -9912,7 +11142,8 @@ app.get('/api/anime-neko-log', async (req, res) => {
                     ok: true,
                     stream: (cached.sources && cached.sources[0]) || null,
                     sources: cached.sources || [],
-                    downloads: cached.subtitles || {}
+                    downloads: cached.subtitles || {},
+                    skipSegments
                 });
             }
         }
@@ -9995,8 +11226,21 @@ app.get('/api/anime-neko-log', async (req, res) => {
         
         // Target VidPlay ('8e4') or fall back to the first available server for VidTube stream
         let dataLinkId = $srv(`div[data-type="${audio}"] li[data-sv-id="8e4"]`).attr('data-link-id') ||
-                         $srv(`div[data-type="${audio}"] li[data-link-id]`).first().attr('data-link-id') ||
-                         $srv('li[data-link-id]').first().attr('data-link-id');
+                         $srv(`div[data-type="${audio}"] li[data-link-id]`).first().attr('data-link-id');
+
+        // hsub is NOT universal - anikoto only lists it for some titles, and only on vidtube.
+        // The last-resort fallback below deliberately ignores data-type, so without this guard
+        // an hsub request for a title that has none silently resolved to whatever server came
+        // first (observed live: audio=hsub returning a megaplay ".../sub" URL, which was then
+        // fed to the VidTube extractor and died as "Could not extract media ID from VidTube
+        // HTML" - a confusing error for what is really just "this title has no hard-sub").
+        // Fail honestly here instead; the frontend surfaces it and the user can pick SUB/DUB.
+        if (!dataLinkId && audio === 'hsub') {
+            throw new Error('This title has no hard-subbed (HSUB) version - try SUB or DUB.');
+        }
+
+        // Type-agnostic last resort, unchanged for sub/dub.
+        dataLinkId = dataLinkId || $srv('li[data-link-id]').first().attr('data-link-id');
 
         if (!dataLinkId) throw new Error(`Could not find data-link-id for audio type: ${audio}`);
         logNekoDebug('[Neko] Selected server link id', { audio, dataLinkId });
@@ -10041,7 +11285,8 @@ app.get('/api/anime-neko-log', async (req, res) => {
                 sub2: subLinks[1] || subLinks[0] || null,
                 dub: dubLinks[0] || null,
                 dub2: dubLinks[1] || dubLinks[0] || null
-            }
+            },
+            skipSegments
         };
 
         // Cache the result
@@ -10295,6 +11540,17 @@ app.get('/api/anime-new-log', async (req, res) => {
         return res.status(400).json({ ok: false, error: 'Title is required' });
     }
 
+    // Same skip data KAA/Neko use - keyed by (title, season, episode), not provider, and
+    // backed by getAnimeSkipTimestamps' own cache (see AnimeSkipService.js).
+    let skipSegments = [];
+    try {
+        skipSegments = await getAnimeSkipTimestamps({ title: rawTitle, season, episode: parseInt(episode, 10) || 1 });
+    } catch (skipErr) {
+        console.warn('[AnimeSkip] NewStream skip lookup failed:', skipErr.message || skipErr);
+        skipSegments = [];
+    }
+    skipSegments = Array.isArray(skipSegments) ? skipSegments : [];
+
     try {
         if (tmdbId) {
             const cached = await episodeLoadCacheGet(tmdbId, season, episode, 'ru', 'newstream');
@@ -10305,7 +11561,8 @@ app.get('/api/anime-new-log', async (req, res) => {
                     stream: cached.sources[0],
                     proxyRef: 'https://aniboom.one/',
                     translationId: meta.translationId || null,
-                    translationTitle: meta.translationTitle || 'RU'
+                    translationTitle: meta.translationTitle || 'RU',
+                    skipSegments
                 });
             }
         }
@@ -10333,7 +11590,8 @@ app.get('/api/anime-new-log', async (req, res) => {
                     stream: streamUrl,
                     proxyRef: 'https://aniboom.one/',
                     translationId: translation.id,
-                    translationTitle: translation.title
+                    translationTitle: translation.title,
+                    skipSegments
                 });
             } catch (err) {
                 lastErr = err;
@@ -10433,6 +11691,208 @@ function resolveKinogoMovieCached(rawTitle) {
         .finally(() => kinogoResolveInFlight.delete(key));
     kinogoResolveInFlight.set(key, p);
     return p;
+}
+
+// --- Kinogo RU movie/TV comments -------------------------------------------------------
+// Movies/TV had no comment source at all before this (only anime had Anikoto/animego) --
+// kinogo.mu's own DLE comment system has no real user accounts (comments are posted with
+// just a typed display name, no login required) and no separate ajax endpoint - every
+// comment is already sitting in the movie page's initial HTML, in .comments__section.
+// Namespaced the same way as ANIMEGO_USER_ID_OFFSET, in its own lane so the two RU
+// sources' synthetic accounts can never collide with each other or with real users.
+const KINOGO_COMMENT_USER_ID_OFFSET = 3_000_000_000;
+const KINOGO_RU_MONTHS = {
+    'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6,
+    'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
+};
+
+// kinogo shows an absolute date ("25 мая 2021 21:15"), not relative text, so this is a
+// straightforward calendar parse rather than the fuzzy "N ago" handling Anikoto needs.
+function parseKinogoCommentDate(text, fallbackSeconds) {
+    if (!text) return fallbackSeconds;
+    const m = String(text).trim().match(/(\d{1,2})\s+([а-яё]+)\s+(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/i);
+    if (!m) return fallbackSeconds;
+    const [, day, monthName, year, hour, minute] = m;
+    const month = KINOGO_RU_MONTHS[monthName.toLowerCase()];
+    if (!month) return fallbackSeconds;
+    const ts = Math.floor(Date.UTC(Number(year), month - 1, Number(day), Number(hour || 0), Number(minute || 0)) / 1000);
+    return Number.isFinite(ts) ? ts : fallbackSeconds;
+}
+
+// Stable string hash (djb2) - kinogo commenters have no real numeric id at all (no
+// accounts, just a typed display name per comment), so this derives a pseudo-id instead.
+// Two different commenters who happen to type the exact same display name will end up
+// sharing one synthetic account here - an acceptable tradeoff given kinogo itself doesn't
+// distinguish them either (there's nothing more stable to key on).
+function hashStringToInt(str) {
+    let hash = 5381;
+    for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) + hash + str.charCodeAt(i)) >>> 0;
+    }
+    return hash % 1_000_000_000;
+}
+
+async function fetchKinogoComments(moviePageUrl) {
+    // Cloudflare bot management here fingerprints the TLS client, same reason
+    // resolveKinogoMovie() uses got-scraping instead of axios for kinogo.mu.
+    const gotScraping = await getGotScraping();
+    const pageRes = await gotScraping.get(moviePageUrl, {
+        headers: { 'User-Agent': KINOGO_UA, 'Referer': moviePageUrl },
+        timeout: { request: 20000 }
+    });
+    const $ = cheerio.load(pageRes.body);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const comments = [];
+
+    // Matches both the one "featured" comment (class "js-comment-top comment") and
+    // every regular one (class "comment level"/"comment level-1" for replies) -- both
+    // share the bare "comment" token, which CSS/cheerio class matching requires as an
+    // exact whitespace-separated token, so this doesn't also pick up unrelated
+    // elements like .comment_body or .comment__text that merely start with "comment".
+    $('.comment').each((i, el) => {
+        const $el = $(el);
+        const idAttr = $el.find('[id^="comm-id-"]').first().attr('id') || '';
+        const idMatch = idAttr.match(/comm-id-(\d+)/);
+        const sourceCommentId = idMatch ? idMatch[1] : null;
+        if (!sourceCommentId) return;
+
+        const username = $el.find('.comment_body-header b').first().text().trim() || 'kinogo User';
+        const dateText = $el.find('.comment-date').first().text().trim();
+        const bodyText = $el.find('.comment__text-text').first().text().trim();
+        if (!bodyText) return;
+        const likes = parseInt($el.find(`#comments-likes-id-${sourceCommentId}`).first().text().trim(), 10) || 0;
+        const dislikes = parseInt($el.find(`#comments-dislikes-id-${sourceCommentId}`).first().text().trim(), 10) || 0;
+
+        comments.push({
+            sourceCommentId,
+            username,
+            text: bodyText,
+            createdAt: parseKinogoCommentDate(dateText, nowSeconds),
+            upvotes: likes,
+            downvotes: dislikes
+        });
+    });
+
+    return comments;
+}
+
+function hasRecentKinogoComments(movieId, maxAgeSeconds = 24 * 3600) {
+    return new Promise((resolve) => {
+        activityDb.get(
+            `SELECT scraped_at FROM movie_comment_scrape_log WHERE movie_id = ? AND source = 'kinogo'`,
+            [movieId],
+            (err, row) => {
+                if (err || !row) return resolve(false);
+                resolve((Math.floor(Date.now() / 1000) - row.scraped_at) < maxAgeSeconds);
+            }
+        );
+    });
+}
+
+function recordKinogoCommentScrape(movieId) {
+    return new Promise((resolve) => {
+        activityDb.run(
+            `INSERT INTO movie_comment_scrape_log (movie_id, source, scraped_at)
+             VALUES (?, 'kinogo', ?)
+             ON CONFLICT(movie_id, source) DO UPDATE SET scraped_at = excluded.scraped_at`,
+            [movieId, Math.floor(Date.now() / 1000)],
+            () => resolve()
+        );
+    });
+}
+
+const kinogoCommentJobsInFlight = new Map();
+const KINOGO_COMMENT_USER_INFO_LOG_PATH = path.join(__dirname, 'KinogoCommentUserInfo.txt');
+
+// The page's #title element briefly shows this placeholder before the real TMDB title
+// loads in (movieLoading.js's loadComments() used to fire on raw DOMContentLoaded, well
+// before that), so a request carrying it is definitely not a real, usable title - reject
+// it outright rather than waste a doomed kinogo search on it.
+const KINOGO_TITLE_PLACEHOLDER_BLOCKLIST = new Set(['loading...', 'loading', '']);
+
+// resolveKinogoMovie() (shared with RU-MV video playback) just takes kinogo's FIRST
+// lightsearch result unconditionally -- confirmed a real mismatch: query "Deadpool 2"
+// returns 5 results with the correct "Дэдпул 2 (2018)" ranked SECOND, so it silently
+// resolved to "Дэдпул (2016)" (the original) instead. That's a pre-existing bug in a
+// function the live video pipeline also depends on, so it's deliberately NOT touched
+// here -- this is a separate, comments-only resolver that disambiguates by release
+// year (which kinogo titles always include as "(YYYY)") when one is supplied, safely
+// falling back to kinogo's own top result otherwise (matching the old behavior).
+async function resolveKinogoMoviePageForComments(rawTitle, releaseYear) {
+    const gotScraping = await getGotScraping();
+    const searchRes = await gotScraping.post('https://user.kinogo.mu/engine/ajax/controller.php?mod=lightsearch', {
+        form: { q: rawTitle, method: '', user_hash: '', skin: 'Kinogo' },
+        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Referer': 'https://user.kinogo.mu/' },
+        timeout: { request: 15000 }
+    });
+    const searchData = JSON.parse(searchRes.body);
+    const html = searchData?.html || '';
+
+    const hrefs = [...html.matchAll(/href="(\/\d+-{1,2}[^"]+\.html)"/g)].map(m => m[1]);
+    const titles = [...html.matchAll(/lightsearch__itemTitle">([^<]+)</g)].map(m => m[1]);
+    if (hrefs.length === 0) throw new Error(`No kinogo.mu results for: "${rawTitle}"`);
+
+    let chosenIdx = 0;
+    if (releaseYear) {
+        const yearIdx = titles.findIndex(t => t.includes(String(releaseYear)));
+        if (yearIdx >= 0) chosenIdx = yearIdx;
+    }
+    return `https://user.kinogo.mu${hrefs[chosenIdx]}`;
+}
+
+function runKinogoCommentImportJob(movieId, rawTitle, releaseYear) {
+    const normalizedTitle = String(rawTitle || '').trim();
+    if (KINOGO_TITLE_PLACEHOLDER_BLOCKLIST.has(normalizedTitle.toLowerCase())) {
+        return Promise.resolve();
+    }
+
+    // Keyed by movieId+title, not just movieId: a request carrying the correct title
+    // must never get silently merged into (and inherit the failure of) an in-flight job
+    // that was kicked off for the same movie with a DIFFERENT/bad title -- confirmed
+    // happening in practice (a "Loading..." request racing ahead of the real one for the
+    // same movieId, poisoning it via the old movieId-only dedup key).
+    const key = `${movieId}:${normalizedTitle.toLowerCase()}`;
+    if (kinogoCommentJobsInFlight.has(key)) return kinogoCommentJobsInFlight.get(key);
+
+    const job = (async () => {
+        const alreadyFresh = await hasRecentKinogoComments(movieId);
+        if (alreadyFresh || !rawTitle) return;
+        await recordKinogoCommentScrape(movieId);
+
+        const moviePageUrl = await resolveKinogoMoviePageForComments(rawTitle, releaseYear);
+        const comments = await fetchKinogoComments(moviePageUrl);
+
+        const commenterInfo = new Map();
+        for (const c of comments) {
+            const userUID = KINOGO_COMMENT_USER_ID_OFFSET + hashStringToInt(c.username.toLowerCase());
+            try {
+                await new Promise((resolve, reject) => {
+                    activityDb.run(
+                        `INSERT INTO movie_comments (movie_id, parent_id, user_uid, username, text, upvotes, downvotes, created_at, source, source_comment_id)
+                         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'kinogo', ?)
+                         ON CONFLICT(source, source_comment_id) DO UPDATE SET
+                            text = excluded.text, upvotes = excluded.upvotes, downvotes = excluded.downvotes`,
+                        [movieId, String(userUID), c.username, c.text, c.upvotes, c.downvotes, c.createdAt, c.sourceCommentId],
+                        (err) => err ? reject(err) : resolve()
+                    );
+                });
+            } catch (err) {
+                logTempDebug('[Kinogo Import] Failed to upsert comment', { id: c.sourceCommentId, error: err.message });
+            }
+            trackCommenter(commenterInfo, userUID, c.username, null, null, c.createdAt);
+        }
+
+        await ensureImportedCommentUserAccounts(commenterInfo, {
+            idOffset: KINOGO_COMMENT_USER_ID_OFFSET,
+            usernamePrefix: 'KinogoUser',
+            logPath: KINOGO_COMMENT_USER_INFO_LOG_PATH
+        });
+    })();
+
+    kinogoCommentJobsInFlight.set(key, job);
+    job.catch(err => logTempDebug('[Kinogo Import] Job failed', { movieId, error: err.message || String(err) }))
+        .finally(() => kinogoCommentJobsInFlight.delete(key));
+    return job;
 }
 
 async function fetchCinemarStream(embedUrl, moviePageUrl) {
@@ -10654,6 +12114,585 @@ app.get('/api/tv-ru-download', async (req, res) => {
     }
 });
 
+// --- Kino (vidsrcme.ru -> cloudorchestranova.com, movies + TV) ---
+// vidsrcme.ru's embed is defended by disable-devtool.js (a "Performance" timing
+// check: CDP's Runtime domain instruments the native console API, so any
+// CDP-driven browser -- Puppeteer included -- is slow enough to trip it) plus a
+// plain navigator.webdriver check. Both are neutralized below. The actual player
+// then lives two iframes deep: vidsrcme.ru -> a "landing" iframe on
+// cloudorchestranova.com (poster + play button only) -> clicking play injects a
+// THIRD nested iframe (a fresh signed `vs` token) that is the real hls.js player.
+// That innermost frame's first network request for a `master.m3u8` is the fully
+// resolved, playable stream URL -- no need to touch the WASM stream_urls
+// decryption (vsdec.js) at all. The URL's JWT token is IP-locked (`ip_cidr`) to
+// whoever fetched it, so this backend's own IP must do the extraction (fine,
+// since it also does the proxying) and the token is only valid ~4h, hence the
+// deliberately-short cache below (independent of the 24h default used by
+// episodeLoadCacheGet/Set for other providers).
+const KINO_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const kinoCache = new Map(); // cacheKey -> { result, resolvedAt }
+const kinoInFlight = new Map();
+const KINO_CACHE_TTL_MS = 3 * 60 * 60 * 1000; // stream JWT is valid ~4h
+
+// --- Fast path: plain HTTP, no browser -------------------------------------------------
+// The whole iframe chase below turns out to be unnecessary. Walking vidsrcme's own player
+// scripts showed the entire flow is reproducible with 3 plain requests:
+//
+//   1. GET data.vidsrcme.ru/api.php?type=<movie|tv>&tmdb=<id>[&season=&episode=]&stream_urls
+//      -> JSON. Needs no Referer, no `vs` token, and no page fetches at all: the embed page
+//         and both nested iframes exist only to hand the browser this same URL, which is
+//         fully derivable from the tmdb id. (Verified live against movie + tv.)
+//   2. `data.stream_urls` comes back as one base64 ChaCha20 blob rather than an array. The
+//      response carries `vs.wasm_url`, a per-5-minute-window WASM decryptor - so instead of
+//      reversing their crypto we just run THEIR decryptor as a black box. Node has
+//      WebAssembly built in, so this is the exact same three calls (alloc/decrypt/memory)
+//      vsdec.js makes in the browser. Their decoy exports change per window (observed
+//      meta/info one window, calc/hash/seed the next) but those three are stable.
+//   3. Each decrypted URL 401s on its own - player.js resolves a per-HOST, IP-bound JWT from
+//      <stream-origin>/generate.php and appends ?token=. Variant/segment URLs inside the
+//      returned playlist already carry the token, so stamping the master covers the chain.
+//
+// Same ~1.1s end to end vs ~6.6s for a full Chromium launch, and no browser process at all.
+// The browser path is kept below and used automatically if any of this stops working.
+const kinoWasmModuleCache = new Map(); // vs.w (5-min window) -> Promise<WebAssembly.Module>
+
+function getKinoWasmModule(windowId, wasmUrl) {
+    const key = String(windowId ?? wasmUrl);
+    if (kinoWasmModuleCache.has(key)) return kinoWasmModuleCache.get(key);
+    const p = axios.get(wasmUrl, {
+        headers: { 'User-Agent': KINO_UA, 'Referer': 'https://cloudorchestranova.com/' },
+        responseType: 'arraybuffer',
+        timeout: 15000
+    }).then(res => WebAssembly.compile(Buffer.from(res.data)));
+    kinoWasmModuleCache.set(key, p);
+    // Windows roll every 5 minutes; keep only the newest few so this can't grow unbounded.
+    if (kinoWasmModuleCache.size > 4) {
+        kinoWasmModuleCache.delete(kinoWasmModuleCache.keys().next().value);
+    }
+    p.catch(() => kinoWasmModuleCache.delete(key));
+    return p;
+}
+
+async function decryptKinoStreamUrls(payload) {
+    const mod = await getKinoWasmModule(payload.vs?.w, payload.vs.wasm_url);
+    const inst = await WebAssembly.instantiate(mod, {});
+    const ex = inst.exports;
+    const enc = Buffer.from(payload.data.stream_urls, 'base64');
+    const ptr = ex.alloc(enc.length);
+    new Uint8Array(ex.memory.buffer, ptr, enc.length).set(enc);
+    const outLen = ex.decrypt(ptr, enc.length);
+    // Output starts after the 12-byte ChaCha20 nonce, same as vsdec.js does.
+    const txt = Buffer.from(new Uint8Array(ex.memory.buffer, ptr + 12, outLen)).toString('utf8');
+    return txt.split('\n').filter(Boolean);
+}
+
+// embedPath is "movie/<id>" or "tv/<id>/<season>/<episode>" (unchanged from the browser path).
+function buildKinoApiUrl(embedPath) {
+    const parts = String(embedPath).split('/').filter(Boolean);
+    const [type, id, season, episode] = parts;
+    if (type === 'tv' && season && episode) {
+        return `https://data.vidsrcme.ru/api.php?type=tv&tmdb=${encodeURIComponent(id)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}&stream_urls`;
+    }
+    return `https://data.vidsrcme.ru/api.php?type=movie&tmdb=${encodeURIComponent(id)}&stream_urls`;
+}
+
+// The token is a JWT whose payload carries its own expiry (observed exp - iat = 4h) and is
+// bound to our IP. Re-requesting one per extraction got /generate.php to answer 429 under
+// only light testing, so tokens are cached per host and reused until shortly before they
+// expire - one token then covers every title served by that host.
+const kinoHostTokenCache = new Map(); // origin -> { token, expiresAtMs }
+const KINO_TOKEN_SAFETY_MARGIN_MS = 10 * 60 * 1000;
+
+function readJwtExpiryMs(token) {
+    try {
+        const payload = JSON.parse(Buffer.from(String(token).split('.')[1], 'base64').toString('utf8'));
+        return Number.isFinite(payload?.exp) ? payload.exp * 1000 : 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+async function fetchKinoHostToken(streamOrigin) {
+    const cached = kinoHostTokenCache.get(streamOrigin);
+    if (cached && Date.now() < cached.expiresAtMs) return cached.token;
+
+    const res = await axios.get(`${streamOrigin}/generate.php`, {
+        headers: { 'User-Agent': KINO_UA, 'Referer': 'https://cloudorchestranova.com/' },
+        timeout: 15000
+    });
+    let tk = res.data;
+    // player.js accepts a bare string or any of these JSON shapes.
+    if (tk && typeof tk === 'object') tk = tk.token || tk.data || tk.string || tk.result || '';
+    tk = String(tk || '').trim();
+
+    if (tk) {
+        // Fall back to a conservative 30min if the token isn't a JWT we can read an expiry from.
+        const exp = readJwtExpiryMs(tk);
+        const expiresAtMs = exp ? exp - KINO_TOKEN_SAFETY_MARGIN_MS : Date.now() + 30 * 60 * 1000;
+        if (expiresAtMs > Date.now()) kinoHostTokenCache.set(streamOrigin, { token: tk, expiresAtMs });
+    }
+    return tk;
+}
+
+async function runKinoExtractionViaApi(embedPath) {
+    const apiRes = await axios.get(buildKinoApiUrl(embedPath), {
+        headers: { 'User-Agent': KINO_UA, 'Accept': 'application/json' },
+        timeout: 15000
+    });
+    const payload = apiRes.data;
+
+    // vidsrcme's own data service answering 404 is authoritative: the title genuinely isn't in
+    // their catalog (confirmed on tmdb 558144, a short film - both the metadata and stream
+    // endpoints 404). The browser path can't do any better, since the player it drives fetches
+    // this exact same API - so mark this as "don't bother falling back" rather than paying a
+    // full Chromium launch and timeout to rediscover the same 404.
+    if (String(payload?.status_code) === '404' || !payload?.data) {
+        const err = new Error('vidsrcme has no entry for this title');
+        err.kinoNotInCatalog = true;
+        throw err;
+    }
+
+    const rawUrls = Array.isArray(payload?.data?.stream_urls)
+        ? payload.data.stream_urls                      // unencrypted responses still happen
+        : (typeof payload?.data?.stream_urls === 'string' && payload?.vs?.wasm_url)
+            ? await decryptKinoStreamUrls(payload)
+            : [];
+    if (!rawUrls.length) throw new Error('vidsrcme API returned no stream urls');
+
+    // Group by host before doing anything: a title's "mirror" URLs are usually all on the
+    // SAME host, and /generate.php allows only about one token request per ~5s per host
+    // (measured: the 2nd rapid call 429s, recovering within ~5s). Fetching a token per URL
+    // therefore rate-limits itself on the 2nd and 3rd try for no benefit. One token attempt
+    // per distinct host, reused across that host's URLs.
+    const byOrigin = new Map();
+    for (const raw of rawUrls) {
+        let origin;
+        try { origin = new URL(raw).origin; } catch (e) { continue; }
+        if (!byOrigin.has(origin)) byOrigin.set(origin, []);
+        byOrigin.get(origin).push(raw);
+    }
+
+    // Confirm the playlist really comes back before this gets cached for 3h - a token that
+    // silently fails would otherwise be stored as a "success" and break playback for hours.
+    let lastErr = null;
+    for (const [origin, urls] of byOrigin) {
+        let token;
+        try {
+            token = await fetchKinoHostToken(origin);
+        } catch (err) {
+            lastErr = new Error(`${origin} token: ${err.message}`);
+            continue; // whole host is unusable right now - don't retry its other URLs
+        }
+        for (const raw of urls) {
+            try {
+                const finalUrl = token
+                    ? (raw.includes('__TOKEN__')
+                        ? raw.split('__TOKEN__').join(token)
+                        : raw + (raw.includes('?') ? '&' : '?') + 'token=' + token)
+                    : raw;
+                const check = await axios.get(finalUrl, {
+                    headers: { 'User-Agent': KINO_UA, 'Referer': 'https://cloudorchestranova.com/' },
+                    timeout: 15000,
+                    validateStatus: () => true
+                });
+                if (check.status === 200 && String(check.data || '').startsWith('#EXTM3U')) {
+                    return { streamUrl: finalUrl, proxyRef: 'https://cloudorchestranova.com/' };
+                }
+                lastErr = new Error(`host ${origin} returned ${check.status}`);
+            } catch (err) {
+                lastErr = err;
+            }
+        }
+    }
+    throw new Error(`no vidsrcme host served a playable playlist (${lastErr?.message || 'unknown'})`);
+}
+
+// Shared extraction core -- identical iframe-chase for both /embed/movie/{id}
+// and /embed/tv/{id}/{season}/{episode} (verified: same landing-frame ->
+// click bigPlay -> nested player-frame -> master.m3u8 mechanism on both).
+// `embedPath` is the path segment after https://vidsrcme.ru (e.g.
+// "movie/299536" or "tv/1396/1/1"); `mediaType` ("movie"/"tv") is only used
+// to recognize the landing iframe's URL shape.
+async function runKinoExtraction(embedPath, mediaType) {
+    // Try the browser-free path first; fall back to the Puppeteer chase below if vidsrcme
+    // changes anything about the API/WASM/token flow, so a break there degrades to "slow
+    // like it used to be" instead of "Kino is down".
+    try {
+        const fast = await runKinoExtractionViaApi(embedPath);
+        console.log(`[Kino] API path OK for ${embedPath}`);
+        return fast;
+    } catch (err) {
+        // Title simply isn't on vidsrcme - the browser path drives a player that hits the very
+        // same API, so it would just spend ~30-60s of Chromium startup and timeouts to reach
+        // the identical answer. Fail fast instead and let the caller fall through to another
+        // server, rather than leaving the user on a spinner.
+        if (err.kinoNotInCatalog) {
+            console.warn(`[Kino] ${embedPath}: not in vidsrcme's catalog - skipping browser fallback`);
+            throw err;
+        }
+        console.warn(`[Kino] API path failed for ${embedPath} (${err.message}) - falling back to browser extraction`);
+    }
+    return runKinoExtractionViaBrowser(embedPath, mediaType);
+}
+
+async function runKinoExtractionViaBrowser(embedPath, mediaType) {
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: [
+            '--no-sandbox', '--disable-setuid-sandbox', '--autoplay-policy=no-user-gesture-required',
+            // Keep this cheap on weaker production hardware than the dev machine
+            // this was built on -- no GPU process, no /dev/shm reliance (its
+            // default 64MB in most containers/small VPS is enough to crash
+            // Chromium under load), no extensions/background chatter.
+            '--disable-gpu', '--disable-dev-shm-usage', '--disable-extensions',
+            '--disable-background-networking', '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding',
+            '--disable-breakpad', '--disable-component-update', '--disable-sync',
+            '--no-first-run', '--mute-audio'
+        ]
+    });
+
+    try {
+        const page = await browser.newPage();
+        await page.setUserAgent(KINO_UA);
+
+        // Defeat disable-devtool.js's console-timing check (CDP's Runtime domain
+        // instruments the native console API -- replacing it with plain JS
+        // functions takes those calls out of V8's console binding, so they're no
+        // longer instrumented) and the plain navigator.webdriver tell. Also spoof
+        // the WebGL renderer: this box has a real GPU so it wasn't an issue
+        // during development, but a typical VPS deploy has no dedicated GPU and
+        // Chromium falls back to SwiftShader/llvmpipe, which
+        // WEBGL_debug_renderer_info would report plainly -- a well-known
+        // headless tell nothing here has actually needed yet, but cheap to
+        // close off before it matters. Patches both WebGL1 and WebGL2 contexts
+        // (separate prototype chains in Chromium -- fingerprint scripts
+        // commonly probe 'webgl2' first).
+        await page.evaluateOnNewDocument(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            const noop = () => {};
+            for (const k of ['log', 'debug', 'info', 'warn', 'error', 'table', 'dir', 'trace', 'group', 'groupEnd', 'groupCollapsed', 'clear', 'count', 'assert', 'time', 'timeEnd']) {
+                try { console[k] = noop; } catch (e) {}
+            }
+
+            const UNMASKED_VENDOR_WEBGL = 0x9245;   // 37445
+            const UNMASKED_RENDERER_WEBGL = 0x9246;  // 37446
+            const spoofVendor = 'Google Inc. (NVIDIA)';
+            const spoofRenderer = 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+
+            for (const ctor of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
+                if (!ctor) continue;
+                const origGetParameter = ctor.prototype.getParameter;
+                ctor.prototype.getParameter = function (parameter) {
+                    if (parameter === UNMASKED_VENDOR_WEBGL) return spoofVendor;
+                    if (parameter === UNMASKED_RENDERER_WEBGL) return spoofRenderer;
+                    return origGetParameter.apply(this, arguments);
+                };
+            }
+        });
+
+        let streamUrl = null;
+        page.on('response', (resp) => {
+            if (streamUrl) return;
+            const u = resp.url();
+            if (/\.m3u8(\?|$)/i.test(u)) streamUrl = u;
+        });
+
+        await page.goto(`https://vidsrcme.ru/embed/${embedPath}`, { waitUntil: 'load', timeout: 30000 });
+
+        let landingFrame = null;
+        for (let i = 0; i < 10 && !landingFrame; i++) {
+            landingFrame = page.frames().find(f => f.url().includes(`/embed/${mediaType}/`) && f.url() !== page.url());
+            if (!landingFrame) await new Promise(r => setTimeout(r, 500));
+        }
+        if (!landingFrame) throw new Error('vidsrcme landing iframe never appeared (title not on vidsrcme, or blocked)');
+
+        await landingFrame.evaluate(() => { document.getElementById('bigPlay')?.click(); });
+
+        for (let i = 0; i < 20 && !streamUrl; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        if (!streamUrl) throw new Error('vidsrcme never served a stream (may be geo/anti-bot blocked)');
+
+        return { streamUrl, proxyRef: 'https://cloudorchestranova.com/' };
+    } finally {
+        await browser.close();
+    }
+}
+
+function resolveKinoCached(cacheKey, resolver) {
+    const cached = kinoCache.get(cacheKey);
+    if (cached && (Date.now() - cached.resolvedAt) < KINO_CACHE_TTL_MS) {
+        return Promise.resolve(cached.result);
+    }
+    if (kinoInFlight.has(cacheKey)) return kinoInFlight.get(cacheKey);
+    const p = resolver()
+        .then(result => {
+            kinoCache.set(cacheKey, { result, resolvedAt: Date.now() });
+            return result;
+        })
+        .finally(() => kinoInFlight.delete(cacheKey));
+    kinoInFlight.set(cacheKey, p);
+    return p;
+}
+
+// --- Kino health check -------------------------------------------------------------------
+// vidsrcme.ru has quietly broken Kino before (a TLS/browser fingerprint check started
+// silently aborting our extraction with no error on their end - see the stealth plugin
+// fix above) with nothing alerting us until a user reported it. This runs the real
+// extraction against a fixed, known-good movie on a timer and prints something impossible
+// to miss in the terminal the moment it starts failing again, so it gets caught within
+// minutes instead of whenever someone happens to notice.
+const KINO_HEALTH_CHECK_TMDB_ID = 293660; // Deadpool 2 - stable, always available on vidsrcme
+const KINO_HEALTH_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+let kinoHealthCheckRunning = false;
+
+async function runKinoHealthCheck() {
+    if (kinoHealthCheckRunning) return; // don't overlap if a run somehow takes >10min
+    // A real user's extraction already has a Chromium instance up. Launching a second one
+    // for the health check on top of it can starve both for CPU/memory on smaller boxes and
+    // time out for reasons that have nothing to do with vidsrcme being down - misreporting
+    // "KINO IS DOWN" for what's actually just local resource contention. Skip this cycle and
+    // let the next one (10 min later) catch a genuine outage instead.
+    if (kinoInFlight.size > 0) {
+        console.log(`[Kino Health] Skipped - ${kinoInFlight.size} real extraction(s) already in flight`);
+        return;
+    }
+    kinoHealthCheckRunning = true;
+    const startedAt = Date.now();
+    try {
+        // Deliberately bypasses resolveKinoCached/kinoCache - this must exercise the real
+        // extraction every time, not report "healthy" off a stale cached success.
+        await runKinoExtraction(`movie/${KINO_HEALTH_CHECK_TMDB_ID}`, 'movie');
+        console.log(`[Kino Health] OK (${Date.now() - startedAt}ms)`);
+    } catch (err) {
+        const banner = '!'.repeat(70);
+        console.error(`\n${banner}\n⚠️  ⚠️  ⚠️   KINO IS DOWN   ⚠️  ⚠️  ⚠️\n${banner}`);
+        console.error(`[Kino Health] Extraction failed: ${err.message}`);
+        console.error(`${banner}\n`);
+    } finally {
+        kinoHealthCheckRunning = false;
+    }
+}
+
+app.get('/api/movie-kino-log', async (req, res) => {
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    if (!tmdbId) {
+        return res.status(400).json({ ok: false, error: 'tmdbId is required' });
+    }
+
+    try {
+        const { streamUrl, proxyRef } = await resolveKinoCached(
+            `movie:${tmdbId}`,
+            () => runKinoExtraction(`movie/${tmdbId}`, 'movie')
+        );
+        return res.json({ ok: true, stream: streamUrl, proxyRef });
+    } catch (err) {
+        console.error('[Kino] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: err.message });
+    }
+});
+
+app.get('/api/tv-kino-log', async (req, res) => {
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    const season = parseInt(req.query.season || '1', 10);
+    const episode = parseInt(req.query.episode || req.query.ep || '1', 10);
+    if (!tmdbId) {
+        return res.status(400).json({ ok: false, error: 'tmdbId is required' });
+    }
+
+    try {
+        const { streamUrl, proxyRef } = await resolveKinoCached(
+            `tv:${tmdbId}:${season}:${episode}`,
+            () => runKinoExtraction(`tv/${tmdbId}/${season}/${episode}`, 'tv')
+        );
+        return res.json({ ok: true, stream: streamUrl, proxyRef });
+    } catch (err) {
+        console.error('[Kino TV] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: err.message });
+    }
+});
+
+// --- Kino subtitles (OpenSubtitles, via the same lookup vidsrcme's own player uses) ---
+// vidsrcme's client-side subtitles.js doesn't pull captions from the encrypted
+// stream_urls/WASM path at all -- it does its own independent lookup: grab the
+// title's IMDB id from the (unencrypted) metaApi response, then hit the old
+// keyless OpenSubtitles legacy REST API with a shared, non-secret UA string
+// every site using this API uses ("trailers.to-UA"), then converts whatever
+// gzipped .srt it gets back to .vtt. We do the same thing, just server-side and
+// for every language available instead of one at a time on demand, and we do
+// our own SRT->VTT conversion (their conversion happens on THEIR backend --
+// not meant for outside use, so we don't depend on it).
+const OPENSUBS_UA = 'trailers.to-UA';
+const kinoImdbIdCache = new Map(); // `${mediaType}:${tmdbId}` -> imdbId (doesn't change, cache indefinitely)
+const kinoSubsCache = new Map();   // cacheKey -> { tracks, resolvedAt }
+const KINO_SUBS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const kinoVttCache = new Map();    // downloadLink -> vttText (converted subtitle files never change)
+
+async function getKinoImdbId(tmdbId, mediaType) {
+    const key = `${mediaType}:${tmdbId}`;
+    if (kinoImdbIdCache.has(key)) return kinoImdbIdCache.get(key);
+    const res = await axios.get(`https://data.vidsrcme.ru/api.php?type=${mediaType}&tmdb=${tmdbId}`, { timeout: 15000 });
+    const imdbId = res.data?.data?.imdb_id;
+    if (!imdbId) throw new Error('vidsrcme has no IMDB id for this title');
+    kinoImdbIdCache.set(key, imdbId);
+    return imdbId;
+}
+
+// Crowd-sourced subtitle dumps are frequently bad: mismatched files, forced/SDH-only
+// tracks that are just sound-effect tags with no actual dialogue, files that are
+// technically valid SRT but decode to near-nothing for that language. Rather than
+// let a broken track appear as a selectable "language" and go silent when picked,
+// strip a converted VTT down to its real dialogue text and require a sane minimum
+// before it's allowed into the list at all.
+function vttDialogueLength(vtt) {
+    const text = vtt
+        .replace(/^WEBVTT.*$/m, '')
+        .split('\n')
+        .filter(line => {
+            const t = line.trim();
+            if (!t) return false;
+            if (/^\d+$/.test(t)) return false;                 // cue index
+            if (/-->/.test(t)) return false;                    // timestamp line
+            return true;
+        })
+        .join(' ')
+        .replace(/<[^>]+>/g, ' ')          // <i>, <font color=...>, etc.
+        .replace(/\{[^}]*\}/g, ' ')        // {\an8} ASS-style positioning tags
+        .replace(/\[[^\]]*\]|\([^)]*\)/g, ' ') // [music playing], (laughs) -- SFX-only, not dialogue
+        .replace(/\s+/g, ' ')
+        .trim();
+    return text.length;
+}
+
+async function searchKinoSubtitles(imdbId, season, episode) {
+    const numericImdb = String(imdbId).replace(/^tt/i, '');
+    let url = 'https://rest.opensubtitles.org/search';
+    if (season && episode) url += `/episode-${episode}/imdbid-${numericImdb}/season-${season}`;
+    else url += `/imdbid-${numericImdb}`;
+
+    const res = await axios.get(url, { headers: { 'X-User-Agent': OPENSUBS_UA }, timeout: 15000 });
+    const results = Array.isArray(res.data) ? res.data : [];
+
+    // OpenSubtitles returns results best-match-first and doesn't support a
+    // multi-language query (confirmed: "multiple values per parameter are not
+    // supported") -- but an unfiltered search already spans every language it
+    // has, so grabbing the first hit per distinct SubLanguageID gets the
+    // widest language coverage in a single request.
+    const seen = new Set();
+    const candidates = [];
+    for (const r of results) {
+        if (!r?.SubDownloadLink || !r?.SubLanguageID || seen.has(r.SubLanguageID)) continue;
+        seen.add(r.SubLanguageID);
+        candidates.push({
+            lang: r.LanguageName || r.SubLanguageID,
+            langCode: r.SubLanguageID,
+            downloadLink: r.SubDownloadLink,
+            encoding: r.SubEncoding || 'UTF-8'
+        });
+    }
+
+    // Validate every candidate in parallel -- this actually fetches+converts
+    // each one, but that work isn't wasted: fetchKinoVtt caches by downloadLink,
+    // so a track that passes validation here is already warm for the actual
+    // /api/kino-subtitle-vtt request that follows when someone picks it.
+    const MIN_DIALOGUE_CHARS = 300; // a real movie/episode has thousands; a
+                                     // broken/SFX-only file has next to nothing
+    const settled = await Promise.allSettled(
+        candidates.map(c => fetchKinoVtt(c.downloadLink, c.encoding))
+    );
+    return candidates.filter((c, i) => {
+        const outcome = settled[i];
+        return outcome.status === 'fulfilled' && vttDialogueLength(outcome.value) >= MIN_DIALOGUE_CHARS;
+    });
+}
+
+function getKinoSubtitlesCached(cacheKey, resolver) {
+    const cached = kinoSubsCache.get(cacheKey);
+    if (cached && (Date.now() - cached.resolvedAt) < KINO_SUBS_CACHE_TTL_MS) {
+        return Promise.resolve(cached.tracks);
+    }
+    return resolver().then(tracks => {
+        kinoSubsCache.set(cacheKey, { tracks, resolvedAt: Date.now() });
+        return tracks;
+    });
+}
+
+function srtToVtt(srtText) {
+    const text = srtText.replace(/^﻿/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+        .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
+        // Fansub groups (common on non-English tracks) often leave raw ASS/SSA
+        // override codes in what's nominally an .srt -- e.g.
+        // "{\3c&H00C5D2&\fnArabic Typesetting\b1...}". WebVTT doesn't understand
+        // that syntax, so left in, it renders as literal garbage text on screen.
+        .replace(/\{\\[^}]*\}/g, '');
+    return 'WEBVTT\n\n' + text.trim() + '\n';
+}
+
+async function fetchKinoVtt(downloadLink, encoding) {
+    if (kinoVttCache.has(downloadLink)) return kinoVttCache.get(downloadLink);
+
+    const res = await axios.get(downloadLink, { responseType: 'arraybuffer', timeout: 15000 });
+    let buf = Buffer.from(res.data);
+    try { buf = zlib.gunzipSync(buf); } catch (e) { /* wasn't gzipped, use raw bytes */ }
+
+    let text;
+    try {
+        text = iconv.decode(buf, iconv.encodingExists(encoding) ? encoding : 'utf-8');
+    } catch (e) {
+        text = buf.toString('utf-8');
+    }
+
+    const vtt = srtToVtt(text);
+    kinoVttCache.set(downloadLink, vtt);
+    return vtt;
+}
+
+app.get('/api/kino-subtitles', async (req, res) => {
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    const mediaType = req.query.mediaType === 'tv' ? 'tv' : 'movie';
+    const season = req.query.season ? parseInt(req.query.season, 10) : null;
+    const episode = req.query.episode ? parseInt(req.query.episode, 10) : null;
+    if (!tmdbId) {
+        return res.status(400).json({ ok: false, error: 'tmdbId is required' });
+    }
+
+    try {
+        const imdbId = await getKinoImdbId(tmdbId, mediaType);
+        const cacheKey = mediaType === 'tv' ? `tv:${imdbId}:${season}:${episode}` : `movie:${imdbId}`;
+        const tracks = await getKinoSubtitlesCached(cacheKey, () => searchKinoSubtitles(imdbId, season, episode));
+
+        return res.json({
+            ok: true,
+            tracks: tracks.map(t => ({
+                lang: t.lang,
+                url: `/api/kino-subtitle-vtt?link=${encodeURIComponent(t.downloadLink)}&enc=${encodeURIComponent(t.encoding)}`
+            }))
+        });
+    } catch (err) {
+        console.error('[Kino Subtitles] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: err.message });
+    }
+});
+
+app.get('/api/kino-subtitle-vtt', async (req, res) => {
+    const link = req.query.link;
+    const enc = req.query.enc || 'UTF-8';
+    if (!link || !link.startsWith('https://')) {
+        return res.status(400).send('Invalid subtitle link');
+    }
+
+    try {
+        const vtt = await fetchKinoVtt(link, enc);
+        res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        return res.send(vtt);
+    } catch (err) {
+        console.error('[Kino Subtitle VTT] Error:', err.message);
+        return res.status(500).send('Failed to convert subtitle');
+    }
+});
+
 app.get('/api/anime-kaa-servers', async (req, res) => {
     try {
         let malId = req.query.malId;
@@ -10778,6 +12817,246 @@ app.get('/api/kickass/test', async (req, res) => {
         });
     }
 });
+// =========================================
+//  9b0. MEGAPLAY EXTRACTION (real stream, not just an iframe embed)
+// =========================================
+// megaplay.buzz gives us the embed page at /stream/mal/{malId}/{ep}/{sub|dub} (that's what
+// 9b1 below hands the frontend to iframe). Unpacking it to a real stream turned out to be
+// two plain requests, no browser and no crypto:
+//
+//   1. GET /stream/mal/{malId}/{ep}/{lang}  -> HTML carrying data-id="<numeric id>".
+//      A Referer header is REQUIRED - without one the site answers its "Error 410, file not
+//      found" page for every id, which looks exactly like "this anime isn't available" and
+//      is easy to misdiagnose. Any referer works (verified with megaplay's own, ours, and an
+//      unrelated domain), which is also why the plain iframe embed works fine in a browser -
+//      browsers always send one.
+//   2. GET /stream/getSources?id=<data-id>  -> plain, UNENCRYPTED JSON:
+//        { sources: { file: "https://cdn.../master.m3u8" },
+//          tracks:  [ { file: "...eng-2.vtt", label: "English", kind: "captions" } ],
+//          intro:   { start: 31,   end: 111 },
+//          outro:   { start: 1376, end: 1447 } }
+//
+// The playlist itself 403s without `Referer: https://megaplay.buzz/`, hence proxyRef.
+// Worth noting this gives us strictly MORE than the iframe did: subtitle tracks and real
+// intro/outro skip markers (the same shape the KAA skip-button UI already consumes), plus
+// it drops megaplay's own ad scripts (app.main.js is almost entirely ad loading).
+const MEGAPLAY_ORIGIN = 'https://megaplay.buzz';
+const megaplaySourceCache = new Map(); // `${malId}:${ep}:${lang}` -> { data, resolvedAt }
+const megaplayInFlight = new Map();
+const MEGAPLAY_CACHE_TTL_MS = 60 * 60 * 1000;
+
+async function fetchMegaplaySources(malId, episode, lang) {
+    const embedUrl = `${MEGAPLAY_ORIGIN}/stream/mal/${encodeURIComponent(malId)}/${encodeURIComponent(episode)}/${encodeURIComponent(lang)}`;
+    const page = await axios.get(embedUrl, {
+        headers: { 'User-Agent': KINO_UA, 'Referer': `${MEGAPLAY_ORIGIN}/` },
+        timeout: 15000
+    });
+    const idMatch = String(page.data).match(/data-id=["'](\d+)["']/);
+    if (!idMatch) throw new Error('megaplay has no entry for this anime/episode');
+
+    const srcRes = await axios.get(`${MEGAPLAY_ORIGIN}/stream/getSources?id=${idMatch[1]}`, {
+        headers: {
+            'User-Agent': KINO_UA,
+            'Referer': embedUrl,
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        timeout: 15000
+    });
+    const j = srcRes.data;
+    // sources is usually an object, but the player's own code also handles an array form.
+    const file = typeof j?.sources?.file === 'string'
+        ? j.sources.file
+        : (Array.isArray(j?.sources) && j.sources[0]?.file) || null;
+    if (!file) throw new Error('megaplay returned no source file');
+
+    return {
+        stream: file,
+        proxyRef: `${MEGAPLAY_ORIGIN}/`,
+        tracks: Array.isArray(j.tracks) ? j.tracks : [],
+        intro: j.intro || null,
+        outro: j.outro || null
+    };
+}
+
+function resolveMegaplaySourcesCached(malId, episode, lang) {
+    const key = `${malId}:${episode}:${lang}`;
+    const cached = megaplaySourceCache.get(key);
+    if (cached && (Date.now() - cached.resolvedAt) < MEGAPLAY_CACHE_TTL_MS) {
+        return Promise.resolve(cached.data);
+    }
+    if (megaplayInFlight.has(key)) return megaplayInFlight.get(key);
+
+    const p = fetchMegaplaySources(malId, episode, lang).then(data => {
+        megaplaySourceCache.set(key, { data, resolvedAt: Date.now() });
+        return data;
+    });
+    megaplayInFlight.set(key, p);
+    // Same unhandled-rejection guard as the other in-flight maps in this file.
+    p.finally(() => megaplayInFlight.delete(key)).catch(() => {});
+    return p;
+}
+
+// --- Direct anime download links (sub + dub, per quality) --------------------------------
+// nekostream's mapper resolves (MAL id, episode) straight to downloadable files, split by
+// sub/dub and by quality. Our Neko extractor already calls this, but only deep inside its own
+// flow - it needs the full anikoto chain first (search -> watch page -> episode list ->
+// server list), so the "External Neko" download buttons only light up when the user happens
+// to be on the Neko server AND that whole chain succeeded.
+//
+// It doesn't actually need any of that. Verified by testing:
+//   * the "epSlug" the existing code scrapes off anikoto's episode element is just the plain
+//     episode NUMBER ("1")
+//   * the `timestamp` argument is NOT VALIDATED at all - ts=1 and ts=9999999999 return
+//     identical payloads; only ts=0 fails, and only for being falsy
+// So (malId, episode) is enough, and this endpoint can serve the download buttons regardless
+// of which server is selected.
+//
+// The links terminate at kwik.cx (animepahe), which sits behind a Cloudflare managed
+// challenge - our server gets a 403 no matter what Referer it sends. That's fine and by
+// design here: we only ever RESOLVE the URL and hand it to the client, and a real browser
+// clears the challenge normally. Never try to proxy these bytes server-side.
+const ANIME_DL_MAPPER_ORIGIN = 'https://mapper.nekostream.site';
+const animeDownloadLinkCache = new Map(); // `${mal}:${ep}` -> { data, resolvedAt }
+const ANIME_DL_CACHE_TTL_MS = 60 * 60 * 1000; // mapper reports ~1-2h of its own cache anyway
+
+app.get('/api/anime-download-links', async (req, res) => {
+    const malId = String(req.query.malId || '').trim();
+    const episode = String(req.query.episode || req.query.ep || '1').trim();
+    if (!malId) return res.status(400).json({ ok: false, error: 'malId is required' });
+
+    const key = `${malId}:${episode}`;
+    const cached = animeDownloadLinkCache.get(key);
+    if (cached && (Date.now() - cached.resolvedAt) < ANIME_DL_CACHE_TTL_MS) {
+        return res.json({ ok: true, ...cached.data, cached: true });
+    }
+
+    try {
+        // Third path segment is the unvalidated timestamp - any truthy value works.
+        const r = await axios.get(`${ANIME_DL_MAPPER_ORIGIN}/api/mal/${encodeURIComponent(malId)}/${encodeURIComponent(episode)}/1`, {
+            headers: {
+                'User-Agent': KINO_UA,
+                'Origin': 'https://anikoto.cz',
+                'Referer': 'https://anikoto.cz/',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            timeout: 15000
+        });
+
+        // Shape: { "<Provider>": { sub: { download: { "360p": url, ... } }, dub: {...} }, status: {...} }
+        const providers = Object.keys(r.data || {}).filter(k => k !== 'status');
+        const merged = { sub: {}, dub: {} };
+        for (const prov of providers) {
+            for (const audio of ['sub', 'dub']) {
+                const dl = r.data[prov]?.[audio]?.download;
+                if (dl && typeof dl === 'object') {
+                    // Keyed by quality ("360p"/"720p"/"1080p"), NOT by provider - a subtlety
+                    // that already caused a bug in the existing Neko code path.
+                    for (const [quality, url] of Object.entries(dl)) {
+                        if (typeof url === 'string' && url && !merged[audio][quality]) {
+                            merged[audio][quality] = url;
+                        }
+                    }
+                }
+            }
+        }
+
+        const pickBest = (obj) => {
+            const order = ['1080p', '720p', '480p', '360p'];
+            for (const q of order) if (obj[q]) return obj[q];
+            return Object.values(obj)[0] || null;
+        };
+        const data = {
+            providers,
+            sub: merged.sub,
+            dub: merged.dub,
+            bestSub: pickBest(merged.sub),
+            bestDub: pickBest(merged.dub)
+        };
+        if (!data.bestSub && !data.bestDub) throw new Error('no download links available for this episode');
+
+        animeDownloadLinkCache.set(key, { data, resolvedAt: Date.now() });
+        res.json({ ok: true, ...data, cached: false });
+    } catch (err) {
+        console.error('[Anime Downloads] Error:', err.message);
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// Server-side download, no ffmpeg anywhere.
+// The CDN serves plain MPEG-TS segments (verified: first byte 0x47 and a clean 0x47 at every
+// 188-byte packet stride), just disguised behind decoy extensions - seg-1-f1-v1-a1.jpg served
+// as Content-Type: image/jpeg, with .css/.js/.png/.ico/.txt/.webp also in rotation, presumably
+// to look like static assets. MPEG-TS is the one container you can legitimately join by raw
+// byte concatenation, so no remux step is required to produce a playable file.
+//
+// Doing it here rather than in the browser solves three things at once:
+//   * the CDN 403s the playlist/segments without `Referer: https://megaplay.buzz/`, which a
+//     browser can't forge for a cross-origin request - the server can
+//   * no ~25MB ffmpeg.wasm download, and no CORS fight
+//   * segments are piped straight through, so memory stays flat instead of buffering the
+//     whole ~350MB episode
+// Output is .ts (directly playable in VLC/mpv). Producing .mp4 would need a remux - which is
+// the ONLY thing ffmpeg would still be useful for here, and it's optional.
+app.get('/api/anime-megaplay-download', async (req, res) => {
+    const malId = String(req.query.malId || '').trim();
+    const episode = String(req.query.episode || req.query.ep || '1').trim();
+    const lang = String(req.query.lang || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
+    if (!malId) return res.status(400).json({ ok: false, error: 'malId is required' });
+
+    const headers = { 'User-Agent': KINO_UA, 'Referer': `${MEGAPLAY_ORIGIN}/` };
+    try {
+        const { stream: masterUrl } = await resolveMegaplaySourcesCached(malId, episode, lang);
+
+        // master -> highest-bandwidth variant playlist
+        const master = await axios.get(masterUrl, { headers, timeout: 20000 });
+        const variantLine = String(master.data).split('\n')
+            .filter(l => l.trim() && !l.startsWith('#'))
+            .find(l => /\.m3u8/i.test(l));
+        const variantUrl = variantLine ? new URL(variantLine.trim(), masterUrl).href : masterUrl;
+
+        const variant = await axios.get(variantUrl, { headers, timeout: 20000 });
+        const segments = String(variant.data).split('\n')
+            .map(l => l.trim())
+            .filter(l => l && !l.startsWith('#'))
+            .map(l => new URL(l, variantUrl).href);
+        if (!segments.length) throw new Error('no segments in playlist');
+
+        res.setHeader('Content-Type', 'video/mp2t');
+        res.setHeader('Content-Disposition',
+            `attachment; filename="anime_${malId}_ep${episode}_${lang}.ts"`);
+
+        for (const segUrl of segments) {
+            const seg = await axios.get(segUrl, { headers, timeout: 30000, responseType: 'stream' });
+            await new Promise((resolve, reject) => {
+                seg.data.on('end', resolve);
+                seg.data.on('error', reject);
+                seg.data.pipe(res, { end: false });
+            });
+            if (res.destroyed) return; // client cancelled the download
+        }
+        res.end();
+    } catch (err) {
+        console.error('[MegaPlay Download] Error:', err.message);
+        if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
+        else res.end();
+    }
+});
+
+// Full payload (stream + subtitle tracks + intro/outro skip markers).
+app.get('/api/anime-megaplay-log', async (req, res) => {
+    const malId = String(req.query.malId || '').trim();
+    const episode = String(req.query.episode || req.query.ep || '1').trim();
+    const lang = String(req.query.lang || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
+    if (!malId) return res.status(400).json({ ok: false, error: 'malId is required' });
+    try {
+        const data = await resolveMegaplaySourcesCached(malId, episode, lang);
+        res.json({ ok: true, ...data });
+    } catch (err) {
+        console.error('[MegaPlay] Error:', err.message);
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
 // =========================================
 //  9b1. MEGAPLAY STREAM API (MAL ID based)
 // =========================================
@@ -11009,11 +13288,19 @@ function metaListToGroups(metaList, tmdbEpisodes = []) {
 
     let tmdbOffset = 0;
     return sorted.map((m, idx) => {
-        const total = Math.max(1, Number(m.episodesCount || 0));
+        const streaming = Array.isArray(m.streamingEpisodes) ? m.streamingEpisodes : [];
+        // AniList/Jikan's `episodes` count is null/0 for a currently-airing season
+        // until MAL/AniList staff confirm the final total once it finishes -- a
+        // near-universal behavior for anything still airing weekly, not an error.
+        // Trusting that blindly (Math.max(1, ...) was the only other floor)
+        // collapsed an already-partially-aired, ongoing season down to a
+        // single-episode placeholder even though several real episodes existed.
+        // AniList's streamingEpisodes listing tracks what's actually aired in
+        // closer to real time, so use whichever signal is larger.
+        const total = Math.max(1, Number(m.episodesCount || 0), streaming.length);
         const tmdbSlice = tmdbEpisodes.slice(tmdbOffset, tmdbOffset + total);
         tmdbOffset += total;
 
-        const streaming = Array.isArray(m.streamingEpisodes) ? m.streamingEpisodes : [];
         const episodes = Array.from({ length: total }, (_, i) => {
             const tmdbEp = tmdbSlice[i];
             if (tmdbEp) {
@@ -11046,6 +13333,148 @@ function metaListToGroups(metaList, tmdbEpisodes = []) {
         };
     });
 }
+
+// --- animefillerlist.com filler/canon status --------------------------------------------
+// Jikan's own `filler` field is a plain boolean (confirmed against its OpenAPI schema) --
+// MAL doesn't track the "Mixed Canon/Filler" or "Anime Canon" distinction at all, that's
+// animefillerlist-specific granularity, so this is the only real source for the full
+// 4-category system (Manga Canon / Filler / Mixed Canon-Filler / Anime Canon).
+const ANIMEFILLERLIST_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+let animeFillerListDirectoryCache = null; // { entries: [{slug,title}], fetchedAt }
+const ANIMEFILLERLIST_DIRECTORY_TTL_MS = 24 * 60 * 60 * 1000;
+
+// animefillerlist has no search API, just a static directory of every show it covers --
+// fetch it once (long TTL, it rarely changes) and fuzzy-match against it, same pattern as
+// searchAnimegoCandidates()/stringSimilarity used for the RU anime video source.
+async function getAnimeFillerListDirectory() {
+    if (animeFillerListDirectoryCache && (Date.now() - animeFillerListDirectoryCache.fetchedAt) < ANIMEFILLERLIST_DIRECTORY_TTL_MS) {
+        return animeFillerListDirectoryCache.entries;
+    }
+    const res = await axios.get('https://www.animefillerlist.com/shows', {
+        headers: { 'User-Agent': ANIMEFILLERLIST_UA },
+        timeout: 20000
+    });
+    const $ = cheerio.load(res.data);
+    const entries = [];
+    $('a[href^="/shows/"]').each((i, el) => {
+        const $el = $(el);
+        const slug = ($el.attr('href') || '').replace(/^\/shows\//, '');
+        const title = $el.text().trim();
+        if (!slug || !title) return;
+        entries.push({ slug, title });
+    });
+    animeFillerListDirectoryCache = { entries, fetchedAt: Date.now() };
+    return entries;
+}
+
+async function resolveAnimeFillerListSlug(rawTitle) {
+    const entries = await getAnimeFillerListDirectory();
+    const query = rawTitle.toLowerCase();
+    let best = null, bestScore = 0;
+    for (const e of entries) {
+        const score = stringSimilarity.compareTwoStrings(query, e.title.toLowerCase());
+        if (score > bestScore) { bestScore = score; best = e; }
+    }
+    if (!best || bestScore < 0.5) {
+        throw new Error(`No animefillerlist match for "${rawTitle}" (closest: ${best?.title || 'none'}, ${Math.round(bestScore * 100)}%)`);
+    }
+    return best.slug;
+}
+
+async function fetchAnimeFillerListEpisodes(slug) {
+    const res = await axios.get(`https://www.animefillerlist.com/shows/${slug}`, {
+        headers: { 'User-Agent': ANIMEFILLERLIST_UA },
+        timeout: 20000
+    });
+    const $ = cheerio.load(res.data);
+    const episodes = [];
+    // Table rows are [#, Title, Type, Airdate] - Type is the literal string we need
+    // ("Manga Canon" / "Filler" / "Mixed Canon/Filler" / "Anime Canon").
+    $('table.EpisodeList tr').each((i, el) => {
+        const cells = $(el).find('td');
+        if (cells.length < 3) return;
+        const epNum = parseInt($(cells[0]).text().trim(), 10);
+        const type = $(cells[2]).text().trim();
+        if (!epNum || !type) return;
+        episodes.push({ episodeNumber: epNum, type });
+    });
+    return episodes;
+}
+
+function fillerCacheKey(rawTitle) {
+    return String(rawTitle).toLowerCase().trim();
+}
+
+function getCachedFillerEpisodes(cacheKey) {
+    return new Promise((resolve) => {
+        animeCacheDb.all(
+            `SELECT episode_number, type, cached_at FROM anime_episode_filler WHERE cache_key = ?`,
+            [cacheKey],
+            (err, rows) => resolve(err ? [] : (rows || []))
+        );
+    });
+}
+
+function upsertFillerEpisodes(cacheKey, episodes) {
+    const now = Math.floor(Date.now() / 1000);
+    return Promise.all(episodes.map(ep => new Promise((resolve) => {
+        animeCacheDb.run(
+            `INSERT INTO anime_episode_filler (cache_key, episode_number, type, cached_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(cache_key, episode_number) DO UPDATE SET type = excluded.type, cached_at = excluded.cached_at`,
+            [cacheKey, ep.episodeNumber, ep.type, now],
+            () => resolve()
+        );
+    })));
+}
+
+const FILLER_STATUS_TTL_SECONDS = 6 * 60 * 60; // 6h - only matters for "finished" shows below
+
+// `isOngoing` (from TMDB's own status field, passed by the frontend) decides the refresh
+// policy: a finished show's filler list never changes once fully aired, so a plain
+// TTL-based cache is fine. An ONGOING show gets a new episode roughly weekly, so this
+// always tries a live fetch first regardless of cache age - and only falls back to
+// whatever's cached if that live attempt fails (animefillerlist down/rate-limited/no
+// match), instead of silently serving a stale list missing the newest episodes.
+async function getAnimeFillerStatus(rawTitle, isOngoing) {
+    const cacheKey = fillerCacheKey(rawTitle);
+    const cached = await getCachedFillerEpisodes(cacheKey);
+    const cacheFresh = cached.length > 0 &&
+        (Math.floor(Date.now() / 1000) - Math.max(...cached.map(r => r.cached_at))) < FILLER_STATUS_TTL_SECONDS;
+
+    if (!isOngoing && cacheFresh) {
+        return { episodes: cached, stale: false };
+    }
+
+    try {
+        const slug = await resolveAnimeFillerListSlug(rawTitle);
+        const fresh = await fetchAnimeFillerListEpisodes(slug);
+        if (fresh.length === 0) throw new Error('animefillerlist returned no episodes');
+        await upsertFillerEpisodes(cacheKey, fresh);
+        return { episodes: fresh.map(e => ({ episode_number: e.episodeNumber, type: e.type })), stale: false };
+    } catch (err) {
+        if (cached.length > 0) {
+            logTempDebug('[FillerStatus] Live fetch failed, serving cached', { rawTitle, error: err.message });
+            return { episodes: cached, stale: true };
+        }
+        throw err;
+    }
+}
+
+app.get('/api/anime-filler-status', async (req, res) => {
+    const rawTitle = req.query.title || '';
+    const isOngoing = req.query.ongoing === 'true';
+    if (!rawTitle) return res.status(400).json({ error: 'title is required' });
+
+    try {
+        const { episodes, stale } = await getAnimeFillerStatus(rawTitle, isOngoing);
+        const map = {};
+        episodes.forEach(e => { map[e.episode_number] = e.type; });
+        res.json({ status: 'ready', episodes: map, stale });
+    } catch (err) {
+        res.json({ status: 'unavailable', episodes: {}, error: err.message });
+    }
+});
 
 app.get('/api/anime-season-groups', async (req, res) => {
     const tmdbId = parseInt(req.query.tmdbId, 10);
@@ -11797,4 +14226,8 @@ const server = app.listen(PORT, 'localhost', () => {
     } else {
         console.log('   Secret header enforcement: disabled (set MIDDLEWARE_SECRET env var to enable)');
     }
+
+    console.log(`   Kino health check: every ${KINO_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
+    setInterval(runKinoHealthCheck, KINO_HEALTH_CHECK_INTERVAL_MS);
+    runKinoHealthCheck(); // also check once right away instead of waiting 10min for the first read
 });

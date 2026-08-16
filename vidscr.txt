@@ -1,0 +1,1454 @@
+================================================================================
+VIDSRC / vidsrcme.ru — FULL RECAP: how "vidRemodelled" was built
+================================================================================
+Date: 2026-08-14
+Scope: English MOVIES only (TV not implemented). Endpoint: /api/movie-vidremodelled-log
+Frontend button: "vidRemodelled" in the Movies server row (js/moviePlayer.js)
+Backend code: Backend/server.js, search for "VidRemodelled"
+
+This is a full lesson/walkthrough of the investigation, in the order it actually
+happened, including the dead ends, so it's reproducible if vidsrcme changes their
+setup later and this needs to be redone or repaired.
+
+
+--------------------------------------------------------------------------------
+0. THE GOAL
+--------------------------------------------------------------------------------
+The site already had:
+  - Animego (RU anime)
+  - NekoStream / KAA (EN anime)
+  - kinogo.mu -> cinemar.cc (RU movies/series)
+  - plain iframe embeds for EN movies/TV (srvMega, srvUp, srvT, 2Embed, etc. --
+    these just point <iframe src> straight at vidsrcme.su/.ru, vidsrc-embed.su,
+    111movies.com, etc. -- no extraction, just embedding their player as-is)
+
+Nothing extracted a raw stream URL for EN movies/TV the way KAA/kinogo do for
+anime/RU. The ask: pick one EN movie source (vidsrcme.ru) and actually unpack it
+-- get the real .m3u8 URL server-side and play it through OUR OWN player, same
+pattern as the RU sources, instead of just iframing their page.
+
+Starting point given by the user: an example embed URL
+    https://vidsrcme.ru/embed/movie/299536      (299536 = Avengers: Infinity War, TMDB id)
+and their docs page:
+    https://vidsrcme.ru/vidsrc/docs/
+
+
+--------------------------------------------------------------------------------
+1. FIRST ATTEMPT: just fetch the docs page
+--------------------------------------------------------------------------------
+Tried WebFetch on https://vidsrcme.ru/vidsrc/docs/ -> HTTP 403. Bot-blocked for
+plain HTTP clients (no real browser fingerprint/TLS handshake).
+
+Fix: load it through an actual browser tool instead of a raw HTTP fetch. That
+worked and gave the full public API docs. Relevant bits (there's much more in
+their docs, e.g. subtitle params, player postMessage events, latest-content
+JSON feeds -- only the parts that mattered for extraction are summarized here):
+
+  GET /embed/movie/{id}            -- {id} = IMDB (tt...) or numeric TMDB id
+  GET /embed/tv/{id}/{season}/{episode}
+  GET /embed/movie?imdb={id}       -- query-string form also works
+
+None of this told us how to get a raw stream URL -- the public docs are purely
+about the *embed iframe* contract, not extraction. That had to be found by
+actually loading the embed and watching what it does.
+
+
+--------------------------------------------------------------------------------
+2. FINDING THE HIDDEN API: window.CONFIG
+--------------------------------------------------------------------------------
+The user separately captured the real embed traffic with HTTPToolkit and pasted
+the full HTML of what an embed page actually returns (worth noting: this is
+served from a DIFFERENT domain than vidsrcme.ru -- see section 3). Buried near
+the bottom of that HTML was:
+
+    window.CONFIG = {
+      "mediaType": "movie",
+      "idType": "tmdb",
+      "mediaId": "299536",
+      "imdb": "",
+      "tmdb": "299536",
+      "autoplay": true,
+      "landing": true,
+      "autoNext": false,
+      "api": "https://data.vidsrcme.ru/api.php?type=movie&tmdb=299536&stream_urls",
+      "metaApi": "https://data.vidsrcme.ru/api.php?type=movie&tmdb=299536",
+      "season": null,
+      "episode": null,
+      "cacheBase": "/embed/iframe_player/cache.php"
+    };
+
+`api` (with the extra `&stream_urls` param) looked like exactly what we wanted --
+a JSON endpoint with the actual stream. Hit it directly:
+
+    GET https://data.vidsrcme.ru/api.php?type=movie&tmdb=299536&stream_urls
+
+    {
+      "status_code": "200",
+      "data": {
+        "title": "Avengers: Infinity War 2018",
+        "imdb_id": "tt4154756",
+        "file_name": "Avengers Infinity War (2018) [BluRay] [1080p] [YTS.AM]/...",
+        "backdrop": "https://image.tmdb.org/t/p/w1280/....jpg",
+        "stream_urls": "JK7aRRZyEtsRYSWh0g4apxEbYONYEheVEt4rsydNhm1g..."  <- huge opaque blob
+      },
+      "default_subs": [],
+      "thumbnails_url": "https://vidapi.cloud/static/.../thumbnails.vtt",
+      "vs": { "w": 5955712, "wasm_url": "https://data.vidsrcme.ru/wasm.php?w=5955712&_=..." }
+    }
+
+Dead end (directly, at least): `stream_urls` is NOT a URL, it's an encrypted
+blob. The `vs.wasm_url` field tells the client to fetch a WASM module
+(`wasm.php`) that decrypts it client-side. The embed HTML also loads
+`vsdec.js` for this. Decrypting this ourselves would mean fully reverse
+engineering an obfuscated WASM binary -- a real crypto reverse-engineering
+project, not just scraping HTML/JSON like the RU sources do.
+
+So: two options going in.
+  (A) Reverse-engineer the WASM decryption -> no browser needed at request time,
+      fast, but a much bigger from-scratch RE effort, and fragile (breaks
+      silently if they change the algorithm/key derivation).
+  (B) Drive a real (headless) browser server-side, let THEIR OWN JS do the
+      decryption like it normally would for a real visitor, and just sniff the
+      resulting network request for the real stream URL. No crypto touched at
+      all, more robust to them changing the encryption, but adds a browser-
+      automation dependency and (as it turned out) an anti-bot fight.
+
+Asked the user; picked "whichever is faster" -> went with (B), Puppeteer.
+Puppeteer was already a listed dependency in Backend/package.json (unused
+anywhere in the codebase before this), and its bundled Chromium launched fine
+locally, so it was the natural pick.
+
+
+--------------------------------------------------------------------------------
+3. LAYER 1 OF DEFENSE: disable-devtool.js kills the whole page
+--------------------------------------------------------------------------------
+First real attempt: open our own Browser tool (which drives Chrome over the
+Chrome DevTools Protocol, CDP -- same category of thing as Puppeteer) and just
+navigate to the embed URL to poke around.
+
+Result: the tab died. `read_network_requests` / `get_page_text` immediately
+started returning "No site is open in this tab." The page had blanked itself.
+
+The embed HTML (visible in the user's HTTPToolkit dump) explains why -- near
+the bottom:
+
+    <!-- Anti-tamper: disable browser devtools -- https://github.com/theajack/disable-devtool -->
+    <script src="/embed/iframe_player/assets/disable-devtool.js?v=..."></script>
+    <script>
+    (function () {
+      if (!window.DisableDevtool) return;
+      function kill() {
+        var v = document.querySelector('video');
+        if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
+        if (window.parent && window.parent !== window)
+          window.parent.postMessage({ type: 'VS_DEVTOOLS' }, '*');
+        location.replace('about:blank');
+      }
+      DisableDevtool({ disableMenu: true, clearLog: true, disableIframeParents: true, ondevtoolopen: kill });
+      window.addEventListener('message', function (e) {
+        if (e && e.data && e.data.type === 'VS_DEVTOOLS') kill();
+      });
+    })();
+    </script>
+
+Confirmed the exact same thing happens with plain Puppeteer (script below,
+minimal repro): it launched, navigated fine, then a page console message
+appeared --
+
+    You don't have permission to use DEVTOOL!【type = 6】
+
+-- and the page URL became "about:blank". So this isn't specific to our
+in-house Browser tool; ANY CDP-driven Chrome (Puppeteer, Playwright-chromium,
+our tool, whatever) trips it.
+
+Looked up disable-devtool's documented detector types (npm package
+"disable-devtool", vendored/customized here). Type 6 = "Performance" --
+"Performance detection based on log big data." What it actually does: it
+repeatedly logs various object types (Date, Function, Array, big nested
+structures) via console.log/console.table and times how long the call takes
+to return. Under CDP, the "Runtime" domain instruments the native V8 console
+API to serialize logged objects and forward them to the debugging client --
+which is real, measurable overhead. A real end-user's browser has no such
+instrumentation, so console.log() returns near-instantly; a CDP-driven browser
+is slow enough on those calls to give itself away, REGARDLESS of whether your
+own code is doing anything with a console listener -- Puppeteer enables the
+Runtime domain internally by default (needed for evaluate(), etc.), so this
+fires unconditionally, not just if you attach a 'console' event handler.
+
+THE FIX: don't intercept console output -- replace the console methods
+themselves with plain JS functions before the page's own scripts run. A
+plain reassigned function is not the native V8 console binding anymore, so
+CDP's Runtime domain has nothing to instrument -- the calls become ordinary,
+fast function calls again.
+
+    await page.evaluateOnNewDocument(() => {
+        const noop = () => {};
+        for (const k of ['log','debug','info','warn','error','table','dir',
+                          'trace','group','groupEnd','groupCollapsed','clear',
+                          'count','assert','time','timeEnd']) {
+            try { console[k] = noop; } catch (e) {}
+        }
+    });
+
+Verified with a standalone repro (this is close to the actual test script used,
+run via `node repro.js` against a local Puppeteer install):
+
+    const puppeteer = require('puppeteer');
+    (async () => {
+        const browser = await puppeteer.launch({ headless: true });
+        const page = await browser.newPage();
+        await page.evaluateOnNewDocument(() => {
+            const noop = () => {};
+            for (const k of ['log','debug','info','warn','error','table','dir',
+                              'trace','group','groupEnd','groupCollapsed','clear',
+                              'count','assert','time','timeEnd']) {
+                try { console[k] = noop; } catch (e) {}
+            }
+        });
+        await page.goto('https://vidsrcme.ru/embed/movie/299536', { waitUntil: 'domcontentloaded' });
+        await new Promise(r => setTimeout(r, 8000));
+        console.log(page.url()); // was "about:blank" before the noop fix,
+                                  // stayed on the real embed URL after it
+        await browser.close();
+    })();
+
+After this fix the page stopped self-destructing. Progress, but the actual
+stream still wasn't loading (see next section).
+
+
+--------------------------------------------------------------------------------
+4. LAYER 2 OF DEFENSE: navigator.webdriver
+--------------------------------------------------------------------------------
+With the devtool-kill defeated, the page survived, but nothing useful happened
+-- no video element populated, no stream_urls fetch fired.
+
+Ran a quick fingerprint dump in a fresh Puppeteer page to see what a detector
+script would actually observe:
+
+    {
+      "webdriver": true,                 <-- the giveaway
+      "plugins": 5,
+      "languages": ["en-US"],
+      "hasChrome": "object",
+      "webglVendor": "Google Inc. (NVIDIA)",
+      "webglRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti ...)",
+      "hardwareConcurrency": 24,
+      "permissions": "object"
+    }
+
+`navigator.webdriver` is `true` by default in any Puppeteer/Selenium-driven
+Chrome -- it's the single most well-known automation tell on the web, and it's
+trivial to check for from plain JS (no WASM/fingerprinting library needed).
+GPU/WebGL looked fine here (a real GPU, not the usual "SwiftShader"/headless
+software-renderer tell), so that one wasn't actually a factor in this case --
+worth checking again if this breaks in a different environment (e.g. a real
+headless Linux server without a GPU would show SwiftShader/llvmpipe and could
+need extra evasion for that specifically).
+
+THE FIX: patch it away before any page script runs, same evaluateOnNewDocument
+hook as the console patch:
+
+    await page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        // ...console noop from section 3 goes in the same call...
+    });
+
+Combined fix (both layers in one evaluateOnNewDocument):
+
+    await page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        const noop = () => {};
+        for (const k of ['log','debug','info','warn','error','table','dir',
+                          'trace','group','groupEnd','groupCollapsed','clear',
+                          'count','assert','time','timeEnd']) {
+            try { console[k] = noop; } catch (e) {}
+        }
+    });
+
+Even after both patches, still no stream request. Real clicks on the visible
+"bigPlay" button (both a JS-dispatched click AND a real trusted mouse click via
+page.mouse.click() at the iframe's on-screen coordinates) didn't help either.
+That ruled out "it's waiting for a user gesture" as the actual blocker --
+something structural was still missing.
+
+
+--------------------------------------------------------------------------------
+5. THE REAL STRUCTURE: THREE IFRAMES, NOT ONE
+--------------------------------------------------------------------------------
+Dumped page.frames() from the top-level vidsrcme.ru page and found FIVE frames,
+most of them ad/analytics trackers (dtscout, crwdcntrl -- ignore those). The one
+that mattered:
+
+    https://cloudorchestranova.com/embed/movie/299536?vs=<TOKEN>
+
+This matches exactly what the user's HTTPToolkit capture showed as the actual
+player request -- so `cloudorchestranova.com` is the real CDN/player domain
+vidsrcme.ru embeds under the hood (rotating -- the docs' "custom domain" /
+mirror system means this hostname isn't fixed and could be a different one on
+a different day).
+
+Dumped THIS frame's body HTML and it was NOT the full player from the user's
+original HTTPToolkit dump -- it was a much simpler "landing" page:
+
+    <div id="player" class="jw landing">
+        <div id="poster" class="jw-poster" style="background-image:url(...)"></div>
+        <div class="jw-center">
+            <button id="bigPlay" class="jw-bigplay" aria-label="Play">...</button>
+        </div>
+    </div>
+    <script>
+      window.CFG = {
+        "metaApi": "https://data.vidsrcme.ru/api.php?type=movie&tmdb=299536",
+        "playerUrl": "/embed/player/movie/299536?vs=<ANOTHER TOKEN>",
+        "epLabel": "", "isTvIndex": false, "autoStart": false
+      };
+      // on #bigPlay click: creates a NEW <iframe> pointed at CFG.playerUrl
+      // and appends it into #player. THAT nested iframe is the real,
+      // full-featured hls.js player (matches the user's original HTTPToolkit
+      // dump exactly -- video#video, window.CONFIG with .api/.stream_urls,
+      // vsdec.js, player.js, hls.js from jsdelivr, etc.)
+    </script>
+
+So the actual chain is:
+
+    vidsrcme.ru (top page)
+      -> iframe: cloudorchestranova.com/embed/movie/{id}?vs=TOKEN_1   ("landing": poster + play button only)
+           -> on click, JS injects ANOTHER iframe:
+           -> iframe: cloudorchestranova.com/embed/player/movie/{id}?vs=TOKEN_2   (the REAL player)
+
+Two different `vs=` tokens, one per layer -- consistent with the token-signing
+JS visible in the outermost vidsrcme.ru page (an HMAC-ish per-window token
+generator using SubtleCrypto SHA-256, tied to the current UTC hour bucket --
+not reproduced here since we never needed to generate our own, just let their
+JS keep doing it).
+
+Once this was understood, the fix was simple: click #bigPlay in the LANDING
+frame specifically (not the top page, not blindly trying to find #video before
+it exists), then wait for a NEW frame whose URL contains "/embed/player/" to
+appear, and treat THAT as the real player frame.
+
+    const landingFrame = page.frames().find(f =>
+        f.url().includes('/embed/movie/') && f.url() !== page.url()
+    );
+    await landingFrame.evaluate(() => { document.getElementById('bigPlay')?.click(); });
+
+    // then poll page.frames() until one matching '/embed/player/' shows up
+
+
+--------------------------------------------------------------------------------
+6. CAPTURING THE STREAM
+--------------------------------------------------------------------------------
+With the click firing on the correct frame, the real player frame loaded, its
+window.CONFIG.api (WITH &stream_urls) got fetched, and shortly after:
+
+    [RESPONSE] 200  https://data.vidsrcme.ru/api.php?type=movie&tmdb=299536&stream_urls
+    [RESPONSE] 200  https://vidapi.cloud/static/.../thumbnails.vtt
+    [RESPONSE] 200  https://effervescentephemera.space/pl/<big-encoded-blob>/master.m3u8?token=<JWT>
+    [RESPONSE] 200  https://effervescentephemera.space/pl/<...>/<hash>/index.m3u8?token=<JWT>
+
+`effervescentephemera.space` is yet another rotating CDN hostname (the actual
+video delivery domain -- distinct from cloudorchestranova.com, the iframe/player
+host). The FIRST `.m3u8` response is always the master (multi-bitrate) playlist,
+since hls.js has to fetch the master before it can request any per-quality
+sub-playlist -- so "take the first .m3u8 response seen" reliably gets the
+master, no need to specifically match "master.m3u8" in the URL by name.
+
+    let streamUrl = null;
+    page.on('response', (resp) => {
+        if (streamUrl) return;
+        if (/\.m3u8(\?|$)/i.test(resp.url())) streamUrl = resp.url();
+    });
+
+Decoded the JWT `token` query param on that URL out of curiosity (base64, not
+signature-verified, just inspected):
+
+    { "iss": "my-auth", "iat": 1786718142, "nbf": 1786718142,
+      "exp": 1786732542, "ip_cidr": "46.34.195.0/24" }
+
+Two important properties:
+  - exp - iat = 14400 seconds = exactly 4 hours. The URL/token is only valid
+    for 4 hours after issuance.
+  - `ip_cidr` locks the token to whatever /24 IP block the requester (i.e. our
+    Puppeteer instance) was on when the token was minted. Any later fetch of
+    this m3u8/segment URLs MUST come from that same IP range, or it'll likely
+    be rejected upstream. This is why extraction has to run on the SAME
+    machine/network as the proxying that later serves it to real users -- if
+    Puppeteer ran on a different box/IP than the m3u8 proxy, this would break.
+
+Confirmed the URL is otherwise just a plain HTTPS resource -- a direct `axios`
+GET with only a User-Agent header (no cookies, no special Referer, no
+Origin check) returned 200 with valid HLS content. So once extracted, no
+Puppeteer/browser is needed to actually SERVE or replay the stream -- only to
+obtain the URL in the first place.
+
+
+--------------------------------------------------------------------------------
+7. A LATENT BUG THIS SURFACED: root-relative HLS paths
+--------------------------------------------------------------------------------
+The existing shared `/api/m3u8-proxy` endpoint (already used by KAA/Neko/
+kinogo) rewrites relative URLs inside .m3u8 playlists by string-concatenating
+them onto the directory portion of the current URL:
+
+    const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
+    const absoluteUrl = trimmed.startsWith('http') ? trimmed : baseUrl + trimmed;
+
+That assumes every relative reference is a bare filename relative to the
+current directory. vidsrcme's master.m3u8 instead uses paths starting with a
+single `/` -- i.e. relative to the DOMAIN ROOT, not the current directory:
+
+    #EXT-X-STREAM-INF:BANDWIDTH=817724,...
+    /pl/<blob>/<hash>/index.m3u8?token=<JWT>
+
+Naive concatenation turned this into a doubled, broken path:
+    https://effervescentephemera.space/pl/<blob>//pl/<blob2>/index.m3u8
+
+FIX: use the standard WHATWG URL resolution algorithm instead of manual string
+concatenation -- it correctly handles absolute URLs, root-relative paths, and
+directory-relative paths all at once, and is a strict improvement for every
+other provider using this same proxy too (none of them happened to hit this
+edge case before, but the old code was arguably already wrong for anyone who
+did):
+
+    const resolveUri = (uri) => new URL(uri, targetUrl).href;
+
+Verified with curl after the fix: master.m3u8 -> proxied sub-playlist -> proxied
+.html-disguised video segment (page-0.html, a common trick to dodge naive
+extension-based blocking) -> HTTP 200, 147768 bytes.
+
+
+--------------------------------------------------------------------------------
+8. FINAL ARCHITECTURE (as shipped)
+--------------------------------------------------------------------------------
+File: Backend/server.js (search "VidRemodelled")
+
+    const puppeteer = require('puppeteer');   // was already a package.json
+                                               // dependency, unused anywhere
+                                               // else in the codebase before this
+
+    async function resolveVidRemodelledMovie(tmdbId) {
+        const browser = await puppeteer.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox',
+                   '--autoplay-policy=no-user-gesture-required']
+        });
+        try {
+            const page = await browser.newPage();
+            await page.setUserAgent(VID_REMODELLED_UA);
+
+            await page.evaluateOnNewDocument(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                const noop = () => {};
+                for (const k of ['log','debug','info','warn','error','table','dir',
+                                  'trace','group','groupEnd','groupCollapsed','clear',
+                                  'count','assert','time','timeEnd']) {
+                    try { console[k] = noop; } catch (e) {}
+                }
+            });
+
+            let streamUrl = null;
+            page.on('response', (resp) => {
+                if (streamUrl) return;
+                if (/\.m3u8(\?|$)/i.test(resp.url())) streamUrl = resp.url();
+            });
+
+            await page.goto(`https://vidsrcme.ru/embed/movie/${tmdbId}`,
+                             { waitUntil: 'load', timeout: 30000 });
+
+            // find the "landing" iframe (poster + play button)
+            let landingFrame = null;
+            for (let i = 0; i < 10 && !landingFrame; i++) {
+                landingFrame = page.frames().find(f =>
+                    f.url().includes('/embed/movie/') && f.url() !== page.url());
+                if (!landingFrame) await new Promise(r => setTimeout(r, 500));
+            }
+            if (!landingFrame) throw new Error('vidsrcme landing iframe never appeared');
+
+            await landingFrame.evaluate(() => { document.getElementById('bigPlay')?.click(); });
+
+            // wait for the .m3u8 response captured by the listener above
+            for (let i = 0; i < 20 && !streamUrl; i++) {
+                await new Promise(r => setTimeout(r, 1000));
+            }
+            if (!streamUrl) throw new Error('vidsrcme never served a stream');
+
+            return { streamUrl, proxyRef: 'https://cloudorchestranova.com/' };
+        } finally {
+            await browser.close();
+        }
+    }
+
+Caching (in-memory Map, same shape as the existing animegoResolveCache /
+kinogoResolveCache pattern elsewhere in server.js, but with its own SHORTER
+TTL -- NOT reusing the shared 24h `episodeLoadCacheGet/Set` SQLite helper,
+because that TTL is hardcoded and shared across every provider, and 24h would
+badly outlive the ~4h JWT):
+
+    const vidRemodelledCache = new Map();     // tmdbId -> { result, resolvedAt }
+    const vidRemodelledInFlight = new Map();  // de-dupe concurrent requests for
+                                               // the same not-yet-cached movie
+    const VID_REMODELLED_CACHE_TTL_MS = 3 * 60 * 60 * 1000;  // 3h (safety margin
+                                                               // under the 4h JWT)
+
+Endpoint:
+
+    GET /api/movie-vidremodelled-log?tmdbId=299536
+    -> { ok: true, stream: "<master.m3u8 URL>", proxyRef: "https://cloudorchestranova.com/" }
+
+Frontend (js/moviePlayer.js): a "vidRemodelled" button in the Movies server
+row, calling this endpoint then playing the result through the EXISTING
+/api/m3u8-proxy (same proxy used by the RU-movie/kinogo source), passing the
+stream URL and proxyRef through unmodified. No new player/proxy code needed
+on the frontend side -- it slots into the same showVideoPlayer() pipeline as
+every other HLS source on the site.
+
+
+--------------------------------------------------------------------------------
+9. VERIFICATION DONE
+--------------------------------------------------------------------------------
+- curl direct to /api/movie-vidremodelled-log?tmdbId=299536 through the real
+  restarted backend (with the required x-middleware-secret header) -> 200,
+  returned a live master.m3u8 URL, cold-run took ~15-20s (Puppeteer launch +
+  iframe chase).
+- Repeat request immediately after -> 200 in ~50ms (cache hit, no Puppeteer).
+- curl to /api/m3u8-proxy with that URL -> valid rewritten master playlist,
+  sub-playlist links correctly pointed back through /api/m3u8-proxy.
+- curl to the proxied sub-playlist -> valid media playlist with EXTINF entries.
+- curl to a proxied segment (disguised as page-0.html) -> HTTP 200, 147768
+  bytes, confirming actual video data flows end-to-end through the whole chain.
+- node --check on both changed files (server.js, moviePlayer.js) -> no syntax
+  errors.
+- Full browser click-through in the live site wasn't completed in this session
+  (the local dev middleware.js reverse proxy runs HTTPS with a self-signed
+  cert that the sandboxed browser tool wouldn't trust) -- API-level chain is
+  fully verified as above, but nobody has watched the vidRemodelled button
+  actually produce picture-and-sound in a real browser tab yet. Worth doing
+  once, manually, in a normal browser that can click through the cert warning.
+
+
+--------------------------------------------------------------------------------
+10. LIMITATIONS / WHAT COULD BREAK THIS LATER
+--------------------------------------------------------------------------------
+- Movies only. TV was explicitly out of scope for this pass; loadVidRemodelledVideo()
+  in moviePlayer.js short-circuits with "Not available for TV shows yet." for
+  isSeries. Doing TV would mean adapting the URL to /embed/tv/{id}/{season}/{episode}
+  and re-verifying the same iframe-chase logic holds (it likely does, but untested).
+- Cold-start cost: ~15-20s and a full headless Chromium launch per NOT-yet-cached
+  movie. Fine for occasional use; would need a persistent/pooled browser instance
+  (instead of launch+close per request) if this gets hit hard.
+- Both anti-bot layers (console-timing devtool check, navigator.webdriver) are
+  specific, known techniques -- if vidsrcme adds more (WebGL vendor/renderer
+  checks for headless "SwiftShader"/"llvmpipe" signatures, canvas/audio
+  fingerprinting, IP/ASN-based datacenter blocking, rate limiting, a captcha,
+  etc.) this will need new evasion work. The GPU on THIS dev machine happened
+  to report a real NVIDIA card, not the classic headless "SwiftShader" tell --
+  a different deployment environment (e.g. a real headless Linux VPS with no
+  GPU) could hit a WebGL-based check that never showed up here.
+- The `cloudorchestranova.com` and `effervescentephemera.space` hostnames are
+  themselves rotating/dynamic (their own docs mention "custom domain" mirrors
+  and the outer page's JS visibly generates its own subdomain names via an
+  HMAC-of-current-UTC-hour scheme) -- the extraction code doesn't hardcode
+  either hostname anywhere (it finds the landing frame by URL SHAPE, i.e.
+  containing "/embed/movie/", and the player frame by containing
+  "/embed/player/", and finds the stream by CONTENT TYPE, i.e. the first
+  .m3u8 response -- not by domain), so it should keep working across their
+  domain rotation without changes. If they change the URL SHAPE (path
+  segments, iframe nesting depth, etc.), it would need re-diagnosing the same
+  way this document describes.
+- The JWT's `ip_cidr` binding means this only works correctly when the
+  extraction (Puppeteer) and the later proxying (/api/m3u8-proxy) run from the
+  same IP / network. On this single-server deployment that's automatically
+  true; would matter if the backend and proxy layer were ever split across
+  different machines/regions.
+
+
+--------------------------------------------------------------------------------
+11. PATHS NOT TAKEN (for the record)
+--------------------------------------------------------------------------------
+- Full WASM reverse-engineering of vsdec.js/wasm.php to decrypt stream_urls
+  without any browser at all. Would remove the cold-start cost and the whole
+  anti-bot fight, at the cost of a much bigger, more fragile-to-maintain
+  reverse-engineering effort. Not attempted.
+- Plain iframe embed (what srvUp/srvMega already do for other EN sources) --
+  zero automation, zero anti-bot fight, but gives up the custom-player/
+  proxying benefits (their branding/ads/UI shows through, no unified download/
+  proxy pipeline). This is the fallback if the Puppeteer approach ever stops
+  being worth maintaining.
+================================================================================
+
+
+
+################################################################################
+# FOLLOW-UP: 2026-08-16 — the "Not attempted" item above was attempted.
+# The section right before this one lists full WASM reverse-engineering of
+# vsdec.js/wasm.php as too fragile to be worth it. It turned out NOT to require
+# reverse-engineering the crypto at all, and Puppeteer is now only a fallback.
+# Everything below supersedes the "cold-start cost / anti-bot fight" tradeoffs.
+################################################################################
+
+================================================================================
+KINO / VIDSRCME — HOW THE PUPPETEER DEPENDENCY WAS REMOVED
+Written 2026-08-16. Covers what the old code did, how the new path was derived,
+the exact protocol, and how to re-derive it yourself if vidsrcme changes.
+================================================================================
+
+--------------------------------------------------------------------------------
+0. TL;DR
+--------------------------------------------------------------------------------
+Before: every Kino stream request launched a full headless Chromium, loaded 3
+        nested iframes, clicked a play button, and sniffed the network for a
+        .m3u8 URL.  ~6.6 seconds, ~300MB RAM, fragile.
+
+After:  3 plain HTTP requests + ~1ms of WebAssembly.  ~0.9 seconds, no browser.
+
+The Puppeteer path is STILL THERE as an automatic fallback. If anything below
+stops working, Kino degrades to "slow like it used to be", not "Kino is down".
+
+Relevant functions in Backend/server.js:
+    runKinoExtraction            <- dispatcher (tries fast path, falls back)
+    runKinoExtractionViaApi      <- the new browser-free path
+    runKinoExtractionViaBrowser  <- the original Puppeteer code, unchanged
+    decryptKinoStreamUrls        <- runs their WASM decryptor
+    fetchKinoHostToken           <- gets + caches the per-host JWT
+
+
+--------------------------------------------------------------------------------
+1. WHY PUPPETEER EXISTED IN THE FIRST PLACE
+--------------------------------------------------------------------------------
+The original comment in server.js explains the reasoning, and it was sound at
+the time:
+
+    "The actual player lives two iframes deep: vidsrcme.ru -> a landing iframe
+     on cloudorchestranova.com (poster + play button only) -> clicking play
+     injects a THIRD nested iframe that is the real hls.js player. That innermost
+     frame's first network request for a master.m3u8 is the fully resolved,
+     playable stream URL -- no need to touch the WASM stream_urls decryption
+     (vsdec.js) at all."
+
+That last sentence is the key trade-off: using a browser let us SKIP
+understanding the encryption, because we just watched what the browser did.
+That's a legitimate and fast way to ship something that works.
+
+The cost of that shortcut:
+  - ~6.6s per extraction (Chromium startup dominates)
+  - Hundreds of MB of RAM per concurrent extraction
+  - Breaks whenever their anti-bot fingerprinting changes (it already had once,
+    requiring puppeteer-extra-plugin-stealth)
+  - Two Chromium instances racing (a user + the health check) could starve each
+    other and produce false "KINO IS DOWN" alarms
+
+So the goal was: do what the browser does, without the browser.
+
+
+--------------------------------------------------------------------------------
+2. THE METHODOLOGY (this is the transferable part)
+--------------------------------------------------------------------------------
+The general principle for this kind of work:
+
+    A browser is just an HTTP client that runs JavaScript.
+    Anything it fetches, you can fetch — IF you can figure out how it built
+    the request. So: read the JavaScript that builds the request.
+
+The practical loop is:
+
+  STEP 1 — Fetch the entry point with plain curl and look at what came back.
+           Don't assume you need a browser; check whether the data is already
+           in the static HTML.
+
+  STEP 2 — Find the next hop. Usually an iframe src, a fetch() URL, or a config
+           object like `window.CONFIG = {...}` baked into the page.
+
+  STEP 3 — Repeat until you hit either the payload, or a wall (encryption).
+
+  STEP 4 — At a wall, go read THEIR client-side code. The code that decrypts it
+           is, by necessity, shipped to the browser. It cannot be hidden.
+
+  STEP 5 — Re-implement, or better: reuse their own code as a black box.
+
+The single most valuable habit: **read the comments in their source**. Minified
+production code often still ships developer comments, and they hand you the
+architecture for free. In this case vsdec.js and player.js were both fully
+commented and literally described the whole protocol.
+
+
+--------------------------------------------------------------------------------
+3. WALKING THE CHAIN (with the actual commands used)
+--------------------------------------------------------------------------------
+
+UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+--- 3.1 The embed page -------------------------------------------------------
+
+    curl -s "https://vidsrcme.ru/embed/movie/293660" -A "$UA" | grep -o 'src="[^"]*"'
+
+Output included:
+
+    src="https://cloudorchestranova.com/embed/movie/293660?vs=JWr5PvY0wvPh..."
+
+FINDING #1: the landing iframe URL — including its signed `vs` token — is in
+the STATIC HTML. No JavaScript executed. curl got it. So step 1 needed no
+browser, which immediately suggests the rest might not either.
+
+--- 3.2 The landing page -----------------------------------------------------
+
+    curl -s "<that landing url>" -A "$UA" -H "Referer: https://vidsrcme.ru/"
+
+This is the page with the `#bigPlay` button the old code clicked. Its inline
+script contained:
+
+    window.CFG = {"metaApi":"https://data.vidsrcme.ru/api.php?type=movie&tmdb=293660",
+                  "playerUrl":"/embed/player/movie/293660?vs=3cL-STxDKsjS...", ...};
+
+    function start() {
+        frame = document.createElement('iframe');
+        frame.src = CFG.playerUrl;      // <-- this is all the click did
+        wrap.appendChild(frame);
+    }
+    bigPlay.addEventListener('click', start);
+
+FINDING #2: the "click the play button" step was theater. The click handler
+does exactly one meaningful thing — create an iframe pointing at CFG.playerUrl,
+which is ALREADY sitting in the static HTML. So we can skip the click entirely
+and just read the URL.
+
+This is a very common pattern: a UI interaction that looks like it must be
+simulated turns out to just reveal a value that was already present.
+
+--- 3.3 The player page ------------------------------------------------------
+
+    curl -s "https://cloudorchestranova.com<playerUrl>" -A "$UA"
+
+Contained:
+
+    window.CONFIG = {"mediaType":"movie","tmdb":"293660",
+        "api":"https://data.vidsrcme.ru/api.php?type=movie&tmdb=293660&stream_urls",
+        "metaApi":"https://data.vidsrcme.ru/api.php?type=movie&tmdb=293660", ...};
+
+FINDING #3: the actual stream data comes from `data.vidsrcme.ru/api.php`.
+
+--- 3.4 The realisation ------------------------------------------------------
+
+Look carefully at that API URL:
+
+    https://data.vidsrcme.ru/api.php?type=movie&tmdb=293660&stream_urls
+                                          ^^^^^        ^^^^^^
+                                          known        known (it's the tmdb id
+                                                       we started with!)
+
+Every parameter is derivable from the TMDB id we already had. So I tested
+whether the three page fetches were needed at all:
+
+    curl -s "https://data.vidsrcme.ru/api.php?type=movie&tmdb=293660&stream_urls" -A "$UA"
+    # no Referer, no vs token, no cookies, no prior page loads
+
+    -> HTTP 200, full JSON payload.
+
+FINDING #4 (the big one): the entire iframe chain — embed page, landing page,
+player page, the `vs` tokens, the play button — is DECORATION. It exists to
+walk a real browser to a URL that we can construct directly from the tmdb id.
+
+Lesson: once you know the final request, always test how much of the path you
+actually need. Sites frequently gate the *journey* but not the *destination*.
+
+TV works identically, just with more params:
+    ...api.php?type=tv&tmdb=1396&season=1&episode=1&stream_urls
+
+(Note: the TV player page uses `streamBase` instead of `api` in its CONFIG —
+a shape difference that broke my first prototype. Since I now build the URL
+myself from the tmdb id, that difference no longer matters.)
+
+
+--------------------------------------------------------------------------------
+4. THE WALL: ENCRYPTED stream_urls
+--------------------------------------------------------------------------------
+The API response looks like this:
+
+    {
+      "status_code": "200",
+      "data": {
+        "title": "Deadpool 2016",
+        "stream_urls": "eQs1NebCW5dLkDNRxqyu948pe8GBOTu4lc0h0Z3o..."   <- a STRING, not an array
+      },
+      "vs": {
+        "w": 5956345,
+        "wasm_url": "https://data.vidsrcme.ru/wasm.php?w=5956345&_=1786903760"
+      }
+    }
+
+`stream_urls` is encrypted. This is the wall. Now go read their decryptor.
+
+    curl -s "https://cloudorchestranova.com/embed/iframe_player/assets/vsdec.js"
+
+It's 3.5KB and — critically — fully commented:
+
+    /**
+     * vsdec.js — transparent decryption of the API's encrypted `stream_urls`.
+     * ... `data.stream_urls` is a single encrypted string (base64 ChaCha20
+     * nonce||ciphertext) instead of an array, plus a top-level:
+     *     vs: { w: <window>, wasm_url: "https://.../<w>.wasm?_=<ts>" }
+     * carrying the per-5-minute-window ChaCha20 decryptor.
+     */
+
+And the actual decryption:
+
+    function decryptWith(modPromise, encB64) {
+        return modPromise
+            .then(mod => WebAssembly.instantiate(mod, {}))
+            .then(inst => {
+                var ex = inst.exports, enc = b64(encB64);
+                var ptr = ex.alloc(enc.length);
+                new Uint8Array(ex.memory.buffer, ptr, enc.length).set(enc);
+                var outLen = ex.decrypt(ptr, enc.length);
+                return new TextDecoder().decode(
+                    new Uint8Array(ex.memory.buffer, ptr + 12, outLen));
+            });
+    }
+
+*** THE KEY INSIGHT OF THIS WHOLE EXERCISE ***
+
+I did NOT reverse-engineer the ChaCha20 encryption. I never found the key, and
+I never needed to.
+
+The decryptor is a WASM module they serve to the browser. Node.js has
+WebAssembly built in. So I run THEIR decryptor, unmodified, as a black box —
+the exact same three calls their own code makes:
+
+    alloc(n)            -> allocate n bytes, return a pointer
+    <copy ciphertext in>
+    decrypt(ptr, len)   -> decrypt in place, return output length
+    memory.buffer       -> read the plaintext out at (ptr + 12)
+
+Why `ptr + 12`? Because the blob is `nonce || ciphertext` and a ChaCha20 nonce
+is 12 bytes. The plaintext starts after it. (Their code does the same thing;
+I just matched it.)
+
+This is almost always the better move than reimplementing crypto:
+  - It cannot be wrong — it's literally their implementation
+  - It survives key rotation (the key lives inside the WASM, which we refetch)
+  - It's a fraction of the effort
+
+Node implementation (server.js, decryptKinoStreamUrls):
+
+    const mod  = await WebAssembly.compile(wasmBytes);
+    const inst = await WebAssembly.instantiate(mod, {});
+    const ex   = inst.exports;
+    const enc  = Buffer.from(payload.data.stream_urls, 'base64');
+    const ptr  = ex.alloc(enc.length);
+    new Uint8Array(ex.memory.buffer, ptr, enc.length).set(enc);
+    const outLen = ex.decrypt(ptr, enc.length);
+    const txt = Buffer.from(new Uint8Array(ex.memory.buffer, ptr + 12, outLen))
+                    .toString('utf8');
+    return txt.split('\n').filter(Boolean);
+
+GOTCHA — POLYMORPHIC EXPORTS:
+The WASM's export list CHANGES between 5-minute windows. Observed live:
+
+    window A: memory, meta, info,  alloc, decrypt
+    window B: memory, calc, hash, seed, alloc, decrypt
+
+`meta/info` and `calc/hash/seed` are decoys that shift to defeat signature
+matching. Only `memory`, `alloc`, `decrypt` are stable — and those are the only
+three the code touches. If you ever extend this, do NOT depend on the others.
+
+CACHING: the module is keyed by `vs.w` (the 5-minute window id), so it's
+downloaded and compiled once per window rather than per request. Max 4 retained.
+
+
+--------------------------------------------------------------------------------
+5. THE SECOND WALL: THE URLS 401
+--------------------------------------------------------------------------------
+Decryption yields URLs like:
+
+    https://obeliskoverture.space/pl/H4sIAAAAAAAAA.../master.m3u8
+
+Requesting one directly:
+
+    HTTP 401
+
+Note what's MISSING versus what Puppeteer used to capture — Puppeteer's URL had
+a `?token=eyJ...` on the end. So the token is added client-side. Go read the
+player:
+
+    curl -s "https://cloudorchestranova.com/embed/iframe_player/assets/player.js"
+
+Header comment again gives it away:
+
+    *   2. If gen_token_url is present, generate a token in the browser
+    *      (IP-bound) and apply it to every stream URL (replace __TOKEN__ or
+    *      append ?token=).
+
+And the implementation:
+
+    function loadStream(idx, isRetry) {
+        var raw = state.allStreams[idx];
+        var origin = originOf(raw);                          // https://<host>
+        var tokenReq = fetchToken(origin + '/generate.php');  // <-- HERE
+        tokenReq.then(function (tk) {
+            initHLS(applyToken(raw, tk), isRetry);
+        });
+    }
+
+    function applyToken(url, token) {
+        if (url.indexOf('__TOKEN__') > -1) return url.split('__TOKEN__').join(token);
+        return url + (url.indexOf('?') > -1 ? '&' : '?') + 'token=' + token;
+    }
+
+So: GET https://<stream-host>/generate.php  ->  a JWT.  Append it. Done.
+
+    curl -s "https://obeliskoverture.space/generate.php" -A "$UA" \
+         -H "Referer: https://cloudorchestranova.com/"
+
+    -> eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJteS1hdXRoIiwiaWF0Ijo...
+
+Decoding that JWT payload:
+
+    {"iss":"my-auth","iat":1786904803,"nbf":1786904803,
+     "exp":1786919203,"ip_cidr":"5.34.1.0/24"}
+
+Two things matter here:
+  * exp - iat = 14400 seconds = 4 hours validity
+  * ip_cidr — the token is bound to the requesting IP's /24 block
+
+The IP binding is WHY this must run on the backend: the machine that fetches
+the token must be the machine that fetches the stream. Since our backend also
+proxies the stream, that lines up. (This was equally true of the Puppeteer
+version — the old comment noted it.)
+
+Once you request the master playlist WITH the token, you get real content, and
+the variant/segment URLs inside it already carry the token — so stamping the
+master covers the whole playlist chain:
+
+    #EXTM3U
+    #EXT-X-STREAM-INF:BANDWIDTH=711817,RESOLUTION=640x266,...
+    /pl/H4sIA.../index.m3u8?token=eyJ...
+    #EXT-X-STREAM-INF:BANDWIDTH=2320390,RESOLUTION=1280x534,...
+    /pl/H4sIA.../index.m3u8?token=eyJ...
+    #EXT-X-STREAM-INF:BANDWIDTH=4349130,RESOLUTION=1920x800,...
+    /pl/H4sIA.../index.m3u8?token=eyJ...
+
+
+--------------------------------------------------------------------------------
+6. FINAL PROTOCOL (what the code now does)
+--------------------------------------------------------------------------------
+    1. GET https://data.vidsrcme.ru/api.php?type=movie&tmdb=<id>&stream_urls
+       (or  ?type=tv&tmdb=<id>&season=<s>&episode=<e>&stream_urls)
+
+    2. If status_code == 404 or no `data` -> title isn't in their catalog.
+       AUTHORITATIVE. Fail immediately, do NOT try the browser (see §7).
+
+    3. data.stream_urls:
+         - already an array?  use it
+         - a string?          fetch vs.wasm_url, run alloc/decrypt, split on \n
+
+    4. For each candidate URL, in order:
+         a. origin = protocol + host of the URL
+         b. token  = GET origin + /generate.php   (cached per host, ~4h)
+         c. final  = url with __TOKEN__ replaced, or ?token= appended
+         d. GET final — require HTTP 200 AND body starting with "#EXTM3U"
+         e. first one that passes wins
+
+    5. Return { streamUrl: final, proxyRef: 'https://cloudorchestranova.com/' }
+
+Step 4d matters: without validating, a silently-dead token would be cached as a
+"success" for 3 hours (KINO_CACHE_TTL_MS) and break playback the whole time.
+
+
+--------------------------------------------------------------------------------
+7. FAILURE HANDLING / GOTCHAS LEARNED THE HARD WAY
+--------------------------------------------------------------------------------
+
+7.1 "404 is authoritative" — a real bug I introduced and fixed
+    Test case: tmdb 558144 (Deadpool: No Good Deed, a short film).
+    vidsrcme's API returns {"status_code":404} — it's genuinely not in their
+    catalog. My first version treated that like any other failure and fell back
+    to Puppeteer, which then spent 30-60s launching Chromium to rediscover the
+    same 404. Net effect: missing titles got SLOWER than before (~15-20s spinner).
+
+    Fix: mark that error with `err.kinoNotInCatalog = true` and skip the
+    fallback. The browser path drives a player that calls the same API, so it
+    can never do better. Result: 15-20s hang -> 303ms clean failure, letting the
+    frontend fall through to another server immediately.
+
+    General principle: only retry/fallback when the failure is AMBIGUOUS. If an
+    upstream authoritatively says "no such thing", believe it.
+
+7.2 /generate.php rate-limits HARD — token caching is mandatory, not an optimisation
+    I initially wrote this off as "my testing burned through it". That was wrong,
+    and worth measuring properly. Actual measurement, 6 rapid calls to one host:
+
+        #1 http=200
+        #2 http=429      <- the SECOND call already fails
+        #3..#6 http=429
+
+    Recovery test (same host, after the burst):
+        after +5s:  http=200
+        after +10s: http=200
+        after +20s: http=200
+
+    So the limit is roughly ONE token request per ~5 seconds per host, per IP.
+    Concretely: watching two movies within 5 seconds of each other would 429 the
+    second one if you fetch a token per extraction. That is not an edge case,
+    that's normal browsing.
+
+    Hence tokens are cached per host, keyed off the JWT's own `exp` claim minus
+    a 10min safety margin (~4h in practice). One token then covers every title
+    served by that host, so /generate.php gets called on the order of once per
+    host per 4 hours instead of once per playback.
+
+    Note this ALSO means the limit is per-host, not global — during the same
+    burst, other hosts still answered 200.
+
+    When a 429 does slip through (e.g. a cold cache on a host that was hit
+    seconds ago), the browser fallback picks it up. Observed live: request still
+    succeeded, just at 6.6s instead of 0.8s. The safety net works.
+
+7.3 All "mirror" URLs are often the SAME host — and that interacts badly with 7.2
+    The 3 decrypted URLs for a title frequently share one hostname. So looping
+    over them does NOT give host diversity against a 429 — worse, a naive loop
+    fetches a token per URL, meaning a single 429 becomes three 429s in a row
+    (each one further into the rate limit) before giving up.
+
+    The code therefore groups candidate URLs by origin first, makes at most ONE
+    token attempt per distinct host, reuses it across that host's URLs, and
+    skips a host's remaining URLs entirely if its token fetch failed.
+
+    Measured after this change — 5 different movies back to back, cold caches:
+        293660  759ms   ok
+        533535  941ms   ok
+        155    6625ms   ok  (host was still cooling down -> browser fallback)
+        27205   795ms   ok
+        157336  882ms   ok
+
+7.4 Don't trust one measurement
+    First TV test failed with "Invalid URL" and I nearly shipped a fix for the
+    wrong cause. Root cause was the TV player page using `streamBase` instead of
+    `api`. Because I now derive the API URL from the tmdb id directly, that
+    entire class of difference is bypassed.
+
+
+--------------------------------------------------------------------------------
+8. MEASURED RESULTS
+--------------------------------------------------------------------------------
+    Deadpool 2016 (movie 293660)      6.6s + Chromium  ->  902ms
+    movie 533535                       6.6s + Chromium  ->  897ms
+    Breaking Bad S1E1 (tv 1396)        6.6s + Chromium  ->  852ms
+    86 EIGHTY-SIX S1E1 (tv 100565)     6.6s + Chromium  ->  3189ms (host fallback)
+    Kino health check                  6620ms           ->  1119ms
+    Missing title (558144)             ~15-20s hang     ->  303ms clean fail
+
+Zero browser fallbacks across all successful cases.
+
+
+--------------------------------------------------------------------------------
+9. IF IT BREAKS — HOW TO RE-DERIVE IT
+--------------------------------------------------------------------------------
+Symptom: logs show "[Kino] API path failed ... falling back to browser
+extraction" consistently (rather than occasionally). Playback still works, just
+slowly. That's the fallback doing its job — you have time to fix it properly.
+
+Re-derivation checklist:
+
+  1. Does the API still answer?
+         curl -s "https://data.vidsrcme.ru/api.php?type=movie&tmdb=293660&stream_urls" -A "$UA"
+     If the URL shape changed, re-walk §3: fetch the embed page, find the
+     iframe, fetch the landing page, read `window.CFG`, fetch the player page,
+     read `window.CONFIG`, and see what endpoint it points at now.
+
+  2. Did the decryptor change?
+         curl -s "https://cloudorchestranova.com/embed/iframe_player/assets/vsdec.js"
+     Re-read it. Check the export names it calls and the nonce offset (currently
+     12). If they switched ciphers, the offset may change — the file will say.
+
+  3. Did the token flow change?
+         curl -s "https://cloudorchestranova.com/embed/iframe_player/assets/player.js" \
+           | grep -o '.\{0,120\}token.\{0,150\}'
+     Look for how the final stream URL gets built (currently /generate.php).
+
+  4. Verify a full manual chain end-to-end before touching server.js. Build the
+     throwaway probe script, confirm you get "#EXTM3U", THEN port it.
+
+The three files worth reading whenever anything changes — all of them are
+served unminified and commented:
+    /embed/iframe_player/assets/vsdec.js       (decryption)
+    /embed/iframe_player/assets/player.js      (token + playback flow)
+    the landing/player pages' inline window.CFG / window.CONFIG blocks
+
+
+--------------------------------------------------------------------------------
+10. THE GENERAL LESSON
+--------------------------------------------------------------------------------
+Reaching for a headless browser is a legitimate first move — it gets you working
+code fast, and that's what shipped originally. But it's usually a placeholder,
+not an endpoint. Almost every "you need a browser for this" case is really
+"someone needs to read the JavaScript."
+
+The ordered questions to ask:
+
+    1. Is the data already in the static HTML?          (often yes)
+    2. Does the UI interaction actually do anything,
+       or does it just reveal a value already present?  (often the latter)
+    3. Can I construct the final request directly from
+       what I already know?                             (test this explicitly!)
+    4. At an encryption wall: can I reuse their own
+       decryptor instead of reimplementing it?          (almost always yes)
+
+And regardless of how confident you are: keep the old path as a fallback, and
+make sure you have TESTED that the fallback actually runs. A fallback you've
+never exercised is not a fallback — it's an untested branch that will fail at
+exactly the worst moment. (Ours was verified by forcing a bogus tmdb id and
+confirming Chromium really launched.)
+================================================================================
+
+
+################################################################################
+# ADDENDUM: MEGAPLAY (anime) — 2026-08-16
+# Same methodology as the vidsrcme work above, applied to megaplay.buzz.
+# Much easier target: no encryption, no browser, two plain requests.
+################################################################################
+
+WHAT IT WAS BEFORE
+------------------
+MegaPlay was only ever an IFRAME EMBED. /api/stream/mal/:malId/:episode/:language
+just string-built  https://megaplay.buzz/stream/mal/{malId}/{ep}/{sub|dub}  and
+handed it to the frontend to drop into an <iframe>. That means their player,
+their branding, their ads (app.main.js is almost entirely ad-loading code), no
+download support, no subtitle control, no skip markers.
+
+There was ALSO a broken endpoint: /api/megaplay/extract/:malId/:ep/:type.
+It was a leftover placeholder that literally requested the string
+
+    https://megaplay.buzz/api/v1/source/...        <- ellipsis included
+
+with a comment "Let's assume you found it is...". js/animeDownload.js:42 calls
+this for real, so every MegaPlay download attempt threw and showed the user
+"Download preparation failed". It had presumably never worked.
+
+THE CHAIN (2 requests, no crypto, no browser)
+---------------------------------------------
+  1. GET https://megaplay.buzz/stream/mal/{malId}/{ep}/{sub|dub}
+     *** A Referer header is REQUIRED ***
+     Without one, EVERY id returns their "Error Code: 410 / we can't find the
+     file" page. This is a nasty trap: it looks identical to "this anime isn't
+     on megaplay", so you'd wrongly conclude the whole site was dead. Tested:
+
+         (no referer)              -> <title>Error - MegaPlay</title>
+         https://megaplay.buzz/    -> <title>File 36396 - MegaPlay</title>
+         https://localhost:3000/   -> <title>File 36396 - MegaPlay</title>
+         https://example.com/      -> <title>File 36396 - MegaPlay</title>
+
+     ANY referer works. That's also why the plain iframe embed works fine in a
+     browser — browsers always send one. Only server-side curl/axios trips it.
+
+     Parse out:  data-id="36396"
+
+  2. GET https://megaplay.buzz/stream/getSources?id=36396
+     (Referer + X-Requested-With: XMLHttpRequest)
+
+     Returns plain, UNENCRYPTED JSON:
+
+       {
+         "sources": { "file": "https://cdn.watching.onl/anime/<h1>/<h2>/master.m3u8" },
+         "tracks":  [ { "file": ".../subtitles/eng-2.vtt", "label": "English",
+                        "kind": "captions", "default": true } ],
+         "intro":   { "start": 31,   "end": 111  },
+         "outro":   { "start": 1376, "end": 1447 },
+         "server":  ...
+       }
+
+     Finding the endpoint: newclient.min.js monkeypatches jQuery.ajax and checks
+     `url.indexOf("getSources")`, which reveals the name; the exact path was then
+     found by trying the standard shapes for this player family. First hit:
+         /stream/getSources?id=<data-id>        (the embed-1/v2/e-1/... variants
+                                                 used by sibling players 404 here)
+
+  3. Playback: the master.m3u8 403s without `Referer: https://megaplay.buzz/`,
+     so responses carry proxyRef for the existing proxy pipeline.
+
+WHAT THIS BUYS US OVER THE IFRAME
+---------------------------------
+  * Real stream in OUR player (no megaplay branding/ads/UI)
+  * Downloads actually work now (the broken stub is wired to this)
+  * Subtitle tracks exposed  (Frieren mal 52991 returns NINE language tracks)
+  * *** REAL INTRO/OUTRO SKIP MARKERS ***, per episode, e.g.
+        One Piece ep1     intro 31-111s     outro 1376-1447s
+        One Piece ep1050  intro 0-130s
+    Same {start,end} shape the existing KAA skip-button UI already consumes
+    (see buildKaaPlaybackSegments / kaaSkipButtonSpawnState in js/moviePlayer.js),
+    so wiring megaplay into that UI later should be mostly plumbing.
+
+ENDPOINTS ADDED / FIXED
+-----------------------
+  /api/anime-megaplay-log?malId=&episode=&lang=sub|dub
+      -> { ok, stream, proxyRef, tracks[], intro, outro }
+  /api/megaplay/extract/:malId/:ep/:type
+      -> { sourceUrl, proxyRef }     (unchanged response contract, so
+                                      js/animeDownload.js needed no edits)
+  /api/stream/mal/...  left EXACTLY as-is — the iframe path still works.
+
+Cached in memory for 1h per (malId, episode, lang), with in-flight dedup, same
+pattern as kinoCache.
+
+MEASURED
+--------
+  mal 21   ep1    sub   ~250-400ms   intro 31-111    1 sub track
+  mal 21   ep1    dub   408ms        intro 31-111    1 sub track
+  mal 21   ep1050 sub   245ms        intro 0-130     1 sub track
+  mal 52991 ep1   sub   249ms        intro 0-89      9 sub tracks
+  mal 999999      sub   352ms        clean error: "megaplay has no entry..."
+  repeat (cached)       54ms
+
+
+--------------------------------------------------------------------------------
+MEGAPLAY DOWNLOADS — WHY NO FFMPEG IS NEEDED
+--------------------------------------------------------------------------------
+Question: megaplay has no "download" of its own — do we have to ffmpeg it?
+Answer:   You must fetch all the segments (it IS HLS, there is no single-file
+          MP4 anywhere). But you do NOT need ffmpeg to STITCH them.
+
+WHAT THE SEGMENTS ACTUALLY ARE
+The variant playlist for One Piece ep1 has 321 segments, and they look like this:
+
+    https://03nc1.livedns.my/anime/<h1>/<h2>/seg-1-f1-v1-a1.jpg
+
+Note the extension. Across one playlist the extensions rotate through:
+
+    css  html  ico  jpg  js  png  txt  webp
+
+...and the server backs up the lie in the headers:
+
+    Content-Type: image/jpeg
+
+None of that is true. Dumping the first bytes of a "jpg" segment:
+
+    00000000: 4740 0010 0000 b00d 0001 c100 0000 01ef  G@..............
+
+0x47 is the MPEG-TS sync byte. Verified properly rather than by eyeballing the
+first byte — MPEG-TS is a fixed 188-byte packet format, so the sync byte must
+recur on that exact stride:
+
+    byte0: 0x47 -> MPEG-TS
+    contains ftyp (fMP4)? false
+    0x47 at 188-byte stride: 200/200  -> clean MPEG-TS packets
+
+So it's plain MPEG-TS wearing a .jpg costume (presumably so segment traffic
+looks like ordinary static assets to filters/inspection).
+
+WHY THAT MATTERS
+MPEG-TS is the one common container that can be joined by RAW BYTE
+CONCATENATION. Each packet is self-describing and 188 bytes; there's no global
+header/index to rebuild (unlike MP4's moov atom, or fMP4 which needs its init
+segment). So:
+
+    segment1 bytes + segment2 bytes + ... + segmentN bytes = a valid .ts file
+
+No remux, no ffmpeg, no re-encode. Plays directly in VLC/mpv.
+ffmpeg only becomes necessary if you specifically want a .mp4 CONTAINER, and
+even then it's just `-c copy` (a remux, not a re-encode).
+
+WHY IT MUST BE DONE SERVER-SIDE
+The old js/animeDownload.js did this in the browser:
+
+    const ffmpeg = createFFmpeg({ log: true });
+    await ffmpeg.load();                                  // ~25MB wasm download
+    await ffmpeg.run("-i", m3u8Url, "-c", "copy", "output.mp4");
+
+That could never have worked, for three independent reasons:
+  1. ffmpeg.wasm operates on its own virtual filesystem — it does not fetch
+     remote URLs. You'd have to download every segment yourself and write them
+     into its FS first, which the code never does.
+  2. The CDN 403s the playlist and segments without
+     `Referer: https://megaplay.buzz/`. A browser cannot forge a Referer for a
+     cross-origin request. The server can.
+  3. ~350MB of segments buffered in browser memory, plus the wasm.
+
+New endpoint (no ffmpeg at all):
+
+    GET /api/anime-megaplay-download?malId=&episode=&lang=sub|dub
+
+    master.m3u8 -> pick variant -> fetch each segment with the right Referer
+                -> pipe each straight into the response, sequentially
+    Content-Type: video/mp2t
+    Content-Disposition: attachment; filename="anime_<mal>_ep<N>_<lang>.ts"
+
+Piping (rather than buffering) keeps server memory flat regardless of episode
+length, and `if (res.destroyed) return;` aborts the segment loop if the user
+cancels the download instead of pulling the remaining hundreds of MB.
+
+VERIFIED
+    downloaded: 222.6 MB in one request
+    TS packet alignment across MANY concatenated segments: 3000/3000
+    -> valid continuous MPEG-TS, i.e. the concatenation is genuinely correct
+       and not just "the first segment happened to be fine"
+
+WHERE DOES MEGAPLAY GET ITS CONTENT?
+Traceable delivery chain:
+    megaplay.buzz            embed page  (data-domain: megaplay-1.buzz)
+      -> cdn.watching.onl    master.m3u8 / variant playlists / subtitle .vtt
+      -> 03nc1.livedns.my    the actual segments (numbered host, likely rotating)
+
+Strong hint about who runs it: megaplay's own app.main.js loads its ad/analytics
+from nekostream.site —
+
+    src = `https://nekostream.site/mt/3p.js?h=${cachebuster}`
+    XHR   https://dump.nekostream.site/          (geo lookup for ad targeting)
+
+...and our OWN "Neko" anime server already talks to mapper.nekostream.site.
+So MegaPlay and NekoStream are near-certainly the same operator or share
+infrastructure — meaning srvMega1 and srvNeko1 may be two front doors onto one
+backend. NOT proven here (a guessed mapper route returned "Route not found"),
+just a well-supported inference; worth confirming before treating them as
+independent fallbacks for each other.
+
+Beyond that CDN hop the ultimate provenance isn't visible client-side — the
+files are just objects on a CDN. (Contrast vidsrcme, which leaks it: its API
+returns a `file_name` field like
+"Deadpool (2016) [1080p] [YTS.AG]/Deadpool.2016.1080p.BluRay.x264-[YTS.AG].mp4",
+naming the scene release it was sourced from. MegaPlay's getSources exposes no
+equivalent field — only sources/tracks/t/intro/outro/server.)
+
+
+--------------------------------------------------------------------------------
+ANIKOTO'S SERVER MAP — what's actually behind it (investigated 2026-08-17)
+--------------------------------------------------------------------------------
+Question: anikoto has more servers than just Neko — what are they, especially
+          for DUB?
+
+Walked anikoto's own server list for a real episode:
+    /watch/<slug>/ep-N            -> #watch-main data-id
+    /ajax/episode/list/<id>?vrf=  -> per-episode token (data-ids)
+    /ajax/server/list?servers=<token>
+    /ajax/server?get=<data-link-id>   (needs header X-FP: 0e5bzbvh9uqp)
+
+Result for "Attack on Titan Final Season Part 2" ep1:
+
+  [SUB]   3 servers
+    sv-id=e54  Vidstream-2  -> https://megaplay.buzz/stream/s-2/85848/sub
+    sv-id=323  HD-1         -> https://megaplay.buzz/stream/s-2/85848/sub?s=tcdn
+    sv-id=8e4  VidPlay-1    -> https://vidtube.site/stream/<blob>/sub
+  [HSUB]  1 server
+    sv-id=8e4  VidPlay-1    -> https://vidtube.site/stream/<blob>/hsub
+  [DUB]   3 servers
+    sv-id=e54  Vidstream-2  -> https://megaplay.buzz/stream/s-2/85848/dub
+    sv-id=323  HD-1         -> https://megaplay.buzz/stream/s-2/85848/dub?s=tcdn
+    sv-id=8e4  VidPlay-1    -> https://vidtube.site/stream/<blob>/dub
+
+THE ANSWER: anikoto has exactly TWO backends, not many —
+    megaplay.buzz   (exposed twice: "Vidstream-2" and "HD-1")
+    vidtube.site    (exposed as "VidPlay-1")
+
+And we ALREADY have both:
+    srvMega1  -> megaplay.buzz   (now fully extracted, see the addendum above)
+    srvNeko1  -> vidtube.site    (existing Neko integration, resolveNeko...)
+
+So there is no untapped third source hiding in anikoto. The earlier hunch that
+"neko is secretly anikoto" is roughly right, but the direction is the reverse:
+anikoto is a FRONT-END that aggregates megaplay + vidtube, and our site already
+talks to both of those directly.
+
+DUB availability: full. Every backend lists dub alongside sub. Our megaplay
+extraction already handles it (`lang=dub` -> verified working, returns its own
+intro/outro markers distinct from the sub track's).
+
+Two genuinely new things worth noting:
+  * HSUB ("hard-sub", subtitles burned into the video) exists as a third audio
+    type on vidtube, alongside sub/dub. Our Neko code only ever asks for
+    sub/dub, so this is currently unreachable — could matter for shows where the
+    soft-sub track is missing or broken.
+  * HD-1 is the same megaplay stream with `?s=tcdn` — an ALTERNATE CDN for
+    identical content. That's a cheap real fallback: if cdn.watching.onl is
+    failing or throttling, retry the same episode with ?s=tcdn rather than
+    failing over to an entirely different server.
+
+TRAP (cost me a wrong conclusion): megaplay's TWO id spaces both work, but both
+need a Referer.
+    /stream/mal/{malId}/{ep}/{sub|dub}   <- what our integration uses
+    /stream/s-2/{internalId}/{sub|dub}   <- what anikoto links to
+I first measured mal/16498 as "410 not found" and briefly concluded the MAL
+route had worse catalog coverage than anikoto's route. Wrong: it 410'd purely
+because that probe omitted the Referer. With the header both resolve fine
+(mal/16498/1/dub -> data-id 36078). Always re-test a negative result with the
+full header set before drawing conclusions from it.
+
+
+--------------------------------------------------------------------------------
+CORRECTION + VIDTUBE / NEKOSTREAM MAPPER (2026-08-17)
+--------------------------------------------------------------------------------
+CORRECTION to the server map above: I claimed HD-1's `?s=tcdn` was an "alternate
+CDN". That was inferred from the parameter name and is WRONG. Tested:
+
+    /stream/s-2/85848/sub          -> data-id 26911 -> cdn.watching.onl/...
+    /stream/s-2/85848/sub?s=tcdn   -> data-id 26911 -> cdn.watching.onl/...   (identical)
+
+Same id, same playlist, same CDN. Vidstream-2 and HD-1 are the SAME stream; the
+param appears inert at this level. So anikoto really only has TWO distinct
+backends, and only two real choices - not three.
+
+VIDTUBE.SITE (= our srvNeko1 backend)
+Structurally identical to megaplay - same player family, different CDN:
+
+    GET https://vidtube.site/stream/getSourcesNew?id=<data-id>&type=<sub|dub|hsub>
+    -> { sources:{file:"https://s1.akirax.buzz/<hash>/master.m3u8"},
+         tracks:[{file:"https://vidtub.shiora.top/<hash>/subtitles/English.vtt",...}],
+         intro:{...}, outro:{...} }
+
+Note the SAME data-id serves sub, dub AND hsub - only the `type` param changes.
+
+THE NEKOSTREAM MAPPER — direct sub/dub DOWNLOAD links
+Our Neko code already calls this, but only as a side-path:
+
+    GET https://mapper.nekostream.site/api/mal/{malId}/{episodeNumber}/{timestamp}
+    Header: Origin: https://anikoto.cz
+
+    -> {"Kiwi":{
+          "sub":{"download":{"360p":"https://pahe.nekostream.site/xvnbP",
+                             "720p":"...","1080p":"..."}},
+          "dub":{"download":{"360p":"...","720p":"...","1080p":"..."}}},
+        "status":{"cache_expires_in":"1 hours 44 minutes","serves_from":"cache"}}
+
+Two useful properties found by testing:
+  * `episodeNumber` is literally just the episode number ("1"), not an opaque slug.
+  * The `timestamp` is NOT VALIDATED. Any truthy value works (ts=1 and
+    ts=9999999999 return the same data; only ts=0 fails, and only because it's
+    falsy -> "Missing required parameters"). Our code scrapes data-timestamp off
+    anikoto's episode element to build this, but it doesn't need to - the mapper
+    is callable directly from (malId, episodeNumber) alone, with no anikoto
+    round-trip at all.
+
+WHERE THOSE DOWNLOAD LINKS ACTUALLY GO (and why we can't serve them ourselves)
+
+    mapper -> https://pahe.nekostream.site/<id>       (tiny interstitial page)
+           -> the page's JS is trivial:
+                  url = "https://proud-dew-d754.download992.workers.dev/" + id
+           -> that Cloudflare Worker 302s to:
+                  https://kwik.cx/f/<token>
+
+"Kiwi" is animepahe, and the files live on kwik.cx.
+
+kwik.cx is behind a Cloudflare MANAGED CHALLENGE - not a referer problem:
+
+    referer=https://kwik.cx/               http=403  Attention Required! | Cloudflare
+    referer=https://animepahe.ru/          http=403  Attention Required! | Cloudflare
+    referer=https://pahe.nekostream.site/  http=403  Attention Required! | Cloudflare
+
+So the server cannot fetch these files. Beating that would mean a real browser
+with a genuine TLS fingerprint - i.e. re-introducing the exact Puppeteer
+dependency this whole document is about removing. Not worth it.
+
+BUT THAT DOESN'T KILL THE FEATURE - it relocates it.
+A real user's browser passes the Cloudflare challenge without any trouble. So
+the right design is NOT to proxy the bytes, but to hand the link to the client:
+
+    backend:  (malId, ep) -> mapper -> pick quality + sub/dub -> kwik URL
+    frontend: open that URL in a new tab; the user's own browser does the rest
+
+That gives real MP4 files at a chosen quality (360p/720p/1080p), sub or dub,
+with ZERO ffmpeg, zero stitching and zero server bandwidth - strictly better
+than both the old (broken) ffmpeg.wasm approach and the segment-concatenation
+downloader, for anime that this provider covers.
+
+CURRENT STATE OF ANIME DOWNLOADS - two complementary options:
+  1. /api/anime-megaplay-download  (BUILT, works today)
+     Server concatenates MPEG-TS segments -> .ts file. Always available for
+     anything megaplay has, but costs server bandwidth and yields .ts not .mp4.
+  2. mapper -> kwik link handed to the browser  (NOT BUILT - proposed above)
+     Real .mp4, pick quality, sub or dub, no server cost. Limited to titles the
+     "Kiwi"/animepahe provider actually carries.
