@@ -560,7 +560,12 @@ const BCRYPT_SALT_ROUNDS = 10;
 const GOOGLE_TRANSLATE_API_KEY = process.env.GOOGLE_TRANSLATE_API_KEY || '';
 const LIBRETRANSLATE_URL = process.env.LIBRETRANSLATE_URL || '';
 const LIBRETRANSLATE_API_KEY = process.env.LIBRETRANSLATE_API_KEY || '';
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+// Was a hardcoded 'dev-secret-change-me' fallback - pentest (2026-08-17, round 3) confirmed
+// it was live on the running server, letting anyone sign their own valid session JWT for any
+// userUID/userEmail (no password needed) and hijack the account via POST /users below. Same
+// generate-once-and-persist pattern as proxy_token.key/middleware_secret.key/session_secret.key
+// now - setting this env var still overrides it, but there's no insecure default to fall back to.
+const JWT_SECRET = process.env.JWT_SECRET || require('./secretStore').loadOrCreateSecret('jwt_secret.key');
 const JWT_EXPIRES_IN = '7d';
 const LOGIN_CODE_TTL_SECONDS = 60 * 60 * 24 * 3650; // 10 years
 const TMDB_API_KEY = 'f4705f0e34fafba5ccef5cc38a703fc5';
@@ -4802,7 +4807,8 @@ app.post('/users', requireAuth, async (req, res) => {
             userLanguage,
             searchCount,
             viewCount,
-            allUIDs
+            allUIDs,
+            currentPassword
         } = req.body || {};
 
         const uidNum = parseInt(req.user.userUID, 10);
@@ -4812,12 +4818,29 @@ app.post('/users', requireAuth, async (req, res) => {
             return res.status(403).json({ error: 'Cannot update another user' });
         }
 
-        usersDb.get('SELECT * FROM users WHERE userUID = ?', [uidNum], (err, existing) => {
+        usersDb.get('SELECT * FROM users WHERE userUID = ?', [uidNum], async (err, existing) => {
             if (err) {
                 console.error('Error saving user:', err.message);
                 return res.status(500).json({ error: 'Could not save user' });
             }
             if (!existing) return res.status(404).json({ error: 'User not found' });
+
+            // Email is the login key - silently letting it change here is a full account
+            // takeover primitive (attacker with any valid session for this account, forged
+            // or stolen, locks the real owner out permanently). Pentest (2026-08-17, round 3)
+            // demonstrated exactly this. Every other field here (username/tier/language/
+            // counts) is cosmetic/non-sensitive and stays self-service, same as before.
+            const normalizedNewEmail = userEmail ? String(userEmail).trim().toLowerCase() : '';
+            const normalizedExistingEmail = String(existing.userEmail || '').trim().toLowerCase();
+            if (normalizedNewEmail && normalizedNewEmail !== normalizedExistingEmail) {
+                if (!currentPassword) {
+                    return res.status(400).json({ error: 'Current password required to change email' });
+                }
+                const passwordMatch = await bcrypt.compare(currentPassword, existing.userPassword);
+                if (!passwordMatch) {
+                    return res.status(401).json({ error: 'Current password is incorrect' });
+                }
+            }
 
             const userRecord = {
                 username: username || existing.username,

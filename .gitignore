@@ -12,3 +12,8 @@ Backend/middleware_secret.key
 # HMAC key that signs the aniko_sid session cookie - leaking this lets a client forge a
 # "valid" session id of its choosing. Auto-generated on first run.
 Backend/session_secret.key
+
+# Signs/verifies every login session JWT. Used to run on a hardcoded 'dev-secret-change-me'
+# fallback (pentest, 2026-08-17 round 3, confirmed live) - leaking this key lets anyone forge
+# a valid session for any userUID/userEmail with no password. Auto-generated on first run.
+Backend/jwt_secret.key
