@@ -1348,18 +1348,43 @@ const SESSION_COOKIE_NAME = 'aniko_sid';
 // would force a brand new session (and silently invalidate every token minted under the old
 // one) partway through a long viewing session, breaking playback for no security benefit.
 const SESSION_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// Pentest (2026-08-17, round 2) pointed out the old check only verified the cookie was
+// 64 hex chars - any client-supplied value matching that shape was silently adopted as a
+// "real" session id, with no proof the server ever issued it. There's no server-side session
+// store here (stateless by design), so instead of adding one, the cookie signs itself: value
+// is `${sid}.${hmac}`, where hmac = HMAC-SHA256(SESSION_SECRET, sid) - a client can still pick
+// any sid it wants, but can't produce a signature that validates without SESSION_SECRET, which
+// never leaves the server. Same pattern as MIDDLEWARE_SECRET/proxy_token.key (see secretStore.js).
+const SESSION_SECRET = require('./secretStore').loadOrCreateSecret('session_secret.key');
+function signSessionId(sid) {
+    return crypto.createHmac('sha256', SESSION_SECRET).update(sid).digest('hex');
+}
+function issueSessionCookie(res, sid) {
+    res.cookie(SESSION_COOKIE_NAME, `${sid}.${signSessionId(sid)}`, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        maxAge: SESSION_COOKIE_MAX_AGE_MS
+    });
+}
 
 app.use((req, res, next) => {
     const cookies = parseCookies(req);
-    let sid = cookies[SESSION_COOKIE_NAME];
-    if (!sid || !/^[a-f0-9]{64}$/.test(sid)) {
+    const raw = cookies[SESSION_COOKIE_NAME] || '';
+    const dot = raw.lastIndexOf('.');
+    const sidCandidate = dot === -1 ? '' : raw.slice(0, dot);
+    const sigCandidate = dot === -1 ? '' : raw.slice(dot + 1);
+    const validShape = /^[a-f0-9]{64}$/.test(sidCandidate) && /^[a-f0-9]{64}$/.test(sigCandidate);
+    const validSig = validShape && crypto.timingSafeEqual(
+        Buffer.from(sigCandidate, 'hex'),
+        Buffer.from(signSessionId(sidCandidate), 'hex')
+    );
+    let sid;
+    if (validSig) {
+        sid = sidCandidate;
+    } else {
         sid = crypto.randomBytes(32).toString('hex');
-        res.cookie(SESSION_COOKIE_NAME, sid, {
-            httpOnly: true,
-            secure: true,
-            sameSite: 'lax',
-            maxAge: SESSION_COOKIE_MAX_AGE_MS
-        });
+        issueSessionCookie(res, sid);
     }
     req.sessionId = sid;
     next();

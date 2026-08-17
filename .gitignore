@@ -8,3 +8,7 @@ Backend/proxy_token.key
 # Shared secret between middleware.js and server.js - replaces the old hardcoded default.
 # Auto-generated on first run by either process.
 Backend/middleware_secret.key
+
+# HMAC key that signs the aniko_sid session cookie - leaking this lets a client forge a
+# "valid" session id of its choosing. Auto-generated on first run.
+Backend/session_secret.key
