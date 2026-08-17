@@ -79,7 +79,15 @@ const authLimiter = rateLimit({
 });
 
 // ── Static files ──────────────────────────────────────────────────────────────
-// Serve everything in the project root (html/, css/, js/, img/, etc.)
+// Serve ONLY the actual frontend asset directories - never the project root itself.
+// Pentest (2026-08-17) found the previous `express.static(path.join(__dirname, '..'))`
+// mount served the ENTIRE repo root, including Backend/ (server.js, users.db,
+// proxy_token.key, middleware_secret.key - the literal keys the whole token/session
+// security scheme depends on) and cert/ (the HTTPS private key bundle) over plain
+// GET requests. Every directory below is deliberately explicit and allowlisted -
+// adding a new top-level asset folder means adding a line here, not widening the
+// mount back out to the whole tree.
+//
 // no-cache (not no-store) forces the browser to revalidate via ETag/
 // Last-Modified on every load instead of guessing its own freshness window
 // (the default with no Cache-Control header at all) -- unmodified files still
@@ -87,11 +95,20 @@ const authLimiter = rateLimit({
 // silently serve a stale cached copy. Without this, a background tab getting
 // reloaded by the browser (memory-saver tab discarding, etc.) could load
 // against whatever the browser last decided was "still fresh enough".
-app.use(express.static(path.join(__dirname, '..'), {
-    setHeaders: (res) => {
+const staticHeaders = { setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') };
+const PROJECT_ROOT = path.join(__dirname, '..');
+['html', 'css', 'js', 'img', 'svg'].forEach(dir => {
+    app.use(`/${dir}`, express.static(path.join(PROJECT_ROOT, dir), staticHeaders));
+});
+// A handful of top-level files (favicon, manifest, etc.) are requested from "/" directly -
+// serve those individually rather than remounting the whole root.
+['favicon.ico', 'manifest.json'].forEach(file => {
+    const filePath = path.join(PROJECT_ROOT, file);
+    app.get(`/${file}`, (req, res) => {
         res.setHeader('Cache-Control', 'no-cache');
-    }
-}));
+        res.sendFile(filePath, err => { if (err) res.status(404).end(); });
+    });
+});
 app.use(
     "/node_modules",
     express.static(path.join(__dirname, "node_modules"))
