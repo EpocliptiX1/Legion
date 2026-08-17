@@ -29,7 +29,15 @@ const rateLimit = require('express-rate-limit');
 const MIDDLEWARE_PORT  = parseInt(process.env.MIDDLEWARE_PORT  || '3000', 10);
 const BACKEND_HOST     = process.env.BACKEND_HOST              || 'localhost';
 const BACKEND_PORT     = parseInt(process.env.BACKEND_PORT     || '4000', 10);
-const MIDDLEWARE_SECRET = process.env.MIDDLEWARE_SECRET        || 'ls_internal_4f8b2e9d';
+// Was a hardcoded default shared with server.js's own copy - see server.js for why that's a
+// problem on a public repo. Both processes now independently load/generate the same persisted
+// secretStore.js file, so they still agree without hardcoding a public value.
+const MIDDLEWARE_SECRET = process.env.MIDDLEWARE_SECRET || require('./secretStore').loadOrCreateSecret('middleware_secret.key');
+// Comma-separated list of origins allowed to call /api/* - anything else (curl, a script,
+// another site's fetch) gets rejected before it ever reaches the backend. Set this to your
+// real domain(s) when deployed, e.g. "https://mysite.com,https://www.mysite.com".
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || `https://localhost:${MIDDLEWARE_PORT},http://localhost:${MIDDLEWARE_PORT}`)
+    .split(',').map(o => o.trim()).filter(Boolean);
 
 const app = express();
 
@@ -88,7 +96,40 @@ app.use(
     "/node_modules",
     express.static(path.join(__dirname, "node_modules"))
 );
+// Reject /api/* calls that didn't come from a page load on our own site - blocks the
+// straightforward case (curl/a script hitting the API directly, no browser involved,
+// no Origin/Referer set) without touching real browser traffic. Trivially spoofable by
+// anyone who bothers to set the header, but that's a much higher bar than what it took to
+// scrape anikoto/KAA in the first place, and costs real users nothing.
+//
+// Origins are validated against the Host header of the incoming request itself, not a
+// hardcoded list - the site gets hit at whatever address the client actually used
+// (localhost for local dev, a LAN IP for the Electron app/other devices on the same WiFi,
+// the real domain once deployed), and all of those need to keep working without editing
+// this file every time. ALLOWED_ORIGINS is only for extra origins beyond that (e.g. a
+// separately-hosted frontend), not required for the normal case.
+function requireSameOrigin(req, res, next) {
+    if (skipLocalhost(req)) return next();
+
+    const host = req.headers['host'];
+    const validOrigins = host ? [`https://${host}`, `http://${host}`, ...ALLOWED_ORIGINS] : ALLOWED_ORIGINS;
+
+    const origin = req.headers['origin'];
+    if (origin) {
+        if (validOrigins.includes(origin)) return next();
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const referer = req.headers['referer'] || req.headers['referrer'];
+    if (referer && validOrigins.some(o => referer.startsWith(o + '/') || referer === o)) {
+        return next();
+    }
+
+    return res.status(403).json({ error: 'Forbidden' });
+}
+
 // Apply limits before proxying to backend.
+app.use('/api', requireSameOrigin);
 app.use('/api', apiLimiter);
 app.use(['/api/megacloud', '/api/anime-embed', '/api/anime-allanime', '/api/anime-animetsu', '/api/anime-kite-servers', '/api/yt-search', '/api/jikan', '/api/anime-mal-id'], heavyApiLimiter);
 app.use(['/users/register', '/users/auth', '/users/change-password'], authLimiter);

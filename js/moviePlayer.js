@@ -23,6 +23,15 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // Bumped once per updateSource() call, before any async loader starts. Switching servers
+    // rapidly (e.g. KAA still resolving -> click Neko -> click HSUB) used to leave multiple
+    // load*() calls in flight at once, and whichever one's async chain happened to finish LAST
+    // won the player/UI state regardless of which the user actually clicked last - confirmed
+    // live: KAA finishing after a Neko/HSUB click silently replaced it back. Each loader reads
+    // its own token at the top (synchronously, before its first await) and checks it again
+    // immediately before committing anything to the DOM/player state; a stale token means a
+    // newer request has since superseded it, so it bails out quietly instead of overwriting.
+    let playbackRequestGen = 0;
     let watchHistoryCache = null;
     let watchHistoryMap = {};
     let kaaContinueState = null;
@@ -749,20 +758,6 @@ document.addEventListener('DOMContentLoaded', function() {
             window.downloadKinoEpisode?.();
         }
 
-        if (target.id === 'btnDownloadRuAnime') {
-            event.preventDefault();
-            if (window.currentServer !== 'srvNew1') {
-                if (typeof window.showLimitToast === 'function') {
-                    window.showLimitToast('Please switch to the RU - MV server and wait for it to load before downloading.');
-                }
-                return;
-            }
-            // Reuses the exact same KAA muxing/subtitle-burn pipeline unchanged --
-            // it only ever reads window.currentVideo/currentAudioType, both of which
-            // the RU - MV source populates the same way KAA does (aniboom's HLS also
-            // splits audio into its own #EXT-X-MEDIA track, same shape KAA produces).
-            downloadKAAEpisode();
-        }
     });
 
     // Background preload for Kino (movies only) -- same "fire it off early so
@@ -890,7 +885,7 @@ document.addEventListener('DOMContentLoaded', function() {
             fetch(kaaUrl).then(res => res.json()).then(data => {
                 if (data?.sources?.length > 0) {
                     window.__preloadedKaaSources = data;
-                    window.__preloadedKaaEpisode = { season, ep: episode };
+                    window.__preloadedKaaEpisode = { season, ep: episode, audioType };
                     console.log('[Preload] ✓ KAA sources cached for S' + season + 'E' + episode, { sourceCount: data.sources.length });
                 } else {
                     console.log('[Preload] ✗ KAA returned no sources:', data);
@@ -1069,13 +1064,13 @@ document.addEventListener('DOMContentLoaded', function() {
                                             </div>
                                             <div class="player-block-downloads">
                                                 <div id="animeDownloadWrap" style="display:none;margin-top:auto;padding-top:10px;">
-                                                    <div class="downloadTextNextoBtn" style="font-size:0.85rem;color:#ffb366;margin-bottom:6px;">Anime Downloads</div>
-                                                    <div class="downloadButtonMovieInfoParent" >
-                                                        <button id="btnDownloadSub" class="audio-btn" style="margin:0;padding:6px 12px;">Download SUB (Internal KickAA)</button>
-                                                        <button id="btnDownloadDub" class="audio-btn" style="margin:0;padding:6px 12px;">Download DUB (Internal KickAA)</button>
-                                                        <button id="btnDownloadSub2" class="audio-btn" style="margin:0;padding:6px 12px;">Download SUB (External Neko)</button>
-                                                        <button id="btnDownloadDub2" class="audio-btn" style="margin:0;padding:6px 12px;">Download DUB (External Neko)</button>
-                                                        <button id="btnDownloadRuAnime" class="audio-btn" style="margin:0;padding:6px 12px;">Download (RU - MV)</button>
+                                                    <div class="downloadButtonMovieInfoParent">
+                                                        <button id="btnDownloadAnime" class="audio-btn" style="margin:0;padding:6px 12px;display:inline-flex;align-items:center;gap:6px;">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:15px;height:15px;">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                                            </svg>
+                                                            Download Anime
+                                                        </button>
                                                     </div>
                                                 </div>
                                                 <div id="movieDownloadWrap" style="display:none;margin-top:auto;padding-top:10px;">
@@ -1143,6 +1138,59 @@ document.addEventListener('DOMContentLoaded', function() {
                             <button id="btnSub" class="audio-btn active">SUB</button>
                             <button id="btnHsub" class="audio-btn" title="Hard-subbed: subtitles burned into the video. NekoStream only, and only for some titles.">HSUB</button>
                             <button id="btnDub" class="audio-btn">DUB</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="animeDownloadPanel" class="anime-download-panel">
+                    <div class="anime-download-panel__header">
+                        <span class="anime-download-panel__title">Download Anime</span>
+                        <button id="btnCloseDownloadPanel" class="anime-download-panel__close">✕</button>
+                    </div>
+                    <div class="anime-download-panel__body">
+                        <div class="anime-download-panel__row">
+                            <div>
+                                <div class="anime-download-panel__label">Servers for downloads</div>
+                                <div class="server-group anime-download-panel__group" id="dlSourceRow">
+                                    <button class="audio-btn active" data-dl-source="kaa">KAA</button>
+                                    <button class="audio-btn" data-dl-source="megaplay">MegaPlay</button>
+                                    <button class="audio-btn" data-dl-source="neko">NekoStream</button>
+                                    <button class="audio-btn" data-dl-source="rumv">RU-MV</button>
+                                    <button class="audio-btn" data-dl-source="external">Kiwi (third party, ads)</button>
+                                </div>
+                            </div>
+                            <div id="dlLanguageWrap">
+                                <div class="anime-download-panel__label">Type</div>
+                                <div class="server-group anime-download-panel__group" id="dlLanguageRow">
+                                    <button class="audio-btn active" data-dl-lang="sub">SUB</button>
+                                    <button class="audio-btn" data-dl-lang="dub">DUB</button>
+                                    <button class="audio-btn anime-download-panel__hsub" data-dl-lang="hsub" id="dlHsubOption" title="Subtitles burned into the video by the source itself - NekoStream only, and only for some titles.">HSUB</button>
+                                </div>
+                            </div>
+                            <div id="dlQualityWrap">
+                                <div class="anime-download-panel__label">Quality</div>
+                                <div class="server-group anime-download-panel__group" id="dlQualityRow">
+                                    <button class="audio-btn active" data-dl-quality="1080p">1080p</button>
+                                    <button class="audio-btn" data-dl-quality="720p">720p</button>
+                                    <button class="audio-btn" data-dl-quality="360p">360p</button>
+                                </div>
+                            </div>
+                            <div id="dlBurnWrap" class="anime-download-panel__burn">
+                                <div class="anime-download-panel__label">Subtitles (burn into mp4)</div>
+                                <label class="download-subs-choice anime-download-panel__burn-label">
+                                    <input type="checkbox" id="dlBurnCheckbox" />
+                                    Burn subtitles
+                                </label>
+                                <select id="dlSubsPicker" class="download-subs-picker" disabled>
+                                    <option value="">Skip</option>
+                                </select>
+                            </div>
+                            <div class="anime-download-panel__go">
+                                <button id="btnDownloadGo" class="audio-btn active anime-download-panel__go-btn">Download</button>
+                                <span id="dlStatusText" class="anime-download-panel__status"></span>
+                            </div>
+                        </div>
+                        <div id="dlBurnHint" class="anime-download-panel__hint">
+                            KAA / MegaPlay / NekoStream / RU-MV will switch the active server if needed before downloading. Kiwi links open a third-party download page in a new tab.
                         </div>
                     </div>
                 </div>
@@ -1222,7 +1270,9 @@ document.addEventListener('DOMContentLoaded', function() {
         // Attack on Titan/Frieren/Naruto have it while Demon Slayer/Solo Leveling don't.
         // So the button only makes sense on that server; updateSource re-runs this.
         const syncHsubVisibility = () => {
-            if (btnHsubEl) btnHsubEl.style.display = (currentServer === 'srvNeko1') ? 'inline-block' : 'none';
+            // Always visible now (not gated to NekoStream) - clicking it switches server to
+            // Neko automatically, so there's no need to hide it elsewhere first.
+            if (btnHsubEl) btnHsubEl.style.display = 'inline-block';
         };
         window.__syncHsubVisibility = syncHsubVisibility;
         syncHsubVisibility();
@@ -1734,6 +1784,7 @@ document.addEventListener('DOMContentLoaded', function() {
             episode,
             audioType
         ) {
+            const myGen = playbackRequestGen;
             window.currentAudioType = audioType;
             const infoDiv = document.getElementById('serverInfoText');
             if (!malId) return false;
@@ -1757,7 +1808,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 let data;
                 const preloadedEp = window.__preloadedKaaEpisode;
-                if (window.__preloadedKaaSources && preloadedEp && parseInt(selectedSeason) === parseInt(preloadedEp.season || 1) && parseInt(episode) === parseInt(preloadedEp.ep || 1)) {
+                // Season/episode alone isn't enough - the preload fetches whatever audio
+                // localStorage's preferredAudio said at page-load time, then can sit unconsumed
+                // if the real initial load already fetched its own copy before the preload
+                // resolved. Without checking audioType too, the FIRST sub<->dub toggle click
+                // after that would silently reuse that stale, wrong-audio preload instead of
+                // fetching what was actually just picked.
+                if (window.__preloadedKaaSources && preloadedEp && parseInt(selectedSeason) === parseInt(preloadedEp.season || 1) && parseInt(episode) === parseInt(preloadedEp.ep || 1) && preloadedEp.audioType === audioType) {
                     console.log('[KAA] Using preloaded sources for S' + selectedSeason + 'E' + episode);
                     data = window.__preloadedKaaSources;
                     window.__preloadedKaaSources = null;
@@ -1795,6 +1852,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     skipSegments: currentKaaSkipSegments
                 };
                 if (!streamUrl) {
+                    // A newer updateSource() call has already started (user switched servers
+                    // again while this one was still resolving) - stop here, before any of the
+                    // fallback branches below touch the DOM, rather than racing whatever that
+                    // newer call is doing.
+                    if (myGen !== playbackRequestGen) return false;
                     // KAA has nothing for this episode. Prefer Neko if the parallel preload
                     // above already resolved it (KAA and Neko are ours — real HLS we control).
                     // Only fall to Megaplay, an external embed, if Neko isn't ready either.
@@ -1838,10 +1900,14 @@ document.addEventListener('DOMContentLoaded', function() {
                             renderKaaSkipSegments();
                             updateKaaSkipOverlay();
 
-                            const subs = (ex.tracks || [])
-                                .filter(t => t && t.file && (t.kind === 'captions' || t.kind === 'subtitles' || !t.kind))
-                                .map(t => ({ file: t.file, label: t.label || 'Subtitles', default: !!t.default }));
-                            const proxied = `/api/m3u8-proxy?url=${encodeURIComponent(ex.stream)}&ref=${encodeURIComponent(ex.proxyRef || '')}`;
+                            // /api/anime-megaplay-log now hands back tracks pre-tokenized in
+                            // showVideoPlayer's expected {url, lang, default} shape (see
+                            // tokenizeMegaplayTracks server-side) - no raw .file/build-the-proxy-
+                            // url-ourselves step needed here anymore.
+                            const subs = ex.tracks || [];
+                            // /api/anime-megaplay-log now hands back an already-tokenized
+                            // /api/m3u8-proxy link - no raw CDN URL to wrap here anymore.
+                            const proxied = ex.stream;
                             const okNative = showVideoPlayer(proxied, subs, {
                                 provider: 'megaplay',
                                 title: document.getElementById('title')?.textContent.trim() || 'Unknown Anime',
@@ -1851,6 +1917,20 @@ document.addEventListener('DOMContentLoaded', function() {
                             });
                             if (okNative !== false) {
                                 if (infoDiv) infoDiv.textContent = `Megaplay: Streaming.${marks.length ? ' · skip markers' : ''}`;
+                                const episodeKey = buildEpisodeKey(selectedSeason, episode);
+                                const videoEl = document.getElementById('moviePlayerVideo');
+                                if (videoEl) {
+                                    const resumeSeconds = getWatchHistoryResumeSeconds(episodeKey);
+                                    if (Number.isFinite(resumeSeconds) && resumeSeconds > 5) {
+                                        showKaaResumeOverlay(episodeKey, resumeSeconds, () => applyResumeToVideo(videoEl, resumeSeconds), () => {});
+                                    }
+                                    const activityUID = typeof window.getActivityUID === 'function' ? window.getActivityUID() : null;
+                                    startKaaContinueWatching(videoEl, {
+                                        episodeKey,
+                                        userUID: activityUID,
+                                        movieId: tmdbId
+                                    });
+                                }
                                 return true;
                             }
                         }
@@ -1879,6 +1959,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     return false;
                 }
 
+                // Same staleness check for KAA's own (non-fallback) success path.
+                if (myGen !== playbackRequestGen) return false;
                 const episodeKey = buildEpisodeKey(selectedSeason, episode);
                 const ok = showVideoPlayer(
                     streamUrl,
@@ -1925,33 +2007,62 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
-        async function fetchKaaSubtitlesForEpisode(episode, audioType, season) {
+        // MegaPlay's own subtitle extraction - same shape/proxy pattern as the inline version
+        // in loadMegaPlayFrame, factored out so fetchKaaSubtitlesForEpisode's fallback tier
+        // below can reuse it instead of duplicating the tracks->subs mapping.
+        async function fetchMegaplaySubtitlesForEpisode(episode, season) {
             try {
-                // Anikoto/Neko doesn't provide its own caption tracks -- borrow KAA's (always
-                // requested as its 'sub' flow below, since that's where KAA's captions live)
-                // regardless of which audio Neko itself is playing, sub or dub.
-                const seasonSelectEl = document.getElementById('seasonSelect');
-                const selectedSeason = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || season || 1;
-                const title = document.getElementById('title')?.textContent.trim() || '';
-                const query = new URLSearchParams({
-                    malId: malId || '',
-                    tmdbId: tmdbId || '',
-                    season: selectedSeason,
-                    ep: episode || 1,
-                    type: 'sub',
-                    title
-                });
-                const res = await fetch(`/api/anime-kaa-servers?${query.toString()}`);
+                const seasonGroups = window.__resolvedSeasonGroups || [];
+                const seasonMatch = seasonGroups.find(g => Number(g.seasonNumber) === Number(season));
+                const megaplayMalId = seasonMatch?.malId || malId;
+                if (!megaplayMalId) return [];
+                const res = await fetch(`/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalId)}&episode=${encodeURIComponent(episode)}&lang=sub`);
                 if (!res.ok) return [];
                 const data = await res.json().catch(() => ({}));
-                return Array.isArray(data?.subtitles) ? data.subtitles : [];
+                // Already pre-tokenized in {url, lang, default} shape server-side.
+                return Array.isArray(data?.tracks) ? data.tracks : [];
             } catch (err) {
-                console.warn('[NekoStream] Failed to borrow KAA subtitles:', err);
+                console.warn('[SubtitleBorrow] Failed to borrow MegaPlay subtitles:', err);
                 return [];
             }
         }
 
+        async function fetchKaaSubtitlesForEpisode(episode, audioType, season) {
+            const seasonSelectEl = document.getElementById('seasonSelect');
+            const selectedSeason = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || season || 1;
+            const title = document.getElementById('title')?.textContent.trim() || '';
+            const fetchFor = async (kaaAudio) => {
+                try {
+                    const query = new URLSearchParams({
+                        malId: malId || '', tmdbId: tmdbId || '',
+                        season: selectedSeason, ep: episode || 1, type: kaaAudio, title
+                    });
+                    const res = await fetch(`/api/anime-kaa-servers?${query.toString()}`);
+                    if (!res.ok) return [];
+                    const data = await res.json().catch(() => ({}));
+                    return Array.isArray(data?.subtitles) ? data.subtitles : [];
+                } catch (err) {
+                    console.warn('[NekoStream] Failed to borrow KAA subtitles:', err);
+                    return [];
+                }
+            };
+            // Anikoto/Neko/RU-MV/MegaPlay don't provide their own caption tracks -- borrow
+            // KAA's. Always tries the 'sub' entry first (that's where KAA's captions usually
+            // live) regardless of which audio the caller itself is playing, sub or dub - but
+            // KAA's sub/dub searches can land on genuinely different catalog entries with
+            // different subtitle coverage, so if 'sub' comes back empty, try 'dub' too before
+            // giving up entirely. If KAA has nothing at all (neither sub nor dub), MegaPlay is
+            // the other real subtitle source (not just another KAA-borrower like Neko/RU-MV
+            // are) - try its own extraction as a last resort before giving up.
+            const subResult = await fetchFor('sub');
+            if (subResult.length) return subResult;
+            const dubResult = await fetchFor('dub');
+            if (dubResult.length) return dubResult;
+            return fetchMegaplaySubtitlesForEpisode(episode, selectedSeason);
+        }
+
         async function loadMegaPlayFrame(episode, audioType) {
+            const myGen = playbackRequestGen;
             const infoDiv = document.getElementById('serverInfoText');
             const frame = document.getElementById('moviePlayerFrame');
             if (!frame) return false;
@@ -1967,6 +2078,14 @@ document.addEventListener('DOMContentLoaded', function() {
             const seasonGroups = window.__resolvedSeasonGroups || [];
             const seasonMatch = seasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
             const megaplayMalId = seasonMatch?.malId || malId;
+            // Was previously never wired up at all - MegaPlay never saved or resumed progress,
+            // same pattern KAA/Neko/RU-MV use. Stop any tracking left running from whichever
+            // server was active before this one, same as loadNekoStreamVideo does on entry.
+            stopKaaContinueWatching();
+            if (!watchHistoryCache && typeof window.getActivityUID === 'function') {
+                const activityUID = window.getActivityUID();
+                await fetchWatchHistory(activityUID, tmdbId).then(setWatchHistoryCache);
+            }
             try {
                 const res = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(episode)}/${encodeURIComponent(audioType)}`);
                 if (!res.ok) {
@@ -1994,11 +2113,21 @@ document.addEventListener('DOMContentLoaded', function() {
                         renderKaaSkipSegments();
                         updateKaaSkipOverlay();
 
-                        const subs = (ex.tracks || [])
-                            .filter(t => t && t.file && (t.kind === 'captions' || t.kind === 'subtitles' || !t.kind))
-                            .map(t => ({ file: t.file, label: t.label || 'Subtitles', default: !!t.default }));
+                        // Already pre-tokenized in {url, lang, default} shape server-side.
+                        let subs = ex.tracks || [];
+                        // Not every title's MegaPlay stream carries its own caption tracks -
+                        // same borrow-KAA's-subs fallback loadNekoStreamVideo/loadNewStreamVideo
+                        // already use for the same reason.
+                        if (!subs.length) {
+                            const borrowed = await fetchKaaSubtitlesForEpisode(episode, 'sub', selectedSeason);
+                            if (myGen !== playbackRequestGen) return false;
+                            subs = borrowed;
+                        }
 
-                        const proxied = `/api/m3u8-proxy?url=${encodeURIComponent(ex.stream)}&ref=${encodeURIComponent(ex.proxyRef || '')}`;
+                        if (myGen !== playbackRequestGen) return false;
+                        // /api/anime-megaplay-log now hands back an already-tokenized
+                        // /api/m3u8-proxy link - no raw CDN URL to wrap here anymore.
+                        const proxied = ex.stream;
                         const ok = showVideoPlayer(proxied, subs, {
                             provider: 'megaplay',
                             title: document.getElementById('title')?.textContent.trim() || 'Unknown Anime',
@@ -2008,6 +2137,23 @@ document.addEventListener('DOMContentLoaded', function() {
                         });
                         if (ok !== false) {
                             if (infoDiv) infoDiv.textContent = `MegaPlay: Loaded [${audioType.toUpperCase()}]${marks.length ? ' · skip markers' : ''}`;
+                            // Only the native path has a <video> element we can read currentTime
+                            // from - the iframe fallback below is megaplay's own cross-origin
+                            // player, so there's nothing to track there.
+                            const episodeKey = buildEpisodeKey(selectedSeason, episode);
+                            const videoEl = document.getElementById('moviePlayerVideo');
+                            if (videoEl) {
+                                const resumeSeconds = getWatchHistoryResumeSeconds(episodeKey);
+                                if (Number.isFinite(resumeSeconds) && resumeSeconds > 5) {
+                                    showKaaResumeOverlay(episodeKey, resumeSeconds, () => applyResumeToVideo(videoEl, resumeSeconds), () => {});
+                                }
+                                const activityUID = typeof window.getActivityUID === 'function' ? window.getActivityUID() : null;
+                                startKaaContinueWatching(videoEl, {
+                                    episodeKey,
+                                    userUID: activityUID,
+                                    movieId: tmdbId
+                                });
+                            }
                             return true;
                         }
                     }
@@ -2020,6 +2166,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (infoDiv) infoDiv.textContent = 'MegaPlay: Invalid response from backend.';
                     return false;
                 }
+                if (myGen !== playbackRequestGen) return false;
                 // Iframe fallback - no skip markers/subs available in this mode.
                 currentKaaSkipMarkers = [];
                 currentKaaSkipSegments = [];
@@ -2035,6 +2182,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
         async function loadNekoStreamVideo(episode, audioType, season) {
+            const myGen = playbackRequestGen;
             window.currentAudioType = audioType;
             const infoDiv = document.getElementById('serverInfoText');
 
@@ -2115,12 +2263,27 @@ document.addEventListener('DOMContentLoaded', function() {
                 currentKaaSkipMarkers = Array.isArray(data.skipSegments) ? data.skipSegments : [];
                 currentKaaSkipSegments = buildKaaPlaybackSegments(currentKaaSkipMarkers, 0);
                 window.currentKaaSkipSegments = currentKaaSkipSegments;
-                const borrowedKaaSubtitles = await fetchKaaSubtitlesForEpisode(episode, audioType, season);
+                let borrowedKaaSubtitles = await fetchKaaSubtitlesForEpisode(episode, audioType, season);
+                // /api/anime-neko-log falls back to MegaPlay server-side when anikoto's own
+                // VidTube server doesn't have this audio type - that fallback's own subtitle
+                // tracks (data.tracks) are the last resort if even the KAA/MegaPlay borrow chain
+                // above came back empty.
+                // Already pre-tokenized in {url, lang, default} shape server-side (see
+                // tokenizeMegaplayTracks) - no raw .file field to build a proxy URL from here.
+                if (!borrowedKaaSubtitles.length && Array.isArray(data.tracks) && data.tracks.length) {
+                    borrowedKaaSubtitles = data.tracks;
+                }
                 currentNekoDownloads = {
                     sub2: data?.downloads?.sub2 || null,
                     dub2: data?.downloads?.dub2 || null
                 };
-                const proxiedStreamUrl = `/api/m3u8-proxy?url=${encodeURIComponent(streamUrl)}`;
+                if (myGen !== playbackRequestGen) return false;
+                // /api/anime-neko-log now hands back an already-tokenized /api/m3u8-proxy
+                // link (see buildM3u8ProxyUrl server-side) instead of the raw CDN URL - the
+                // real stream address never reaches the browser at all anymore, and the
+                // correct Referer (vidtube.site, or megaplay.buzz for the MegaPlay fallback)
+                // is baked into that token server-side instead of appended here.
+                const proxiedStreamUrl = streamUrl;
                 const ok = showVideoPlayer(
                     proxiedStreamUrl, // <--- PASS THE PROXIED URL HERE
                     borrowedKaaSubtitles,
@@ -2171,6 +2334,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // translation group -- there's no separate sub/dub to pick, so this ignores
         // currentAudioMode entirely (the SUB/DUB row is hidden for this server in updateSource).
         async function loadNewStreamVideo(episode, season) {
+            const myGen = playbackRequestGen;
             const infoDiv = document.getElementById('serverInfoText');
             if (infoDiv) infoDiv.textContent = 'RU - MV: Loading stream...';
 
@@ -2224,7 +2388,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 // NewStream doesn't carry its own caption tracks either -- same trick as
                 // Neko, borrow KAA's (English) subs for this episode if it has any.
                 const borrowedKaaSubtitles = await fetchKaaSubtitlesForEpisode(episode, 'sub', season);
-                const proxiedStreamUrl = `/api/m3u8-proxy?url=${encodeURIComponent(data.stream)}&ref=${encodeURIComponent(data.proxyRef || '')}`;
+                if (myGen !== playbackRequestGen) return false;
+                // /api/anime-new-log now hands back an already-tokenized /api/m3u8-proxy link
+                // (see buildM3u8ProxyUrl server-side) - no raw CDN URL to wrap here anymore.
+                const proxiedStreamUrl = data.stream;
                 const ok = showVideoPlayer(
                     proxiedStreamUrl,
                     borrowedKaaSubtitles,
@@ -2270,6 +2437,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // RU Movie (kinogo.mu/cinemar.cc) -- movies only, single Russian dub track,
         // same "ignore sub/dub" deal as the anime RU server.
         async function loadRuMovieVideo() {
+            const myGen = playbackRequestGen;
             const infoDiv = document.getElementById('serverInfoText');
             if (isSeries) {
                 if (infoDiv) infoDiv.textContent = 'RU - MV: Not available for TV shows yet.';
@@ -2292,7 +2460,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     return false;
                 }
 
-                const proxiedStreamUrl = `/api/m3u8-proxy?url=${encodeURIComponent(data.stream)}&ref=${encodeURIComponent(data.proxyRef || '')}`;
+                if (myGen !== playbackRequestGen) return false;
+                // /api/movie-ru-log now hands back an already-tokenized /api/m3u8-proxy link -
+                // no raw CDN URL to wrap here.
+                const proxiedStreamUrl = data.stream;
                 const ok = showVideoPlayer(
                     proxiedStreamUrl,
                     [],
@@ -2316,15 +2487,15 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
-        // Kino (vidsrcme.ru -> cloudorchestranova.com) -- movies only, English
-        // HLS extracted server-side via headless-browser automation, so the
-        // first load per title is much slower than the other servers (~15-20s,
-        // cached after that). window.preloadEpisodeSources() kicks this off in
-        // the background shortly after page load (same pattern as KAA/Neko), so
-        // by the time someone actually picks this server it's often already
-        // resolved. No sub/dub toggle, same "ignore audio mode" deal as the RU
-        // sources.
+        // Kino (vidsrcme.ru -> cloudorchestranova.com) -- movies only, English HLS. Extracted
+        // server-side via plain HTTP requests (~0.9s typically - see vidscr.txt), with a
+        // Puppeteer/headless-browser extraction kept as an automatic fallback if that stops
+        // working (~6-7s in that case). window.preloadEpisodeSources() kicks this off in the
+        // background shortly after page load (same pattern as KAA/Neko) regardless, so by the
+        // time someone actually picks this server it's often already resolved. No sub/dub
+        // toggle, same "ignore audio mode" deal as the RU sources.
         async function loadKinoVideo() {
+            const myGen = playbackRequestGen;
             const infoDiv = document.getElementById('serverInfoText');
             if (isSeries) {
                 if (infoDiv) infoDiv.textContent = 'Kino: Use the Kino button in the TV Shows row for series.';
@@ -2348,7 +2519,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     data = preloaded.data;
                     window.__preloadedKinoSource = null;
                 } else {
-                    if (infoDiv) infoDiv.textContent = 'Kino: Resolving stream (first load can take ~15-20s)...';
+                    if (infoDiv) infoDiv.textContent = 'Kino: Resolving stream...';
                     const query = new URLSearchParams({ tmdbId: tmdbId || '' });
                     const res = await fetch(`/api/movie-kino-log?${query.toString()}`);
                     data = await res.json().catch(() => ({}));
@@ -2359,7 +2530,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
 
                 const subtitles = await subtitlesPromise;
-                const proxiedStreamUrl = `/api/m3u8-proxy?url=${encodeURIComponent(data.stream)}&ref=${encodeURIComponent(data.proxyRef || '')}`;
+                if (myGen !== playbackRequestGen) return false;
+                // /api/movie-kino-log now hands back an already-tokenized /api/m3u8-proxy
+                // link (see buildM3u8ProxyUrl server-side) - no raw CDN URL to wrap here.
+                const proxiedStreamUrl = data.stream;
                 const ok = showVideoPlayer(
                     proxiedStreamUrl,
                     subtitles,
@@ -2407,6 +2581,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // after page load, using the continue-from season/episode) warms this
         // the same way KAA/Neko/movie-Kino are warmed.
         async function loadKinoTvVideo(episode, season) {
+            const myGen = playbackRequestGen;
             const infoDiv = document.getElementById('serverInfoText');
             if (!isSeries) {
                 if (infoDiv) infoDiv.textContent = 'Kino: Use the Kino button in the Movies row for movies.';
@@ -2433,7 +2608,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     data = preloaded.data;
                     window.__preloadedKinoTvSource = null;
                 } else {
-                    if (infoDiv) infoDiv.textContent = 'Kino: Resolving stream (first load can take ~15-20s)...';
+                    if (infoDiv) infoDiv.textContent = 'Kino: Resolving stream...';
                     const query = new URLSearchParams({
                         tmdbId: tmdbId || '',
                         season: season || 1,
@@ -2448,7 +2623,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
 
                 const subtitles = await subtitlesPromise;
-                const proxiedStreamUrl = `/api/m3u8-proxy?url=${encodeURIComponent(data.stream)}&ref=${encodeURIComponent(data.proxyRef || '')}`;
+                if (myGen !== playbackRequestGen) return false;
+                // /api/tv-kino-log now hands back an already-tokenized /api/m3u8-proxy link -
+                // no raw CDN URL to wrap here.
+                const proxiedStreamUrl = data.stream;
                 const ok = showVideoPlayer(
                     proxiedStreamUrl,
                     subtitles,
@@ -2537,6 +2715,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // RU TV (kinogo/cinemar series tree) -- same "one Russian track, no sub/dub
         // toggle" deal as the anime and movie RU sources.
         async function loadRuTvVideo(episode, season) {
+            const myGen = playbackRequestGen;
             const infoDiv = document.getElementById('serverInfoText');
             if (!isSeries) {
                 if (infoDiv) infoDiv.textContent = 'RU - MV: Not available for movies.';
@@ -2561,7 +2740,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     return false;
                 }
 
-                const proxiedStreamUrl = `/api/m3u8-proxy?url=${encodeURIComponent(data.stream)}&ref=${encodeURIComponent(data.proxyRef || '')}`;
+                if (myGen !== playbackRequestGen) return false;
+                // /api/tv-ru-log now hands back an already-tokenized /api/m3u8-proxy link -
+                // no raw CDN URL to wrap here.
+                const proxiedStreamUrl = data.stream;
                 const ok = showVideoPlayer(
                     proxiedStreamUrl,
                     [],
@@ -2630,6 +2812,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // 4. Update Source Logic
         function updateSource(server) {
+            playbackRequestGen++;
             currentServer = server;
             window.currentServer = server;
             // hsub exists on NekoStream only - switching to any other server while it's the
@@ -2675,6 +2858,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 window.dispatchEvent(new CustomEvent('anime-episode-changed', {
                     detail: { malId, season: window.__currentAnimeSeason, episode: window.__currentAnimeEpisode, title: animeTitle || document.getElementById('title')?.textContent.trim() || '' }
                 }));
+                // Same SUB/DUB(KAA)/RU-MV/HSUB availability check the download panel uses,
+                // fired here too so it's usually already cached (dlAvailabilityCache, keyed by
+                // malId+season+episode) by the time someone opens that panel, and so the live
+                // SUB/DUB/RU-MV buttons themselves reflect it instead of only ever failing
+                // silently when clicked. dlCheckAvailability is declared further down in this
+                // same scope but only actually runs once updateSource() is invoked (a click
+                // handler or the one-time kickoff call at the bottom of this block), by which
+                // point that declaration has long since executed - not a temporal-dead-zone issue.
+                dlCheckAvailability?.();
             }
 
             // Update Active Highlight on the visual List
@@ -2845,8 +3037,360 @@ document.addEventListener('DOMContentLoaded', function() {
             currentAudioMode = 'hsub';
             window.currentAudioType = currentAudioMode;
             applyAudioButtonState(currentAudioMode);
-            updateSource(currentServer);
+            // hsub only exists on NekoStream - the button is visible on every server now, so
+            // route through Neko regardless of what's currently selected. updateSource's own
+            // guard would otherwise immediately revert this back to 'sub' on any other server.
+            updateSource('srvNeko1');
             startEpisodePanelHeightSyncBurst();
+        });
+
+        // ── Download Anime panel ────────────────────────────────────────────────
+        // One button opens a picker: which server, and sub/dub/hsub. Real subtitle BURNING
+        // (picking a language, or skipping) is NOT built here - it's the existing modal
+        // (ensureDownloadModal/#downloadSubsPicker in downloadEpisode.js) that already pops up
+        // automatically once a download actually starts via downloadKAAEpisode/
+        // downloadKinoEpisode, reading whatever's active in window.currentVideo.subtitles.
+        //
+        // KAA / MegaPlay / NekoStream / RU-MV all go through THAT existing client-side
+        // ffmpeg.wasm pipeline (burn-capable, no server bandwidth) - but it only ever operates
+        // on whatever's CURRENTLY LOADED, so picking a source that isn't already active
+        // switches the player to it first, waits for it to actually load, then downloads.
+        // Which of the two existing download functions to use is NOT the same per source -
+        // verified live by fetching each source's real master.m3u8 rather than assuming:
+        //   KAA and RU-MV  both carry a separate #EXT-X-MEDIA audio track -> downloadKAAEpisode
+        //     (it hard-requires master.audios.length >= 1 and throws "No matching audio
+        //     playlist found" otherwise - confirmed this breaks on the other two)
+        //   MegaPlay and NekoStream both mux audio+video together per variant, same shape as
+        //     Kino -> downloadKinoEpisode (no separate-track assumption at all)
+        // Kiwi (external) has no burn capability - it's a link to a third-party download page.
+        const DL_SOURCE_INFO = {
+            kaa:      { server: 'srvPahe1', provider: 'kickassanime', fn: 'downloadKAAEpisode' },
+            megaplay: { server: 'srvMega1', provider: 'megaplay',     fn: 'downloadKinoEpisode' },
+            neko:     { server: 'srvNeko1', provider: 'nekostream',   fn: 'downloadKinoEpisode' },
+            rumv:     { server: 'srvNew1',  provider: 'newstream',    fn: 'downloadKAAEpisode' }
+        };
+
+        const dlPanel = document.getElementById('animeDownloadPanel');
+        let dlSource = 'kaa', dlLang = 'sub', dlQuality = '1080p';
+
+        // Checking the box with the picker still on "Skip" silently downgrades "burn
+        // subtitles" back into a no-op (burnEnabled requires a real value, not '') -
+        // default to English so checking the box alone actually does something.
+        const dlAutoPickSubsLanguage = () => {
+            const picker = document.getElementById('dlSubsPicker');
+            if (!picker || picker.value !== '') return;
+            const options = Array.from(picker.options).filter(o => o.value !== '');
+            const english = options.find(o => /english|^eng$/i.test(o.textContent.trim()));
+            const pick = english || options[0];
+            if (pick) picker.value = pick.value;
+        };
+
+        // The burn checkbox+picker mirror what ensureDownloadModal()'s own
+        // #downloadIncludeSubs/#downloadSubsPicker do inside the progress dialog - duplicated
+        // here so the choice can be made up-front in the panel instead of after the download
+        // (and, for a source that isn't loaded yet, after switching) has already started.
+        // Only reflects real options once the picked source is actually the one loaded, since
+        // window.currentVideo.subtitles belongs to whatever's currently playing.
+        const dlPopulateSubsPicker = () => {
+            const picker = document.getElementById('dlSubsPicker');
+            const checkbox = document.getElementById('dlBurnCheckbox');
+            if (!picker || !checkbox) return;
+            const info = DL_SOURCE_INFO[dlSource];
+            const isActive = info && window.currentServer === info.server && window.currentVideo?.provider === info.provider;
+            const tracks = isActive && Array.isArray(window.currentVideo?.subtitles)
+                ? window.currentVideo.subtitles.filter(t => t?.url) : [];
+            picker.innerHTML = '';
+            const skipOpt = document.createElement('option');
+            skipOpt.value = '';
+            skipOpt.textContent = tracks.length ? 'Skip' : 'No subtitles available';
+            picker.appendChild(skipOpt);
+            tracks.forEach((track, index) => {
+                const opt = document.createElement('option');
+                opt.value = String(index);
+                opt.textContent = track.lang || track.language || `Subtitle ${index + 1}`;
+                picker.appendChild(opt);
+            });
+            // The checkbox itself stays enabled even with nothing to pick yet (e.g. the panel
+            // just opened and the chosen source hasn't been switched to) - disabling it here
+            // made it unclickable until a source happened to already be active with subtitles,
+            // which for the default/most sources is never true until the actual download runs
+            // its own switch. The picker below is what actually reflects "nothing to burn yet".
+            picker.disabled = !checkbox.checked;
+            // Clearing innerHTML above always resets the select back to its first option
+            // ("Skip") even if the user had already picked a language and checked the box
+            // before switching servers - re-apply the same auto-pick so that choice survives
+            // the repopulate that happens after the panel's own source switch.
+            if (checkbox.checked) dlAutoPickSubsLanguage();
+        };
+
+        document.getElementById('dlBurnCheckbox')?.addEventListener('change', (e) => {
+            const picker = document.getElementById('dlSubsPicker');
+            if (!picker) return;
+            picker.disabled = !e.target.checked;
+            if (e.target.checked) dlAutoPickSubsLanguage();
+        });
+
+        // Server/type availability for the panel - HSUB (Neko only), SUB/DUB on KAA specifically
+        // (the source that's actually flaky about it - see vidscr.txt), and whether RU-MV has
+        // this title at all. All three reuse the exact same server-side caches real playback
+        // already writes to, so a cold check costs exactly what actually switching to that
+        // source would anyway. Cached again here per (malId, season, episode) so reopening the
+        // panel for the same episode doesn't refire any of these - that's the actual "too many
+        // requests" fix, since the server-side caches alone still cost a round trip each time.
+        const dlAvailabilityCache = new Map();
+        let dlAvailability = { hsub: false, kaaSub: true, kaaDub: true, rumv: true };
+
+        const dlCurrentEpisodeKey = () => {
+            const seasonSelectEl = document.getElementById('seasonSelect');
+            const season = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || 1;
+            const episode = document.getElementById('episodeSelect')?.value
+                || document.getElementById('episodeNum')?.textContent || 1;
+            return { season, episode, key: `${malId || ''}:${season}:${episode}` };
+        };
+
+        const dlApplyAvailability = () => {
+            const hsubOpt = document.getElementById('dlHsubOption');
+            if (hsubOpt) hsubOpt.style.display = dlAvailability.hsub ? 'inline-block' : 'none';
+            if (!dlAvailability.hsub && dlLang === 'hsub') {
+                dlLang = 'sub';
+                document.querySelectorAll('#dlLanguageRow [data-dl-lang]').forEach(b =>
+                    b.classList.toggle('active', b.dataset.dlLang === 'sub'));
+            }
+
+            const rumvBtn = document.querySelector('#dlSourceRow [data-dl-source="rumv"]');
+            if (rumvBtn) rumvBtn.disabled = !dlAvailability.rumv;
+            if (!dlAvailability.rumv && dlSource === 'rumv') {
+                dlSource = 'kaa';
+                document.querySelectorAll('#dlSourceRow [data-dl-source]').forEach(b =>
+                    b.classList.toggle('active', b.dataset.dlSource === 'kaa'));
+            }
+
+            // KAA has neither - disable the server entirely (same treatment as RU-MV above)
+            // rather than leaving SUB "chosen" on a source that can't serve either language.
+            const kaaBtn = document.querySelector('#dlSourceRow [data-dl-source="kaa"]');
+            const kaaHasNothing = !dlAvailability.kaaSub && !dlAvailability.kaaDub;
+            if (kaaBtn) kaaBtn.disabled = kaaHasNothing;
+            if (kaaHasNothing && dlSource === 'kaa') {
+                dlSource = 'megaplay';
+                document.querySelectorAll('#dlSourceRow [data-dl-source]').forEach(b =>
+                    b.classList.toggle('active', b.dataset.dlSource === 'megaplay'));
+            }
+
+            // SUB/DUB availability is only meaningful for whichever source is actually
+            // selected - MegaPlay/NekoStream aren't checked (KAA's the flaky one), so their
+            // buttons just stay enabled regardless of dlAvailability.kaaSub/kaaDub.
+            const kaaSelected = dlSource === 'kaa';
+            const subBtn = document.querySelector('#dlLanguageRow [data-dl-lang="sub"]');
+            const dubBtn = document.querySelector('#dlLanguageRow [data-dl-lang="dub"]');
+            if (subBtn) subBtn.disabled = kaaSelected && !dlAvailability.kaaSub;
+            if (dubBtn) dubBtn.disabled = kaaSelected && !dlAvailability.kaaDub;
+            if (kaaSelected && dlLang === 'sub' && !dlAvailability.kaaSub && dlAvailability.kaaDub) {
+                dlLang = 'dub';
+                document.querySelectorAll('#dlLanguageRow [data-dl-lang]').forEach(b =>
+                    b.classList.toggle('active', b.dataset.dlLang === 'dub'));
+            } else if (kaaSelected && dlLang === 'dub' && !dlAvailability.kaaDub && dlAvailability.kaaSub) {
+                dlLang = 'sub';
+                document.querySelectorAll('#dlLanguageRow [data-dl-lang]').forEach(b =>
+                    b.classList.toggle('active', b.dataset.dlLang === 'sub'));
+            }
+        };
+
+        // Same availability data, applied to the LIVE server/SUB/DUB buttons (not the download
+        // panel) - passive only (disables what won't work, never auto-switches what's already
+        // playing), since loadKickAssAnimeVideo already has its own synchronous KAA-empty
+        // fallback to Neko/MegaPlay and this check resolves well after that's already decided.
+        const dlApplyLiveAvailability = () => {
+            const liveRuMv = document.getElementById('srvNew1');
+            if (liveRuMv) liveRuMv.disabled = !dlAvailability.rumv;
+            const kaaActive = window.currentServer === 'srvPahe1';
+            const liveSub = document.getElementById('btnSub');
+            const liveDub = document.getElementById('btnDub');
+            if (liveSub) liveSub.disabled = kaaActive && !dlAvailability.kaaSub;
+            if (liveDub) liveDub.disabled = kaaActive && !dlAvailability.kaaDub;
+        };
+
+        const dlCheckAvailability = async () => {
+            const { season, episode, key } = dlCurrentEpisodeKey();
+            if (dlAvailabilityCache.has(key)) {
+                dlAvailability = dlAvailabilityCache.get(key);
+                dlApplyAvailability();
+                dlApplyLiveAvailability();
+                return;
+            }
+            const title = animeTitle || document.getElementById('title')?.textContent.trim() || '';
+            if (!title) return;
+            const tmdbParam = tmdbId ? `&tmdbId=${encodeURIComponent(tmdbId)}` : '';
+            const malParam = malId ? `&malId=${encodeURIComponent(malId)}` : '';
+            const [hsubRes, kaaRes, rumvRes] = await Promise.allSettled([
+                fetch(`/api/anime-neko-hsub-check?title=${encodeURIComponent(title)}&season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}`).then(r => r.json()),
+                fetch(`/api/anime-kaa-availability?season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}&title=${encodeURIComponent(title)}${tmdbParam}${malParam}`).then(r => r.json()),
+                fetch(`/api/anime-rumv-availability?title=${encodeURIComponent(title)}&season=${encodeURIComponent(season)}${tmdbParam}${malParam}`).then(r => r.json())
+            ]);
+            // Any single check failing (network hiccup, etc.) fails OPEN for kaaSub/kaaDub/rumv
+            // so a probe error never blocks a source that might genuinely work - only hsub
+            // fails closed, matching its pre-existing default-hidden behavior.
+            dlAvailability = {
+                hsub: hsubRes.status === 'fulfilled' ? Boolean(hsubRes.value?.available) : false,
+                kaaSub: kaaRes.status === 'fulfilled' && kaaRes.value?.ok ? Boolean(kaaRes.value.sub) : true,
+                kaaDub: kaaRes.status === 'fulfilled' && kaaRes.value?.ok ? Boolean(kaaRes.value.dub) : true,
+                rumv: rumvRes.status === 'fulfilled' ? Boolean(rumvRes.value?.available) : true
+            };
+            dlAvailabilityCache.set(key, dlAvailability);
+            dlApplyAvailability();
+            dlApplyLiveAvailability();
+        };
+
+        const dlSyncRowsForSource = () => {
+            const qualityWrap = document.getElementById('dlQualityWrap');
+            const langWrap = document.getElementById('dlLanguageWrap');
+            const burnWrap = document.getElementById('dlBurnWrap');
+            // Kiwi links are picked by quality directly (no burn step, no per-server switch),
+            // so quality still applies to it - it's everything else in this row that doesn't.
+            if (qualityWrap) qualityWrap.style.display = 'block';
+            if (burnWrap) burnWrap.style.display = (dlSource === 'external') ? 'none' : 'block';
+            // RU-MV is a single Russian audio track - the whole app already hides the SUB/DUB
+            // row for it (subDubToggleRow in updateSource) for the same reason.
+            if (langWrap) langWrap.style.display = (dlSource === 'rumv') ? 'none' : 'block';
+            if (dlLang === 'hsub' && dlSource !== 'neko') {
+                dlLang = 'sub';
+                document.querySelectorAll('#dlLanguageRow [data-dl-lang]').forEach(b =>
+                    b.classList.toggle('active', b.dataset.dlLang === 'sub'));
+            }
+            dlApplyAvailability();
+            dlPopulateSubsPicker();
+        };
+
+        document.getElementById('btnDownloadAnime')?.addEventListener('click', () => {
+            if (!dlPanel) return;
+            const opening = dlPanel.style.display === 'none';
+            dlPanel.style.display = opening ? 'block' : 'none';
+            if (opening) { dlSyncRowsForSource(); dlCheckAvailability(); startEpisodePanelHeightSyncBurst(); }
+        });
+        document.getElementById('btnCloseDownloadPanel')?.addEventListener('click', () => {
+            if (dlPanel) dlPanel.style.display = 'none';
+        });
+
+        document.getElementById('dlSourceRow')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-dl-source]');
+            if (!btn) return;
+            dlSource = btn.dataset.dlSource;
+            document.querySelectorAll('#dlSourceRow [data-dl-source]').forEach(b => b.classList.toggle('active', b === btn));
+            dlSyncRowsForSource();
+        });
+        document.getElementById('dlLanguageRow')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-dl-lang]');
+            if (!btn) return;
+            dlLang = btn.dataset.dlLang;
+            document.querySelectorAll('#dlLanguageRow [data-dl-lang]').forEach(b => b.classList.toggle('active', b === btn));
+            // HSUB only ever comes from NekoStream - picking it here should mean "download the
+            // hardsub from Neko," whatever server happened to be highlighted before this click.
+            if (dlLang === 'hsub' && dlSource !== 'neko') {
+                dlSource = 'neko';
+                document.querySelectorAll('#dlSourceRow [data-dl-source]').forEach(b =>
+                    b.classList.toggle('active', b.dataset.dlSource === 'neko'));
+                dlSyncRowsForSource();
+            }
+        });
+        document.getElementById('dlQualityRow')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-dl-quality]');
+            if (!btn) return;
+            dlQuality = btn.dataset.dlQuality;
+            document.querySelectorAll('#dlQualityRow [data-dl-quality]').forEach(b => b.classList.toggle('active', b === btn));
+        });
+
+        // Waits for updateSource()'s async load to actually finish (window.currentVideo.provider
+        // flips to match) rather than firing the downloader against whatever was there before -
+        // updateSource() itself returns immediately, the real work happens in its async load*()
+        // call, and playbackRequestGen (see above) already guards against a stale one winning.
+        function waitForProvider(expectedProvider, timeoutMs = 20000) {
+            return new Promise((resolve) => {
+                const startedAt = Date.now();
+                const check = () => {
+                    if (window.currentVideo?.provider === expectedProvider) return resolve(true);
+                    if (Date.now() - startedAt > timeoutMs) return resolve(false);
+                    setTimeout(check, 300);
+                };
+                check();
+            });
+        }
+
+        document.getElementById('btnDownloadGo')?.addEventListener('click', async () => {
+            const statusEl = document.getElementById('dlStatusText');
+            const setStatus = (t) => { if (statusEl) statusEl.textContent = t; };
+            const seasonSelectEl = document.getElementById('seasonSelect');
+            const dlSeason = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || 1;
+            const dlEpisode = document.getElementById('episodeSelect')?.value
+                || document.getElementById('episodeNum')?.textContent || 1;
+
+            if (dlSource === 'external') {
+                if (!malId) { setStatus('MAL ID unavailable for this title.'); return; }
+                setStatus('Looking up link...');
+                try {
+                    const r = await fetch(`/api/anime-download-links?malId=${encodeURIComponent(malId)}&episode=${encodeURIComponent(dlEpisode)}`);
+                    const j = await r.json();
+                    const bucket = (dlLang === 'dub' ? j?.dub : j?.sub) || {};
+                    const url = bucket[dlQuality] || (dlLang === 'dub' ? j?.bestDub : j?.bestSub);
+                    if (!j?.ok || !url) {
+                        setStatus(`No ${dlLang.toUpperCase()} link available for this episode.`);
+                        return;
+                    }
+                    window.open(url, '_blank', 'noopener,noreferrer');
+                    setStatus('Opened - the download page runs in the new tab.');
+                } catch (err) {
+                    setStatus('Could not fetch the download link.');
+                }
+                return;
+            }
+
+            const info = DL_SOURCE_INFO[dlSource];
+            if (!info) return;
+
+            const alreadyActive = window.currentServer === info.server && window.currentVideo?.provider === info.provider;
+            if (!alreadyActive) {
+                setStatus(`Switching to ${dlSource === 'rumv' ? 'RU-MV' : dlSource.toUpperCase()}...`);
+                if (dlSource !== 'rumv') {
+                    currentAudioMode = dlLang;
+                    window.currentAudioType = dlLang;
+                    applyAudioButtonState(dlLang);
+                }
+                updateSource(info.server);
+                const ready = await waitForProvider(info.provider);
+                if (!ready) {
+                    setStatus(`${dlSource.toUpperCase()} didn't load in time - try again or pick another source.`);
+                    return;
+                }
+                dlPopulateSubsPicker();
+            }
+
+            const fn = window[info.fn];
+            if (typeof fn !== 'function') { setStatus('Download function unavailable.'); return; }
+
+            // downloadKAAEpisode/downloadKinoEpisode read the picker inside their OWN progress
+            // modal (#downloadIncludeSubs/#downloadSubsPicker), not this panel's copies - the
+            // panel's picker is what the user actually set, so hand it off. window.currentSubtitleTrackIndex
+            // is read as the fallback default the very first time the progress modal is built
+            // for this page load, which is also what the modal's own populateSubtitlePicker()
+            // uses to pick an initial selection - setting it before fn() means that initial
+            // selection already matches what was chosen here.
+            const dlBurnCheckbox = document.getElementById('dlBurnCheckbox');
+            const dlSubsPicker = document.getElementById('dlSubsPicker');
+            const burnEnabled = dlBurnCheckbox?.checked === true && dlSubsPicker?.value !== '';
+            if (burnEnabled) window.currentSubtitleTrackIndex = Number(dlSubsPicker.value || 0);
+            fn(parseInt(dlQuality, 10) || undefined);
+            const modalCheckbox = document.getElementById('downloadIncludeSubs');
+            const modalPicker = document.getElementById('downloadSubsPicker');
+            if (modalCheckbox) {
+                modalCheckbox.checked = burnEnabled;
+                modalCheckbox.dispatchEvent(new Event('change'));
+            }
+            if (modalPicker && burnEnabled) modalPicker.value = String(window.currentSubtitleTrackIndex || 0);
+            // downloadKAAEpisode and downloadKinoEpisode both read the same
+            // #downloadIncludeSubs/#downloadSubsPicker now, so this applies to either path.
+            const subsChoiceEl = document.getElementById('downloadSubsChoice');
+            const burnSectionEl = document.getElementById('downloadSubtitleBurnSection');
+            if (subsChoiceEl) subsChoiceEl.style.display = burnEnabled ? '' : 'none';
+            if (burnSectionEl) burnSectionEl.style.display = burnEnabled ? '' : 'none';
+            setStatus(burnEnabled ? 'Started - burning subtitles in, see the download dock.' : 'Started - see the download dock.');
         });
 
         const back10 = document.getElementById('btnBack10');

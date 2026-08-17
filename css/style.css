@@ -3268,7 +3268,7 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
 
 .cal-day-popup {
     width: 100%;
-    max-width: 640px;
+    max-width: 770px;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
@@ -4362,6 +4362,49 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
     display: flex;
     align-items: center;
     gap: 3px;
+}
+
+.card-episode-badges {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    z-index: 10;
+    pointer-events: none;
+}
+
+.ep-badge {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1;
+    padding: 4px 6px;
+    border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+    white-space: nowrap;
+}
+
+.ep-badge svg {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+}
+
+.ep-badge-sub { background: #4ade80; color: #ffffff; }
+.ep-badge-dub { background: #ef4444; color: #ffffff; }
+.ep-badge-total { background: #6b7280; color: #ffffff; }
+
+/* Used where the badges sit inline in normal document flow (e.g. calendar list rows)
+   instead of overlaid on a poster corner. */
+.card-episode-badges.inline {
+    position: static;
+    display: inline-flex;
+    pointer-events: auto;
 }
 
 .card-title-label {
@@ -9158,6 +9201,30 @@ body.blur-active {
     box-shadow: 0 10px 30px rgba(0,0,0,.5);
 }
 
+/* Submenu panels (e.g. the captions language list) have no built-in cap, so a
+   long language list (Kino's OpenSubtitles tracks can run 30-40+) just grows
+   past the player instead of scrolling. Cap it and let it scroll internally. */
+.plyr__menu__container [role="menu"] {
+    max-height: min(50vh, 320px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #ff8000 #1a1a1a;
+}
+
+.plyr__menu__container [role="menu"]::-webkit-scrollbar {
+    width: 6px;
+}
+
+.plyr__menu__container [role="menu"]::-webkit-scrollbar-track {
+    background: #1a1a1a;
+}
+
+.plyr__menu__container [role="menu"]::-webkit-scrollbar-thumb {
+    background: #ff8000;
+    border-radius: 3px;
+}
+
 /* Menu items */
 .plyr__menu__container .plyr__control {
     color: #e0e0e0;
@@ -9430,6 +9497,91 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
 .download-subs-picker:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+}
+.anime-download-panel {
+    display: none;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0 0 10px 0;
+    padding: 12px 14px;
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+}
+.anime-download-panel__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+.anime-download-panel__title {
+    color: #ff8000;
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+.anime-download-panel__close {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 1.1rem;
+    cursor: pointer;
+    line-height: 1;
+}
+.anime-download-panel__body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.anime-download-panel__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 24px;
+}
+.anime-download-panel__label {
+    font-size: 0.78rem;
+    color: #999;
+    margin-bottom: 4px;
+}
+.anime-download-panel__group {
+    flex-direction: column;
+    align-items: stretch;
+}
+/* Panel buttons reuse .audio-btn for styling but shouldn't carry its glow - too busy against
+   this many stacked buttons in one small panel. */
+.anime-download-panel .audio-btn {
+    box-shadow: none;
+}
+.anime-download-panel .audio-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.anime-download-panel__hsub {
+    display: none;
+}
+.anime-download-panel__burn {
+    min-width: 180px;
+}
+.anime-download-panel__burn-label {
+    justify-content: flex-start;
+    margin: 0 0 6px;
+    font-size: 0.85rem;
+}
+.anime-download-panel__go {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.anime-download-panel__go-btn {
+    padding: 8px 20px;
+}
+.anime-download-panel__status {
+    color: #999;
+    font-size: 0.85rem;
+}
+.anime-download-panel__hint {
+    font-size: 0.75rem;
+    color: #777;
 }
 .plyr:hover .kaa-download-btn-top,
 .plyr.plyr--paused .kaa-download-btn-top,

@@ -200,9 +200,11 @@ function ensureDownloadModal() {
                             <div id="downloadProgressBar" class="download-progress-fill"></div>
                         </div>
 
-                        <div class="download-modal-subheading">Subtitle Burn</div>
-                        <div class="download-progress-track">
-                            <div id="downloadSubtitleProgressBar" class="download-progress-fill download-progress-fill-secondary"></div>
+                        <div id="downloadSubtitleBurnSection">
+                            <div class="download-modal-subheading">Subtitle Burn</div>
+                            <div class="download-progress-track">
+                                <div id="downloadSubtitleProgressBar" class="download-progress-fill download-progress-fill-secondary"></div>
+                            </div>
                         </div>
 
                         <div class="download-modal-warning">
@@ -215,7 +217,21 @@ function ensureDownloadModal() {
 
 function showDownloadModal() {
     const modal = document.getElementById("downloadModal");
-    if (modal) modal.style.display = "flex";
+    if (modal) {
+        // .collapsed carries !important, so it silently keeps overriding this
+        // inline display:flex on every later download unless it's cleared here too.
+        modal.classList.remove('collapsed');
+        modal.style.display = "flex";
+    }
+    // Reset to visible on every call - the download panel hides these afterward when its own
+    // burn choice was "no" (see moviePlayer.js), but that hide is per-call, not permanent: a
+    // plain movie/TV download through the non-panel buttons never runs that step and would
+    // otherwise be stuck with whatever an earlier anime-panel download last left this shared
+    // modal showing.
+    const subsChoiceReset = document.getElementById('downloadSubsChoice');
+    const burnSectionReset = document.getElementById('downloadSubtitleBurnSection');
+    if (subsChoiceReset) subsChoiceReset.style.display = '';
+    if (burnSectionReset) burnSectionReset.style.display = '';
     bindDownloadBeforeUnload();
     if (modal && !modal.dataset.bound) {
         modal.dataset.bound = '1';
@@ -637,7 +653,7 @@ function notifyDownloadCompleteForEpisode(video) {
     }).catch(err => console.warn('[Download] notification create failed:', err.message));
 }
 
-async function downloadKAAEpisode() {
+async function downloadKAAEpisode(requestedHeight) {
     // downloadInProgress was only ever set here, never checked -- a second call
     // (double-click, stray repeat event) would race a second FFmpeg() instance
     // against the first's segment fetches/FS writes, which is a plausible source
@@ -688,7 +704,7 @@ async function downloadKAAEpisode() {
         const master = parseMasterPlaylist(playlist);
         console.log('[Download][3/8] parsed master', { videoVariants: master.videos.length, audioTracks: master.audios, videos: master.videos });
 
-        const selectedVideo = master.videos[0];
+        const selectedVideo = pickVideoByHeight(master.videos, requestedHeight);
         if (!selectedVideo) throw new Error('Master playlist had no #EXT-X-STREAM-INF video variants');
         console.log('[Download] selectedVideo=', selectedVideo, "currentAudioType =", window.currentAudioType);
 
@@ -1043,6 +1059,18 @@ function parseMasterPlaylist(text) {
     return { videos, audios };
 }
 
+// `videos` is already sorted highest-resolution-first by parseMasterPlaylist. With no
+// requestedHeight, keep the old always-best behavior. With one, pick the best variant that
+// still fits within it, or fall back to the lowest available if the source doesn't have
+// anything that small (e.g. requesting 360p from a source that only offers 1080p/720p).
+function pickVideoByHeight(videos, requestedHeight) {
+    if (!requestedHeight || !Array.isArray(videos) || videos.length === 0) return videos[0];
+    const withHeight = videos.map(v => ({ ...v, _h: parseInt((v.resolution || '').split('x')[1], 10) || 0 }));
+    const fits = withHeight.filter(v => v._h && v._h <= requestedHeight);
+    if (fits.length) return fits[0];
+    return withHeight[withHeight.length - 1];
+}
+
 // fMP4/CMAF HLS streams (e.g. aniboom) split a "moov" init segment out via
 // #EXT-X-MAP, which every media segment after it depends on to be a valid
 // standalone file -- KAA's plain-MPEG-TS segments never have this tag, so
@@ -1093,6 +1121,209 @@ async function downloadSegments(segments, progressCallback) {
     return downloaded;
 }
 
+// Kino (vidsrcme.ru) downloads -- deliberately a separate, simpler function
+// rather than a branch inside downloadKAAEpisode, so anime/RU-anime's existing
+// behavior is untouched. Kino's HLS shape differs from KAA/aniboom's in ways
+// that don't fit that function's assumptions:
+//   - no separate audio track to pick: vidsrcme's variants already mux
+//     audio+video per segment (no #EXT-X-MEDIA audio rendition to select --
+//     downloadKAAEpisode would throw "No matching audio playlist found" here)
+//   - quality: optional requestedHeight, same pickVideoByHeight() helper KAA's downloader
+//     uses - omit it and this keeps defaulting to videos[0] (the best available), same as before
+//   - subtitle burning: same #downloadIncludeSubs/#downloadSubsPicker mechanism as
+//     downloadKAAEpisode now (used to just burn whatever caption track Plyr happened to have
+//     active live in the player, which meant MegaPlay/NekoStream downloads effectively never
+//     burned anything - Plyr's active track isn't wired the same way there)
+async function downloadKinoEpisode(requestedHeight) {
+    if (downloadInProgress) {
+        if (typeof window.showLimitToast === 'function') {
+            window.showLimitToast('A download is already in progress. Please wait for it to finish.');
+        }
+        return;
+    }
+    downloadedBytes = 0;
+    downloadInProgress = true;
+    const video = window.currentVideo;
+    const downloadContext = window.currentDownloadContext || {};
+    const task = createDownloadTaskCard({
+        title: downloadContext.title || video?.title || 'Unknown',
+        episode: video?.episode || '',
+        season: video?.season || '',
+        thumbnail: downloadContext.thumbnail || video?.thumbnail || video?.poster || '/img/LOGO_Short.png'
+    });
+    const setTaskStatus = (text) => {
+        task.setStatus(text);
+        setDownloadStatus(text);
+    };
+    const setTaskCombinedProgress = (percent) => {
+        task.setCombinedProgress(percent);
+    };
+    const setTaskSubtitleProgress = (label, percent) => {
+        task.setCombinedProgress(percent);
+        task.setSubline(label);
+        setSubtitleProgress(label, percent);
+    };
+
+    ensureDownloadModal();
+    showDownloadModal();
+
+    try {
+        console.log('[Download][Kino][1/6] start', { provider: video?.provider, playlistUrl: video?.playlist });
+
+        const masterRes = await fetch(video.playlist);
+        if (!masterRes.ok) throw new Error(`Master playlist fetch failed (HTTP ${masterRes.status}) for ${video.playlist}`);
+        const playlist = await masterRes.text();
+        const master = parseMasterPlaylist(playlist);
+        console.log('[Download][Kino][2/6] parsed master', { videoVariants: master.videos.length, videos: master.videos });
+
+        const selectedVideo = pickVideoByHeight(master.videos, requestedHeight);
+        if (!selectedVideo) throw new Error('Master playlist had no #EXT-X-STREAM-INF video variants');
+        console.log('[Download][Kino] selectedVideo=', selectedVideo);
+
+        const videoPlaylistRes = await fetch(selectedVideo.url);
+        if (!videoPlaylistRes.ok) throw new Error(`Video media playlist fetch failed (HTTP ${videoPlaylistRes.status})`);
+        const videoPlaylist = await videoPlaylistRes.text();
+        const { segments: videoSegments, initSegmentUrl: videoInitUrl } = parseMediaPlaylist(videoPlaylist);
+        console.log('[Download][Kino] video segments parsed', { count: videoSegments.length, initSegmentUrl: videoInitUrl });
+
+        const isFmp4 = Boolean(videoInitUrl);
+
+        const subtitleTracks = Array.isArray(video?.subtitles) ? video.subtitles.filter(t => t?.url) : [];
+        const subtitleIndex = Math.max(0, Math.min(subtitleTracks.length - 1, Number(document.getElementById('downloadSubsPicker')?.value || window.currentSubtitleTrackIndex || 0)));
+        const subtitleTrack = subtitleTracks[subtitleIndex] || null;
+        let subtitleText = '';
+        let subtitleFilename = '';
+        if (subtitleTrack?.url) {
+            try {
+                setDownloadStatus('Loading subtitles...');
+                const fetchedSubtitleText = await fetch(subtitleTrack.url).then(r => r.text());
+                const normalizedSubtitles = normalizeSubtitlePayload(fetchedSubtitleText);
+                subtitleText = normalizedSubtitles.text;
+                subtitleFilename = normalizedSubtitles.filename;
+                console.log('[Download][Kino] subtitle fetch ok:', { url: subtitleTrack.url, lang: subtitleTrack.lang, chars: subtitleText.length });
+            } catch (err) {
+                console.warn('[Download][Kino] subtitle fetch failed, continuing without subs:', err);
+                subtitleText = '';
+                subtitleFilename = '';
+            }
+        } else {
+            console.log('[Download][Kino] no matching subtitle track -- downloading without subtitles');
+        }
+
+        totalSegments = videoSegments.length;
+        completedSegments = 0;
+        showDownloadModal();
+        updateDownloadProgress();
+
+        console.log('[Download][Kino][3/6] downloading segments', { videoSegmentCount: videoSegments.length });
+        const downloadedVideo = await downloadSegments(videoSegments, () => {
+            const percent = totalSegments === 0 ? 0 : (completedSegments / totalSegments) * 100;
+            updateDownloadProgress();
+            setTaskCombinedProgress(percent);
+        });
+
+        if (videoInitUrl) {
+            const initRes = await fetch(videoInitUrl);
+            if (!initRes.ok) throw new Error(`Video init segment fetch failed (HTTP ${initRes.status}) for ${videoInitUrl}`);
+            const initBytes = new Uint8Array(await initRes.arrayBuffer());
+            downloadedVideo.unshift(initBytes);
+        }
+
+        const mergedVideo = mergeSegments(downloadedVideo);
+        console.log('[Download][Kino][4/6] merged buffer', { mergedVideoBytes: mergedVideo.byteLength, isFmp4 });
+
+        setTaskStatus('Loading FFmpeg...');
+        const ffmpeg = new FFmpeg();
+        ffmpeg.on?.('log', ({ message }) => { if (message) console.log('[FFmpeg][log]', message); });
+
+        await ffmpeg.load({
+            coreURL: '/node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.js',
+            wasmURL: '/node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.wasm'
+        });
+
+        const videoInputName = isFmp4 ? 'video.mp4' : 'video.ts';
+        await ffmpeg.writeFile(videoInputName, mergedVideo);
+
+        if (subtitleText && subtitleFilename) {
+            const subtitleDownloadName = `${video.title || 'Kino'}${video.episode ? ` - S${video.season}E${video.episode}` : ''}.txt`;
+            triggerBrowserDownload(subtitleDownloadName, subtitleText, 'text/plain;charset=utf-8');
+            await ffmpeg.writeFile(subtitleFilename, new TextEncoder().encode(subtitleText));
+        }
+
+        // Audio's already muxed into the video segments -- this is just a
+        // container remux (e.g. fMP4 fragments -> a standalone playable MP4),
+        // not a real audio+video combine like KAA needs.
+        const hasSubtitle = Boolean(subtitleText && subtitleFilename) && document.getElementById('downloadIncludeSubs')?.checked === true;
+        setTaskStatus(hasSubtitle ? 'Rendering subtitles on canvas...' : 'Remuxing video...');
+        document.getElementById('downloadProgressBar').style.width = '100%';
+        setTaskSubtitleProgress('Subtitle Burn: queued', 0);
+
+        const outputFilename = 'output.mp4';
+        const muxArgs = hasSubtitle
+            ? ['-i', videoInputName, '-c', 'copy', '-movflags', '+faststart', outputFilename]
+            : ['-i', videoInputName, '-c', 'copy', outputFilename];
+
+        console.log('[Download][Kino][5/6] running ffmpeg remux', muxArgs);
+        await ffmpeg.exec(muxArgs);
+
+        const data = await ffmpeg.readFile(outputFilename);
+        if (!data || (data.byteLength || data.length || 0) === 0) {
+            console.error('[Download][Kino] final output file is EMPTY', { muxArgs, isFmp4 });
+        }
+        let blob = new Blob([data.buffer], { type: 'video/mp4' });
+        let downloadExt = 'mp4';
+
+        if (hasSubtitle) {
+            try {
+                setTaskStatus('Rendering subtitles in browser canvas...');
+                const canvasBlob = await recordVideoWithCanvasSubtitles(blob, subtitleText, video, (state) => {
+                    const current = state?.currentTime || 0;
+                    const duration = state?.duration || 0;
+                    const percent = state?.percent || 0;
+                    setTaskStatus(`Rendering subtitles in browser canvas... ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`);
+                    setTaskSubtitleProgress(`Subtitle Burn: ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`, percent);
+                });
+                blob = canvasBlob;
+                downloadExt = 'webm';
+            } catch (canvasErr) {
+                console.warn('[CanvasBurn][Kino] failed, falling back to plain MP4:', canvasErr);
+                setTaskStatus('Subtitle canvas render failed. Downloading video only...');
+            }
+        }
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${video.title || 'Kino'}${video.episode ? ` - S${video.season}E${video.episode}` : ''}.${downloadExt}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+
+        setTaskStatus('Download complete!');
+        downloadInProgress = false;
+        task.finish(true);
+        notifyDownloadCompleteForEpisode(video);
+        setTimeout(() => { hideDownloadModal(); }, 1000);
+
+    } catch (err) {
+        console.error('[Download][Kino] FAILED', {
+            name: err?.name,
+            message: err?.message,
+            stack: err?.stack,
+            provider: video?.provider,
+            playlistUrl: video?.playlist
+        });
+        setTaskStatus(`Download failed: ${err?.message || 'unknown error'}`);
+        if (typeof window.showLimitToast === 'function') {
+            window.showLimitToast(`Download failed: ${err?.message || 'unknown error'}`);
+        }
+        downloadInProgress = false;
+        task.finish(false);
+        setTimeout(hideDownloadModal, 2000);
+    }
+}
+
 function mergeSegments(segments) {
     let totalLength = 0;
     for (const segment of segments) {
@@ -1110,4 +1341,5 @@ function mergeSegments(segments) {
 
 // Global exposes
 window.downloadKAAEpisode = downloadKAAEpisode;
+window.downloadKinoEpisode = downloadKinoEpisode;
 window.updateDownloadButtons = updateDownloadButtons;

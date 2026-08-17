@@ -1,2 +1,10 @@
 # Contains plaintext passwords for generated Anikoto-commenter accounts - never commit this
 Backend/AnikotoCommentUserInfo.txt
+
+# AES key that encrypts every /api/m3u8-proxy and /api/proxy-stream target URL - leaking this
+# defeats that protection entirely, same as a leaked password. Auto-generated on first run.
+Backend/proxy_token.key
+
+# Shared secret between middleware.js and server.js - replaces the old hardcoded default.
+# Auto-generated on first run by either process.
+Backend/middleware_secret.key

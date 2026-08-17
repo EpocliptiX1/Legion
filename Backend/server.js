@@ -1283,25 +1283,25 @@ function mapTmdbMovieWithCredits(item, credits) {
 }
 
 // --- 1. MIDDLEWARE ---
-// Restrict CORS to the middleware layer only (localhost:3000).
-// In production, replace with the real middleware domain.
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://localhost:3000,http://localhost:3000')
-    .split(',').map(o => o.trim());
-app.use(cors({
-    origin: (origin, cb) => {
-        // Allow requests with no origin (e.g. same-origin, curl, Postman), explicitly allowed origins, or local network IPs
-        if (!origin || ALLOWED_ORIGINS.includes(origin) || origin.startsWith('http://192.168.') || origin.startsWith('https://192.168.')) return cb(null, true);
-        
-        console.error(`CORS Blocked: ${origin}`); // Log the blocked origin for debugging
-        cb(new Error('CORS: origin not allowed'));
-    },
-    credentials: true,
-}));
+// This used to independently re-check Origin against a hardcoded localhost:3000 default -
+// redundant with (and stricter than) middleware.js's own requireSameOrigin, which already runs
+// on every /api/* request BEFORE it ever reaches here and correctly validates dynamically
+// against whatever Host the request actually arrived on (ngrok tunnel, a LAN IP, a real
+// domain - all "just work" there without editing a config). This backend is unreachable except
+// through that check anyway (bound to 'localhost' only, plus the x-middleware-secret guard
+// right below - only middleware.js can produce a request that gets this far), so a second,
+// worse-informed origin check here added no real protection - just broke anything that wasn't
+// literally localhost:3000 (this ngrok pentest tunnel included). Still sets proper CORS
+// response headers via cors(), just no longer rejects based on origin.
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '8mb' })); // raised from 5mb for base64 profile picture uploads
 
 // Secret-header guard — backend refuses any request that didn't come through the middleware.
-// Override the default with the MIDDLEWARE_SECRET environment variable (must match middleware.js).
-const MIDDLEWARE_SECRET = process.env.MIDDLEWARE_SECRET || 'ls_internal_4f8b2e9d';
+// Was a hardcoded default shared with middleware.js's own copy - harmless on a private repo,
+// worthless on a public one (this one is: EpocliptiX1/Legion). Set MIDDLEWARE_SECRET env var
+// to override; otherwise both processes independently generate/read the same persisted
+// secretStore.js file, so they still agree without either one hardcoding a public value.
+const MIDDLEWARE_SECRET = process.env.MIDDLEWARE_SECRET || require('./secretStore').loadOrCreateSecret('middleware_secret.key');
 app.use((req, res, next) => {
     // Allow direct browser access to the MAL OAuth endpoints
     if (
@@ -1315,6 +1315,89 @@ app.use((req, res, next) => {
     }
     next();
 });
+
+// --- Proxy target encryption -------------------------------------------------------------
+// /api/m3u8-proxy and /api/proxy-stream used to take the real upstream CDN URL as a plain
+// ?url= query param - visible in cleartext in the browser's network tab, and (unlike the
+// referer-lock above, which only gates who's allowed to call OUR endpoint) copying that raw
+// URL out and hitting the real CDN directly bypasses us entirely. This is the same class of
+// protection vidsrcme uses (their stream_urls come back ChaCha20-encrypted, only decryptable
+// via a WASM blob that rotates every 5 minutes - see vidscr.txt) - here, AES-256-GCM instead,
+// with an expiry baked into the payload so a captured link goes dead on its own.
+//
+// The key is generated once and persisted to disk (not re-derived per process) because
+// invalidating it would break every token already handed to a browser mid-playback - a
+// restart must NOT silently kill everyone's current stream.
+const PROXY_TOKEN_KEY_FILE = path.join(__dirname, 'proxy_token.key');
+function loadOrCreateProxyTokenKey() {
+    try {
+        const existing = Buffer.from(fs.readFileSync(PROXY_TOKEN_KEY_FILE, 'utf8').trim(), 'base64');
+        if (existing.length === 32) return existing;
+    } catch (err) { /* file doesn't exist yet - generate below */ }
+    const key = crypto.randomBytes(32);
+    fs.writeFileSync(PROXY_TOKEN_KEY_FILE, key.toString('base64'), 'utf8');
+    return key;
+}
+const PROXY_TOKEN_KEY = loadOrCreateProxyTokenKey();
+// A fresh token is minted every time an EPISODE/title loads (updateSource -> the relevant
+// loader -> a fresh resolve call), not once per binge session - so this only has to outlive
+// ONE title's active viewing (seeking/quality switches/a reasonable pause), not a whole
+// session watching many episodes back to back. Originally set to 6h reasoning "cover a full
+// binge" - live pentest (see proxy-security.txt) correctly called that out as 72x more
+// generous than it needed to be (vidsrcme's own tokens, the thing we modeled this after, are
+// ~5min windows) since a captured/leaked token is a fully self-contained bearer credential for
+// its whole TTL, no session/origin binding. 2h covers even a long movie plus a real pause,
+// while cutting that exposure window 3x.
+const PROXY_TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
+
+function encryptProxyTarget({ url, referer = null, ua = null }) {
+    const payload = JSON.stringify({ u: url, r: referer, a: ua, e: Date.now() + PROXY_TOKEN_TTL_MS });
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', PROXY_TOKEN_KEY, iv);
+    const encrypted = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    return Buffer.concat([iv, authTag, encrypted]).toString('base64url');
+}
+
+function decryptProxyTarget(token) {
+    const raw = Buffer.from(String(token || ''), 'base64url');
+    if (raw.length < 29) throw new Error('Malformed proxy token');
+    const iv = raw.subarray(0, 12);
+    const authTag = raw.subarray(12, 28);
+    const ciphertext = raw.subarray(28);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', PROXY_TOKEN_KEY, iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    const payload = JSON.parse(decrypted.toString('utf8'));
+    if (!payload.u || !payload.e || payload.e < Date.now()) {
+        throw new Error('Proxy token expired or invalid');
+    }
+    return { url: payload.u, referer: payload.r || null, ua: payload.a || null };
+}
+
+// Builds a token-based /api/m3u8-proxy or /api/proxy-stream URL - the ONE place that should
+// construct these going forward, so every emitter (KAA/Neko/MegaPlay/RU-MV responses, the
+// manifest-rewriter inside /api/m3u8-proxy itself, subtitle URLs, etc.) shares one code path
+// instead of each hand-rolling its own ?url= string.
+function buildM3u8ProxyUrl(url, referer = null) {
+    return `/api/m3u8-proxy?token=${encryptProxyTarget({ url, referer })}`;
+}
+function buildStreamProxyUrl(url, referer = null, ua = null) {
+    return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua })}`;
+}
+
+// MegaPlay's raw {file, label, kind, default} track shape, tokenized into the exact
+// {url, lang, default} shape the frontend consumes directly - moves the proxy URL building
+// (and the raw CDN url that used to travel with it) server-side, matching the video stream URL.
+function tokenizeMegaplayTracks(tracks) {
+    return (Array.isArray(tracks) ? tracks : [])
+        .filter(t => t && t.file && (t.kind === 'captions' || t.kind === 'subtitles' || !t.kind))
+        .map(t => ({
+            url: buildStreamProxyUrl(t.file, 'https://megaplay.buzz/'),
+            lang: t.label || 'Subtitles',
+            default: !!t.default
+        }));
+}
 
 const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, 
@@ -5654,23 +5737,45 @@ const ALLOWED_PROXY_HOSTS = [
     'kwik.cx', 'uwucdn.top',
     'hls.krussdomi.com', 'subst.krussdomi.com', 'krussdomi.com',
     'advancedairesearchlab.xyz', 'habibikun.xyz',
-    'babybayw.xyz', 'narutokun.xyz'
+    'babybayw.xyz', 'narutokun.xyz',
+    // MegaPlay/VidTube (see vidscr.txt) - CDN hosts for playlists/segments/subtitles.
+    // livedns.my segment hosts are numbered/rotating (03nc1.livedns.my etc.), hence the
+    // suffix match rather than a fixed hostname.
+    'megaplay.buzz', 'watching.onl', 'livedns.my', 'akirax.buzz', 'shiora.top'
 ];
 let proxyDebugPrinted = false;
 
 app.get('/api/proxy-stream', async (req, res) => {
-    const rawUrl = req.query.url;
-    const rawReferer = req.query.referer;
-    const rawUserAgent = req.query.ua;
-    if (!rawUrl) return res.status(400).send('Missing url');
-
+    // Preferred path: an encrypted token (see encryptProxyTarget) instead of a plaintext
+    // ?url=. ?url=/&referer=/&ua= still work as a fallback for callers not migrated yet -
+    // new emitters should use buildStreamProxyUrl().
     let decodedUrl, decodedReferer, decodedUserAgent;
+    if (req.query.token) {
+        try {
+            const decoded = decryptProxyTarget(req.query.token);
+            decodedUrl = decoded.url;
+            decodedReferer = decoded.referer || 'https://kwik.si/';
+            decodedUserAgent = decoded.ua || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+        } catch (err) {
+            return res.status(403).send('Invalid or expired proxy token');
+        }
+    } else {
+        const rawUrl = req.query.url;
+        const rawReferer = req.query.referer;
+        const rawUserAgent = req.query.ua;
+        if (!rawUrl) return res.status(400).send('Missing url');
+        try {
+            decodedUrl = decodeURIComponent(rawUrl);
+            decodedReferer = rawReferer ? decodeURIComponent(rawReferer) : 'https://kwik.si/';
+            decodedUserAgent = rawUserAgent
+                ? decodeURIComponent(rawUserAgent)
+                : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+        } catch {
+            return res.status(400).send('Invalid URL');
+        }
+    }
+
     try {
-        decodedUrl = decodeURIComponent(rawUrl);
-        decodedReferer = rawReferer ? decodeURIComponent(rawReferer) : 'https://kwik.si/';
-        decodedUserAgent = rawUserAgent
-            ? decodeURIComponent(rawUserAgent)
-            : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
         const host = new URL(decodedUrl).hostname;
         if (!ALLOWED_PROXY_HOSTS.some(h => host === h || host.endsWith('.' + h))) {
             return res.status(403).send('Domain not allowed');
@@ -5697,6 +5802,7 @@ app.get('/api/proxy-stream', async (req, res) => {
             proxyDebugPrinted = true;
         }
     const isM3u8 = decodedUrl.includes('.m3u8');
+    const isSubtitleFile = /\.(vtt|srt)(\?|$)/i.test(decodedUrl);
     try {
 
         // console.log({
@@ -5707,7 +5813,7 @@ app.get('/api/proxy-stream', async (req, res) => {
         const response = await axios({
             url: decodedUrl,
             method: 'get',
-            responseType: isM3u8 ? 'text' : 'stream',
+            responseType: (isM3u8 || isSubtitleFile) ? 'text' : 'stream',
             headers: {
                 Referer: decodedReferer,
                 Origin: 'https://krussdomi.com',
@@ -5807,39 +5913,13 @@ app.get('/api/proxy-stream', async (req, res) => {
                 if (!trimmed) return line;
 
                 const absUrl = new URL(trimmed, baseUrl).toString();
-
-                // console.log('PLAYLIST ENTRY:', trimmed);
-                // console.log('ABS URL:', absUrl);
-
-                return `/api/proxy-stream?url=${encodeURIComponent(absUrl)}&referer=${encodeURIComponent(decodedReferer)}&ua=${encodeURIComponent(decodedUserAgent)}`;
+                return buildStreamProxyUrl(absUrl, decodedReferer, decodedUserAgent);
             });
             content = content.replace(/URI="([^"]+)"/g, (match, uri) => {
                 if (/^data:/i.test(uri)) return match;
                 const absUrl = new URL(uri, baseUrl).toString();
-                const proxied = `/api/proxy-stream?url=${encodeURIComponent(absUrl)}&referer=${encodeURIComponent(decodedReferer)}&ua=${encodeURIComponent(decodedUserAgent)}`;
+                const proxied = buildStreamProxyUrl(absUrl, decodedReferer, decodedUserAgent);
                 return `URI="${proxied}"`;
-                content = content.replace(
-                    /URI="([^"]+)"/g,
-                    (match, uri) => {
-
-                        // console.log(
-                        //     'REWRITING AUDIO URI:',
-                        //     uri
-                        // );
-
-                        const absUrl = new URL(uri, baseUrl).toString();
-
-                        // console.log(
-                        //     'TO:',
-                        //     absUrl
-                        // );
-
-                        const proxied =
-                            `/api/proxy-stream?url=${encodeURIComponent(absUrl)}&referer=${encodeURIComponent(decodedReferer)}&ua=${encodeURIComponent(decodedUserAgent)}`;
-
-                        return `URI="${proxied}"`;
-                    }
-                );
             });
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
             fs.writeFileSync(
@@ -5856,16 +5936,23 @@ app.get('/api/proxy-stream', async (req, res) => {
             //     console.log('===============================');
             // }
             res.send(content);
+        } else if (isSubtitleFile) {
+            // KAA injects its own self-promotional cue at the very start of every subtitle
+            // file - a <ruby> "kaa.lt"/"kaa.it" watermark sitting in the first few seconds,
+            // right where a cold-open's first real line would normally be. Reported live as
+            // "captions look ~5s ahead of the stream": that watermark cue occupies roughly
+            // 0-5s, displacing where the first real line visually seems to belong. Rather than
+            // just deleting their watermark cue, rebrand it - same <ruby> markup, our name.
+            const cleaned = String(response.data).replace(/kaa\.(lt|it)/gi, 'AniKino');
+            res.set('Content-Type', 'text/vtt; charset=utf-8');
+            res.send(cleaned);
         } else {
             if (response.status === 206) res.status(206);
             const responseHost = new URL(decodedUrl).hostname;
             const isKaaDisguisedSegment =
                 /\.(jpg|jpeg|png|webp)(\?|$)/i.test(decodedUrl) &&
                 ['advancedairesearchlab.xyz', 'habibikun.xyz'].some(h => responseHost === h || responseHost.endsWith('.' + h));
-            const fallbackType = /\.vtt(\?|$)/i.test(decodedUrl)
-                ? 'text/vtt; charset=utf-8'
-                : 'video/mp2t';
-            res.set('Content-Type', isKaaDisguisedSegment ? 'video/mp2t' : (response.headers['content-type'] || fallbackType));
+            res.set('Content-Type', isKaaDisguisedSegment ? 'video/mp2t' : (response.headers['content-type'] || 'video/mp2t'));
             if (response.headers['content-length']) res.set('Content-Length', response.headers['content-length']);
             if (response.headers['content-range']) res.set('Content-Range', response.headers['content-range']);
             if (response.headers['accept-ranges']) res.set('Accept-Ranges', response.headers['accept-ranges']);
@@ -6872,6 +6959,8 @@ async function aniListGetMediaBasic({ anilistId, malId }) {
                 idMal
                 title { romaji english native }
                 coverImage { extraLarge large }
+                episodes
+                format
             }
         }
     `;
@@ -8492,10 +8581,16 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
     const topCandidates = ranked.slice(0, 4);
     logKaaDebug('[KAA Resolve] fetching top candidates in parallel', { count: topCandidates.length });
 
+    // kaa.lt gives each locale ITS OWN per-episode slug under the same show (verified live:
+    // solo-leveling-da47 ep1 is .../ep-1-58ad18 under ja-JP but .../ep-1-0b53cf under en-US) -
+    // fetchAnimeInfo defaults to ja-JP, so a dub request left unpatched would silently come back
+    // with the SUB episode's slug (and therefore its stream) even though audioScore above
+    // already picked the right anime entry. See kickassanime.js's fetchAnimeInfo for the fix.
+    const kaaEpisodeLang = wantedAudio === 'dub' ? 'en-US' : 'ja-JP';
     const candidatesWithEpisodes = await Promise.all(
         topCandidates.map(async (entry) => {
             try {
-                const candidateInfo = await kickass.fetchAnimeInfo(entry.result.id);
+                const candidateInfo = await kickass.fetchAnimeInfo(entry.result.id, kaaEpisodeLang);
                 const candidateEpisodes = Array.isArray(candidateInfo?.episodes) ? candidateInfo.episodes : [];
                 return { entry, info: candidateInfo, episodes: candidateEpisodes };
             } catch (err) {
@@ -8504,6 +8599,47 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
             }
         })
     );
+
+    // parseAnimeTitle's season number comes from literal English markers ("Season 2", "2nd",
+    // "II") - KAA lists most arcs under their raw romaji subtitle instead (Tower of God S2P1 is
+    // "Kami no Tou: Ouji no Kikan", not "... Season 2"), so candidates that are actually
+    // different seasons/specials all parse as the same "season 1" here and this sort can't tell
+    // them apart at all. Verified live: exactly this happened for Tower of God S1 - all 4 KAA
+    // search results (real S1, a recap short, S2P1, S2P2) parsed as season 1, so which one
+    // "won" episode 1 was arbitrary noise, not a real match.
+    //
+    // AniList knows both the real episode count AND the real romaji/english title for THIS
+    // specific season (same resolveAnimeIds(tmdbId, season) lookup RU-MV's season fix uses) -
+    // signals KAA's own title text can't fake. Title similarity is the stronger of the two
+    // (episode count alone can coincidentally tie - verified live: Tower of God's real S1 and
+    // its S2P2 both happen to have exactly 13 episodes), so it's checked first; episode count
+    // is only a fallback for whenever a season's real title isn't a good match for anything
+    // (e.g. a completely retitled arc). Both are used ONLY as tiebreakers when parseAnimeTitle
+    // already sees the two candidates as the same season, so titles that already sort
+    // correctly today (many DO literally say "2nd Season") are completely unaffected.
+    let expectedEpisodeCount = null;
+    let seasonTitleVariants = [];
+    if (tmdbId) {
+        try {
+            const seasonIds = await resolveAnimeIds(tmdbId, wantedSeason);
+            if (seasonIds?.anilistId || seasonIds?.malId) {
+                const seasonMedia = await aniListGetMediaBasic({ anilistId: seasonIds.anilistId, malId: seasonIds.malId });
+                if (Number.isFinite(seasonMedia?.episodes) && seasonMedia.episodes > 0) {
+                    expectedEpisodeCount = seasonMedia.episodes;
+                }
+                seasonTitleVariants = [seasonMedia?.title?.romaji, seasonMedia?.title?.english]
+                    .filter(Boolean).map(t => String(t).toLowerCase());
+            }
+        } catch (err) {
+            logKaaDebug('[KAA Resolve] AniList season-title lookup failed', { error: err.message || String(err) });
+        }
+    }
+    const seasonTitleSimilarity = (candidateTitle) => {
+        if (!seasonTitleVariants.length) return 0;
+        const lower = String(candidateTitle || '').toLowerCase();
+        return Math.max(...seasonTitleVariants.map(v => stringSimilarity.compareTwoStrings(v, lower)));
+    };
+    logKaaDebug('[KAA Resolve] season disambiguation signals', { wantedSeason, expectedEpisodeCount, seasonTitleVariants });
 
     // Sort candidates by season order (S1, S2P1, S2P2, S3, S4, ...) for proper episode accumulation
     // Don't rely on score ranking when accumulating episodes across seasons
@@ -8539,6 +8675,16 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
         });
 
         if (seaA !== seaB) return seaA - seaB;
+        if (seasonTitleVariants.length) {
+            const simA = seasonTitleSimilarity(a.entry.result.title);
+            const simB = seasonTitleSimilarity(b.entry.result.title);
+            if (Math.abs(simA - simB) > 0.05) return simB - simA; // higher similarity first
+        }
+        if (expectedEpisodeCount) {
+            const diffA = Math.abs((a.episodes.length || 0) - expectedEpisodeCount);
+            const diffB = Math.abs((b.episodes.length || 0) - expectedEpisodeCount);
+            if (diffA !== diffB) return diffA - diffB;
+        }
         return partNumA - partNumB; // Sort by part number: Part 1, Part 2, Part 3, Part 4
     });
 
@@ -8717,7 +8863,7 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
 function proxiedKaaUrl(sourceUrl, headers = {}) {
     const referer = headers.Referer || headers.referer || 'https://kaa.lt/';
     const userAgent = headers['User-Agent'] || headers['user-agent'] || '';
-    return `/api/proxy-stream?url=${encodeURIComponent(sourceUrl)}&referer=${encodeURIComponent(referer)}${userAgent ? `&ua=${encodeURIComponent(userAgent)}` : ''}`;
+    return buildStreamProxyUrl(sourceUrl, referer, userAgent || null);
 }
 
 function proxiedKaaSubtitle(subtitle, headers = {}) {
@@ -8736,13 +8882,27 @@ function slugifyTitle(title) {
         .replace(/(^-|-$)/g, '');    // Remove leading/trailing hyphens
 }
 app.get('/api/m3u8-proxy', async (req, res) => {
-    const targetUrl = req.query.url;
+    // Preferred path: an encrypted token (see encryptProxyTarget above) that never reveals the
+    // real upstream URL in the query string. ?url= is kept working as a fallback ONLY for
+    // callers not migrated to tokens yet - every new emitter should use buildM3u8ProxyUrl().
+    let targetUrl, refererOverride;
+    if (req.query.token) {
+        try {
+            const decoded = decryptProxyTarget(req.query.token);
+            targetUrl = decoded.url;
+            refererOverride = decoded.referer || undefined;
+        } catch (err) {
+            return res.status(403).send('Invalid or expired proxy token');
+        }
+    } else {
+        targetUrl = req.query.url;
+        refererOverride = req.query.ref;
+    }
     if (!targetUrl) return res.status(400).send('URL required');
 
     // Most sources proxied here (KAA/Neko) are served off vidtube.site regardless of the
     // actual CDN host, so that's the safe default Referer/Origin. Sources on their own
     // CDN with their own Referer allowlist (e.g. aniboom.one) pass `ref` explicitly.
-    const refererOverride = req.query.ref;
     const refererBase = refererOverride ? refererOverride.replace(/\/?$/, '/') : 'https://vidtube.site/';
     const originBase = refererBase.replace(/\/$/, '');
 
@@ -8769,25 +8929,23 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         // Handle Master / Media Playlists (.m3u8)
         if (isM3u8) {
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            const refSuffix = refererOverride ? `&ref=${encodeURIComponent(refererOverride)}` : '';
             // Resolve against targetUrl (not just its directory) so domain-root-relative
             // paths (e.g. vidsrcme's "/pl/<hash>/index.m3u8") resolve correctly instead
             // of getting naively concatenated onto the directory prefix.
             const resolveUri = (uri) => new URL(uri, targetUrl).href;
+            const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null);
 
             const rewrittenM3u8 = response.data.split('\n').map(line => {
                 const trimmed = line.trim();
                 if (!trimmed) return line;
 
                 if (trimmed.startsWith('#EXT-X-MAP:') || trimmed.startsWith('#EXT-X-KEY:') || trimmed.startsWith('#EXT-X-MEDIA:')) {
-                    return line.replace(/URI="([^"]+)"/, (match, uri) => {
-                        return `URI="/api/m3u8-proxy?url=${encodeURIComponent(resolveUri(uri))}${refSuffix}"`;
-                    });
+                    return line.replace(/URI="([^"]+)"/, (match, uri) => `URI="${proxyUri(uri)}"`);
                 }
 
                 if (trimmed.startsWith('#')) return line;
 
-                return `/api/m3u8-proxy?url=${encodeURIComponent(resolveUri(trimmed))}${refSuffix}`;
+                return proxyUri(trimmed);
             }).join('\n');
 
             return res.send(rewrittenM3u8);
@@ -9218,6 +9376,26 @@ function recordCommentScrape(malId, episodeNumber, source) {
     });
 }
 
+// recordCommentScrape() above is written BEFORE the actual scrape/import runs (so concurrent
+// requests for the same key can tell one is already in flight - though animeCommentJobsInFlight/
+// animegoCommentJobsInFlight already handle that too). If the import then fails for any reason
+// (resolution error, source down, a genuine bug), that timestamp is still sitting there marking
+// this malId+episode as "freshly scraped", and hasRecentSourceComments' 24h TTL means nobody
+// retries it until tomorrow even though nothing was ever actually imported. Verified this is
+// exactly what happened live: a request that hit a real bug in resolveAnimegoAniboom got logged
+// as scraped, the bug was then fixed, and every following request for that title kept getting
+// silently skipped as "already fresh" for the rest of the day. Call this in the catch/failure
+// path so a failed attempt doesn't block the next real one.
+function clearCommentScrapeMark(malId, episodeNumber, source) {
+    return new Promise((resolve) => {
+        animeCacheDb.run(
+            `DELETE FROM anime_comment_scrape_log WHERE mal_id = ? AND episode_number = ? AND source = ?`,
+            [malId, episodeNumber, source],
+            () => resolve()
+        );
+    });
+}
+
 async function resolveAnimegoCommentSectionId(slug) {
     const pageRes = await axios.get(`https://animego.me/anime/${slug}`, {
         headers: { 'User-Agent': NEWSTREAM_UA, 'Referer': 'https://animego.me/' },
@@ -9354,45 +9532,50 @@ function runAnimegoCommentImportJob(malId, rawTitle, season) {
         if (!rawTitle) return;
         await recordCommentScrape(malId, 0, 'animego');
 
-        const resolved = await resolveAnimegoAniboomCached(rawTitle, season || 1, { malId });
-        const sectionId = await resolveAnimegoCommentSectionId(resolved.slug);
-        const refererUrl = `https://animego.me/anime/${resolved.slug}`;
+        try {
+            const resolved = await resolveAnimegoAniboomCached(rawTitle, season || 1, { malId });
+            const sectionId = await resolveAnimegoCommentSectionId(resolved.slug);
+            const refererUrl = `https://animego.me/anime/${resolved.slug}`;
 
-        const commenterInfo = new Map();
-        let page = 1;
-        let hasMore = true;
-        // Sanity cap - a runaway thread shouldn't turn one page load into dozens of
-        // sequential requests against animego.
-        while (hasMore && page <= 15) {
-            const result = await fetchAnimegoCommentPage(sectionId, page, refererUrl);
-            for (const c of result.comments) {
-                const userUID = c.userId ? ANIMEGO_USER_ID_OFFSET + Number(c.userId) : null;
-                try {
-                    await upsertAnimeComment({
-                        malId, episodeNumber: 0, source: 'animego',
-                        sourceCommentId: c.sourceCommentId, parentSourceId: null,
-                        anikotoAnimeId: null, anikotoEpisodeId: null,
-                        userId: userUID, username: c.username, avatarUrl: c.avatarUrl,
-                        text: c.text, rawText: c.text,
-                        replyCount: 0, postedTimeText: null, createdAtOverride: c.createdAt
-                    });
-                } catch (err) {
-                    logTempDebug('[Animego Import] Failed to upsert comment', { id: c.sourceCommentId, error: err.message });
+            const commenterInfo = new Map();
+            let page = 1;
+            let hasMore = true;
+            // Sanity cap - a runaway thread shouldn't turn one page load into dozens of
+            // sequential requests against animego.
+            while (hasMore && page <= 15) {
+                const result = await fetchAnimegoCommentPage(sectionId, page, refererUrl);
+                for (const c of result.comments) {
+                    const userUID = c.userId ? ANIMEGO_USER_ID_OFFSET + Number(c.userId) : null;
+                    try {
+                        await upsertAnimeComment({
+                            malId, episodeNumber: 0, source: 'animego',
+                            sourceCommentId: c.sourceCommentId, parentSourceId: null,
+                            anikotoAnimeId: null, anikotoEpisodeId: null,
+                            userId: userUID, username: c.username, avatarUrl: c.avatarUrl,
+                            text: c.text, rawText: c.text,
+                            replyCount: 0, postedTimeText: null, createdAtOverride: c.createdAt
+                        });
+                    } catch (err) {
+                        logTempDebug('[Animego Import] Failed to upsert comment', { id: c.sourceCommentId, error: err.message });
+                    }
+                    if (userUID) {
+                        trackCommenter(commenterInfo, userUID, c.username, c.avatarUrl,
+                            null, c.createdAt);
+                    }
                 }
-                if (userUID) {
-                    trackCommenter(commenterInfo, userUID, c.username, c.avatarUrl,
-                        null, c.createdAt);
-                }
+                hasMore = result.hasMore;
+                page++;
             }
-            hasMore = result.hasMore;
-            page++;
-        }
 
-        ensureImportedCommentUserAccounts(commenterInfo, {
-            idOffset: ANIMEGO_USER_ID_OFFSET,
-            usernamePrefix: 'AnimeGoUser',
-            logPath: ANIMEGO_USER_INFO_LOG_PATH
-        }).catch(err => logTempDebug('[Animego Import] User account sync failed', { error: err.message }));
+            ensureImportedCommentUserAccounts(commenterInfo, {
+                idOffset: ANIMEGO_USER_ID_OFFSET,
+                usernamePrefix: 'AnimeGoUser',
+                logPath: ANIMEGO_USER_INFO_LOG_PATH
+            }).catch(err => logTempDebug('[Animego Import] User account sync failed', { error: err.message }));
+        } catch (err) {
+            await clearCommentScrapeMark(malId, 0, 'animego');
+            throw err;
+        }
     })();
 
     animegoCommentJobsInFlight.set(key, job);
@@ -9430,13 +9613,21 @@ function runAnimeCommentImportJob(malId, episodeNumber, resolveIds) {
             return;
         }
         await recordCommentScrape(malId, episodeNumber, 'anikoto');
-        const ids = await resolveIds();
-        if (!ids || !ids.anikotoAnimeId || !ids.anikotoEpisodeId) return;
-        await importAnikotoComments({
-            malId, episodeNumber,
-            anikotoAnimeId: ids.anikotoAnimeId,
-            anikotoEpisodeId: ids.anikotoEpisodeId
-        });
+        try {
+            const ids = await resolveIds();
+            if (!ids || !ids.anikotoAnimeId || !ids.anikotoEpisodeId) {
+                await clearCommentScrapeMark(malId, episodeNumber, 'anikoto');
+                return;
+            }
+            await importAnikotoComments({
+                malId, episodeNumber,
+                anikotoAnimeId: ids.anikotoAnimeId,
+                anikotoEpisodeId: ids.anikotoEpisodeId
+            });
+        } catch (err) {
+            await clearCommentScrapeMark(malId, episodeNumber, 'anikoto');
+            throw err;
+        }
     })();
 
     animeCommentJobsInFlight.set(key, job);
@@ -9468,13 +9659,14 @@ function trackCommenter(commenterInfo, userId, username, avatarUrl, postedTimeTe
     }
 }
 
+// Only ever called from runAnimeCommentImportJob(), which already does its own freshness
+// check BEFORE calling this - and calls recordCommentScrape() right before that, marking this
+// exact (malId, episodeNumber, 'anikoto') as "just scraped". A second freshness check here used
+// to always see that same timestamp and immediately bail out, which meant the actual scrape
+// loop below never ran for anyone going through the normal path - explains why the comment
+// scrape log kept updating every few minutes while anime_comments' newest anikoto row stayed
+// weeks stale.
 async function importAnikotoComments({ malId, episodeNumber, anikotoAnimeId, anikotoEpisodeId }) {
-    const alreadyFresh = await hasRecentAnimeComments(malId, episodeNumber);
-    if (alreadyFresh) {
-        logTempDebug('[Import] Skipped - already have recent comments', { malId, episodeNumber });
-        return;
-    }
-
     logTempDebug('[Import] Starting', { malId, episodeNumber, anikotoAnimeId, anikotoEpisodeId });
 
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -9828,7 +10020,16 @@ async function resolveAnikotoEpisode(rawTitle, season, episode) {
 // are cached; a failure isn't remembered, so a later retry isn't permanently blocked by it.
 const anikotoEpisodeResolveCache = new Map(); // key -> { result, resolvedAt }
 const anikotoEpisodeResolveInFlight = new Map(); // key -> Promise
-const ANIKOTO_RESOLVE_CACHE_TTL_MS = 30 * 60 * 1000;
+// vidtube (Neko's backend) has no public catalog of its own - it only knows opaque internal
+// ids that anikoto's own database assigns, so this resolution genuinely can't be bypassed (see
+// vidscr.txt for what was checked). What CAN change is how long we trust a resolution once
+// found: the (title,season,episode) -> anikoto/vidtube mapping essentially never changes once
+// anikoto has assigned it, so 30 minutes was needlessly short and made most Neko loads pay the
+// full anikoto chain (search, watch page, episode list, server list) again and again for no
+// reason. In-memory only, so a server restart still clears it - a DB-backed table (same
+// pattern as anikoto_episode_counts) would make this durable across restarts too, if that
+// turns out to matter in practice.
+const ANIKOTO_RESOLVE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function resolveAnikotoEpisodeCached(rawTitle, season, episode) {
     const key = `${String(rawTitle).toLowerCase().trim()}::${season}::${episode}`;
@@ -11104,6 +11305,72 @@ app.delete('/anime-comments/:id', requireAuth, (req, res) => {
     });
 });
 
+// serverToken -> anikoto's server list -> the link-id for the requested audio type -> resolve
+// that to a VidTube embed page -> scrape its numeric media id out of the HTML. Extracted
+// verbatim from what used to be inlined in /api/anime-neko-log, so both playback and download
+// (/api/anime-neko-download) share one implementation instead of two that could drift apart.
+async function resolveNekoMediaId(serverToken, audio, baseHeaders) {
+    logNekoDebug('[Neko] 2. Fetching server list...');
+    const serverListRes = await axios.get(`https://anikoto.cz/ajax/server/list?servers=${encodeURIComponent(serverToken)}`, { headers: baseHeaders });
+    const $srv = cheerio.load(serverListRes.data.result || serverListRes.data);
+    const serverCandidates = [];
+    $srv('li[data-link-id]').each((i, el) => {
+        serverCandidates.push({
+            index: i + 1,
+            type: $srv(el).closest('div[data-type]').attr('data-type'),
+            svId: $srv(el).attr('data-sv-id'),
+            linkId: $srv(el).attr('data-link-id'),
+            text: $srv(el).text().trim()
+        });
+    });
+    logNekoDebug('[Neko] Server candidates', serverCandidates);
+
+    // VidPlay ('8e4') is the ONLY server on anikoto that's actually VidTube - the others under
+    // the same data-type (Vidstream-2/HD-1/HD-2, sv-id e54/323) are anikoto's OWN embeds of
+    // MegaPlay, a completely different site with a completely different embed page shape. This
+    // used to fall back to "whatever server this audio type has" when 8e4 wasn't present,
+    // which for THIS type could easily be one of those MegaPlay links - handed to step 4's
+    // VidTube-specific media-id regex below, it obviously never matches, producing the
+    // confusing "Could not extract media ID from VidTube HTML" error for what's really just
+    // "this episode has no VidTube [sub|dub], only a MegaPlay one." Verified live: Tower of God
+    // ep1's server list has VidPlay-1 (8e4) under dub but NOT under sub - anikoto genuinely
+    // doesn't offer a VidTube sub stream for it, only MegaPlay-branded ones.
+    const dataLinkId = $srv(`div[data-type="${audio}"] li[data-sv-id="8e4"]`).attr('data-link-id');
+
+    // hsub is NOT universal - anikoto only lists it for some titles, and only on vidtube.
+    if (!dataLinkId && audio === 'hsub') {
+        throw new Error('This title has no hard-subbed (HSUB) version - try SUB or DUB.');
+    }
+    if (!dataLinkId) {
+        // Distinct, catchable shape (not a generic Error) so /api/anime-neko-log can tell
+        // "no VidTube for this type" apart from a real extraction failure and fall back to
+        // MegaPlay - anikoto's OTHER real backend - instead of just failing outright.
+        const err = new Error(`NekoStream (VidTube) has no ${audio.toUpperCase()} stream for this episode.`);
+        err.noVidtube = true;
+        throw err;
+    }
+    logNekoDebug('[Neko] Selected server link id', { audio, dataLinkId });
+
+    // 3. Trade slug for VidTube Embed URL
+    logNekoDebug('[Neko] 3. Resolving VidTube Embed URL...');
+    const serverRes = await axios.get(`https://anikoto.cz/ajax/server?get=${encodeURIComponent(dataLinkId)}`, {
+        headers: { ...baseHeaders, 'X-FP': '0e5bzbvh9uqp' }
+    });
+
+    const embedUrl = serverRes.data?.result?.url || serverRes.data?.url;
+    if (!embedUrl) throw new Error('Anikoto rejected server lookup.');
+    logNekoDebug('[Neko] Embed URL', embedUrl);
+
+    // 4. Extract VidTube media ID
+    logNekoDebug('[Neko] 4. Extracting VidTube media ID...');
+    const embedRes = await axios.get(embedUrl, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
+
+    const mediaIdMatch = embedRes.data.match(/data-id=["'](\d+)["']/i) || embedRes.data.match(/caPm\s*=\s*["']?(\d+)["']/i);
+    if (!mediaIdMatch) throw new Error('Could not extract media ID from VidTube HTML.');
+
+    return { mediaId: mediaIdMatch[1], embedUrl };
+}
+
 app.get('/api/anime-neko-log', async (req, res) => {
     const malId = req.query.malId || null;
     const tmdbId = req.query.tmdbId || null;
@@ -11138,11 +11405,26 @@ app.get('/api/anime-neko-log', async (req, res) => {
             const cached = await episodeLoadCacheGet(parseInt(tmdbId), season, episode, audio, 'neko');
             if (cached && cached.sources) {
                 logNekoDebug(`[Cache HIT] Neko S${season}E${episode} ${audio}`);
+                // __proxyRef/__tracks are bundled into the same cached blob as `downloads`
+                // (see the SET below) - split back out so a cache hit returns exactly the same
+                // shape a cold resolve does, instead of silently dropping the MegaPlay-fallback
+                // Referer and subtitle tracks (was a real bug: a title that was ever resolved
+                // via the MegaPlay fallback got cached without them, so cache hits kept feeding
+                // the frontend a vidtube.site-referer'd proxy URL for a MegaPlay CDN link -
+                // exactly the 403 that was being reported).
+                const { __proxyRef, __tracks, ...downloads } = cached.subtitles || {};
+                const cachedRawStream = (cached.sources && cached.sources[0]) || null;
                 return res.json({
                     ok: true,
-                    stream: (cached.sources && cached.sources[0]) || null,
-                    sources: cached.sources || [],
-                    downloads: cached.subtitles || {},
+                    // Tokenized fresh on every response (not at cache-write time) - the cache
+                    // entry's raw URL can be up to 24h old, but a token is only good for 6h,
+                    // so building it here instead of storing it keeps it always valid.
+                    stream: cachedRawStream ? buildM3u8ProxyUrl(cachedRawStream, __proxyRef || null) : null,
+                    sources: (cached.sources || []).map(u => buildM3u8ProxyUrl(u, __proxyRef || null)),
+                    proxyRef: __proxyRef || null,
+                    // Same fresh-per-response tokenizing as `stream` above, not stored this way.
+                    tracks: tokenizeMegaplayTracks(__tracks),
+                    downloads,
                     skipSegments
                 });
             }
@@ -11208,69 +11490,44 @@ app.get('/api/anime-neko-log', async (req, res) => {
             }
         }
 
-        // 2. Fetch server list HTML
-        logNekoDebug('[Neko] 2. Fetching server list...');
-        const serverListRes = await axios.get(`https://anikoto.cz/ajax/server/list?servers=${encodeURIComponent(serverToken)}`, { headers: baseHeaders });
-        const $srv = cheerio.load(serverListRes.data.result || serverListRes.data);
-        const serverCandidates = [];
-        $srv('li[data-link-id]').each((i, el) => {
-            serverCandidates.push({
-                index: i + 1,
-                type: $srv(el).closest('div[data-type]').attr('data-type'),
-                svId: $srv(el).attr('data-sv-id'),
-                linkId: $srv(el).attr('data-link-id'),
-                text: $srv(el).text().trim()
+        // 2-4. Server list -> pick the link for this audio type -> resolve VidTube embed ->
+        // extract its numeric media id. Shared with /api/anime-neko-download (see
+        // resolveNekoMediaId) so both playback and download go through the identical chain
+        // instead of two copies that could quietly drift apart.
+        let streamUrl = null;
+        // /api/m3u8-proxy defaults its Referer/Origin to vidtube.site when no `ref` is given
+        // (correct for the normal path below) - MegaPlay's CDN needs megaplay.buzz's instead,
+        // or its hotlink protection blocks the request. null here means "use the proxy's
+        // default", set explicitly only when the MegaPlay fallback actually runs.
+        let streamProxyRef = null;
+        let megaplayTracks = [];
+        try {
+            const { mediaId, embedUrl } = await resolveNekoMediaId(serverToken, audio, baseHeaders);
+            logNekoDebug('[Neko] Extracted media id', mediaId);
+
+            const sourcesRes = await axios.get(`https://vidtube.site/stream/getSourcesNew?id=${mediaId}&type=${audio}`, {
+                headers: { ...baseHeaders, 'Referer': embedUrl }
             });
-        });
-        logNekoDebug('[Neko] Server candidates', serverCandidates);
-        
-        // Target VidPlay ('8e4') or fall back to the first available server for VidTube stream
-        let dataLinkId = $srv(`div[data-type="${audio}"] li[data-sv-id="8e4"]`).attr('data-link-id') ||
-                         $srv(`div[data-type="${audio}"] li[data-link-id]`).first().attr('data-link-id');
 
-        // hsub is NOT universal - anikoto only lists it for some titles, and only on vidtube.
-        // The last-resort fallback below deliberately ignores data-type, so without this guard
-        // an hsub request for a title that has none silently resolved to whatever server came
-        // first (observed live: audio=hsub returning a megaplay ".../sub" URL, which was then
-        // fed to the VidTube extractor and died as "Could not extract media ID from VidTube
-        // HTML" - a confusing error for what is really just "this title has no hard-sub").
-        // Fail honestly here instead; the frontend surfaces it and the user can pick SUB/DUB.
-        if (!dataLinkId && audio === 'hsub') {
-            throw new Error('This title has no hard-subbed (HSUB) version - try SUB or DUB.');
+            streamUrl = sourcesRes.data?.sources?.file || sourcesRes.data?.file;
+            if (!streamUrl) throw new Error('Could not resolve VidTube stream file.');
+        } catch (vidtubeErr) {
+            // Anikoto's OWN server list frequently only has VidTube (VidPlay-1) under ONE of
+            // sub/dub, not both (verified live: Tower of God ep1 has it under dub but not
+            // sub) - the other audio type's servers on that same list are anikoto's embeds of
+            // MegaPlay instead, a site we already extract directly and reliably. Falling back
+            // to that instead of failing means "NekoStream" effectively still works whenever
+            // anikoto has ANY working backend for this episode, not just specifically VidTube.
+            if (vidtubeErr.noVidtube && audio !== 'hsub' && (malId || mal)) {
+                logNekoDebug('[Neko] No VidTube for this type, falling back to MegaPlay via anikoto', { audio, error: vidtubeErr.message });
+                const mp = await resolveMegaplaySourcesCached(malId || mal, episode, audio);
+                streamUrl = mp.stream;
+                streamProxyRef = mp.proxyRef || 'https://megaplay.buzz/';
+                megaplayTracks = Array.isArray(mp.tracks) ? mp.tracks : [];
+            } else {
+                throw vidtubeErr;
+            }
         }
-
-        // Type-agnostic last resort, unchanged for sub/dub.
-        dataLinkId = dataLinkId || $srv('li[data-link-id]').first().attr('data-link-id');
-
-        if (!dataLinkId) throw new Error(`Could not find data-link-id for audio type: ${audio}`);
-        logNekoDebug('[Neko] Selected server link id', { audio, dataLinkId });
-
-        // 3. Trade slug for VidTube Embed URL
-        logNekoDebug('[Neko] 3. Resolving VidTube Embed URL...');
-        const serverRes = await axios.get(`https://anikoto.cz/ajax/server?get=${encodeURIComponent(dataLinkId)}`, {
-            headers: { ...baseHeaders, 'X-FP': '0e5bzbvh9uqp' }
-        });
-
-        const embedUrl = serverRes.data?.result?.url || serverRes.data?.url;
-        if (!embedUrl) throw new Error('Anikoto rejected server lookup.');
-        logNekoDebug('[Neko] Embed URL', embedUrl);
-
-        // 4. Extract VidTube media ID and fetch .m3u8 stream
-        logNekoDebug('[Neko] 4. Extracting VidTube media ID and fetching stream...');
-        const embedRes = await axios.get(embedUrl, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
-        
-        const mediaIdMatch = embedRes.data.match(/data-id=["'](\d+)["']/i) || embedRes.data.match(/caPm\s*=\s*["']?(\d+)["']/i);
-        if (!mediaIdMatch) throw new Error('Could not extract media ID from VidTube HTML.');
-        
-        const mediaId = mediaIdMatch[1];
-        logNekoDebug('[Neko] Extracted media id', mediaId);
-        
-        const sourcesRes = await axios.get(`https://vidtube.site/stream/getSourcesNew?id=${mediaId}&type=${audio}`, {
-            headers: { ...baseHeaders, 'Referer': embedUrl }
-        });
-
-        const streamUrl = sourcesRes.data?.sources?.file || sourcesRes.data?.file;
-        if (!streamUrl) throw new Error('Could not resolve VidTube stream file.');
 
         logNekoDebug('✓ SUCCESS! Stream resolved');
         logNekoDebug('[Neko] Stream M3U8:', streamUrl);
@@ -11279,7 +11536,11 @@ app.get('/api/anime-neko-log', async (req, res) => {
 
         const responseData = {
             ok: true,
-            stream: streamUrl,
+            // Tokenized here (not stored this way) - the raw streamUrl never reaches the
+            // browser at all now, only this opaque, time-limited proxy link does.
+            stream: buildM3u8ProxyUrl(streamUrl, streamProxyRef),
+            proxyRef: streamProxyRef,
+            tracks: tokenizeMegaplayTracks(megaplayTracks),
             downloads: {
                 sub: subLinks[0] || null,
                 sub2: subLinks[1] || subLinks[0] || null,
@@ -11289,10 +11550,11 @@ app.get('/api/anime-neko-log', async (req, res) => {
             skipSegments
         };
 
-        // Cache the result
+        // Cache the result - proxyRef/tracks bundled into the same blob as downloads (see the
+        // GET above for why: a cache hit needs to reconstruct the exact same response shape).
         if (tmdbId && streamUrl) {
             const sources = [streamUrl];
-            const subtitles = responseData.downloads;
+            const subtitles = { ...responseData.downloads, __proxyRef: streamProxyRef, __tracks: megaplayTracks };
             episodeLoadCacheSet(parseInt(tmdbId), malId, season, episode, audio, 'neko',
                 null, rawTitle, sources, subtitles).catch(err =>
                 logNekoDebug('[Cache] Failed to cache Neko result:', err.message));
@@ -11357,6 +11619,19 @@ async function searchAnimegoCandidates(query) {
     return candidates;
 }
 
+// AniList often gives a combined romaji like "Kami no Tou: Tower of God" (native title +
+// English subtitle bolted on) rather than the clean "Kami no Tou" animego's own secondary-title
+// line uses. Comparing the combined string as one blob dilutes the bigram overlap: verified
+// live, compareTwoStrings("kami no tou: tower of god", "kami no tou") = 0.59, just under the
+// 0.6 cutoff, when the two are actually the same title. Splitting on the common
+// title/subtitle separators and scoring each piece as its own variant recovers the clean 1.0
+// match without loosening the threshold (which is what keeps unrelated titles like "Dies
+// Irae: To the Ring Reincarnation" rejected for a "Jobless Reincarnation" query).
+function splitTitleSegments(title) {
+    const segments = String(title || '').split(/[:–—-]+/).map(s => s.trim()).filter(s => s.length >= 3);
+    return segments.length > 1 ? segments : [];
+}
+
 async function resolveAnimegoAniboom(rawTitle, season, { malId = null, tmdbId = null } = {}) {
     const headers = { 'User-Agent': NEWSTREAM_UA, 'Referer': 'https://animego.me/' };
 
@@ -11374,58 +11649,72 @@ async function resolveAnimegoAniboom(rawTitle, season, { malId = null, tmdbId = 
     // scores 0.53 from bigram overlap on "reincarnation" alone -- 0.4 let that false
     // positive through, 0.6 cleanly separates the two.
     const NEWSTREAM_MIN_TITLE_SIMILARITY = 0.6;
-    const titleVariants = [rawTitle];
-
+    const titleVariants = [rawTitle, ...splitTitleSegments(rawTitle)];
+    // Tracks which variant string produced each candidate's best score, so season selection
+    // below can tell "matched the season-specific AniList title" apart from "matched the raw
+    // query" without re-deriving it.
     const scoreCandidates = (list, variants) => {
         const lowerVariants = variants.map(v => v.toLowerCase());
         return list.map(c => {
             const candidateTitles = [c.title, c.secondaryTitle].filter(Boolean).map(t => t.toLowerCase());
             let best = 0;
+            let bestVariant = null;
             for (const v of lowerVariants) {
                 for (const t of candidateTitles) {
-                    best = Math.max(best, stringSimilarity.compareTwoStrings(v, t));
+                    const s = stringSimilarity.compareTwoStrings(v, t);
+                    if (s > best) { best = s; bestVariant = v; }
                 }
             }
-            return { ...c, similarity: best };
+            return { ...c, similarity: best, bestVariant };
         }).sort((a, b) => b.similarity - a.similarity);
     };
 
     let scored = scoreCandidates(candidates, titleVariants);
 
-    // Not every anime has an English localization on animego -- some cards only
-    // show the Russian title plus the raw Japanese romaji as the secondary line
-    // (e.g. "Koko wa Ore ni Makasete..." instead of "I Became a Legend After My
-    // 10 Year-Long Last Stand"). An English TMDB/query title has near-zero
-    // overlap with that romaji, so it fails here even though the show genuinely
-    // exists. Fetch the real romaji/native title from AniList (same id lookup
-    // used elsewhere) and retry with that as an additional search query + match
-    // target before giving up.
-    if (scored[0].similarity < NEWSTREAM_MIN_TITLE_SIMILARITY && (malId || tmdbId)) {
-        try {
-            let anilistId = null, resolvedMalId = malId ? Number(malId) : null;
-            if (tmdbId) {
-                const ids = await resolveAnimeIds(tmdbId, season);
-                if (ids) {
-                    anilistId = ids.anilistId || null;
-                    resolvedMalId = resolvedMalId || ids.malId || null;
-                }
-            }
-            const media = await aniListGetMediaBasic({ anilistId, malId: resolvedMalId });
-            const altTitles = [media?.title?.romaji, media?.title?.native, media?.title?.english].filter(Boolean);
-            if (altTitles.length) {
-                console.log(`[NewStream] "${rawTitle}" scored low, retrying with AniList titles:`, altTitles);
-                for (const alt of altTitles) {
-                    if (titleVariants.includes(alt)) continue;
-                    titleVariants.push(alt);
-                    const altCandidates = await searchAnimegoCandidates(alt);
-                    for (const c of altCandidates) {
-                        if (!candidates.some(existing => existing.slug === c.slug)) candidates.push(c);
+    // Season-specific AniList title, fetched via the SAME season-aware fribb/MAL mapping KAA
+    // uses (resolveAnimeIds already picks the entry whose item.season.tmdb matches, not just
+    // whatever the base show's id is) - this both rescues low-scoring matches (some anime have
+    // no English localization on animego at all, only Russian + raw romaji) AND, more
+    // importantly, gives season > 1 selection below something real to match against instead of
+    // guessing from a regex on Russian catalog text that rarely says "Part 2" or "2 сезон" at
+    // all - most sequels are shelved under a wholly different arc subtitle
+    // (Tower of God S2P1 is "Kami no Tou: Ouji no Kikan", not "Tower of God 2").
+    let seasonVariants = [];
+    if (season > 1 || scored[0].similarity < NEWSTREAM_MIN_TITLE_SIMILARITY) {
+        if (malId || tmdbId) {
+            try {
+                let anilistId = null, resolvedMalId = malId ? Number(malId) : null;
+                if (tmdbId) {
+                    const ids = await resolveAnimeIds(tmdbId, season);
+                    if (ids) {
+                        anilistId = ids.anilistId || null;
+                        resolvedMalId = resolvedMalId || ids.malId || null;
                     }
                 }
-                scored = scoreCandidates(candidates, titleVariants);
+                const media = await aniListGetMediaBasic({ anilistId, malId: resolvedMalId });
+                const altTitles = [media?.title?.romaji, media?.title?.native, media?.title?.english].filter(Boolean);
+                if (altTitles.length) {
+                    console.log(`[NewStream] "${rawTitle}" S${season} - retrying with season-specific AniList titles:`, altTitles);
+                    for (const alt of altTitles) {
+                        const variants = [alt, ...splitTitleSegments(alt)];
+                        for (const v of variants) {
+                            if (!titleVariants.includes(v)) titleVariants.push(v);
+                        }
+                        // Only the FULL (unsplit) alt title counts as a season signal - a split
+                        // segment like "Kami no Tou" is the shared franchise prefix EVERY season
+                        // uses, so treating it as season-specific would make season 1 tie with
+                        // season 2's real match and win on candidate-array order.
+                        if (!seasonVariants.includes(alt)) seasonVariants.push(alt);
+                        const altCandidates = await searchAnimegoCandidates(alt);
+                        for (const c of altCandidates) {
+                            if (!candidates.some(existing => existing.slug === c.slug)) candidates.push(c);
+                        }
+                    }
+                    scored = scoreCandidates(candidates, titleVariants);
+                }
+            } catch (err) {
+                console.warn('[NewStream] AniList title fallback failed:', err.message || err);
             }
-        } catch (err) {
-            console.warn('[NewStream] AniList title fallback failed:', err.message || err);
         }
     }
 
@@ -11438,13 +11727,19 @@ async function resolveAnimegoAniboom(rawTitle, season, { malId = null, tmdbId = 
         throw err;
     }
 
-    // Sequel seasons are usually distinct catalog entries (e.g. "... 2", "Part 2").
-    // Default to the best title match; for season > 1 prefer a well-matching
-    // candidate whose title also looks like that season.
+    // Sequel seasons are usually distinct catalog entries (e.g. "... 2", "Part 2"). Prefer
+    // whichever well-matched candidate scored highest specifically against the season-specific
+    // AniList title fetched above - that's a real season signal, unlike guessing off Russian
+    // catalog text. Only fall back to the old "does the title literally say season N" regex
+    // when AniList had nothing to offer (e.g. this title isn't in the fribb MAL mapping).
     let chosen = scored[0];
     if (season > 1) {
         const wellMatched = scored.filter(c => c.similarity >= NEWSTREAM_MIN_TITLE_SIMILARITY);
-        chosen = wellMatched.find(c => new RegExp(`(^|\\s)(${season}|part\\s*${season}|${season}\\s*сезон)(\\s|$)`, 'i').test(c.title))
+        const seasonMatched = seasonVariants.length
+            ? wellMatched.find(c => seasonVariants.includes(c.bestVariant))
+            : null;
+        chosen = seasonMatched
+            || wellMatched.find(c => new RegExp(`(^|\\s)(${season}|part\\s*${season}|${season}\\s*сезон)(\\s|$)`, 'i').test(c.title))
             || wellMatched[season - 1]
             || scored[0];
     }
@@ -11558,7 +11853,9 @@ app.get('/api/anime-new-log', async (req, res) => {
                 const meta = cached.subtitles || {};
                 return res.json({
                     ok: true,
-                    stream: cached.sources[0],
+                    // Tokenized fresh per-response, same reasoning as Neko above - cache TTL
+                    // outlives a single token's TTL.
+                    stream: buildM3u8ProxyUrl(cached.sources[0], 'https://aniboom.one/'),
                     proxyRef: 'https://aniboom.one/',
                     translationId: meta.translationId || null,
                     translationTitle: meta.translationTitle || 'RU',
@@ -11587,7 +11884,7 @@ app.get('/api/anime-new-log', async (req, res) => {
 
                 return res.json({
                     ok: true,
-                    stream: streamUrl,
+                    stream: buildM3u8ProxyUrl(streamUrl, 'https://aniboom.one/'),
                     proxyRef: 'https://aniboom.one/',
                     translationId: translation.id,
                     translationTitle: translation.title,
@@ -11966,7 +12263,7 @@ app.get('/api/movie-ru-log', async (req, res) => {
 
     try {
         const { streamUrl, translationTitle } = await resolveMovieRuData(rawTitle, tmdbId);
-        return res.json({ ok: true, stream: streamUrl, proxyRef: 'https://cinemar.cc/', translationTitle });
+        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, 'https://cinemar.cc/'), proxyRef: 'https://cinemar.cc/', translationTitle });
     } catch (err) {
         console.error('[RU Movie] Error:', err.message);
         return res.status(err.status || 500).json({ ok: false, error: err.message });
@@ -12086,7 +12383,7 @@ app.get('/api/tv-ru-log', async (req, res) => {
 
     try {
         const { streamUrl, translationTitle } = await resolveTvRuData(rawTitle, tmdbId, season, episode);
-        return res.json({ ok: true, stream: streamUrl, proxyRef: 'https://cinemar.cc/', translationTitle });
+        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, 'https://cinemar.cc/'), proxyRef: 'https://cinemar.cc/', translationTitle });
     } catch (err) {
         console.error('[RU TV] Error:', err.message);
         return res.status(err.status || 500).json({ ok: false, error: err.message });
@@ -12486,7 +12783,7 @@ app.get('/api/movie-kino-log', async (req, res) => {
             `movie:${tmdbId}`,
             () => runKinoExtraction(`movie/${tmdbId}`, 'movie')
         );
-        return res.json({ ok: true, stream: streamUrl, proxyRef });
+        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, proxyRef || null), proxyRef });
     } catch (err) {
         console.error('[Kino] Error:', err.message);
         return res.status(err.status || 500).json({ ok: false, error: err.message });
@@ -12506,7 +12803,7 @@ app.get('/api/tv-kino-log', async (req, res) => {
             `tv:${tmdbId}:${season}:${episode}`,
             () => runKinoExtraction(`tv/${tmdbId}/${season}/${episode}`, 'tv')
         );
-        return res.json({ ok: true, stream: streamUrl, proxyRef });
+        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, proxyRef || null), proxyRef });
     } catch (err) {
         console.error('[Kino TV] Error:', err.message);
         return res.status(err.status || 500).json({ ok: false, error: err.message });
@@ -12766,6 +13063,59 @@ app.get('/api/anime-kaa-servers', async (req, res) => {
     }
 });
 
+// Cheap SUB/DUB availability probe for the download panel - shares the exact same
+// episode_load_cache real playback writes to above, so a title someone already watched (or
+// already checked) costs nothing extra. A genuinely cold check still does a real KAA
+// resolution (same cost as switching servers would), but only ever once per
+// (tmdbId,season,episode,audio) thanks to that cache - the frontend also caches this
+// per page session so reopening the panel doesn't refire it at all.
+app.get('/api/anime-kaa-availability', async (req, res) => {
+    try {
+        let malId = req.query.malId;
+        const tmdbId = parseInt(req.query.tmdbId, 10);
+        const season = parseInt(req.query.season, 10) || 1;
+        const episodeNumber = req.query.ep || req.query.episode || 1;
+        const frontendTitle = req.query.title || '';
+        if (tmdbId) {
+            await ensureAnimeMalListLoaded();
+            let entry = _animeMalList.find(item => {
+                const mappedTmdbId = getMappedTmdbId(item.themoviedb_id);
+                if (mappedTmdbId !== tmdbId) return false;
+                if (item.season && item.season.tmdb != null) return Number(item.season.tmdb) === season;
+                return true;
+            });
+            if (!entry || !entry.mal_id) {
+                entry = _animeMalList.find(item => getMappedTmdbId(item.themoviedb_id) === tmdbId && item.mal_id);
+            }
+            if (entry?.mal_id) malId = entry.mal_id;
+        }
+        if (!malId) return res.status(400).json({ ok: false, error: 'Missing malId or tmdbId mapping' });
+
+        const checkOne = async (audioType) => {
+            const cached = await episodeLoadCacheGet(tmdbId, season, episodeNumber, audioType, 'kaa');
+            if (cached) return Array.isArray(cached.sources) && cached.sources.length > 0;
+            try {
+                const result = await resolveKickAssAnimeSources({
+                    malId, tmdbId, itemType: 'tv', episodeNumber, audioType, frontendTitle, season
+                });
+                if (result?.sources?.length > 0) {
+                    episodeLoadCacheSet(tmdbId, malId, season, episodeNumber, audioType, 'kaa',
+                        result.animeId, result.animeTitle, result.sources, result.subtitles).catch(() => {});
+                    return true;
+                }
+                return false;
+            } catch (err) {
+                return false;
+            }
+        };
+
+        const [sub, dub] = await Promise.all([checkOne('sub'), checkOne('dub')]);
+        res.json({ ok: true, sub, dub });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
 app.get('/api/animepahe/:malId/:ep/:type', async (req, res) => {
     try {
         const { malId, ep, type } = req.params;
@@ -12997,48 +13347,129 @@ app.get('/api/anime-download-links', async (req, res) => {
 //     whole ~350MB episode
 // Output is .ts (directly playable in VLC/mpv). Producing .mp4 would need a remux - which is
 // the ONLY thing ffmpeg would still be useful for here, and it's optional.
+// Shared by megaplay AND vidtube/Neko downloads - both CDNs serve plain MPEG-TS segments
+// disguised behind decoy extensions/content-types (verified for both: first byte 0x47, clean
+// sync byte at every 188-byte stride - see vidscr.txt), so the same "resolve master -> pick
+// variant -> pipe each segment through" logic works unmodified for either source. Output is
+// .ts (byte concatenation is valid for MPEG-TS, no remux needed - see vidscr.txt for why).
+async function streamHlsAsDownload(res, { masterUrl, headers, filename }) {
+    const master = await axios.get(masterUrl, { headers, timeout: 20000 });
+    const variantLine = String(master.data).split('\n')
+        .filter(l => l.trim() && !l.startsWith('#'))
+        .find(l => /\.m3u8/i.test(l));
+    const variantUrl = variantLine ? new URL(variantLine.trim(), masterUrl).href : masterUrl;
+
+    const variant = await axios.get(variantUrl, { headers, timeout: 20000 });
+    const segments = String(variant.data).split('\n')
+        .map(l => l.trim())
+        .filter(l => l && !l.startsWith('#'))
+        .map(l => new URL(l, variantUrl).href);
+    if (!segments.length) throw new Error('no segments in playlist');
+
+    res.setHeader('Content-Type', 'video/mp2t');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    for (const segUrl of segments) {
+        const seg = await axios.get(segUrl, { headers, timeout: 30000, responseType: 'stream' });
+        await new Promise((resolve, reject) => {
+            seg.data.on('end', resolve);
+            seg.data.on('error', reject);
+            seg.data.pipe(res, { end: false });
+        });
+        if (res.destroyed) return; // client cancelled the download
+    }
+    res.end();
+}
+
 app.get('/api/anime-megaplay-download', async (req, res) => {
     const malId = String(req.query.malId || '').trim();
     const episode = String(req.query.episode || req.query.ep || '1').trim();
     const lang = String(req.query.lang || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
     if (!malId) return res.status(400).json({ ok: false, error: 'malId is required' });
 
-    const headers = { 'User-Agent': KINO_UA, 'Referer': `${MEGAPLAY_ORIGIN}/` };
     try {
         const { stream: masterUrl } = await resolveMegaplaySourcesCached(malId, episode, lang);
-
-        // master -> highest-bandwidth variant playlist
-        const master = await axios.get(masterUrl, { headers, timeout: 20000 });
-        const variantLine = String(master.data).split('\n')
-            .filter(l => l.trim() && !l.startsWith('#'))
-            .find(l => /\.m3u8/i.test(l));
-        const variantUrl = variantLine ? new URL(variantLine.trim(), masterUrl).href : masterUrl;
-
-        const variant = await axios.get(variantUrl, { headers, timeout: 20000 });
-        const segments = String(variant.data).split('\n')
-            .map(l => l.trim())
-            .filter(l => l && !l.startsWith('#'))
-            .map(l => new URL(l, variantUrl).href);
-        if (!segments.length) throw new Error('no segments in playlist');
-
-        res.setHeader('Content-Type', 'video/mp2t');
-        res.setHeader('Content-Disposition',
-            `attachment; filename="anime_${malId}_ep${episode}_${lang}.ts"`);
-
-        for (const segUrl of segments) {
-            const seg = await axios.get(segUrl, { headers, timeout: 30000, responseType: 'stream' });
-            await new Promise((resolve, reject) => {
-                seg.data.on('end', resolve);
-                seg.data.on('error', reject);
-                seg.data.pipe(res, { end: false });
-            });
-            if (res.destroyed) return; // client cancelled the download
-        }
-        res.end();
+        await streamHlsAsDownload(res, {
+            masterUrl,
+            headers: { 'User-Agent': KINO_UA, 'Referer': `${MEGAPLAY_ORIGIN}/` },
+            filename: `anime_${malId}_ep${episode}_${lang}.ts`
+        });
     } catch (err) {
         console.error('[MegaPlay Download] Error:', err.message);
         if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
         else res.end();
+    }
+});
+
+// vidtube/Neko download - the only source that can serve an HSUB (hard-subbed, subs burned
+// into the picture) file, since that's a distinct `type=hsub` stream on vidtube's own side,
+// not a post-processing step we apply ourselves. Needs the SAME anikoto->vidtube resolution
+// as normal Neko playback (see resolveAnikotoEpisodeCached) - vidtube has no public catalog of
+// its own to bypass that with (see vidscr.txt).
+app.get('/api/anime-neko-download', async (req, res) => {
+    const rawTitle = String(req.query.title || '').trim();
+    const episode = String(req.query.episode || req.query.ep || '1').trim();
+    const season = parseInt(req.query.season || req.query.s || '1', 10);
+    const audio = ['sub', 'dub', 'hsub'].includes(String(req.query.type || '').toLowerCase())
+        ? String(req.query.type).toLowerCase() : 'sub';
+    if (!rawTitle) return res.status(400).json({ ok: false, error: 'title is required' });
+
+    try {
+        const { serverToken, baseHeaders } = await resolveAnikotoEpisodeCached(rawTitle, season, parseInt(episode, 10) || 1);
+        const { mediaId, embedUrl } = await resolveNekoMediaId(serverToken, audio, baseHeaders);
+
+        const sourcesRes = await axios.get(
+            `https://vidtube.site/stream/getSourcesNew?id=${mediaId}&type=${audio}`,
+            { headers: { ...baseHeaders, 'Referer': embedUrl }, timeout: 15000 }
+        );
+        const masterUrl = sourcesRes.data?.sources?.file;
+        if (!masterUrl) throw new Error(`This title has no ${audio.toUpperCase()} stream to download`);
+
+        await streamHlsAsDownload(res, {
+            masterUrl,
+            headers: { 'User-Agent': baseHeaders['User-Agent'] || KINO_UA, 'Referer': 'https://vidtube.site/' },
+            filename: `anime_ep${episode}_${audio}.ts`
+        });
+    } catch (err) {
+        console.error('[Neko Download] Error:', err.message);
+        if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
+        else res.end();
+    }
+});
+
+// Cheap probe: does this episode have an HSUB (hard-subbed) stream on vidtube/Neko at all?
+// The download panel needs to know this up front so it can offer HSUB regardless of which
+// server is currently selected there - reuses the same cached anikoto resolution chain as
+// real Neko playback/downloads, so this doesn't cost anything extra once that's warm.
+app.get('/api/anime-neko-hsub-check', async (req, res) => {
+    const rawTitle = String(req.query.title || '').trim();
+    const episode = String(req.query.episode || req.query.ep || '1').trim();
+    const season = parseInt(req.query.season || req.query.s || '1', 10);
+    if (!rawTitle) return res.status(400).json({ ok: false, error: 'title is required' });
+    try {
+        const { serverToken, baseHeaders } = await resolveAnikotoEpisodeCached(rawTitle, season, parseInt(episode, 10) || 1);
+        await resolveNekoMediaId(serverToken, 'hsub', baseHeaders);
+        res.json({ ok: true, available: true });
+    } catch (err) {
+        res.json({ ok: true, available: false });
+    }
+});
+
+// Cheap probe: does RU-MV (animego.me -> aniboom.one) actually have this title at all? Reuses
+// the same cached resolver real RU-MV playback/comments use (resolveAnimegoAniboomCached), so
+// this costs nothing extra once that's warm, and a cold check costs exactly what switching to
+// RU-MV would anyway.
+app.get('/api/anime-rumv-availability', async (req, res) => {
+    const rawTitle = String(req.query.title || '').trim();
+    const season = parseInt(req.query.season || req.query.s || '1', 10);
+    const malId = req.query.malId || null;
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    if (!rawTitle) return res.status(400).json({ ok: false, error: 'title is required' });
+    try {
+        await resolveAnimegoAniboomCached(rawTitle, season, { malId, tmdbId });
+        res.json({ ok: true, available: true });
+    } catch (err) {
+        res.json({ ok: true, available: false });
     }
 });
 
@@ -13050,7 +13481,14 @@ app.get('/api/anime-megaplay-log', async (req, res) => {
     if (!malId) return res.status(400).json({ ok: false, error: 'malId is required' });
     try {
         const data = await resolveMegaplaySourcesCached(malId, episode, lang);
-        res.json({ ok: true, ...data });
+        res.json({
+            ok: true,
+            ...data,
+            // Tokenized here (per-response, not at cache-write time - see the Neko/RU-MV
+            // routes above for why) instead of exposing the raw MegaPlay CDN URL.
+            stream: buildM3u8ProxyUrl(data.stream, data.proxyRef || null),
+            tracks: tokenizeMegaplayTracks(data.tracks)
+        });
     } catch (err) {
         console.error('[MegaPlay] Error:', err.message);
         res.status(500).json({ ok: false, error: err.message });

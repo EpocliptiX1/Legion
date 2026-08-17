@@ -2103,17 +2103,42 @@
         }
 
         // ── 4. "Because You Watched X" — Anime recommendations from cache ──────
-        const seedTmdbId = malEntries[0]?.tmdbId || historyIds[0] || null;
-        const seedHistory = historyRows.find(h => String(h.movie_id) === String(seedTmdbId));
-        // Fall back to the ANIME-filtered history, never the raw history - seedTmdbId is
-        // always anime-filtered, so pulling the label from historyRows[0] meant that if the
-        // most recent watch was a movie, the row rendered anime recommendations under
-        // "Because you watched <that movie>" - right recommendations, wrong show named.
-        const seedTitle = seedHistory?.title || animeHistoryRows[0]?.title || 'a recent anime';
+        // A single seed isn't reliable: the "anime" history filter also lets through a real
+        // non-anime TV show whenever its genre wasn't recorded (only checks item_type==='tv',
+        // not the genre text), and that show's MAL-id lookup can mismap it to an unrelated
+        // anime - either way, that seed yields zero real recommendations and used to just hide
+        // the whole row. Try seeds in recency order (MAL-mapped ones first, since those are
+        // confirmed real anime) and stop at the first one that actually renders something.
+        const seedCandidates = [];
+        const seenTmdbIds = new Set();
+        for (const entry of malEntries) {
+            if (entry?.tmdbId && !seenTmdbIds.has(String(entry.tmdbId))) {
+                seenTmdbIds.add(String(entry.tmdbId));
+                seedCandidates.push(entry.tmdbId);
+            }
+        }
+        for (const id of historyIds) {
+            if (id && !seenTmdbIds.has(String(id))) {
+                seenTmdbIds.add(String(id));
+                seedCandidates.push(id);
+            }
+        }
 
-        if (seedTmdbId) {
-            await loadAnimeBecauseYouWatchedRow(seedTmdbId, seedTitle);
-        } else {
+        let bywSucceeded = false;
+        for (const seedTmdbId of seedCandidates.slice(0, 6)) {
+            const seedHistory = historyRows.find(h => String(h.movie_id) === String(seedTmdbId));
+            // Fall back to the ANIME-filtered history, never the raw history - pulling the
+            // label from historyRows[0] meant a non-anime seed could render real anime recs
+            // under "Because you watched <that non-anime show>".
+            const seedTitle = seedHistory?.title
+                || animeHistoryRows.find(h => String(h.movie_id) === String(seedTmdbId))?.title
+                || 'a recent anime';
+            if (await loadAnimeBecauseYouWatchedRow(seedTmdbId, seedTitle)) {
+                bywSucceeded = true;
+                break;
+            }
+        }
+        if (!bywSucceeded) {
             const bywSection = document.getElementById('becauseYouWatchedSection');
             if (bywSection) bywSection.style.display = 'none';
         }
@@ -2368,27 +2393,23 @@
 // ===================JIKAN COMMENTED OUT
 // THIS IS THE PART RESPONSIBLE FOR JIKAN IN INDEXBROWSE, DONT FUCKING FORGET ABOUT IT, IT IS IMPORTANT, I REPEAT, DO NOT FORGET ABOUT IT, THIS IS THE PART RESPONSIBLE FOR JIKAN IN INDEXBROWSE, DONT FUCKING FORGET ABOUT IT, IT IS IMPORTANT, I REPEAT, DO NOT FORGET ABOUT IT
 
+    // Returns true if it actually rendered recommendations, false otherwise - lets the caller
+    // try the NEXT history candidate instead of just giving up and hiding the row. A seed with
+    // no real anime recommendations (e.g. a non-anime show that slipped into the anime history
+    // filter, or one whose MAL-id lookup mismapped) used to silently kill the whole row.
     async function loadAnimeBecauseYouWatchedRow(seedTmdbId, seedTitle) {
         const section = document.getElementById('becauseYouWatchedSection');
         const container = document.getElementById('rowBecauseYouWatched');
         const titleEl = document.getElementById('becauseYouWatchedTitle');
-        if (!section || !container) return;
-
-        if (titleEl) {
-            titleEl.textContent = `Because you watched "${seedTitle || 'a recent anime'}"`;
-        }
+        if (!section || !container) return false;
 
         try {
             const response = await fetch(`/api/anime-recommendations?tmdbId=${encodeURIComponent(seedTmdbId)}`);
-            if (!response.ok) {
-                section.style.display = 'none';
-                return;
-            }
+            if (!response.ok) return false;
 
             const body = await response.json();
             if (body.status !== 'ready' || !Array.isArray(body.recommendations) || body.recommendations.length === 0) {
-                section.style.display = 'none';
-                return;
+                return false;
             }
 
             // _type: 'anime' (not 'tv') - this row is anime-only recommendations, and
@@ -2400,11 +2421,9 @@
                 .map(createCard)
                 .join('');
 
-            if (!cards) {
-                section.style.display = 'none';
-                return;
-            }
+            if (!cards) return false;
 
+            if (titleEl) titleEl.textContent = `Because you watched "${seedTitle || 'a recent anime'}"`;
             section.style.display = '';
             container.innerHTML = cards;
 
@@ -2412,9 +2431,10 @@
             if (firstPoster) {
                 setBrowseSectionBgImage('becauseYouWatchedSection', firstPoster);
             }
+            return true;
         } catch (err) {
             console.warn('[animePersonal] BYW failed:', err);
-            section.style.display = 'none';
+            return false;
         }
     }
     // ── Bootstrap ─────────────────────────────────────────────────

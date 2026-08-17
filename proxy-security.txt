@@ -1,0 +1,301 @@
+====================================================================
+PROXY SECURITY — referer-locking + encrypted stream URLs
+Written: 2026-08-17 (session continuing from vidscr.txt's reverse-engineering work)
+====================================================================
+
+WHY THIS EXISTS
+----------------
+Prompted by comparing ourselves to vidsrc.me/vidsrcme.ru: if someone were tasked
+with "go get the raw stream" from our site vs. from vidsrc, they'd pick ours,
+because our proxy endpoints put the real upstream CDN URL in plain text in the
+query string, visible in any browser's network tab. vidsrc's own protection
+(documented in vidscr.txt) is: ChaCha20-encrypted stream_urls, only decryptable
+via a rotating WASM blob, plus short-lived signed tokens per host. We can't
+(and don't need to) copy that exactly, but the same SHAPE of protection is
+worth having: don't let the real URL travel through the browser in cleartext,
+and make a copied link expire.
+
+Two separate layers exist now. Layer 1 already existed before this session and
+just needed to be found/verified. Layer 2 (AES token encryption) is new.
+
+
+====================================================================
+LAYER 1 — Referer/Origin locking (already existed, verified this session)
+====================================================================
+
+middleware.js is the ONLY thing browsers ever talk to (port 3000, HTTPS).
+It reverse-proxies /api/* to the backend (port 4000, internal only).
+
+requireSameOrigin() in middleware.js (~line 108):
+  - Applied to ALL /api/* routes via `app.use('/api', requireSameOrigin);`
+  - If the request has an Origin header, it must match our own Host (or
+    ALLOWED_ORIGINS env list) or it's rejected with 403.
+  - If it has no Origin but has a Referer, the Referer must start with our
+    own origin, or it's rejected.
+  - If it has NEITHER header, it's rejected outright (blocks plain curl/script
+    hits with zero headers, which is the laziest kind of scraping).
+  - skipLocalhost() bypasses ALL of this for requests originating from
+    127.0.0.1/::1 — this is why every curl test done from the same machine
+    during development "just works" without needing to fake headers. A real
+    external request does NOT get this bypass.
+
+Backend-side, independently:
+  - server.js binds with `app.listen(PORT, 'localhost', ...)` — not reachable
+    from the network at all, only from the same machine.
+  - Every route also requires an `x-middleware-secret` header matching
+    MIDDLEWARE_SECRET, which only middleware.js knows and injects when it
+    forwards a request. Direct hits to :4000 get a flat 403 regardless of any
+    other header.
+
+KNOWN WEAKNESS (inherent to the technique, not a bug):
+  Referer/Origin headers are attacker-controlled. Anyone willing to set a fake
+  header defeats this layer entirely. It stops the laziest scraping (curl with
+  no headers, or a script that never bothers) but not a determined one. That's
+  exactly why Layer 2 exists — it protects the URL itself, not just who's
+  allowed to ask for it.
+
+  Also found (during the ngrok pentest tunnel): server.js had ITS OWN,
+  separate, older origin check via app.use(cors({...})) - hardcoded to
+  localhost:3000 by default, independent of and stricter than
+  requireSameOrigin above. Since the backend is already unreachable except
+  through that check (localhost-only bind + the secret-header guard below -
+  only middleware.js can produce a request that gets this far), this second
+  check added no real protection, just broke anything not literally
+  localhost:3000 (the ngrok tunnel, and would've broken any real production
+  domain too unless someone remembered to keep ALLOWED_ORIGINS in sync).
+  FIXED: simplified to `cors({ origin: true, credentials: true })` - still
+  sets proper CORS response headers, no longer redundantly re-rejects origin.
+
+  Also found: MIDDLEWARE_SECRET had no .env override anywhere, so it was
+  running on a hardcoded default value that sat directly in server.js's
+  source — and the repo (EpocliptiX1/Legion) is public on GitHub, so that
+  "secret" was public too. FIXED this session: both server.js and
+  middleware.js now load/generate a shared random secret via
+  Backend/secretStore.js -> Backend/middleware_secret.key (gitignored, same
+  "generate once, persist, both processes read the same file" pattern as
+  proxy_token.key below). Set MIDDLEWARE_SECRET as a real env var to override
+  this if you ever want to manage it that way instead.
+
+  Separately, and bigger, and explicitly deferred (user said to leave it):
+  Backend/users.db and Backend/activity.db (real user emails, bcrypt hashes,
+  watch history) are tracked in git with commit history, also public. Flagged
+  to the user twice, confirmed both times to leave it alone — not touched.
+
+
+====================================================================
+LAYER 2 — AES-256-GCM encrypted proxy tokens (new this session)
+====================================================================
+
+THE PROBLEM THIS SOLVES
+Even with Layer 1 fully working, /api/m3u8-proxy?url=https://real-cdn.com/...
+puts the real CDN URL in plain text in the query string. Layer 1 only checks
+WHO is allowed to call our endpoint — it does nothing to hide WHAT the
+endpoint actually points at. Anyone using the site normally (a real browser,
+real Referer, totally legitimate) can still open devtools, copy that URL out,
+and hit the real CDN directly forever — completely bypassing our site, our
+Referer check, everything, since the real CDN doesn't know or care about any
+of that.
+
+THE FIX
+Pack {url, referer, userAgent, expiresAt} into one AES-256-GCM encrypted,
+base64url-encoded token. The browser only ever sees this opaque token, never
+the real URL. server.js decrypts it server-side right before making the real
+request.
+
+Location: Backend/server.js, right after the MIDDLEWARE_SECRET guard (~line 1319)
+
+  PROXY_TOKEN_KEY_FILE = Backend/proxy_token.key
+    - 32 random bytes, base64-encoded, generated ONCE on first run and
+      persisted to disk (NOT regenerated per process/restart). If it were
+      regenerated on every restart, every token already handed to a browser
+      mid-episode would instantly stop decrypting — a page reload isn't
+      supposed to kill your stream.
+    - Added to .gitignore. This file IS a real secret — same failure mode as
+      the MIDDLEWARE_SECRET issue above if it ever gets committed.
+
+  PROXY_TOKEN_TTL_MS = 2 hours (was 6h - see PENTEST FINDINGS below)
+    - A fresh token is minted every time an episode/title LOADS (not once per
+      binge session) - it only has to outlive one title's active viewing, not
+      a whole session watching many episodes back to back. 2h covers even a
+      long movie plus a real pause.
+
+  encryptProxyTarget({ url, referer, ua })
+    -> JSON payload {u, r, a, e} -> AES-256-GCM encrypt with a random 12-byte
+       IV -> Buffer.concat([iv, authTag, ciphertext]) -> base64url string.
+       (base64url specifically because it has no +, /, or = characters that
+       would need URL-encoding in a query string.)
+
+  decryptProxyTarget(token)
+    -> reverse of the above. Throws if:
+       - the token doesn't decode/decrypt (GCM's auth tag catches ANY
+         tampering — flip one character and decryption fails outright,
+         doesn't just silently produce garbage)
+       - payload.e (expiry) has passed
+    Verified all three failure modes directly (see chat history): a correct
+    round-trip, a tampered token, and an expired token all behave correctly.
+
+  buildM3u8ProxyUrl(url, referer)   -> "/api/m3u8-proxy?token=<encrypted>"
+  buildStreamProxyUrl(url, referer, ua) -> "/api/proxy-stream?token=<encrypted>"
+    These are THE functions to use anywhere a proxy URL needs to be built,
+    going forward. Don't hand-roll ?url=... again.
+
+ENDPOINT CHANGES
+  /api/m3u8-proxy and /api/proxy-stream both now accept EITHER:
+    ?token=<encrypted>          <- preferred, new
+    ?url=...&ref=...            <- legacy, still works, for anything not
+                                    migrated yet (see status table below)
+  Both also had their internal manifest-rewriting logic (the part that turns
+  nested #EXT-X-STREAM-INF / #EXT-X-MEDIA / segment lines inside a proxied
+  .m3u8 into more proxy URLs, so hls.js keeps following everything through
+  us) switched to emit tokens instead of raw ?url= too.
+
+IMPORTANT: tokens are built AT RESPONSE TIME, not at cache-write time.
+  episode_load_cache (SQLite, 24h TTL) still stores the RAW url internally —
+  it has to, since a 6h token would go stale before a 24h cache entry does.
+  Every route wraps the cached raw url in a FRESH buildM3u8ProxyUrl() call on
+  every read, cache hit or not. If you ever add a new cached provider, follow
+  this same pattern: cache raw, tokenize on the way out, never the reverse.
+
+
+====================================================================
+MIGRATION STATUS — who's actually using tokens right now
+====================================================================
+
+EVERY provider is now hardened. Full list:
+  - KAA               — proxiedKaaUrl() helper (server.js ~8866), used for
+                         both video sources AND subtitle URLs
+  - NekoStream         — /api/anime-neko-log, cache-hit + fresh-resolve paths.
+                         Covers its MegaPlay fallback path too (proxyRef
+                         threaded through correctly for that case).
+  - RU-MV (anime)      — /api/anime-new-log, both paths
+  - MegaPlay           — /api/anime-megaplay-log
+  - Kino (movie + TV)  — /api/movie-kino-log, /api/tv-kino-log
+  - RU-Movie           — /api/movie-ru-log
+  - RU-TV              — /api/tv-ru-log
+  - MegaPlay/Neko subtitle TRACKS — tokenizeMegaplayTracks() helper
+    (server.js ~1385), turns raw {file, label, kind, default} into the final
+    {url, lang, default} shape server-side, same cache-raw/tokenize-on-read
+    rule as the video streams. Frontend no longer touches .file at all in any
+    of the 4 spots that used to build a proxy URL from it by hand.
+
+  Frontend (js/moviePlayer.js): every provider's loader now uses data.stream/
+  ex.stream DIRECTLY as the already-built proxy URL, and subtitle tracks are
+  used as-is instead of mapped from a raw .file field. Several spots would
+  have actively broken once the backend contract changed (double-wrapping a
+  relative path as if it were an absolute url= target, or filtering on a
+  .file field that no longer exists on a tokenized track) — caught and fixed
+  as each provider was migrated.
+
+NOT HARDENED (nothing left here, kept as reference for what "not hardened"
+used to mean and as the template for anything new added later):
+  - The legacy ?url=/&ref= fallback still works on both proxy endpoints for
+    any FUTURE code that isn't updated yet — intentional, not a gap in
+    today's providers, just means a new provider added later won't
+    automatically be hardened until it explicitly calls buildM3u8ProxyUrl/
+    buildStreamProxyUrl the way everything above does now.
+
+HOW TO MIGRATE ONE OF THE ABOVE (the repeatable recipe):
+  1. Find the backend route that resolves the raw stream URL (grep for
+     `stream:` in its res.json(...) call).
+  2. Wherever it currently does `stream: rawUrl`, change it to
+     `stream: buildM3u8ProxyUrl(rawUrl, refererIfAny)`.
+  3. If that route caches its result (episodeLoadCacheGet/Set), make sure the
+     CACHE still stores the raw url — only wrap it on the way OUT, in both the
+     cache-hit branch and the fresh-resolve branch.
+  4. Find the frontend loader for that provider in js/moviePlayer.js — it'll
+     have a line like:
+        const proxiedStreamUrl = `/api/m3u8-proxy?url=${encodeURIComponent(data.stream)}...`
+     Delete that wrapping — just use `data.stream` directly, since it's
+     already a full proxy URL now.
+  5. `node --check` both files, restart the backend, reload the page, test
+     actual playback for that provider before moving to the next one.
+
+
+====================================================================
+PENTEST FINDINGS — fresh-session security test, run by a separate Claude
+instance (no source access, browser/network only via ngrok tunnel)
+====================================================================
+
+ROUND 1 — caught a real, self-inflicted regression (not a design flaw):
+  Tested mid-migration, after the frontend had already stopped wrapping
+  data.stream in /api/m3u8-proxy?url=... (assuming the backend always
+  returns pre-tokenized URLs now) but BEFORE the backend had been restarted
+  to actually start doing that. Result: raw upstream CDN URLs (JWT and all -
+  vidsrcme's own token, decoded live: {iss:"my-auth", ip_cidr, exp - 4h
+  window}) went straight to the browser, completely unwrapped. Worse than
+  the pre-session baseline, purely because of restart-ordering, not a flaw
+  in the token scheme itself. Fixed by restarting the backend - lesson:
+  frontend/backend contract changes that swap "wrap it here" for "it's
+  already wrapped" are NOT safe to deploy out of order.
+
+ROUND 2 — post-restart, found the real design gap:
+  Confirmed the raw upstream URL is never exposed anymore (good - the fix
+  from round 1 held). But: captured a live /api/m3u8-proxy?token=... URL and
+  replayed it with a plain fetch() - no cookies, spoofed Origin/Referer,
+  completely detached from any site session. Still 200, still played.
+  Tampering the token (flip a char, truncate, garbage) correctly 403'd,
+  confirming it's genuinely signed/encrypted, not just obscured - so this
+  ISN'T "anyone can mint a token for arbitrary content," it's "a valid,
+  captured token is a fully self-contained bearer credential for its whole
+  TTL, no session/origin binding at all."
+  This was true by design (see LAYER 2 above - the whole point was letting a
+  page reload/second tab keep working without re-resolving), but the TTL
+  was set wrong: 6 hours, reasoned as "cover a full binge session," when a
+  fresh token actually mints on every episode/title LOAD, not once per
+  binge. That made the exposure window 72x longer than vidsrcme's own
+  ~5-minute tokens (the thing this scheme was modeled after) for no real
+  benefit. FIXED: PROXY_TOKEN_TTL_MS dropped to 2 hours (still safely covers
+  one long movie + a pause, cuts the window 3x).
+
+  Cross-title token reuse: not tested live, but structurally impossible -
+  the target URL is INSIDE the encrypted payload ({u: url, ...}), not a
+  separate lookup key. A token minted for one resource can only ever decrypt
+  back to that exact resource.
+
+SECONDARY FINDING — /api/kino-subtitle-vtt is an open server-side fetch
+proxy for arbitrary external URLs (by design - it fetches whatever subtitle
+host OpenSubtitles points at). Confirmed it DOES correctly block loopback/
+link-local/private ranges and a DNS-rebinding attempt (127.0.0.1.nip.io), so
+no real SSRF into internal infra. Residual risk is low: using the server as
+a fetch relay to hide requester IP against third-party sites, and it always
+labels responses text/vtt regardless of real content-type (minor content-
+confusion smell, not fixed - not worth the complexity for the actual risk
+level here).
+
+REMAINING OPEN QUESTION (not yet resolved): should proxy tokens bind to
+something about the requesting browser (a session cookie, if this app ever
+requires one even for guests) so a captured link can't be replayed from a
+totally different machine at all, not just "within 2h instead of 6h"? Not
+implemented - would need a real per-visitor identifier to bind to, which
+this app doesn't currently issue to anonymous/guest viewers. Worth
+revisiting if that ever changes.
+
+
+====================================================================
+KEY FILES
+====================================================================
+  Backend/server.js          — encryptProxyTarget/decryptProxyTarget/
+                                buildM3u8ProxyUrl/buildStreamProxyUrl/
+                                tokenizeMegaplayTracks (~line 1319),
+                                /api/m3u8-proxy (~8870), /api/proxy-stream
+                                (~5729), all seven migrated provider routes
+  Backend/secretStore.js     — shared loadOrCreateSecret() helper, used by
+                                both server.js and middleware.js for
+                                MIDDLEWARE_SECRET
+  Backend/proxy_token.key    — the AES key itself. Gitignored. Delete it and
+                                a new one gets generated on next start — but
+                                that instantly invalidates every token
+                                already handed out (anyone mid-episode gets
+                                a broken stream). Don't do this casually.
+  Backend/middleware_secret.key — the shared server.js<->middleware.js
+                                secret. Gitignored. Same "don't delete
+                                casually" caveat, though the blast radius is
+                                smaller (just breaks the secret-header check
+                                until both processes restart and agree on a
+                                new one).
+  js/moviePlayer.js          — loadKickAssAnimeVideo, loadNekoStreamVideo,
+                                loadNewStreamVideo, loadMegaPlayFrame, and
+                                the plain movie/TV Kino/RU loaders — all
+                                updated to consume pre-built proxy URLs
+  .gitignore                  — proxy_token.key + middleware_secret.key
+                                entries added
