@@ -672,6 +672,10 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             if(document.getElementById('posterImg')) document.getElementById('posterImg').src = posterUrl;
             if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${tmdbImgUrl(movie.poster_path, 'w500', 'w300')}')`; // heavily blurred anyway (30px), low-res is invisible here
             setText('title', movie.name || movie.original_name || 'Unknown');
+            // Retry now that the real title is in -- the initial DOMContentLoaded call
+            // (see bottom of file) ran before this and had nothing but "Loading..." to
+            // send, so the kinogo RU comment lookup never got a usable title until now.
+            if (typeof window.loadComments === 'function') window.loadComments();
             setText('rating', movie.vote_average ? movie.vote_average.toFixed(1) : '--');
             setText('runtime', movie.episode_run_time?.[0] ? `${movie.episode_run_time[0]} min` : 'N/A');
             window.__setMoviePlotText(movie.overview || 'No description available.');
@@ -679,6 +683,17 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             setText('votes', movie.vote_count || '0');
             setText('year', movieYear || '----');
             setText('imdbId', movie.external_ids?.imdb_id || 'N/A');
+
+            const badgeSlot = document.getElementById('episodeCountBadgesSlot');
+            if (badgeSlot && window.buildEpisodeCountBadgesPlaceholder) {
+                badgeSlot.innerHTML = window.buildEpisodeCountBadgesPlaceholder({
+                    type: _isAnimeTitle ? 'anime' : 'tv',
+                    title: movie.name || movie.original_name || '',
+                    tmdbId: movieId,
+                    inline: true
+                });
+                window.mountEpisodeCountBadges?.(badgeSlot);
+            }
             directors = [movie.created_by?.[0]?.name || 'N/A'];
             
             // Show main cast (up to 5 names) for text
@@ -1065,7 +1080,9 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                                     const poster = tmdbImgUrl(item.poster_path, 'w342', 'w154');
                                     const card = document.createElement('div');
                                     card.className = 'mini-card';
+                                    card.style.position = 'relative';
                                     card.innerHTML = `
+                                        ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: 'tv', title: displayName, tmdbId: item.id }) : ''}
                                         <img src="${poster}" alt="${displayName}">
                                         <div class="mini-info">
                                             <h4>${displayName}</h4>
@@ -1078,6 +1095,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                                     };
                                     actorRow.appendChild(card);
                                 });
+                                window.mountEpisodeCountBadges?.(actorRow);
                             });
                     };
                     // Initial load
@@ -1202,6 +1220,10 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
 
             // 3. WRITE TO THE HTML UI
             setText('title', movie['Movie Name']);
+            // Retry now that the real title is in -- the initial DOMContentLoaded call
+            // (see bottom of file) ran before this and had nothing but "Loading..." to
+            // send, so the kinogo RU comment lookup never got a usable title until now.
+            if (typeof window.loadComments === 'function') window.loadComments();
             setText('rating', movie.vote_average ? movie.vote_average.toFixed(1) : "--");
             setText('runtime', movie.runtime ? `${movie.runtime} min` : 'N/A');
             window.__setMoviePlotText(movie.overview || 'No description available.');
@@ -1211,6 +1233,12 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             setText('imdbId', movie.external_ids?.imdb_id || movie.imdb_id || 'N/A');
             setText('directors', directors.length > 0 ? directors[0] : 'N/A');
             setText('actors', stars.length > 0 ? stars.join(', ') : 'N/A');
+
+            const movieBadgeSlot = document.getElementById('episodeCountBadgesSlot');
+            if (movieBadgeSlot && window.buildEpisodeCountBadgesPlaceholder) {
+                movieBadgeSlot.innerHTML = window.buildEpisodeCountBadgesPlaceholder({ type: 'movie', inline: true });
+                window.mountEpisodeCountBadges?.(movieBadgeSlot);
+            }
 
             // 4. Financials
             const revEl = document.getElementById('revenue');
@@ -1457,6 +1485,10 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
 
         if (uniqueData.length === 0) {
             container.innerHTML = `<p style="color:#666; padding:20px;">No similar titles found.</p>`;
+            if (containerId === 'genreRow') {
+                const clone = document.getElementById('genreRowClone');
+                if (clone) clone.innerHTML = container.innerHTML;
+            }
             return;
         }
 
@@ -1473,8 +1505,17 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
                 </div>
             </div>`;
         }).join('');
-        
+
         if (containerId === 'genreRow') {
+            // #genreRowClone is what's actually shown at narrower widths (see
+            // toggleVerticalRecommendRow() further down the page) -- that
+            // function only copies genreRow's CURRENT innerHTML into the clone
+            // on page load and on resize. Without this, a narrow-screen load
+            // captures the "Loading..." placeholder (this fetch hasn't
+            // resolved yet at DOMContentLoaded time) and the clone never
+            // updates again until something happens to fire a resize event.
+            const clone = document.getElementById('genreRowClone');
+            if (clone) clone.innerHTML = container.innerHTML;
             buildPlaylist(document.getElementById('title').innerText);
         }
     };
@@ -2027,7 +2068,13 @@ function commentAuthHeaders(json) {
 
 function commentAvatarHTML(profilePic, username) {
     if (profilePic) {
-        return `<div class="comment-avatar" style="background-image:url('${profilePic}')"></div>`;
+        // Pentest (2026-08-17/18, round 5) found this was the one interpolation site in the
+        // whole comment-rendering path that skipped escapeHtml() - every other field (comment
+        // text, usernames) already goes through it. profilePic is server-stored user input
+        // (POST /users/profile-picture), so a crafted value breaking out of the quoted url('')
+        // was a real stored-XSS sink here even though the server-side check is also being
+        // hardened separately.
+        return `<div class="comment-avatar" style="background-image:url('${escapeHtml(profilePic)}')"></div>`;
     }
     const letter = (username || '?').trim().charAt(0).toUpperCase();
     return `<div class="comment-avatar comment-avatar-fallback">${escapeHtml(letter)}</div>`;
@@ -2105,7 +2152,19 @@ window.loadComments = async function () {
     const sort = document.getElementById('commentsSortSelect')?.value || 'newest';
 
     try {
-        const res = await fetch(`/movie-comments?movieId=${encodeURIComponent(movieId)}&sort=${encodeURIComponent(sort)}`);
+        // loadComments() fires on raw DOMContentLoaded (see bottom of this file), well
+        // before the real TMDB title is written into #title -- it shows a "Loading..."
+        // placeholder until then. Sending that as a search query 100% fails on kinogo, so
+        // just omit title entirely rather than waste a doomed request; the title-set code
+        // paths below call loadComments() again once the real title is in, which retries
+        // properly. (The backend also independently rejects this exact placeholder, but
+        // catching it here avoids the request altogether.)
+        const rawTitleText = document.getElementById('title')?.textContent.trim() || '';
+        const title = /^loading\.*$/i.test(rawTitleText) ? '' : rawTitleText;
+        const yearText = document.getElementById('year')?.textContent.trim() || '';
+        const yearMatch = yearText.match(/\d{4}/);
+        const releaseYear = yearMatch ? yearMatch[0] : '';
+        const res = await fetch(`/movie-comments?movieId=${encodeURIComponent(movieId)}&sort=${encodeURIComponent(sort)}&title=${encodeURIComponent(title)}&releaseYear=${encodeURIComponent(releaseYear)}`);
         const comments = await res.json();
 
         if (countEl) countEl.textContent = `(${comments.length})`;
@@ -2214,33 +2273,49 @@ window.loadAnimeComments = async function (forceReload) {
     bodyEl.appendChild(overlay);
     requestAnimationFrame(() => overlay.classList.add('show'));
 
-    try {
-        const params = new URLSearchParams({ malId, episode, season, title, sort });
-        const res = await fetch(`/api/anime-comments?${params.toString()}`);
-        const data = await res.json();
-        const comments = Array.isArray(data.comments) ? data.comments : [];
+    const params = new URLSearchParams({ malId, episode, season, title, sort });
 
+    const render = (data) => {
+        const comments = Array.isArray(data?.comments) ? data.comments : [];
         if (countEl) {
             const total = comments.reduce((sum, c) => sum + 1 + (c.replies?.length || 0), 0);
             countEl.textContent = `(${total})`;
         }
-
-        window.__lastLoadedAnimeCommentsKey = key;
-
         if (!comments.length) {
             container.innerHTML = `<p class="setting-hint">No comments yet. Be the first to share your thoughts!</p>`;
             return;
         }
-
         container.innerHTML = comments.map(c => renderAnikotoComment(c, false)).join('');
-    } catch (err) {
-        console.error('Failed to load anime comments:', err);
-        container.innerHTML = `<p class="setting-hint">Could not load comments.</p>`;
-    } finally {
-        // The overlay lives in #commentsBody now, a separate element from #commentsList, so
-        // replacing the list's innerHTML above no longer removes it automatically.
+    };
+
+    // The overlay lives in #commentsBody now, a separate element from #commentsList, so
+    // replacing the list's innerHTML above no longer removes it automatically.
+    let overlayRemoved = false;
+    const removeOverlayOnce = () => {
+        if (overlayRemoved) return;
+        overlayRemoved = true;
         overlay.remove();
+    };
+
+    // Anikoto (EN) and animego (RU) are fetched as two independent requests rather than
+    // one combined call, so whichever source resolves first renders immediately and clears
+    // the loading overlay - animego is often noticeably slower, and there's no reason to
+    // make users stare at a blurred/loading screen for EN comments that are already ready.
+    // Whichever source lands second just quietly re-renders the (now-merged, since the
+    // backend always reads the full cached set) comment list - no overlay, no flicker reset.
+    const fetchSource = (source) => fetch(`/api/anime-comments?${params.toString()}&only=${source}`)
+        .then(res => res.json())
+        .then(data => { render(data); removeOverlayOnce(); });
+
+    const results = await Promise.allSettled([fetchSource('anikoto'), fetchSource('animego')]);
+
+    if (results.every(r => r.status === 'rejected')) {
+        console.error('Failed to load anime comments:', results[0].reason, results[1].reason);
+        container.innerHTML = `<p class="setting-hint">Could not load comments.</p>`;
     }
+
+    window.__lastLoadedAnimeCommentsKey = key;
+    removeOverlayOnce();
 };
 
 window.postAnimeTopLevelComment = async function () {

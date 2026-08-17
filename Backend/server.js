@@ -5121,26 +5121,43 @@ app.post('/users/profile-picture', requireAuth, async (req, res) => {
     try {
         _pfpDebug(`req.user=${JSON.stringify(req.user)}`);
         const { profilePic } = req.body || {};
-        const startsOk = typeof profilePic === 'string' && PROFILE_PIC_ALLOWED_TYPES.some(t => profilePic.startsWith(t + ';base64,'));
-        _pfpDebug(`profilePic present=${!!profilePic} type=${typeof profilePic} len=${profilePic?.length} startsOk=${startsOk}`);
-        if (!profilePic || typeof profilePic !== 'string' || !startsOk) {
+        const matchedType = typeof profilePic === 'string' ? PROFILE_PIC_ALLOWED_TYPES.find(t => profilePic.startsWith(t + ';base64,')) : null;
+        _pfpDebug(`profilePic present=${!!profilePic} type=${typeof profilePic} len=${profilePic?.length} startsOk=${!!matchedType}`);
+        if (!profilePic || typeof profilePic !== 'string' || !matchedType) {
             return res.status(400).json({ error: 'profilePic must be a base64 PNG/JPEG/GIF/WEBP image data URI' });
         }
-        if (profilePic.length > PROFILE_PIC_MAX_BYTES) {
+        // Pentest (2026-08-17/18, round 5) found the old prefix-only check let arbitrary text
+        // ride along after the base64 marker - the payload got stored verbatim, and one
+        // rendering site (js/movieLoading.js commentAvatarHTML, now also fixed to escape) would
+        // have executed it as stored XSS. Two checks now, same "don't trust a lenient decode"
+        // lesson as decryptProxyTarget's tamper fix: the body must be nothing BUT valid base64
+        // characters (a real image payload never contains quotes/angle-brackets/etc.), and the
+        // stored value is rebuilt from the decoded bytes rather than the client's raw string, so
+        // nothing outside that alphabet can ever reach storage regardless of what surrounds it.
+        const base64Body = profilePic.slice(matchedType.length + ';base64,'.length);
+        if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64Body) || base64Body.length % 4 !== 0) {
+            return res.status(400).json({ error: 'profilePic is not valid base64 image data' });
+        }
+        const decoded = Buffer.from(base64Body, 'base64');
+        if (decoded.length === 0 || decoded.toString('base64') !== base64Body) {
+            return res.status(400).json({ error: 'profilePic is not valid base64 image data' });
+        }
+        const sanitizedProfilePic = `${matchedType};base64,${decoded.toString('base64')}`;
+        if (sanitizedProfilePic.length > PROFILE_PIC_MAX_BYTES) {
             return res.status(413).json({ error: 'Image too large (max ~5MB)' });
         }
         const uidNum = parseInt(req.user.userUID, 10);
         _pfpDebug(`uidNum=${uidNum}`);
         if (!uidNum) return res.status(401).json({ error: 'Invalid token user' });
 
-        usersDb.run('UPDATE users SET profile_pic = ? WHERE userUID = ?', [profilePic, uidNum], function (err) {
+        usersDb.run('UPDATE users SET profile_pic = ? WHERE userUID = ?', [sanitizedProfilePic, uidNum], function (err) {
             _pfpDebug(`UPDATE result err=${err?.message} changes=${this?.changes}`);
             if (err) {
                 console.error('Error saving profile picture:', err.message);
                 return res.status(500).json({ error: 'Could not save profile picture' });
             }
             if (this.changes === 0) return res.status(404).json({ error: 'User not found' });
-            res.json({ success: true, profilePic });
+            res.json({ success: true, profilePic: sanitizedProfilePic });
         });
     } catch (err) {
         _pfpDebug(`THREW ${err.stack}`);
@@ -5994,7 +6011,12 @@ app.get('/api/proxy-stream', async (req, res) => {
             //     'Saved playlist to kaa-294d-playlist.txt'
             // );
         }
-        res.set('Access-Control-Allow-Origin', '*');
+        // Pentest (2026-08-17/18, round 5) flagged this wildcard as thinner defense-in-depth
+        // than intended - requireSameOrigin (middleware.js) already rejects any request that
+        // didn't come from our own origin before it gets this far, so reflecting the caller's
+        // own (already-validated) Origin back is equivalent for legitimate traffic and doesn't
+        // additionally invite third-party sites to read the response via CORS-enabled fetch/XHR.
+        if (req.headers.origin) res.set('Access-Control-Allow-Origin', req.headers.origin);
         res.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
 
         if (response.status >= 400) {
@@ -9051,7 +9073,8 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             }
         });
 
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        // See the matching comment in /api/proxy-stream - requireSameOrigin already gates entry.
+        if (req.headers.origin) res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
 
         // Handle Master / Media Playlists (.m3u8)
         if (isM3u8) {
@@ -13109,7 +13132,8 @@ app.get('/api/kino-subtitle-vtt', async (req, res) => {
     try {
         const vtt = await fetchKinoVtt(link, enc);
         res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        // See the matching comment in /api/proxy-stream - requireSameOrigin already gates entry.
+        if (req.headers.origin) res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
         return res.send(vtt);
     } catch (err) {
         console.error('[Kino Subtitle VTT] Error:', err.message);
