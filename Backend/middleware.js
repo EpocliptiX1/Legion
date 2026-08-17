@@ -146,8 +146,6 @@ function requireSameOrigin(req, res, next) {
 }
 
 // Apply limits before proxying to backend.
-app.use('/api', requireSameOrigin);
-app.use('/api', apiLimiter);
 app.use(['/api/megacloud', '/api/anime-embed', '/api/anime-allanime', '/api/anime-animetsu', '/api/anime-kite-servers', '/api/yt-search', '/api/jikan', '/api/anime-mal-id'], heavyApiLimiter);
 app.use(['/users/register', '/users/auth', '/users/change-password'], authLimiter);
 
@@ -200,6 +198,16 @@ function proxyToBackend(req, res) {
     // Stream request body through (handles POST / PUT with JSON bodies)
     req.pipe(proxyReq, { end: true });
 }
+
+// requireSameOrigin/apiLimiter used to be scoped to just '/api', silently leaving /users/*,
+// /watch2gether/*, /movie-comments, /anime-comments (backend routes that don't happen to
+// start with /api) completely uncovered by either check. Applied here instead, globally but
+// positioned right before the catch-all proxy: every static asset request and the two page-
+// navigation routes above (/, favicon/manifest) are already short-circuited by the time
+// execution reaches this point, so nothing legitimate is affected - what's left IS a backend
+// call, regardless of its path prefix.
+app.use(requireSameOrigin);
+app.use(apiLimiter);
 
 // Use as catch-all fallback — anything not served as a static file goes to backend
 app.use((req, res) => proxyToBackend(req, res));

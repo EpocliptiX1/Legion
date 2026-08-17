@@ -5106,7 +5106,14 @@ app.post('/users/change-password', requireAuth, async (req, res) => {
 // app.use near the top of the file) had to be raised to make room for this -- adding a
 // second, route-scoped express.json() here wouldn't work: the global one already runs first
 // in declaration order and consumes/rejects the body before this route is ever reached.
-const PROFILE_PIC_MAX_BYTES = 7 * 1024 * 1024; // leave headroom under the raised global body limit
+const PROFILE_PIC_MAX_BYTES = 7 * 1024 * 1024; // string length of the whole data URI, ~5.25MB of actual image bytes after base64 overhead
+// Explicit allowlist instead of accepting any `data:image/*` prefix - pentest (2026-08-17,
+// round 4) flagged the missing type check. Currently harmless in practice: every place that
+// renders profilePic (js/movieLoading.js, footerForms.js, mainPageControls.js) uses it only
+// via <img src> or CSS background-image, and browsers don't execute a <script> embedded in an
+// SVG in either of those contexts. Allowlisting anyway so that stays true even if a future
+// change renders this somewhere less safe (e.g. window.open, <object>, <iframe>).
+const PROFILE_PIC_ALLOWED_TYPES = ['data:image/png', 'data:image/jpeg', 'data:image/jpg', 'data:image/gif', 'data:image/webp', 'data:image/bmp', 'data:image/avif'];
 
 const _pfpDebug = (msg) => { try { fs.appendFileSync(path.join(__dirname, 'pfp_debug.txt'), `[${new Date().toISOString()}] ${msg}\n`); } catch {} };
 
@@ -5114,12 +5121,13 @@ app.post('/users/profile-picture', requireAuth, async (req, res) => {
     try {
         _pfpDebug(`req.user=${JSON.stringify(req.user)}`);
         const { profilePic } = req.body || {};
-        _pfpDebug(`profilePic present=${!!profilePic} type=${typeof profilePic} len=${profilePic?.length} startsOk=${String(profilePic).startsWith('data:image/')}`);
-        if (!profilePic || typeof profilePic !== 'string' || !profilePic.startsWith('data:image/')) {
-            return res.status(400).json({ error: 'profilePic must be a base64 image data URI' });
+        const startsOk = typeof profilePic === 'string' && PROFILE_PIC_ALLOWED_TYPES.some(t => profilePic.startsWith(t + ';base64,'));
+        _pfpDebug(`profilePic present=${!!profilePic} type=${typeof profilePic} len=${profilePic?.length} startsOk=${startsOk}`);
+        if (!profilePic || typeof profilePic !== 'string' || !startsOk) {
+            return res.status(400).json({ error: 'profilePic must be a base64 PNG/JPEG/GIF/WEBP image data URI' });
         }
         if (profilePic.length > PROFILE_PIC_MAX_BYTES) {
-            return res.status(413).json({ error: 'Image too large (max ~1MB)' });
+            return res.status(413).json({ error: 'Image too large (max ~5MB)' });
         }
         const uidNum = parseInt(req.user.userUID, 10);
         _pfpDebug(`uidNum=${uidNum}`);
@@ -14597,8 +14605,16 @@ app.get('/api/anime-kite-servers', async (req, res) => {
         return res.status(500).json({ error: 'Kite fetch failed', details: err.message });
     }
 });
-const MAL_CLIENT_ID = '654799c0f2c7c74d005686ae46dfd20e';
-const MAL_CLIENT_SECRET = 'ca119f2117e5f6238d59a3128e50e36506b0ec3c75795209f4b03e1402ab4c9f';
+const MAL_CLIENT_ID = '654799c0f2c7c74d005686ae46dfd20e'; // OAuth client ID - not secret by design, fine to be public
+// MAL_CLIENT_SECRET was hardcoded here (found during pentest, 2026-08-17 round 4, while
+// mapping the internal API). Unlike proxy_token.key/middleware_secret.key/session_secret.key/
+// jwt_secret.key, this can't be auto-rotated by generating a new random value - it's issued by
+// MyAnimeList's own developer console, so a real fix requires: (1) rotate it there, (2) set
+// MAL_CLIENT_SECRET as an env var with the new value. Falls back to the old (likely already
+// public, since this repo is public and server.js has been committed with this in it before)
+// value only so MAL sync doesn't silently break before that rotation happens - treat this
+// fallback as compromised, not as an acceptable long-term secret.
+const MAL_CLIENT_SECRET = process.env.MAL_CLIENT_SECRET || 'ca119f2117e5f6238d59a3128e50e36506b0ec3c75795209f4b03e1402ab4c9f';
 const MAL_REDIRECT_URI = 'http://localhost:4000/api/auth/mal/callback';
 
 // PKCE helpers for MAL OAuth2
