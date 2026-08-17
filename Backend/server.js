@@ -1316,6 +1316,55 @@ app.use((req, res, next) => {
     next();
 });
 
+// --- Session cookie (binds proxy tokens to the actual browser that requested them) --------
+// The pentest in proxy-security.txt found a captured proxy token is a fully self-contained
+// bearer credential - replayable from anywhere, forever until it expires, with nothing tying
+// it to the browser/session that originally resolved it. This closes that: every proxy token
+// now has the requester's session id baked in at mint time, and /api/m3u8-proxy/proxy-stream
+// verify the CALLER's own session cookie matches before serving anything. A token+URL copied
+// out of devtools is useless without ALSO having that session's HttpOnly cookie, which never
+// travels with a manually-copied URL (unlike an "copy as cURL" export from the SAME browser
+// tab, which does include it - this stops cross-machine/cross-session replay specifically,
+// not "the exact same browser tab exporting everything").
+//
+// Manual cookie parsing instead of pulling in cookie-parser as a dependency - only one cookie
+// is ever read here, the format is trivial.
+function parseCookies(req) {
+    const header = req.headers.cookie;
+    if (!header) return {};
+    const out = {};
+    header.split(';').forEach(pair => {
+        const idx = pair.indexOf('=');
+        if (idx === -1) return;
+        const key = pair.slice(0, idx).trim();
+        if (key) out[key] = decodeURIComponent(pair.slice(idx + 1).trim());
+    });
+    return out;
+}
+
+const SESSION_COOKIE_NAME = 'aniko_sid';
+// Deliberately independent of PROXY_TOKEN_TTL_MS (2h) - this is "how long is this browser
+// recognized as the same visitor," not a playback credential. Tying it to the 2h token window
+// would force a brand new session (and silently invalidate every token minted under the old
+// one) partway through a long viewing session, breaking playback for no security benefit.
+const SESSION_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+app.use((req, res, next) => {
+    const cookies = parseCookies(req);
+    let sid = cookies[SESSION_COOKIE_NAME];
+    if (!sid || !/^[a-f0-9]{64}$/.test(sid)) {
+        sid = crypto.randomBytes(32).toString('hex');
+        res.cookie(SESSION_COOKIE_NAME, sid, {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'lax',
+            maxAge: SESSION_COOKIE_MAX_AGE_MS
+        });
+    }
+    req.sessionId = sid;
+    next();
+});
+
 // --- Proxy target encryption -------------------------------------------------------------
 // /api/m3u8-proxy and /api/proxy-stream used to take the real upstream CDN URL as a plain
 // ?url= query param - visible in cleartext in the browser's network tab, and (unlike the
@@ -1350,8 +1399,8 @@ const PROXY_TOKEN_KEY = loadOrCreateProxyTokenKey();
 // while cutting that exposure window 3x.
 const PROXY_TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
 
-function encryptProxyTarget({ url, referer = null, ua = null }) {
-    const payload = JSON.stringify({ u: url, r: referer, a: ua, e: Date.now() + PROXY_TOKEN_TTL_MS });
+function encryptProxyTarget({ url, referer = null, ua = null, sessionId = null }) {
+    const payload = JSON.stringify({ u: url, r: referer, a: ua, s: sessionId, e: Date.now() + PROXY_TOKEN_TTL_MS });
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', PROXY_TOKEN_KEY, iv);
     const encrypted = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
@@ -1372,28 +1421,40 @@ function decryptProxyTarget(token) {
     if (!payload.u || !payload.e || payload.e < Date.now()) {
         throw new Error('Proxy token expired or invalid');
     }
-    return { url: payload.u, referer: payload.r || null, ua: payload.a || null };
+    return { url: payload.u, referer: payload.r || null, ua: payload.a || null, sessionId: payload.s || null };
+}
+
+// Verifies the decrypted token's embedded session id against the CALLER's own session cookie
+// (req.sessionId, set by the middleware above) - the actual session-binding check. Called from
+// both proxy endpoints right after decryptProxyTarget succeeds.
+function verifyProxySession(req, decoded) {
+    if (!decoded.sessionId || decoded.sessionId !== req.sessionId) {
+        const err = new Error('Proxy token does not belong to this session');
+        err.sessionMismatch = true;
+        throw err;
+    }
 }
 
 // Builds a token-based /api/m3u8-proxy or /api/proxy-stream URL - the ONE place that should
 // construct these going forward, so every emitter (KAA/Neko/MegaPlay/RU-MV responses, the
 // manifest-rewriter inside /api/m3u8-proxy itself, subtitle URLs, etc.) shares one code path
-// instead of each hand-rolling its own ?url= string.
-function buildM3u8ProxyUrl(url, referer = null) {
-    return `/api/m3u8-proxy?token=${encryptProxyTarget({ url, referer })}`;
+// instead of each hand-rolling its own ?url= string. sessionId is required (not optional) -
+// every caller has a req.sessionId available from the session-cookie middleware above.
+function buildM3u8ProxyUrl(url, referer, sessionId) {
+    return `/api/m3u8-proxy?token=${encryptProxyTarget({ url, referer, sessionId })}`;
 }
-function buildStreamProxyUrl(url, referer = null, ua = null) {
-    return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua })}`;
+function buildStreamProxyUrl(url, referer, ua, sessionId) {
+    return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua, sessionId })}`;
 }
 
 // MegaPlay's raw {file, label, kind, default} track shape, tokenized into the exact
 // {url, lang, default} shape the frontend consumes directly - moves the proxy URL building
 // (and the raw CDN url that used to travel with it) server-side, matching the video stream URL.
-function tokenizeMegaplayTracks(tracks) {
+function tokenizeMegaplayTracks(tracks, sessionId) {
     return (Array.isArray(tracks) ? tracks : [])
         .filter(t => t && t.file && (t.kind === 'captions' || t.kind === 'subtitles' || !t.kind))
         .map(t => ({
-            url: buildStreamProxyUrl(t.file, 'https://megaplay.buzz/'),
+            url: buildStreamProxyUrl(t.file, 'https://megaplay.buzz/', null, sessionId),
             lang: t.label || 'Subtitles',
             default: !!t.default
         }));
@@ -5746,33 +5807,19 @@ const ALLOWED_PROXY_HOSTS = [
 let proxyDebugPrinted = false;
 
 app.get('/api/proxy-stream', async (req, res) => {
-    // Preferred path: an encrypted token (see encryptProxyTarget) instead of a plaintext
-    // ?url=. ?url=/&referer=/&ua= still work as a fallback for callers not migrated yet -
-    // new emitters should use buildStreamProxyUrl().
+    // Token-only now - the legacy plaintext ?url=/&referer=/&ua= fallback is retired. Every
+    // emitter was already migrated to buildStreamProxyUrl() before this, and pre-launch is the
+    // right time to close this rather than carry a permanently-unauthenticated fallback path.
+    if (!req.query.token) return res.status(400).send('Missing token');
     let decodedUrl, decodedReferer, decodedUserAgent;
-    if (req.query.token) {
-        try {
-            const decoded = decryptProxyTarget(req.query.token);
-            decodedUrl = decoded.url;
-            decodedReferer = decoded.referer || 'https://kwik.si/';
-            decodedUserAgent = decoded.ua || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-        } catch (err) {
-            return res.status(403).send('Invalid or expired proxy token');
-        }
-    } else {
-        const rawUrl = req.query.url;
-        const rawReferer = req.query.referer;
-        const rawUserAgent = req.query.ua;
-        if (!rawUrl) return res.status(400).send('Missing url');
-        try {
-            decodedUrl = decodeURIComponent(rawUrl);
-            decodedReferer = rawReferer ? decodeURIComponent(rawReferer) : 'https://kwik.si/';
-            decodedUserAgent = rawUserAgent
-                ? decodeURIComponent(rawUserAgent)
-                : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-        } catch {
-            return res.status(400).send('Invalid URL');
-        }
+    try {
+        const decoded = decryptProxyTarget(req.query.token);
+        verifyProxySession(req, decoded);
+        decodedUrl = decoded.url;
+        decodedReferer = decoded.referer || 'https://kwik.si/';
+        decodedUserAgent = decoded.ua || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+    } catch (err) {
+        return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token');
     }
 
     try {
@@ -5913,12 +5960,12 @@ app.get('/api/proxy-stream', async (req, res) => {
                 if (!trimmed) return line;
 
                 const absUrl = new URL(trimmed, baseUrl).toString();
-                return buildStreamProxyUrl(absUrl, decodedReferer, decodedUserAgent);
+                return buildStreamProxyUrl(absUrl, decodedReferer, decodedUserAgent, req.sessionId);
             });
             content = content.replace(/URI="([^"]+)"/g, (match, uri) => {
                 if (/^data:/i.test(uri)) return match;
                 const absUrl = new URL(uri, baseUrl).toString();
-                const proxied = buildStreamProxyUrl(absUrl, decodedReferer, decodedUserAgent);
+                const proxied = buildStreamProxyUrl(absUrl, decodedReferer, decodedUserAgent, req.sessionId);
                 return `URI="${proxied}"`;
             });
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
@@ -8845,32 +8892,49 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
         }))
     });
     const headers = payload?.headers || {};
-    const sources = (payload?.sources || []).map(source => ({
-        ...source,
-        proxiedUrl: source?.url ? proxiedKaaUrl(source.url, headers) : ''
-    }));
 
+    // Deliberately RAW here - no proxiedUrl/token baked in. This result gets cached
+    // (episodeLoadCacheSet, 24h TTL) by every caller of this function, and tokens now carry a
+    // session id (2h TTL) - baking a token in at resolve time would permanently bind a cached
+    // entry to whichever visitor's session happened to trigger the cache write, breaking
+    // playback for every OTHER visitor who later hits the same cache entry. tokenizeKaaResult()
+    // below does the actual proxiedUrl/token building, called fresh per-response with the
+    // CURRENT request's session - same "cache raw, tokenize on read" rule every other migrated
+    // provider already follows.
     return {
         provider: 'kickassanime',
         title: usedTitle || frontendTitle,
         match: anime,
         episode: selectedEpisode,
-        sources,
-        subtitles: (payload?.subtitles || []).map(subtitle => proxiedKaaSubtitle(subtitle, headers)),
+        sources: payload?.sources || [],
+        subtitles: payload?.subtitles || [],
         headers
     };
 }
-function proxiedKaaUrl(sourceUrl, headers = {}) {
+function proxiedKaaUrl(sourceUrl, headers = {}, sessionId) {
     const referer = headers.Referer || headers.referer || 'https://kaa.lt/';
     const userAgent = headers['User-Agent'] || headers['user-agent'] || '';
-    return buildStreamProxyUrl(sourceUrl, referer, userAgent || null);
+    return buildStreamProxyUrl(sourceUrl, referer, userAgent || null, sessionId);
 }
 
-function proxiedKaaSubtitle(subtitle, headers = {}) {
+function proxiedKaaSubtitle(subtitle, headers = {}, sessionId) {
     if (!subtitle?.url) return subtitle;
     return {
         ...subtitle,
-        url: proxiedKaaUrl(subtitle.url, headers)
+        url: proxiedKaaUrl(subtitle.url, headers, sessionId)
+    };
+}
+
+// Turns a raw {sources, subtitles, headers} result (fresh from resolveKickAssAnimeSources, or
+// reconstructed from a cache hit) into the final response shape with real, session-bound
+// proxiedUrl/subtitle.url values. Call this once per response, never before caching.
+function tokenizeKaaResult({ sources, subtitles, headers }, sessionId) {
+    return {
+        sources: (sources || []).map(source => ({
+            ...source,
+            proxiedUrl: source?.url ? proxiedKaaUrl(source.url, headers, sessionId) : ''
+        })),
+        subtitles: (subtitles || []).map(subtitle => proxiedKaaSubtitle(subtitle, headers, sessionId))
     };
 }
 // BOTTOM FOUR FUNCS ARE FOR NEKOSTREAM, ANIKOTO SHIT
@@ -8882,21 +8946,18 @@ function slugifyTitle(title) {
         .replace(/(^-|-$)/g, '');    // Remove leading/trailing hyphens
 }
 app.get('/api/m3u8-proxy', async (req, res) => {
-    // Preferred path: an encrypted token (see encryptProxyTarget above) that never reveals the
-    // real upstream URL in the query string. ?url= is kept working as a fallback ONLY for
-    // callers not migrated to tokens yet - every new emitter should use buildM3u8ProxyUrl().
+    // Token-only now - the legacy plaintext ?url=/&ref= fallback is retired. Every emitter was
+    // already migrated to buildM3u8ProxyUrl() before this, and pre-launch is the right time to
+    // close this rather than carry a permanently-unauthenticated fallback path.
+    if (!req.query.token) return res.status(400).send('Missing token');
     let targetUrl, refererOverride;
-    if (req.query.token) {
-        try {
-            const decoded = decryptProxyTarget(req.query.token);
-            targetUrl = decoded.url;
-            refererOverride = decoded.referer || undefined;
-        } catch (err) {
-            return res.status(403).send('Invalid or expired proxy token');
-        }
-    } else {
-        targetUrl = req.query.url;
-        refererOverride = req.query.ref;
+    try {
+        const decoded = decryptProxyTarget(req.query.token);
+        verifyProxySession(req, decoded);
+        targetUrl = decoded.url;
+        refererOverride = decoded.referer || undefined;
+    } catch (err) {
+        return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token');
     }
     if (!targetUrl) return res.status(400).send('URL required');
 
@@ -8933,7 +8994,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             // paths (e.g. vidsrcme's "/pl/<hash>/index.m3u8") resolve correctly instead
             // of getting naively concatenated onto the directory prefix.
             const resolveUri = (uri) => new URL(uri, targetUrl).href;
-            const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null);
+            const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null, req.sessionId);
 
             const rewrittenM3u8 = response.data.split('\n').map(line => {
                 const trimmed = line.trim();
@@ -11419,11 +11480,11 @@ app.get('/api/anime-neko-log', async (req, res) => {
                     // Tokenized fresh on every response (not at cache-write time) - the cache
                     // entry's raw URL can be up to 24h old, but a token is only good for 6h,
                     // so building it here instead of storing it keeps it always valid.
-                    stream: cachedRawStream ? buildM3u8ProxyUrl(cachedRawStream, __proxyRef || null) : null,
-                    sources: (cached.sources || []).map(u => buildM3u8ProxyUrl(u, __proxyRef || null)),
+                    stream: cachedRawStream ? buildM3u8ProxyUrl(cachedRawStream, __proxyRef || null, req.sessionId) : null,
+                    sources: (cached.sources || []).map(u => buildM3u8ProxyUrl(u, __proxyRef || null, req.sessionId)),
                     proxyRef: __proxyRef || null,
                     // Same fresh-per-response tokenizing as `stream` above, not stored this way.
-                    tracks: tokenizeMegaplayTracks(__tracks),
+                    tracks: tokenizeMegaplayTracks(__tracks, req.sessionId),
                     downloads,
                     skipSegments
                 });
@@ -11538,9 +11599,9 @@ app.get('/api/anime-neko-log', async (req, res) => {
             ok: true,
             // Tokenized here (not stored this way) - the raw streamUrl never reaches the
             // browser at all now, only this opaque, time-limited proxy link does.
-            stream: buildM3u8ProxyUrl(streamUrl, streamProxyRef),
+            stream: buildM3u8ProxyUrl(streamUrl, streamProxyRef, req.sessionId),
             proxyRef: streamProxyRef,
-            tracks: tokenizeMegaplayTracks(megaplayTracks),
+            tracks: tokenizeMegaplayTracks(megaplayTracks, req.sessionId),
             downloads: {
                 sub: subLinks[0] || null,
                 sub2: subLinks[1] || subLinks[0] || null,
@@ -11855,7 +11916,7 @@ app.get('/api/anime-new-log', async (req, res) => {
                     ok: true,
                     // Tokenized fresh per-response, same reasoning as Neko above - cache TTL
                     // outlives a single token's TTL.
-                    stream: buildM3u8ProxyUrl(cached.sources[0], 'https://aniboom.one/'),
+                    stream: buildM3u8ProxyUrl(cached.sources[0], 'https://aniboom.one/', req.sessionId),
                     proxyRef: 'https://aniboom.one/',
                     translationId: meta.translationId || null,
                     translationTitle: meta.translationTitle || 'RU',
@@ -11884,7 +11945,7 @@ app.get('/api/anime-new-log', async (req, res) => {
 
                 return res.json({
                     ok: true,
-                    stream: buildM3u8ProxyUrl(streamUrl, 'https://aniboom.one/'),
+                    stream: buildM3u8ProxyUrl(streamUrl, 'https://aniboom.one/', req.sessionId),
                     proxyRef: 'https://aniboom.one/',
                     translationId: translation.id,
                     translationTitle: translation.title,
@@ -12263,7 +12324,7 @@ app.get('/api/movie-ru-log', async (req, res) => {
 
     try {
         const { streamUrl, translationTitle } = await resolveMovieRuData(rawTitle, tmdbId);
-        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, 'https://cinemar.cc/'), proxyRef: 'https://cinemar.cc/', translationTitle });
+        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, 'https://cinemar.cc/', req.sessionId), proxyRef: 'https://cinemar.cc/', translationTitle });
     } catch (err) {
         console.error('[RU Movie] Error:', err.message);
         return res.status(err.status || 500).json({ ok: false, error: err.message });
@@ -12383,7 +12444,7 @@ app.get('/api/tv-ru-log', async (req, res) => {
 
     try {
         const { streamUrl, translationTitle } = await resolveTvRuData(rawTitle, tmdbId, season, episode);
-        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, 'https://cinemar.cc/'), proxyRef: 'https://cinemar.cc/', translationTitle });
+        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, 'https://cinemar.cc/', req.sessionId), proxyRef: 'https://cinemar.cc/', translationTitle });
     } catch (err) {
         console.error('[RU TV] Error:', err.message);
         return res.status(err.status || 500).json({ ok: false, error: err.message });
@@ -12783,7 +12844,7 @@ app.get('/api/movie-kino-log', async (req, res) => {
             `movie:${tmdbId}`,
             () => runKinoExtraction(`movie/${tmdbId}`, 'movie')
         );
-        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, proxyRef || null), proxyRef });
+        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, proxyRef || null, req.sessionId), proxyRef });
     } catch (err) {
         console.error('[Kino] Error:', err.message);
         return res.status(err.status || 500).json({ ok: false, error: err.message });
@@ -12803,7 +12864,7 @@ app.get('/api/tv-kino-log', async (req, res) => {
             `tv:${tmdbId}:${season}:${episode}`,
             () => runKinoExtraction(`tv/${tmdbId}/${season}/${episode}`, 'tv')
         );
-        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, proxyRef || null), proxyRef });
+        return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, proxyRef || null, req.sessionId), proxyRef });
     } catch (err) {
         console.error('[Kino TV] Error:', err.message);
         return res.status(err.status || 500).json({ ok: false, error: err.message });
@@ -13019,19 +13080,24 @@ app.get('/api/anime-kaa-servers', async (req, res) => {
             return res.status(400).json({ error: 'Missing malId or tmdbId mapping' });
         }
 
-        // Check episode load cache first
+        // Check episode load cache first. Cached sources/subtitles/headers are raw (no
+        // proxiedUrl/token baked in - see resolveKickAssAnimeSources) - tokenizeKaaResult below
+        // builds the real, session-bound URLs fresh on every response, cache hit or not.
         const cached = await episodeLoadCacheGet(tmdbId, season, episodeNumber, audioType, 'kaa');
-        let result;
+        let rawResult;
+        let animeId, animeTitle;
         if (cached) {
             console.log(`[Cache HIT] KAA S${season}E${episodeNumber} ${audioType}`);
-            result = {
+            const { __headers, ...subtitlesMeta } = cached.subtitles || {};
+            rawResult = {
                 sources: cached.sources || [],
-                subtitles: cached.subtitles || [],
-                animeId: cached.animeId,
-                animeTitle: cached.animeTitle
+                subtitles: subtitlesMeta.__tracks || [],
+                headers: __headers || {}
             };
+            animeId = cached.animeId;
+            animeTitle = cached.animeTitle;
         } else {
-            result = await resolveKickAssAnimeSources({
+            rawResult = await resolveKickAssAnimeSources({
                 malId,
                 tmdbId,
                 itemType,
@@ -13040,13 +13106,21 @@ app.get('/api/anime-kaa-servers', async (req, res) => {
                 frontendTitle,
                 season
             });
-            // Cache the result
-            if (result?.sources?.length > 0) {
+            animeId = rawResult.animeId;
+            animeTitle = rawResult.animeTitle;
+            // Cache the raw result
+            if (rawResult?.sources?.length > 0) {
                 episodeLoadCacheSet(tmdbId, malId, season, episodeNumber, audioType, 'kaa',
-                    result.animeId, result.animeTitle, result.sources, result.subtitles).catch(err =>
+                    animeId, animeTitle, rawResult.sources,
+                    { __tracks: rawResult.subtitles, __headers: rawResult.headers }).catch(err =>
                     console.log('[Cache] Failed to cache KAA result:', err.message));
             }
         }
+        const result = {
+            ...tokenizeKaaResult(rawResult, req.sessionId),
+            animeId,
+            animeTitle
+        };
 
         let skipSegments = [];
         try {
@@ -13099,8 +13173,11 @@ app.get('/api/anime-kaa-availability', async (req, res) => {
                     malId, tmdbId, itemType: 'tv', episodeNumber, audioType, frontendTitle, season
                 });
                 if (result?.sources?.length > 0) {
+                    // Same {__tracks, __headers} cache shape /api/anime-kaa-servers writes -
+                    // both routes share this cache key, so the format has to match.
                     episodeLoadCacheSet(tmdbId, malId, season, episodeNumber, audioType, 'kaa',
-                        result.animeId, result.animeTitle, result.sources, result.subtitles).catch(() => {});
+                        result.animeId, result.animeTitle, result.sources,
+                        { __tracks: result.subtitles, __headers: result.headers }).catch(() => {});
                     return true;
                 }
                 return false;
@@ -13119,14 +13196,14 @@ app.get('/api/anime-kaa-availability', async (req, res) => {
 app.get('/api/animepahe/:malId/:ep/:type', async (req, res) => {
     try {
         const { malId, ep, type } = req.params;
-        const result = await resolveKickAssAnimeSources({
+        const rawResult = await resolveKickAssAnimeSources({
             malId,
             episodeNumber: ep,
             audioType: type,
             frontendTitle: ''
         });
         const skipSegments = await getAnimeSkipTimestamps({ malId, season: 1, episode: ep });
-        result.skipSegments = Array.isArray(skipSegments) ? skipSegments : [];
+        const result = { ...rawResult, ...tokenizeKaaResult(rawResult, req.sessionId), skipSegments: Array.isArray(skipSegments) ? skipSegments : [] };
         res.json(result);
     } catch (err) {
         console.error('[AnimePahe compatibility route]', err.message || err);
@@ -13486,8 +13563,8 @@ app.get('/api/anime-megaplay-log', async (req, res) => {
             ...data,
             // Tokenized here (per-response, not at cache-write time - see the Neko/RU-MV
             // routes above for why) instead of exposing the raw MegaPlay CDN URL.
-            stream: buildM3u8ProxyUrl(data.stream, data.proxyRef || null),
-            tracks: tokenizeMegaplayTracks(data.tracks)
+            stream: buildM3u8ProxyUrl(data.stream, data.proxyRef || null, req.sessionId),
+            tracks: tokenizeMegaplayTracks(data.tracks, req.sessionId)
         });
     } catch (err) {
         console.error('[MegaPlay] Error:', err.message);

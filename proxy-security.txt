@@ -140,10 +140,9 @@ Location: Backend/server.js, right after the MIDDLEWARE_SECRET guard (~line 1319
     going forward. Don't hand-roll ?url=... again.
 
 ENDPOINT CHANGES
-  /api/m3u8-proxy and /api/proxy-stream both now accept EITHER:
-    ?token=<encrypted>          <- preferred, new
-    ?url=...&ref=...            <- legacy, still works, for anything not
-                                    migrated yet (see status table below)
+  /api/m3u8-proxy and /api/proxy-stream both accepted EITHER a token or the
+  legacy ?url=&ref= pair during this session's gradual migration. As of
+  LAYER 3 below, the legacy fallback is retired - see that section.
   Both also had their internal manifest-rewriting logic (the part that turns
   nested #EXT-X-STREAM-INF / #EXT-X-MEDIA / segment lines inside a proxied
   .m3u8 into more proxy URLs, so hls.js keeps following everything through
@@ -186,13 +185,11 @@ EVERY provider is now hardened. Full list:
   .file field that no longer exists on a tokenized track) — caught and fixed
   as each provider was migrated.
 
-NOT HARDENED (nothing left here, kept as reference for what "not hardened"
-used to mean and as the template for anything new added later):
-  - The legacy ?url=/&ref= fallback still works on both proxy endpoints for
-    any FUTURE code that isn't updated yet — intentional, not a gap in
-    today's providers, just means a new provider added later won't
-    automatically be hardened until it explicitly calls buildM3u8ProxyUrl/
-    buildStreamProxyUrl the way everything above does now.
+NOT HARDENED: nothing. The legacy ?url=/&ref= fallback that used to exist for
+anything not-yet-migrated has been fully retired (see LAYER 3) - both proxy
+endpoints now REQUIRE a valid, session-bound token. Any new provider added in
+the future must call buildM3u8ProxyUrl/buildStreamProxyUrl from day one, or
+it simply won't work (no silent unhardened fallback path to fall into).
 
 HOW TO MIGRATE ONE OF THE ABOVE (the repeatable recipe):
   1. Find the backend route that resolves the raw stream URL (grep for
@@ -262,13 +259,85 @@ labels responses text/vtt regardless of real content-type (minor content-
 confusion smell, not fixed - not worth the complexity for the actual risk
 level here).
 
-REMAINING OPEN QUESTION (not yet resolved): should proxy tokens bind to
-something about the requesting browser (a session cookie, if this app ever
-requires one even for guests) so a captured link can't be replayed from a
-totally different machine at all, not just "within 2h instead of 6h"? Not
-implemented - would need a real per-visitor identifier to bind to, which
-this app doesn't currently issue to anonymous/guest viewers. Worth
-revisiting if that ever changes.
+RESOLVED (see LAYER 3 below): tokens now bind to a session cookie, closing
+this gap - a captured token+URL is no longer replayable from a different
+machine at all, not just "within 2h instead of 6h."
+
+
+====================================================================
+LAYER 3 — Session-bound tokens (new this session, 2026-08-17)
+====================================================================
+
+THE PROBLEM THIS SOLVES
+Round 2 of the pentest (above) found that a captured /api/m3u8-proxy?token=...
+URL was a fully self-contained bearer credential - replayable via plain
+fetch(), no cookies, spoofed headers, completely detached from any browser
+session, valid for the whole 2h TTL from anywhere. Shortening the TTL (already
+done) reduces the exposure window but doesn't close it - this layer does.
+
+THE FIX
+Every visitor gets a session cookie (aniko_sid: 64 hex chars, HttpOnly,
+Secure, SameSite=Lax, 24h lifetime - independent of the 2h token TTL, per
+explicit design decision: token TTL governs how long a stream stays
+resolvable, cookie lifetime governs how long a browser is recognized as the
+same visitor, and conflating the two would force unnecessary cookie churn
+mid-binge). Set automatically on first request if missing/malformed
+(server.js, ~line 1340-1360, in a global middleware before any route runs).
+
+Every encrypted proxy token now carries the minting visitor's session id
+INSIDE the encrypted payload ({u, r, a, s: sessionId, e}), not as a separate
+lookup key - so tampering with it is caught by the same GCM auth tag as
+everything else in the token.
+
+/api/m3u8-proxy and /api/proxy-stream now call verifyProxySession(req,
+decoded) right after decrypting: if the token's embedded sessionId doesn't
+exactly match the CALLER's own aniko_sid cookie, hard-reject with 403 ("This
+link does not belong to your session"), distinguished from the generic
+"Invalid or expired proxy token" message for a malformed/expired token. Since
+aniko_sid is HttpOnly, it's invisible to JS (can't be read/exfiltrated by
+injected script) and doesn't travel with a manually-copied URL (cookies
+aren't part of a URL) - so a captured link is useless without also somehow
+obtaining that exact browser's session cookie.
+
+LEGACY FALLBACK RETIRED (per explicit instruction: "Enforce session-token
+binding across all proxy routes without exemption... we are not 'out in the
+world' yet, so we need to take this chance to patch up old code"):
+  Both /api/m3u8-proxy and /api/proxy-stream now REQUIRE ?token=... - the old
+  ?url=&ref=&ua= plaintext fallback (kept in LAYER 2 as a gradual-migration
+  aid) is gone entirely. Every provider was already migrated to tokens, so
+  this closes the door rather than leaving a permanently-unauthenticated
+  escape hatch lying around.
+
+buildM3u8ProxyUrl(url, referer, sessionId) and buildStreamProxyUrl(url,
+referer, ua, sessionId) both take sessionId as a real (no-default) parameter
+now - every call site across all 7 provider routes plus tokenizeMegaplayTracks
+threads req.sessionId through.
+
+A REAL BUG CAUGHT WHILE BUILDING THIS (not user-reported):
+  KAA's caching was structured differently from every other already-migrated
+  provider - resolveKickAssAnimeSources() baked the final tokenized
+  proxiedUrl into `sources`/`subtitles` BEFORE the result was written to the
+  24h episode_load_cache. Under Layer 2 alone this was harmless (tokens just
+  went stale after 2h and got silently ignored/errored). But it would have
+  been a real bug under Layer 3: a cached KAA entry's tokens would be
+  permanently bound to whichever visitor's session happened to trigger the
+  cache write, breaking playback for every OTHER visitor who hit that cache
+  entry afterward. FIXED by restructuring to the same cache-raw/tokenize-on-
+  read pattern already used everywhere else: resolveKickAssAnimeSources() now
+  returns raw sources/subtitles/headers; a new tokenizeKaaResult(rawResult,
+  sessionId) builds the actual proxy URLs at RESPONSE time, called from both
+  the cache-hit and fresh-resolve branches of /api/anime-kaa-servers, plus
+  /api/animepahe/:malId/:ep/:type. Also had to fix a second cache-WRITE site
+  (/api/anime-kaa-availability's checkOne) that was still writing the old
+  bare-array cache shape, which would have broken the new read-side
+  destructuring if left alone.
+
+FRONTEND: no changes needed. js/moviePlayer.js's fetch() calls to /api/*
+already default to same-origin credentials (nothing sets `credentials:
+'omit'` anywhere in the file), and aniko_sid is a normal same-origin cookie -
+the browser attaches it automatically to every request to our own domain,
+same as any <video>/hls.js request for a proxied stream URL. Verified by
+grepping the whole file for "credentials" (no matches).
 
 
 ====================================================================
@@ -276,9 +345,11 @@ KEY FILES
 ====================================================================
   Backend/server.js          — encryptProxyTarget/decryptProxyTarget/
                                 buildM3u8ProxyUrl/buildStreamProxyUrl/
-                                tokenizeMegaplayTracks (~line 1319),
-                                /api/m3u8-proxy (~8870), /api/proxy-stream
-                                (~5729), all seven migrated provider routes
+                                tokenizeMegaplayTracks (~line 1443),
+                                parseCookies/session cookie middleware/
+                                verifyProxySession (~line 1330-1365),
+                                /api/m3u8-proxy (~8948), /api/proxy-stream
+                                (~5809), all seven migrated provider routes
   Backend/secretStore.js     — shared loadOrCreateSecret() helper, used by
                                 both server.js and middleware.js for
                                 MIDDLEWARE_SECRET
