@@ -1409,7 +1409,14 @@ function encryptProxyTarget({ url, referer = null, ua = null, sessionId = null }
 }
 
 function decryptProxyTarget(token) {
-    const raw = Buffer.from(String(token || ''), 'base64url');
+    const tokenStr = String(token || '');
+    const raw = Buffer.from(tokenStr, 'base64url');
+    // Node's base64url decoder silently drops a dangling trailing character instead of
+    // erroring (e.g. a 16-char aligned string + 1 extra char decodes to the SAME bytes as
+    // the original 16 chars) - pentest (2026-08-17) found this let `token`+garbage decrypt
+    // as if it were the untampered token. Re-encoding and comparing catches any input that
+    // isn't the exact canonical encoding of these bytes, closing that gap.
+    if (raw.toString('base64url') !== tokenStr) throw new Error('Malformed proxy token');
     if (raw.length < 29) throw new Error('Malformed proxy token');
     const iv = raw.subarray(0, 12);
     const authTag = raw.subarray(12, 28);
@@ -8930,9 +8937,12 @@ function proxiedKaaSubtitle(subtitle, headers = {}, sessionId) {
 // proxiedUrl/subtitle.url values. Call this once per response, never before caching.
 function tokenizeKaaResult({ sources, subtitles, headers }, sessionId) {
     return {
-        sources: (sources || []).map(source => ({
-            ...source,
-            proxiedUrl: source?.url ? proxiedKaaUrl(source.url, headers, sessionId) : ''
+        // Strip the raw upstream `url` before it reaches the client - only proxiedUrl should
+        // ever leave the server. Pentest (2026-08-17) found the raw CDN URL was being spread
+        // into the response alongside the token, defeating the whole point of tokenizing it.
+        sources: (sources || []).map(({ url, ...rest }) => ({
+            ...rest,
+            proxiedUrl: url ? proxiedKaaUrl(url, headers, sessionId) : ''
         })),
         subtitles: (subtitles || []).map(subtitle => proxiedKaaSubtitle(subtitle, headers, sessionId))
     };
