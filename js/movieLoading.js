@@ -599,7 +599,17 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
 
         const studios = anime.studios?.nodes?.map(s => s.name).join(", ") || "N/A";
         const source = anime.source || 'N/A';
-        const episodes = anime.episodes != null ? String(anime.episodes) : 'Unknown';
+        // anime.episodes is AniList's count for the single season=1 entry we mapped to above -
+        // TMDB, unlike anikoto/AniList, lists every season of a show like Tower of God under
+        // one shared id, so its own seasons[] already has the real per-season episode_count
+        // breakdown. Sum that (excluding season 0 "Specials") instead of trusting one season's
+        // AniList number as if it were the whole show.
+        const tmdbSeasonEpisodeTotal = Array.isArray(tmdbItem?.seasons)
+            ? tmdbItem.seasons.filter(s => s && s.season_number > 0).reduce((sum, s) => sum + (Number(s.episode_count) || 0), 0)
+            : 0;
+        const episodes = tmdbSeasonEpisodeTotal > 0
+            ? String(tmdbSeasonEpisodeTotal)
+            : (anime.episodes != null ? String(anime.episodes) : 'Unknown');
         const status = anime.status ? anime.status.replaceAll("_", " ") : "N/A";
         
         const season = anime.season

@@ -1497,15 +1497,33 @@ function tokenizeMegaplayTracks(tracks, sessionId) {
         }));
 }
 
+// express-rate-limit keys IPv4 (127.0.0.1) and IPv6 (::1) loopback as separate buckets by
+// default - invisible for real traffic (a given visitor is always consistently one or the
+// other), but it means anyone who can already reach the backend directly on port 4000
+// (loopback-only, and still needs the middleware secret to get past the guard above - see
+// proxy-security.txt LAYER 1) could double their attempt budget by alternating which loopback
+// address they connect from. Collapsing both loopback forms into one shared bucket closes that
+// without touching real client IPs at all (LAN/WAN addresses still get express-rate-limit's own
+// IPv6-subnet-safe key via ipKeyGenerator, completely unchanged) - so this has no effect on a
+// real device (e.g. the Electron app) talking to the server over the network, only on direct
+// loopback access to the internal port.
+function rateLimitKey(req) {
+    const ip = req.ip || req.socket?.remoteAddress || '';
+    if (ip === '::1' || ip === '127.0.0.1' || ip === '::ffff:127.0.0.1') return 'loopback';
+    return rateLimit.ipKeyGenerator(ip);
+}
+
 const generalLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, 
+    windowMs: 15 * 60 * 1000,
     max: 1000,  //funny story, ratemlimited myself a  few times lol
+    keyGenerator: rateLimitKey,
     message: { error: 'Too many requests from this IP, please try again later.' }
 });
 
 const strictLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 20,
+    keyGenerator: rateLimitKey,
     message: { error: 'Too many requests from this IP, please try again later.' }
 });
 
@@ -1514,6 +1532,7 @@ const strictLimiter = rateLimit({
 const footerFormLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 5,
+    keyGenerator: rateLimitKey,
     message: { error: 'Too many submissions. Please try again later.' }
 });
 
@@ -10251,17 +10270,23 @@ function normalizeAnikotoTitleKey(title) {
 // concrete evidence a new season exists, worth an immediate fresh lookup regardless of the
 // long TTL below - catches a real sequel the moment TMDB itself lists it (often before the
 // season even airs) instead of waiting out a blind polling window.
-function getCachedAnikotoEpisodeCounts(normalizedTitle, tmdbSeasonCount) {
+// Returns { counts, stale } for ANY row that exists regardless of age, or undefined if there's
+// no row at all yet. Splitting "is there something to show" from "is it fresh enough to trust
+// without checking again" is what lets the caller serve an existing row INSTANTLY - even a
+// stale one - while a background refresh runs, instead of making the whole request wait on a
+// live anikoto scrape just because the TTL happened to expire (see resolveAnikotoEpisodeCounts
+// Cached below).
+function getAnyCachedAnikotoRow(normalizedTitle, tmdbSeasonCount) {
     return new Promise((resolve) => {
         animeCacheDb.get(
             `SELECT sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count FROM anikoto_episode_counts WHERE normalized_title = ?`,
             [normalizedTitle],
             (err, row) => {
                 if (err || !row) return resolve(undefined);
-                if (row.is_finished === 1 && Number.isFinite(tmdbSeasonCount) && Number.isFinite(row.tmdb_season_count) &&
-                    tmdbSeasonCount > row.tmdb_season_count) {
-                    logAnikotoDebug(`CACHE BUST "${normalizedTitle}" - TMDB season count grew (${row.tmdb_season_count} -> ${tmdbSeasonCount}) since this was cached as finished`);
-                    return resolve(undefined);
+                const seasonCountBust = row.is_finished === 1 && Number.isFinite(tmdbSeasonCount) &&
+                    Number.isFinite(row.tmdb_season_count) && tmdbSeasonCount > row.tmdb_season_count;
+                if (seasonCountBust) {
+                    logAnikotoDebug(`CACHE STALE "${normalizedTitle}" - TMDB season count grew (${row.tmdb_season_count} -> ${tmdbSeasonCount}) since this was cached as finished`);
                 }
                 const isNegative = row.sub_count == null && row.dub_count == null && row.total_count == null;
                 const finishedTtl = Number.isFinite(row.tmdb_season_count)
@@ -10270,8 +10295,10 @@ function getCachedAnikotoEpisodeCounts(normalizedTitle, tmdbSeasonCount) {
                 const ttl = row.is_finished === 1 ? finishedTtl
                     : (isNegative ? ANIKOTO_NEGATIVE_CACHE_TTL_MS : ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS);
                 const age = Date.now() - Number(row.cached_at || 0);
-                if (age > ttl) return resolve(undefined);
-                resolve({ sub: row.sub_count, dub: row.dub_count, total: row.total_count });
+                resolve({
+                    counts: isNegative ? null : { sub: row.sub_count, dub: row.dub_count, total: row.total_count },
+                    stale: seasonCountBust || age > ttl
+                });
             }
         );
     });
@@ -10620,25 +10647,57 @@ function isAnikotoVariantDivergence(query, candidateTitle) {
 // match; reused here as the grouping signal instead). Restricted to mediaType 'TV' so Movies/
 // OVAs/Specials sharing the franchise name never get summed in as if they were episodes.
 function sumAnikotoSeasonSiblings(primary, candidatePool) {
-    let sub = Number.isFinite(primary.sub) ? primary.sub : 0;
-    let dub = Number.isFinite(primary.dub) ? primary.dub : 0;
-    let total = Number.isFinite(primary.total) ? primary.total : 0;
-    let subKnown = Number.isFinite(primary.sub);
-    let dubKnown = Number.isFinite(primary.dub);
-    let totalKnown = Number.isFinite(primary.total);
-    const summedTitles = [primary.title];
-
+    const group = [primary];
     for (const c of candidatePool) {
         if (c === primary) continue;
         if (c.mediaType?.toLowerCase() !== 'tv') continue;
         if (!isAnikotoVariantDivergence(primary.title, c.title)) continue;
-        summedTitles.push(c.title);
-        if (Number.isFinite(c.sub)) sub += c.sub; else subKnown = false;
-        if (Number.isFinite(c.dub)) dub += c.dub; else dubKnown = false;
-        if (Number.isFinite(c.total)) total += c.total; else totalKnown = false;
+        group.push(c);
     }
 
-    if (summedTitles.length === 1) return primary; // no siblings found in this pool
+    if (group.length === 1) return primary; // no siblings found in this pool
+
+    // NOTE: an earlier version of this function tried to detect and exclude "cour" entries
+    // (e.g. "Tower of God Season 2: Workshop Battle") as duplicates of their parent season,
+    // reasoning that anikoto's own inflated sub/dub numbers meant something was being double-
+    // counted. That was wrong and got reverted: a cour genuinely covers a DIFFERENT block of
+    // episodes than its parent card (episode 14-26, not a re-listing of 1-13), so excluding it
+    // undercounted the real total (confirmed live: Tower of God has 39 real episodes across
+    // Season 1 + Season 2's two cours, but excluding "Workshop Battle" left only 26). The
+    // per-entry clamp below is the correct, sufficient fix for the inflated-sub-number problem
+    // on its own - it brings sub down to at most that entry's own total, which naturally
+    // resolves to the real 39/39/39 once every genuine sibling is summed normally.
+    const kept = group;
+
+    let sub = 0, dub = 0, total = 0;
+    // Starts UNKNOWN and only flips to known once at least one sibling actually reports a
+    // value - the opposite of the old all-or-nothing version, which nulled the WHOLE group's
+    // field the moment any single sibling's card was missing it. That was too aggressive: a
+    // season card missing its dub badge (a stale/incomplete anikoto scrape, or a genuinely
+    // sub-only season) used to wipe out a perfectly good dub count the primary entry (or
+    // another sibling) already had - confirmed live on Tower of God, where "Season 2" briefly
+    // came back with no dub badge at all and silently erased the dub badge for the whole show
+    // even though the primary "Tower of God" entry had dub:13 the entire time. Summing
+    // whatever's actually known instead means one incomplete sibling can no longer erase good
+    // data from the others.
+    let subKnown = false, dubKnown = false, totalKnown = false;
+    const summedTitles = [];
+    for (const entry of kept) {
+        summedTitles.push(entry.title);
+        // anikoto's own sub/dub badge is occasionally the HIGHEST episode number it's seen for
+        // that entry rather than a true released-episode count, so a single season can show
+        // e.g. sub:14 against its own total:13 (confirmed live on Tower of God Season 2's
+        // card). A season can never legitimately have more sub/dub episodes released than its
+        // own total - clamp per-entry before summing so that impossible state can't propagate
+        // into (and inflate) the grouped total across siblings.
+        const entrySub = (Number.isFinite(entry.sub) && Number.isFinite(entry.total)) ? Math.min(entry.sub, entry.total) : entry.sub;
+        const entryDub = (Number.isFinite(entry.dub) && Number.isFinite(entry.total)) ? Math.min(entry.dub, entry.total) : entry.dub;
+        if (Number.isFinite(entrySub)) { sub += entrySub; subKnown = true; }
+        if (Number.isFinite(entryDub)) { dub += entryDub; dubKnown = true; }
+        if (Number.isFinite(entry.total)) { total += entry.total; totalKnown = true; }
+    }
+
+    if (summedTitles.length === 1) return primary; // everything else was a cour, nothing left to sum
 
     logAnikotoDebug(`SEASON SUM grouped [${summedTitles.join(' + ')}] -> sub:${subKnown ? sub : null} dub:${dubKnown ? dub : null} total:${totalKnown ? total : null}`);
     return {
@@ -10929,28 +10988,18 @@ async function fetchAnimegoReleasedEpisodeCount(rawTitle, altTitles) {
 
 const anikotoEpisodeCountsInFlight = new Map();
 
-// tmdbSeasonCount (optional) comes from the caller's own TMDB details fetch - it's what makes
-// a finished show's cache row self-invalidate when a real sequel season shows up, instead of
-// relying purely on the long TTL backstop. See getCachedAnikotoEpisodeCounts.
-function resolveAnikotoEpisodeCountsCached(rawTitle, altTitles, tmdbSeasonCount) {
-    const normalizedTitle = normalizeAnikotoTitleKey(rawTitle);
-    if (!normalizedTitle) return Promise.resolve(null);
-
+// The actual live scrape: anikoto search + match, animego dub/total backfill when anikoto's own
+// dub is missing, then a cache write. Shared by both callers below - a genuinely uncached title
+// (nothing to show yet, has to wait) and a stale-but-present one (something to show already,
+// this just runs quietly in the background to refresh it for next time). Deduped through
+// anikotoEpisodeCountsInFlight either way, so two requests for the same title - whether both
+// cold, or one cold and one triggering a background refresh - never fire two live scrapes.
+function runLiveAnikotoLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount) {
     if (anikotoEpisodeCountsInFlight.has(normalizedTitle)) {
         return anikotoEpisodeCountsInFlight.get(normalizedTitle);
     }
 
     const p = (async () => {
-        const cached = await getCachedAnikotoEpisodeCounts(normalizedTitle, tmdbSeasonCount);
-        if (cached !== undefined) {
-            // A cache row with every field null is a cached MISS (see
-            // ANIKOTO_NEGATIVE_CACHE_TTL_MS above) - collapse it back to null so callers
-            // keep the simple "null = no match" contract regardless of which kind of
-            // cache hit this was.
-            const isNegative = cached.sub == null && cached.dub == null && cached.total == null;
-            return isNegative ? null : cached;
-        }
-
         const fresh = await fetchAnikotoEpisodeCounts(rawTitle);
 
         // A missing dub count is used as a signal that this anikoto entry might be
@@ -10989,12 +11038,41 @@ function resolveAnikotoEpisodeCountsCached(rawTitle, altTitles, tmdbSeasonCount)
     anikotoEpisodeCountsInFlight.set(normalizedTitle, p);
     // .finally() returns its OWN new promise - if it's not caught, a rejection of `p`
     // (e.g. anikoto/Cloudflare rate-limiting us) becomes an unhandled rejection on THIS
-    // chain even though the caller below awaits and catches `p` itself. Node crashes the
-    // whole process on unhandled rejections by default - this is what took the backend
-    // down. The .catch(() => {}) here is just to keep this cleanup-only chain from ever
-    // being "unhandled" - the real error still propagates to whoever awaits `p`.
+    // chain even though every caller below also attaches its own handler to `p` directly.
+    // Node crashes the whole process on unhandled rejections by default - this is what took
+    // the backend down. The .catch(() => {}) here is just to keep this cleanup-only chain
+    // from ever being "unhandled" - the real error still propagates to whoever awaits `p`.
     p.finally(() => anikotoEpisodeCountsInFlight.delete(normalizedTitle)).catch(() => {});
     return p;
+}
+
+// tmdbSeasonCount (optional) comes from the caller's own TMDB details fetch - it's what makes
+// a finished show's cache row self-invalidate when a real sequel season shows up, instead of
+// relying purely on the long TTL backstop. See getAnyCachedAnikotoRow.
+//
+// Stale-while-revalidate: any row already on disk - even an expired one - is returned
+// IMMEDIATELY, so a page load never blocks on a live anikoto scrape just because the TTL ticked
+// over while nobody was looking. A stale row still kicks off a real scrape, just quietly in the
+// background - the next load (or a live-updating client, if one's added later) picks up
+// whatever it finds. Only a title with NO row at all yet has genuinely nothing to serve and has
+// to wait on the first real lookup.
+function resolveAnikotoEpisodeCountsCached(rawTitle, altTitles, tmdbSeasonCount) {
+    const normalizedTitle = normalizeAnikotoTitleKey(rawTitle);
+    if (!normalizedTitle) return Promise.resolve(null);
+
+    return (async () => {
+        const cached = await getAnyCachedAnikotoRow(normalizedTitle, tmdbSeasonCount);
+
+        if (cached !== undefined) {
+            if (cached.stale) {
+                runLiveAnikotoLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount)
+                    .catch(err => logAnikotoDebug(`Background refresh failed for "${rawTitle}"`, { error: err.message || String(err) }));
+            }
+            return cached.counts;
+        }
+
+        return runLiveAnikotoLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount);
+    })();
 }
 
 // Attempted a "sum each season's own anikoto entry" feature here to properly combine

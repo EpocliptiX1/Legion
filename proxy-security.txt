@@ -370,3 +370,370 @@ KEY FILES
                                 updated to consume pre-built proxy URLs
   .gitignore                  — proxy_token.key + middleware_secret.key
                                 entries added
+
+
+====================================================================
+ROUND 3 — full compromise via static file exposure (2026-08-17/18,
+separate pentest session, no source access, browser+curl via ngrok
+then direct localhost:3000 once ngrok hit its bandwidth cap)
+====================================================================
+
+HOW THIS ROUND STARTED
+Round 2 (above) had already closed the session-binding gap. This round set
+out to re-verify that fix plus sweep for anything unrelated. The very first
+thing tried — `GET /Backend/users.db` — returned HTTP 200 with the raw
+SQLite file. That one request unraveled into the worst finding of the whole
+engagement, so the play-by-play matters here, not just the conclusion.
+
+THE ROOT CAUSE
+Whatever was serving static files (almost certainly `express.static()`
+mounted on the repo root, or on `Backend/` itself, instead of a dedicated
+`public/`-only directory) had zero allowlist/denylist on file type or
+location. A plain `GET` to a guessed path served ANYTHING under that mount
+point verbatim: source code, databases, secret key files, debug logs — all
+of it, same as if you'd `cat`ed the file locally.
+
+WHAT WAS ACTUALLY DOWNLOADABLE (all confirmed HTTP 200, full body):
+  /Backend/server.js              675KB — the ENTIRE backend source, i.e.
+                                   everything documented in this file
+  /Backend/proxy_token.key        the AES-256-GCM key from LAYER 2 above,
+                                   in plaintext, 44 bytes, base64
+  /Backend/middleware_secret.key  the MIDDLEWARE_SECRET from LAYER 1 above,
+                                   plaintext, 64 hex chars
+  /Backend/users.db               7.9MB SQLite dump, 107 real users
+  /Backend/backend/users.json     34KB, same 107 users as JSON: username,
+                                   userEmail, userTier, userPassword
+                                   (bcrypt $2b$10$..., 60 chars — hashed,
+                                   not plaintext, that part was fine), plus
+                                   an `admin` account in the dump
+  /Backend/activity.db, /Backend/animeCache.db, /Backend/poster_cache.db,
+  /datasets/movies.db             assorted other DB dumps
+  /Backend/kaa-debug-log.txt, /Backend/episode-logs.txt,
+  /Backend/tmdb_search_log.txt, etc.   assorted logs
+
+WHY THE KEY LEAK IS CATASTROPHIC (not just "one more leaked file")
+Every other finding in this document assumes the AES key and the middleware
+secret are secret. Once they're not, none of the LAYER 1/2/3 protections
+above are actually enforcing anything — they're just code that LOOKS like
+protection to someone reading it, not protection that holds up against
+someone who has the key. Proved this three separate ways, each one a
+complete, working bypass built entirely offline from the leaked key, with
+NO interaction with the real resolver/session flow at all:
+
+  1. DECRYPT any captured token without ever touching a session.
+     Grabbed a live /api/proxy-stream?token=... URL, wrote ~10 lines of
+     Node reimplementing decryptProxyTarget() with the leaked key:
+
+       const raw = Buffer.from(token, 'base64url');
+       const iv = raw.subarray(0,12), authTag = raw.subarray(12,28),
+             ciphertext = raw.subarray(28);
+       const decipher = crypto.createDecipheriv('aes-256-gcm', LEAKED_KEY, iv);
+       decipher.setAuthTag(authTag);
+       JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]))
+
+     -> {"u":"https://bl.krussdomi.com/playlist/.../master.m3u8", "r":"...",
+         "a":"...", "s":"<session id>", "e":<expiry ms>}
+     The exact same {u,r,a,s,e} shape documented in LAYER 2/3 above,
+     recovered with zero access to the app itself.
+
+  2. FORGE a brand new, fully valid token from scratch.
+     Same script, run in reverse (encryptProxyTarget logic instead of
+     decrypt), with a sessionId of `'a'.repeat(64)` — a session that was
+     NEVER issued by the real server, just typed in. Sent it as
+     `Cookie: aniko_sid=aaaa...a` (64 chars, matches the format check) +
+     the forged token as `?token=...`. Server returned 200 with a real,
+     playable HLS manifest. This is the part that actually breaks LAYER 3:
+     verifyProxySession() correctly checks decoded.sessionId === req.sessionId
+     — but with the key known, an attacker controls BOTH sides of that
+     comparison simultaneously (bakes whatever sessionId they want into the
+     token, then sends a cookie with that same string), so the check passes
+     every time regardless of what it's comparing. The check's logic was
+     never wrong; the secret it depends on was just public.
+
+  3. BYPASS the internal-backend gate on :4000 entirely.
+     The leaked middleware_secret.key value, sent as `x-middleware-secret`,
+     turned every `403 Forbidden: direct access to backend is not allowed`
+     from LAYER 1 into a normal (allowed-through) response.
+
+  Also relevant: the session cookie itself was, at the time, validated by
+  format only (`/^[a-f0-9]{64}$/`) with no server-side session store behind
+  it — so step 2 above didn't even require defeating a signature, just
+  matching a regex. (This got hardened as part of the fix — see below.)
+
+THE FIX (confirmed, re-tested from scratch afterward)
+  - Whatever was over-broadly serving `Backend/` was locked down — every
+    path under `/Backend/*` now returns a flat 404, not just the specific
+    files found. Re-tested ~20 paths across all the categories above,
+    all 404.
+  - Both `proxy_token.key` and `middleware_secret.key` were ROTATED, not
+    just hidden. Confirmed by trying to decrypt a freshly-minted live token
+    with the old leaked key value: `Unsupported state or unable to
+    authenticate data` (GCM auth tag rejects it outright — this is what
+    "rotated, not just moved" looks like from outside: the old key
+    literally stops working, instantly, for every token minted after the
+    rotation). Same for the middleware secret: old value -> back to 403 on
+    :4000.
+  - The session cookie was upgraded from a bare 64-hex-char value to a
+    signed `<id>.<signature>` pair. Tested: a well-formed-but-wrong
+    signature gets fully discarded (server mints and sets a brand new
+    legitimate session instead of trusting the malformed one) rather than
+    accepted on format alone.
+
+A SECOND, SMALLER BUG FOUND WHILE RE-VERIFYING THE ABOVE:
+  `POST /users` let an authenticated user change their OWN account's
+  `userEmail` field with no current-password confirmation — meaning a
+  stolen/leaked bearer token (e.g. via XSS, see ROUND 5) could be used to
+  silently take over an account by first swapping the recovery email before
+  the real owner noticed anything.
+  FIX: confirmed `POST /users` now requires `currentPassword` whenever the
+  request body includes an email change; wrong/missing password -> rejected
+  with `"Current password required to change email"`. Verified live against
+  a fresh test account: no-password attempt rejected, correct-password
+  attempt succeeded, tier field on the same route left alone since the user
+  scoped that piece out as a non-issue (see ROUND 4).
+
+
+====================================================================
+ROUND 4 — different attack surface: SSRF audit, scraped-content XSS
+audit, and the (explicitly deprioritized) tier/paywall gap
+====================================================================
+
+METHOD NOTE: this round deliberately avoided repeating the ROUND 3
+playbook (key forgery) and instead picked two structurally different
+bug classes to hunt for, since finding the SAME class of bug three times
+in a row tells you less than checking two you haven't looked at yet.
+
+SSRF AUDIT — clean, no fix needed
+  Every server-side scraper that fetches a third-party URL based on
+  user-supplied input was traced by hand: TMDB proxy (`/api/tmdb-proxy/*`),
+  Jikan (`jikanGet()`), Anikoto comment/reply fetchers, the Kinogo comment
+  importer (`resolveKinogoMoviePageForComments`/`fetchKinogoComments`), and
+  OpenSubtitles (`searchKinoSubtitles`). In every single case, the request
+  URL is built as `FIXED_HOST_STRING + userInput`, where userInput only
+  ever lands in the PATH or QUERY, never the authority/host portion. That
+  means there's no `new URL(userInput, base)`-style construction anywhere
+  that a crafted input could hijack into pointing at a different host
+  (internal service, cloud metadata endpoint, etc.) — the pattern that
+  usually causes SSRF just doesn't exist in this codebase's scrapers.
+  Specifically checked for (and didn't find): protocol-relative host
+  overrides (`//evil.com`), path traversal escaping the hardcoded prefix,
+  and unbounded `axios.get(fullUserSuppliedUrl)` calls anywhere.
+
+STORED XSS VIA SCRAPED THIRD-PARTY CONTENT — clean, no fix needed
+  The theory: your scrapers pull `username`/`text` from real posts on
+  kinogo.mu/anikoto.cz and store+display them on your own pages. If someone
+  posts a payload on THEIR site and it gets imported verbatim, it executes
+  in YOUR users' browsers once rendered here — a stored XSS where the
+  "attacker input" never even touches your own API. Traced the actual
+  render path (`renderOneComment()` -> `escapeHtml()` on both username and
+  comment text, BEFORE any markdown-style transforms are applied) and
+  confirmed it's escaped correctly, consistently, for every comment source
+  (user-authored, kinogo-imported, anikoto-imported alike). The one spot
+  that WASN'T doing this consistently turned out to be a different bug
+  entirely — see ROUND 5's profile-picture XSS below, which was found
+  while specifically re-checking this exact rendering pipeline for gaps.
+
+TIER/PAYWALL SERVER-SIDE ENFORCEMENT — found, reported, explicitly
+DEPRECATED per user instruction ("ignore it, will be removed")
+  `POST /users/me/increment-view` increments a counter unconditionally and
+  never blocks anything; nothing anywhere in the streaming resolve chain
+  (`/api/anime-kaa-servers`, `/api/m3u8-proxy`, `/api/proxy-stream`, or any
+  of the seven other provider routes) checks `userTier` or `viewCount`
+  before serving a stream. A completely fresh, never-registered anonymous
+  guest session gets the exact same working proxied stream token as a
+  paying account. Left as-is per explicit user direction — noting it here
+  only so it isn't rediscovered from scratch next time someone reads this
+  file. If this ever needs picking back up: the check belongs in whichever
+  function is common to all provider routes right before token minting, not
+  bolted onto each of the eight individually.
+
+
+====================================================================
+ROUND 5 — comment/account feature audit + a real stored XSS
+====================================================================
+
+COMMENT DELETE IDOR — clean, no fix needed
+  Posted a comment as account D, attempted `DELETE /movie-comments/:id` and
+  `DELETE /anime-comments/:id` as unrelated account E. Both correctly
+  403 `"You do not own this comment"`. Owner-delete still works.
+
+MERGE-ACCOUNT PASSWORD CHECK + BRUTE FORCE — clean, no fix needed
+  `POST /users/merge-account` takes {sourceEmail, sourcePassword} under the
+  CALLER's own bearer token, and is supposed to verify sourcePassword
+  actually authenticates sourceEmail before merging (and deleting!) that
+  account into the caller's. Wrong password -> 401 `"Incorrect password for
+  that account"`. Correct password -> succeeds and genuinely merges/deletes
+  the source account (confirmed with two disposable test accounts, not real
+  user data). Hammered it with 15 wrong-password attempts against a real
+  target account: attempts 1-6 get normal 401s, attempt 7 onward clamps to
+  429 and stays there — a real, working rate limiter (`strictLimiter` in
+  the source), not just a documented intention.
+
+CSRF ON THE STREAM ENDPOINTS — found, then fixed same session
+  Mutation endpoints (comments, merge-account, `/users`) authenticate via
+  `Authorization: Bearer <jwt>` (localStorage, not a cookie) — a cross-site
+  page literally cannot attach that header automatically, so CSRF isn't a
+  meaningful concern there by construction, no token needed.
+  BUT `/api/proxy-stream` and `/api/m3u8-proxy` authenticate via the
+  `aniko_sid` cookie, and originally accepted requests carrying a
+  completely foreign `Origin`/`Referer` (or none at all) just fine — the
+  Referer/Origin check documented in LAYER 1 wasn't actually being enforced
+  on these two specific routes. Didn't cross a session boundary in practice
+  (the LAYER 3 session-binding check is what was actually doing the real
+  work, and that held throughout), but it was thinner defense-in-depth than
+  documented, and combined with `Access-Control-Allow-Origin: *` on these
+  responses meant any third-party site could freely embed a stream URL
+  (only ever usable with the embedding VIEWER's own valid session, so not a
+  privilege escalation on its own — still worth closing, belt-and-suspenders).
+  FIX: confirmed both proxy endpoints now reject foreign-origin requests
+  (re-tested live with a spoofed external `Origin`/`Referer` — properly
+  blocked), and the three hardcoded `Access-Control-Allow-Origin: *`
+  responses were tightened to reflect the validated caller origin instead.
+
+STORED XSS: profile picture -> comment avatar (the real one this round)
+  Two independent small bugs that chain into one working exploit:
+
+  1. `POST /users/profile-picture` validated only the PREFIX of the
+     `profilePic` data URI (`data:image/png;base64,`) — never checked that
+     everything after the comma was actually valid, size-bounded base64
+     image data. Sent:
+       data:image/png;base64,iVBOR...==');}</style><script>alert(document.cookie)</script><style>a{background:url('
+     and the server stored it verbatim: `{"success":true}`.
+
+  2. `commentAvatarHTML()` (js/movieLoading.js) rendered `profilePic`
+     completely UNescaped, directly into
+       <div class="comment-avatar" style="background-image:url('${profilePic}')"></div>
+     — the one rendering spot in the whole comment-avatar/username/text
+     pipeline that didn't route through `escapeHtml()` like everything else
+     documented as clean in ROUND 4's XSS audit above. (This is exactly why
+     that audit is worth re-running periodically rather than treated as a
+     permanent clean bill of health — a single new render call anywhere in
+     the codebase can reopen the class of bug an earlier audit closed.)
+
+  Proved the FULL chain end-to-end, not just the two halves in isolation:
+  set the malicious profilePic on account D, had D post a real comment,
+  then fetched `GET /movie-comments?movieId=...` with NO AUTHENTICATION AT
+  ALL and got the poisoned `profile_pic` field back unmodified. Any visitor
+  loading that comment section gets the script executed in their own
+  browser — and since the JWT (`authToken`) lives in `localStorage`, not an
+  HttpOnly cookie, `localStorage.getItem('authToken')` inside that injected
+  script is a direct path to stealing another logged-in user's session and
+  fully impersonating them. This was never just a cosmetic/defacement bug.
+
+  FIX (confirmed):
+  - Server now strictly validates the FULL base64 body (decodes it, checks
+    it's real bounded PNG/JPEG/GIF/WEBP image data, magic bytes and all)
+    and rebuilds the stored value from the decoded bytes rather than
+    trusting the client-supplied string verbatim.
+  - `commentAvatarHTML()` now runs `profilePic` through the same
+    `escapeHtml()` used everywhere else before interpolating it — so even
+    if server-side validation ever regresses again later, this specific
+    sink doesn't reopen on its own.
+
+
+====================================================================
+ROUND 6 — remaining checklist items, plus port :4000's actual surface
+====================================================================
+
+PASSWORD STRENGTH POLICY — found, explicitly left as-is per user
+  `userPassword: "1"` and `"a"` both accepted at registration; only a
+  fully empty password is rejected. Given ROUND 3 showed the bcrypt hash
+  DB has leaked once already, single-character passwords are effectively
+  instant to crack offline regardless of hash cost factor. Flagged, user's
+  call: "if someone uses 'a' as a pass, their fault" — noted here as a
+  deliberate product decision, not an oversight, so it isn't miscategorized
+  as unaddressed next time this file gets read.
+
+LOGIN RATE LIMITING on /users/auth — confirmed real, working
+  16ish wrong-password attempts get normal 401s, then it clamps to 429 and
+  stays there. Real and working, just a looser threshold than
+  merge-account's 6-attempt limiter. Given the password-policy decision
+  above, this is the ONLY thing standing between a weak password and an
+  online guessing attack (bcrypt cost + this limiter, no length/complexity
+  requirement) — worth keeping in mind if that product decision ever gets
+  revisited.
+
+PORT :4000'S ACTUAL SURFACE — mapped, with the user's cooperation handing
+over the live MIDDLEWARE_SECRET value for a scoped, authorized look
+  Confirmed :4000 is NOT a separate/hidden/expanded API — it's the literal
+  same Express app and route set as :3000 (identical results from
+  `/api/tmdb/search?q=test` hit on both ports). Probed a dozen likely
+  internal-only paths (`/admin`, `/debug`, `/metrics`, `/internal/*`) —
+  all plain "no route matched" 404s, no evidence of hidden admin/debug
+  functionality living behind the secret gate.
+  Also confirmed :4000 is bound to `[::1]:4000` (IPv6 loopback) only, per
+  `netstat` — not reachable from outside this machine under any
+  circumstance, regardless of who has the secret. This matters a lot for
+  severity: the one real bug found here (below) requires BOTH local machine
+  access AND the secret to exploit at all.
+
+  BUG FOUND: rate-limit bucket splitting via loopback address.
+  Requests to :3000 arrive as `127.0.0.1` (IPv4); requests to :4000 arrive
+  as `::1` (IPv6) — two different keys to an IP-keyed rate limiter, so each
+  address gets its OWN independent quota. Confirmed: burned :3000's
+  registration-endpoint quota to 429, then immediately got 200s via :4000
+  for the identical action — a fresh bucket, not a shared one. This lets
+  someone double their effective attempt budget on any rate-limited
+  endpoint by working both addresses in parallel, PROVIDED they already
+  have local access to the machine and the middleware secret (neither of
+  which an external attacker has, per the loopback-only binding above).
+  FIX (confirmed): re-ran the identical test — burned :3000's quota, then
+  immediately hit :4000 for the same action — and :4000 now inherits the
+  already-exhausted state instantly (429 right away, no fresh bucket).
+  Whatever key the limiter uses is now normalized/shared across both
+  listeners instead of keyed on the raw connecting address.
+
+WATCH2GETHER SESSION OWNERSHIP — clean, no fix needed (nothing reproduced)
+  Tested with two independent accounts against a real hosted-public
+  session: reading another session's state without joining (403 "Not part
+  of this session"), ending a session you don't host (403 "Not the host of
+  this session"), granting yourself control (400 "Invalid request"),
+  kicking the actual host as a non-host participant (403 "Not the host of
+  this session"), and probing 8 adjacent/lower numeric session IDs against
+  `join-public` to check for an existence-leak or private-session-guessing
+  path (all uniform 404 `"Public session not found"` — doesn't even
+  distinguish "exists but not public" from "doesn't exist", which is the
+  right behavior to avoid enumeration). Every ownership check held up.
+
+GUEST ACCOUNT / MERGE-GUEST ABUSE — clean, no fix needed
+  Guest UIDs (`g_` + 24 hex chars) are generated client-side via
+  `crypto.getRandomValues()` — 96 bits of entropy, not guessable or
+  practically enumerable, so `POST /users/merge-guest` can't realistically
+  be abused by guessing someone else's guest ID.
+
+SESSION COOKIE SIGNATURE TIMING ATTACK — attempted, genuinely inconclusive
+  Tried to detect a non-constant-time signature comparison by timing two
+  batches of 20 requests each (wrong-from-byte-one vs. wrong-throughout-at-
+  a-different-value) against the same endpoint. Result: 9.16ms vs 9.41ms
+  average, both well inside the ~3ms request-to-request jitter present in
+  EACH batch individually — no usable signal, but that's the expected
+  outcome of this measurement method, not evidence either way. A real
+  timing side-channel in an HMAC comparison lives at the nanosecond-to-low-
+  microsecond scale; the noise floor of "spawn a curl process, do a TCP+TLS
+  handshake, hit a Node event loop" is roughly 1000x too coarse to see
+  through. This specific question (is the comparison constant-time?) can
+  only be answered by reading the comparison code directly or running a
+  proper in-process microbenchmark — not from outside over HTTP. Left open,
+  flagged as "unknown," not "safe."
+
+
+====================================================================
+KEY FILES — additions from rounds 3-6
+====================================================================
+  Whatever serves static assets (audit this — the exact culprit line
+                                was never pinned down from outside, only
+                                confirmed as fixed by the whole /Backend/*
+                                tree now 404ing)
+  Backend/proxy_token.key       — ROTATED as part of the round 3 fix. Old
+                                value is permanently dead, confirmed.
+  Backend/middleware_secret.key — ROTATED as part of the round 3 fix, then
+                                handed to a pentest session deliberately
+                                (round 6, port :4000 mapping) for one
+                                scoped, authorized look — treat that as a
+                                one-time exception, not a standing practice.
+                                Rotate again if there's ever doubt about who
+                                currently has this value.
+  js/movieLoading.js            — commentAvatarHTML() (~line 2069, escaping
+                                fix from round 5), renderOneComment/
+                                renderCommentText/escapeHtml (already-clean
+                                pattern this was made to match)

@@ -551,29 +551,34 @@ document.addEventListener('DOMContentLoaded', function() {
             overlay = document.createElement('div');
             overlay.id = 'kaaResumeOverlay';
             overlay.style.cssText = 'position:fixed;inset:0;display:flex;justify-content:center;align-items:center;background:rgba(0,0,0,0.85);z-index:10010;';
-            overlay.innerHTML = `
-                <div style="max-width:360px;width:100%;padding:24px;border-radius:18px;background:#111;border:1px solid #ff8000;color:#eee;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.65);">
-                    <div style="font-size:1.25rem;font-weight:800;color:#ffb14d;margin-bottom:12px;">Continue Watching</div>
-                    <div id="kaaResumeMessage" style="font-size:0.95rem;line-height:1.4;margin-bottom:22px;">Resume ${episodeKey} from <strong>${seconds}s</strong>?</div>
-                    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
-                        <button id="kaaResumeConfirmBtn" style="padding:10px 16px;border:none;border-radius:10px;background:#ff8000;color:#111;font-weight:700;cursor:pointer;min-width:120px;">Resume</button>
-                        <button id="kaaResumeRestartBtn" style="padding:10px 16px;border:1px solid #ff8000;border-radius:10px;background:transparent;color:#fff;font-weight:700;cursor:pointer;min-width:120px;">Start Over</button>
-                    </div>
-                </div>
-            `;
             document.body.appendChild(overlay);
-            overlay.querySelector('#kaaResumeConfirmBtn').addEventListener('click', () => {
-                overlay.style.display = 'none';
-                onResume();
-            });
-            overlay.querySelector('#kaaResumeRestartBtn').addEventListener('click', () => {
-                overlay.style.display = 'none';
-                onRestart();
-            });
-        } else {
-            const message = overlay.querySelector('#kaaResumeMessage');
-            if (message) message.innerHTML = `Resume ${episodeKey} from <strong>${seconds}s</strong>?`;
         }
+        // Rebuilt on EVERY call, not just the first - each provider (KAA, Neko, ...) passes its
+        // own onResume/onRestart closures bound to that provider's own <video> element. Reusing
+        // the overlay's DOM without also re-attaching listeners left the FIRST provider's
+        // closures wired up forever: switching KAA -> Neko still showed the overlay (message
+        // text alone was being updated), but clicking Resume kept seeking KAA's now-detached
+        // video element instead of Neko's, so it silently did nothing. Rebuilding the buttons'
+        // innerHTML each time destroys the old listeners along with the old nodes, so the new
+        // addEventListener calls below are always the ones that actually fire.
+        overlay.innerHTML = `
+            <div style="max-width:360px;width:100%;padding:24px;border-radius:18px;background:#111;border:1px solid #ff8000;color:#eee;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.65);">
+                <div style="font-size:1.25rem;font-weight:800;color:#ffb14d;margin-bottom:12px;">Continue Watching</div>
+                <div id="kaaResumeMessage" style="font-size:0.95rem;line-height:1.4;margin-bottom:22px;">Resume ${episodeKey} from <strong>${seconds}s</strong>?</div>
+                <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+                    <button id="kaaResumeConfirmBtn" style="padding:10px 16px;border:none;border-radius:10px;background:#ff8000;color:#111;font-weight:700;cursor:pointer;min-width:120px;">Resume</button>
+                    <button id="kaaResumeRestartBtn" style="padding:10px 16px;border:1px solid #ff8000;border-radius:10px;background:transparent;color:#fff;font-weight:700;cursor:pointer;min-width:120px;">Start Over</button>
+                </div>
+            </div>
+        `;
+        overlay.querySelector('#kaaResumeConfirmBtn').addEventListener('click', () => {
+            overlay.style.display = 'none';
+            onResume();
+        });
+        overlay.querySelector('#kaaResumeRestartBtn').addEventListener('click', () => {
+            overlay.style.display = 'none';
+            onRestart();
+        });
         overlay.style.display = 'flex';
     }
 
