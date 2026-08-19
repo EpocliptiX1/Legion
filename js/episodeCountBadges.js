@@ -66,7 +66,7 @@
         return hasStartedAiring && Number.isFinite(tmdbData?.number_of_episodes) ? tmdbData.number_of_episodes : null;
     }
 
-    function fetchAnikotoCounts(title, altTitles, numberOfSeasons) {
+    function fetchAnikotoCounts(title, altTitles, numberOfSeasons, malId, tmdbTotal, tmdbId) {
         if (!title) return Promise.resolve(null);
         // altTitles rides along even on this primary-title call (not just the alt-title
         // retries below) - the backend's animego dub-backfill needs them too, for shows
@@ -83,7 +83,18 @@
         const seasonsParam = Number.isFinite(numberOfSeasons)
             ? `&numberOfSeasons=${numberOfSeasons}`
             : '';
-        return fetch(`/api/anikoto-episode-counts?title=${encodeURIComponent(title)}${altParam}${seasonsParam}`)
+        // malId lets the backend's native lookup probe MegaPlay directly by MAL id for a dub
+        // backfill (KAA itself just doesn't carry many dubs). tmdbTotal is our own already-
+        // computed released-episode total - the backend uses it as the authoritative `total`
+        // over whatever KAA/animego added up to on their own, since a provider's own per-
+        // episode numbering can have gaps/quirks TMDB's total doesn't. tmdbId (alongside
+        // numberOfSeasons) lets the dub backfill probe MegaPlay under EACH season's own MAL id
+        // instead of just the one malId above - MegaPlay numbers episodes per season, so a
+        // multi-season show's dub coverage past season 1 is invisible without this.
+        const malIdParam = Number.isFinite(malId) ? `&malId=${malId}` : '';
+        const tmdbTotalParam = Number.isFinite(tmdbTotal) && tmdbTotal > 0 ? `&tmdbTotal=${tmdbTotal}` : '';
+        const tmdbIdParam = Number.isFinite(tmdbId) ? `&tmdbId=${tmdbId}` : '';
+        return fetch(`/api/anikoto-episode-counts?title=${encodeURIComponent(title)}${altParam}${seasonsParam}${malIdParam}${tmdbTotalParam}${tmdbIdParam}`)
             .then(res => {
                 if (!res.ok) {
                     console.warn('[EpisodeBadges] anikoto lookup HTTP error', { title, status: res.status });
@@ -106,12 +117,12 @@
     // real counts. Sequential (not Promise.all) on purpose - most titles match on the
     // first try, so firing every alt title in parallel would usually just be wasted
     // anikoto requests for the common case.
-    async function fetchAnikotoCountsWithFallback(title, altTitles, numberOfSeasons) {
-        const primary = await fetchAnikotoCounts(title, altTitles, numberOfSeasons);
+    async function fetchAnikotoCountsWithFallback(title, altTitles, numberOfSeasons, malId, tmdbTotal, tmdbId) {
+        const primary = await fetchAnikotoCounts(title, altTitles, numberOfSeasons, malId, tmdbTotal, tmdbId);
         if (primary) return primary;
         for (const alt of (altTitles || [])) {
             if (!alt || alt === title) continue;
-            const result = await fetchAnikotoCounts(alt, altTitles, numberOfSeasons);
+            const result = await fetchAnikotoCounts(alt, altTitles, numberOfSeasons, malId, tmdbTotal, tmdbId);
             if (result) return result;
         }
         if (title) console.warn('[EpisodeBadges] no match for title or any alt title', { title, altTitles });
@@ -172,35 +183,37 @@
                 .then(res => res.ok ? res.json() : null)
                 .catch(() => null);
 
-            // Deliberately sequential (TMDB first, then anikoto) rather than parallel: the
-            // anikoto request wants TMDB's season count as a parameter, so it can't fire until
-            // that's known. Costs one extra hop, but badges are async placeholders that fill in
-            // after render, so nothing user-visible blocks on it - and the TMDB call hits our
-            // own proxy, not the public API.
-            promise = tmdbDetailsPromise
-                .then(async (tmdbData) => {
+            // malId lets the backend's native lookup (KAA + RU-MV/animego + MegaPlay dub-
+            // backfill, see server.js) probe MegaPlay directly - resolved the same way
+            // movieLoading.js already does elsewhere on this page. Best-effort: a badge still
+            // renders fine without it, just skips that one backfill step.
+            const malIdPromise = !tmdbId ? Promise.resolve(null) : fetch(`/api/anime-mal-id?tmdbId=${encodeURIComponent(tmdbId)}&season=1`)
+                .then(res => res.ok ? res.json() : null)
+                .then(data => Number.isFinite(data?.mal_id) ? data.mal_id : null)
+                .catch(() => null);
+
+            // Deliberately sequential (TMDB/malId first, then anikoto) rather than parallel: the
+            // anikoto request wants TMDB's season count and malId as parameters, so it can't
+            // fire until those are known. Costs one extra hop, but badges are async placeholders
+            // that fill in after render, so nothing user-visible blocks on it - and the TMDB
+            // call hits our own proxy, not the public API.
+            promise = Promise.all([tmdbDetailsPromise, malIdPromise])
+                .then(async ([tmdbData, malId]) => {
                     const seasonCount = Number.isFinite(tmdbData?.number_of_seasons) ? tmdbData.number_of_seasons : undefined;
-                    const anikotoResult = await fetchAnikotoCountsWithFallback(title, altTitles, seasonCount);
-                    const tmdbTotal = Number.isFinite(tmdbData?.number_of_episodes) ? tmdbData.number_of_episodes : null;
-                    // anikoto's total covers less than TMDB's combined total for this id AND
-                    // TMDB confirms this id actually spans 2+ seasons - only then is a lower
-                    // anikoto total actual evidence of a partial-season match, not just an
-                    // ongoing show correctly showing fewer released episodes than TMDB's
-                    // already-known full season order (confirmed live: a single-season,
-                    // still-airing show had anikoto/animego correctly reporting "7 released",
-                    // while TMDB already listed all 12 planned episodes in advance - without
-                    // this season-count gate, that got wrongly overridden to a stale "12").
-                    // dub is left null (not guessed) same as the below no-match fallback -
-                    // TMDB doesn't track dub availability at all.
-                    const isMultiSeasonId = Number.isFinite(tmdbData?.number_of_seasons) && tmdbData.number_of_seasons >= 2;
-                    if (anikotoResult && Number.isFinite(anikotoResult.total) && Number.isFinite(tmdbTotal) &&
-                        anikotoResult.total < tmdbTotal && isMultiSeasonId) {
-                        return { sub: tmdbTotal, dub: null, total: tmdbTotal };
-                    }
-                    if (anikotoResult) return anikotoResult;
-                    // Last resort when neither anikoto nor its animego backfill found
-                    // anything at all: fall back to TMDB's own episode count, same as a
-                    // plain 'tv' badge would use.
+                    // The RELEASED total (not TMDB's raw number_of_episodes, which can be
+                    // inflated by an announced-but-unaired season - see
+                    // computeReleasedTmdbEpisodeTotal above) is what the backend uses as its
+                    // authoritative `total` ceiling, since a provider's own per-episode
+                    // numbering can have gaps/quirks a season-level TMDB count doesn't
+                    // (confirmed live: Tower of God's real total is 39, but KAA's own episode
+                    // list for one cour had 15 entries instead of 13 due to a numbering
+                    // artifact on their end).
+                    const tmdbTotal = computeReleasedTmdbEpisodeTotal(tmdbData) ?? tmdbData?.number_of_episodes ?? null;
+                    const nativeResult = await fetchAnikotoCountsWithFallback(title, altTitles, seasonCount, malId, tmdbTotal, tmdbId);
+                    if (nativeResult) return nativeResult;
+                    // Last resort when the native lookup found nothing at all: fall back to
+                    // TMDB's own episode count, same as a plain 'tv' badge would use. dub is
+                    // left null (not guessed) - TMDB doesn't track dub availability at all.
                     return Number.isFinite(tmdbTotal) ? { sub: tmdbTotal, dub: null, total: tmdbTotal } : null;
                 });
         }

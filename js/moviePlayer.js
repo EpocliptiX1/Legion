@@ -885,7 +885,22 @@ document.addEventListener('DOMContentLoaded', function() {
             window.preloadKinoTvSource(tmdbId, season, episode);
 
             // Preload KAA sources
-            const kaaUrl = `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=tv&title=${encodeURIComponent(title)}`;
+            // Same synthetic-season override loadKickAssAnimeVideo's own fetch uses (see its
+            // comment) - without it here too, THIS preload (which races ahead of the user even
+            // opening the player, straight from continue-watching history) resolves the wrong
+            // season with no anchor title, caches that wrong result into
+            // window.__preloadedKaaSources, and the real loader below then just reuses it
+            // instead of making its own correctly-overridden request at all (confirmed live:
+            // this preload firing for a synthetic Workshop Battle season was exactly why KAA
+            // kept falling back to Neko even after the main loader's own override was working).
+            const kaaSeasonGroupsForPreload = window.__resolvedSeasonGroups || [];
+            const kaaSeasonMatchForPreload = kaaSeasonGroupsForPreload.find(g => Number(g.seasonNumber) === Number(season));
+            // KAA's own catalog is titled in romaji/native form, not English - romajiTitle
+            // specifically (falls back to label if that field isn't present, e.g. an older
+            // cached /api/anime-season-groups response from before this field existed).
+            const preloadSeasonTitleParam = (kaaSeasonMatchForPreload?.romajiTitle || kaaSeasonMatchForPreload?.label) ? `&seasonTitle=${encodeURIComponent(kaaSeasonMatchForPreload.romajiTitle || kaaSeasonMatchForPreload.label)}` : '';
+            const preloadSeasonEpCountParam = Number.isFinite(kaaSeasonMatchForPreload?.episodes?.length) ? `&seasonEpisodeCount=${kaaSeasonMatchForPreload.episodes.length}` : '';
+            const kaaUrl = `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=tv&title=${encodeURIComponent(title)}${preloadSeasonTitleParam}${preloadSeasonEpCountParam}`;
             console.log('[Preload] KAA fetch URL:', kaaUrl);
             fetch(kaaUrl).then(res => res.json()).then(data => {
                 if (data?.sources?.length > 0) {
@@ -898,6 +913,8 @@ document.addEventListener('DOMContentLoaded', function() {
             }).catch(err => console.log('[Preload] ✗ KAA preload failed:', err));
 
             // Preload Neko sources
+            // Same synthetic-season override as KAA's preload just above (reusing the same
+            // kaaSeasonMatchForPreload lookup - it's season-only, not KAA-specific).
             const nekoQuery = new URLSearchParams({
                 malId: malId || '',
                 tmdbId: tmdbId || '',
@@ -906,6 +923,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 season: season || 1,
                 ep: episode || 1
             });
+            if (kaaSeasonMatchForPreload?.label) nekoQuery.set('seasonTitle', kaaSeasonMatchForPreload.label);
             const nekoUrl = `/api/anime-neko-log?${nekoQuery.toString()}`;
             console.log('[Preload] Neko fetch URL:', nekoUrl);
             fetch(nekoUrl).then(res => res.json()).then(data => {
@@ -1776,6 +1794,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const title = animeTitle || document.getElementById('title')?.textContent.trim() || '';
             const query = new URLSearchParams({ malId: malId || '', tmdbId: tmdbId || '', title, type: audioType, season: season || 1, ep: episode || 1 });
+            // See resolveExactWatchUrl's overrideSeasonTitle comment - needed for synthetic
+            // cour-split seasons, whose anikoto page is often titled with the wrong literal
+            // season number too.
+            const preloadNekoSeasonGroups = window.__resolvedSeasonGroups || [];
+            const preloadNekoSeasonMatch = preloadNekoSeasonGroups.find(g => Number(g.seasonNumber) === Number(season));
+            if (preloadNekoSeasonMatch?.label) query.set('seasonTitle', preloadNekoSeasonMatch.label);
             fetch(`/api/anime-neko-log?${query.toString()}`).then(res => res.json()).then(data => {
                 if (data?.stream || data?.sources?.file) {
                     window.__preloadedNekoSources = data;
@@ -1819,14 +1843,38 @@ document.addEventListener('DOMContentLoaded', function() {
                 // resolved. Without checking audioType too, the FIRST sub<->dub toggle click
                 // after that would silently reuse that stale, wrong-audio preload instead of
                 // fetching what was actually just picked.
-                if (window.__preloadedKaaSources && preloadedEp && parseInt(selectedSeason) === parseInt(preloadedEp.season || 1) && parseInt(episode) === parseInt(preloadedEp.ep || 1) && preloadedEp.audioType === audioType) {
+                // Synthetic cour-split seasons need the override below to resolve at all - the
+                // KAA preload (window.preloadEpisodeSources, fired from movieLoading.js at page
+                // load, well before this page's own window.__resolvedSeasonGroups has had a
+                // chance to populate) can never reliably have applied it, so its cached result
+                // can't be trusted for one of these seasons even if season/episode/audio all
+                // superficially match (confirmed live: this exact race is what kept KAA falling
+                // back to Neko for Workshop Battle even after the override itself was working -
+                // the preload had already resolved and cached the WRONG season's sources by the
+                // time this ran, using none of the override logic below at all).
+                const isSyntheticSeasonForKaa = (window.__resolvedSeasonGroups || [])
+                    .some(g => Number(g.seasonNumber) === Number(selectedSeason));
+                if (!isSyntheticSeasonForKaa && window.__preloadedKaaSources && preloadedEp && parseInt(selectedSeason) === parseInt(preloadedEp.season || 1) && parseInt(episode) === parseInt(preloadedEp.ep || 1) && preloadedEp.audioType === audioType) {
                     console.log('[KAA] Using preloaded sources for S' + selectedSeason + 'E' + episode);
                     data = window.__preloadedKaaSources;
                     window.__preloadedKaaSources = null;
                     window.__preloadedKaaEpisode = null;
                 } else {
+                    // Synthetic cour-split seasons (e.g. Workshop Battle) have no real TMDB
+                    // season number - resolveKickAssAnimeSources' own resolveAnimeIds(tmdbId,
+                    // season) lookup would find nothing to anchor its disambiguation on for
+                    // those, so pass the season-group's own already-known title/episode count
+                    // straight through as an override instead (see that function's comment).
+                    const kaaSeasonGroups = window.__resolvedSeasonGroups || [];
+                    const kaaSeasonMatch = kaaSeasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
+                    // KAA's own catalog is titled in romaji/native form, not English - use
+                    // romajiTitle specifically (Neko/anikoto's own loader uses `label`, the
+                    // English one, instead - see its own comment for why the two providers
+                    // need different languages here).
+                    const seasonTitleParam = (kaaSeasonMatch?.romajiTitle || kaaSeasonMatch?.label) ? `&seasonTitle=${encodeURIComponent(kaaSeasonMatch.romajiTitle || kaaSeasonMatch.label)}` : '';
+                    const seasonEpCountParam = Number.isFinite(kaaSeasonMatch?.episodes?.length) ? `&seasonEpisodeCount=${kaaSeasonMatch.episodes.length}` : '';
                     const res = await fetch(
-                        `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=${encodeURIComponent(requestedType)}&title=${encodeURIComponent(title)}`
+                        `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=${encodeURIComponent(requestedType)}&title=${encodeURIComponent(title)}${seasonTitleParam}${seasonEpCountParam}`
                     );
                     data = await res.json().catch(() => ({}));
                     if (!res.ok) {
@@ -1874,7 +1922,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     // attempt on every new episode rather than sticking to whatever this one
                     // fell back to.
                     const preloadedNekoEp = window.__preloadedNekoEpisode;
-                    if (window.__preloadedNekoSources && preloadedNekoEp && parseInt(selectedSeason) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1) && (preloadedNekoEp.audio || 'sub') === audioType) {
+                    // __preloadedNekoSources is shared global state - it could have been
+                    // written by the untrusted page-load-time preload race (see the KAA preload
+                    // guard's comment above) rather than this function's own preloadNekoForEpisode
+                    // call, so the same synthetic-season distrust applies here too.
+                    const isSyntheticSeasonForNekoFallback = (window.__resolvedSeasonGroups || [])
+                        .some(g => Number(g.seasonNumber) === Number(selectedSeason));
+                    if (!isSyntheticSeasonForNekoFallback && window.__preloadedNekoSources && preloadedNekoEp && parseInt(selectedSeason) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1) && (preloadedNekoEp.audio || 'sub') === audioType) {
                         console.log('[Fallback] KAA had no sources, using preloaded Neko instead');
                         document.querySelectorAll('.server-btn').forEach(btn => btn.classList.toggle('active', btn.id === 'srvNeko1'));
                         window.currentServer = 'srvNeko1';
@@ -2230,6 +2284,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     season: season || 1,
                     ep: episode || 1
                 });
+                // Synthetic cour-split seasons (e.g. Workshop Battle) need this override -
+                // anikoto's own page for one is often titled with the WRONG literal season too
+                // (Workshop Battle's own anikoto title says "Season 2", not "Season 3"), so the
+                // backend's literal-season-number matching can't find it without an anchor. See
+                // resolveExactWatchUrl's overrideSeasonTitle comment for the full story.
+                const nekoSeasonGroups = window.__resolvedSeasonGroups || [];
+                const nekoSeasonMatch = nekoSeasonGroups.find(g => Number(g.seasonNumber) === Number(season));
+                if (nekoSeasonMatch?.label) query.set('seasonTitle', nekoSeasonMatch.label);
                 const intervalId = setInterval(() => {
                     syncEpisodePanelHeight();
                 }, 1000);
@@ -2241,7 +2303,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 let data;
                 const preloadedNekoEp = window.__preloadedNekoEpisode;
-                if (window.__preloadedNekoSources && preloadedNekoEp && parseInt(season) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1) && (preloadedNekoEp.audio || 'sub') === audioType) {
+                // Same "can't trust a preload for a synthetic season" reasoning as KAA's own
+                // loader - the page-load-time preload race almost certainly ran before
+                // window.__resolvedSeasonGroups existed, so any cached result for one of these
+                // seasons never had the override applied at all.
+                const isSyntheticSeasonForNeko = !!nekoSeasonMatch;
+                if (!isSyntheticSeasonForNeko && window.__preloadedNekoSources && preloadedNekoEp && parseInt(season) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1) && (preloadedNekoEp.audio || 'sub') === audioType) {
                     console.log('[Neko] Using preloaded sources for S' + season + 'E' + episode);
                     data = window.__preloadedNekoSources;
                     window.__preloadedNekoSources = null;
@@ -3756,12 +3823,22 @@ document.addEventListener('DOMContentLoaded', function() {
                     let seasonEntries = data.seasons.filter(s => s.season_number > 0).sort((a, b) => a.season_number - b.season_number);
                     let resolvedSeasonGroups = null;
 
-                    // Primary fallback for anime lever mode: backend MAL/Jikan cached season groups.
-                    if (useAnimeSeasonUX && seasonEntries.length <= 1) {
+                    // Primary fallback for anime lever mode: backend MAL/Jikan (+ last-resort MAL-
+                    // search) cached season groups. Used to only run when TMDB's OWN season count
+                    // was <=1 - wrong assumption, since TMDB can bundle a split-cour season into
+                    // ONE combined "Season N" entry while the actual providers (MegaPlay etc.)
+                    // still key episodes to separate MAL ids per cour (confirmed live: TMDB lists
+                    // Tower of God's Season 2 as one 26-episode season, but MegaPlay needs a
+                    // THIRD, completely separate MAL id just for its second half - the "Season 2
+                    // episode 14" request 404s because that id was never even resolved). Always
+                    // attempting this fetch for anime, then preferring it only when it's actually
+                    // MORE granular than what TMDB already gave, catches that case without
+                    // discarding TMDB's own season list when there's nothing extra to find.
+                    if (useAnimeSeasonUX) {
                         try {
                             const malGroups = await fetchJsonSafe(`/api/anime-season-groups?tmdbId=${tmdbId}`);
                             const groups = Array.isArray(malGroups?.groups) ? malGroups.groups : [];
-                            if (groups.length > 1) {
+                            if (groups.length > seasonEntries.length) {
                                 resolvedSeasonGroups = groups;
                                 // Split-cour seasons are separate MAL entries (e.g. "86" vs "86
                                 // Part 2") with their own local episode numbering. Providers keyed

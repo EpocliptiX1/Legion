@@ -881,6 +881,27 @@ animeCacheDb.serialize(() => {
             last_accessed INTEGER NOT NULL
         );
     `);
+    // is_finished / tmdb_season_count: same two-tier freshness pattern already proven on
+    // anikoto_episode_counts/native_episode_counts - a finished show's season-group structure
+    // (which MAL ids exist, their episode counts) essentially never changes again, so it gets a
+    // near-permanent TTL instead of blindly refetching (and re-scraping MAL) every 24h for no
+    // reason. tmdb_season_count is the early-bust signal: if TMDB's CURRENT season count is ever
+    // higher than what was true when this was cached, that's concrete evidence something new
+    // appeared, worth an immediate fresh lookup regardless of how "finished" looked at the time.
+    animeCacheDb.all(`PRAGMA table_info(anime_season_groups_cache)`, [], (err, columns) => {
+        if (err) return;
+        const names = new Set((columns || []).map(c => c.name));
+        if (!names.has('is_finished')) {
+            animeCacheDb.run(`ALTER TABLE anime_season_groups_cache ADD COLUMN is_finished INTEGER`, (alterErr) => {
+                if (alterErr) console.error('[SeasonGroupsCache] Failed to add is_finished column', alterErr.message);
+            });
+        }
+        if (!names.has('tmdb_season_count')) {
+            animeCacheDb.run(`ALTER TABLE anime_season_groups_cache ADD COLUMN tmdb_season_count INTEGER`, (alterErr) => {
+                if (alterErr) console.error('[SeasonGroupsCache] Failed to add tmdb_season_count column', alterErr.message);
+            });
+        }
+    });
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS episode_load_cache (
             cache_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -968,6 +989,22 @@ animeCacheDb.serialize(() => {
             });
         }
     });
+    // Same shape as anikoto_episode_counts above, but for the native (KAA + RU-MV/animego)
+    // episode-count lookup that replaced the anikoto scrape on /api/anikoto-episode-counts -
+    // see resolveNativeEpisodeCountsCached. Kept as its own table (not reusing the anikoto one)
+    // so the old anikoto path's cache is untouched and can be flipped back on instantly if the
+    // native path ever needs reverting - see that route for the commented-out old call.
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS native_episode_counts (
+            normalized_title  TEXT    PRIMARY KEY,
+            sub_count         INTEGER,
+            dub_count         INTEGER,
+            total_count       INTEGER,
+            cached_at         INTEGER NOT NULL,
+            is_finished       INTEGER,
+            tmdb_season_count INTEGER
+        );
+    `);
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS anime_comments (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -6124,7 +6161,14 @@ let _animeMalCacheTime = 0;
 const ANIME_MAL_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 const _animeSeasonGroupsCache = new Map();
-const ANIME_SEASON_GROUPS_TTL = 24 * 60 * 60 * 1000; // 24 hours
+// Two-tier, same reasoning as anikoto_episode_counts/native_episode_counts: a FINISHED show's
+// season structure (which MAL ids exist, their episode counts) is essentially permanent once
+// determined - blindly refetching (and re-scraping MAL) every 24h bought nothing. The 24h value
+// is kept only for a still-ONGOING show, where a new episode/season can genuinely appear on a
+// short timescale. The real safety net for catching a genuine new season either way is the
+// tmdb_season_count early-bust check in animeSeasonGroupsCacheGet below, not either TTL.
+const ANIME_SEASON_GROUPS_FINISHED_TTL = 90 * 24 * 60 * 60 * 1000; // 90 days
+const ANIME_SEASON_GROUPS_ONGOING_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -6414,7 +6458,11 @@ function episodeLoadCacheSet(tmdbId, malId, season, episode, audioType, provider
 // Season groups come from Jikan/MAL, which is flaky (intermittent 429/504 on individual
 // entries). Persist them so a good result survives restarts and upstream outages; `stale`
 // tells the caller the TTL lapsed but we could not refresh, so it is still worth serving.
-function animeSeasonGroupsCacheGet(tmdbId, maxAge) {
+// currentTmdbSeasonCount (optional) is the caller's just-fetched, up-to-the-second TMDB season
+// count for this show - if it's HIGHER than what was true when this row was cached, that's
+// concrete evidence a new season exists, worth an immediate fresh lookup regardless of is_finished
+// or either TTL below (same early-bust pattern as anikoto_episode_counts).
+function animeSeasonGroupsCacheGet(tmdbId, currentTmdbSeasonCount) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
         animeCacheDb.get(
@@ -6433,25 +6481,31 @@ function animeSeasonGroupsCacheGet(tmdbId, maxAge) {
                 } catch {
                     return resolve(null);
                 }
-                resolve({ groups, stale: (now - row.cached_at) > maxAge });
+                const seasonCountBust = Number.isFinite(currentTmdbSeasonCount) && Number.isFinite(row.tmdb_season_count) &&
+                    currentTmdbSeasonCount > row.tmdb_season_count;
+                const ttl = row.is_finished === 1 ? ANIME_SEASON_GROUPS_FINISHED_TTL : ANIME_SEASON_GROUPS_ONGOING_TTL;
+                resolve({ groups, stale: seasonCountBust || (now - row.cached_at) > ttl });
             }
         );
     });
 }
 
-function animeSeasonGroupsCacheSet(tmdbId, malId, groups) {
+function animeSeasonGroupsCacheSet(tmdbId, malId, groups, isFinished, tmdbSeasonCount) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
         animeCacheDb.run(
-            `INSERT INTO anime_season_groups_cache (tmdb_id, mal_id, groups_json, group_count, cached_at, last_accessed)
-             VALUES (?, ?, ?, ?, ?, ?)
+            `INSERT INTO anime_season_groups_cache (tmdb_id, mal_id, groups_json, group_count, cached_at, last_accessed, is_finished, tmdb_season_count)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(tmdb_id) DO UPDATE SET
                  mal_id = excluded.mal_id,
                  groups_json = excluded.groups_json,
                  group_count = excluded.group_count,
                  cached_at = excluded.cached_at,
-                 last_accessed = excluded.last_accessed`,
-            [tmdbId, malId, JSON.stringify(groups), groups.length, now, now],
+                 last_accessed = excluded.last_accessed,
+                 is_finished = excluded.is_finished,
+                 tmdb_season_count = excluded.tmdb_season_count`,
+            [tmdbId, malId, JSON.stringify(groups), groups.length, now, now,
+                isFinished ? 1 : 0, Number.isFinite(tmdbSeasonCount) ? tmdbSeasonCount : null],
             function (err) {
                 if (err) return reject(err);
                 resolve(this.changes || 0);
@@ -8433,7 +8487,7 @@ async function resolveKaaEpisodeRedirect(episodeId) {
     }
 }
 
-async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', episodeNumber, audioType, frontendTitle, season = 1 }) {
+async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', episodeNumber, audioType, frontendTitle, season = 1, overrideSeasonTitle, overrideEpisodeCount }) {
     let requestedEpisode = Number(episodeNumber);
 
    let titles = [];
@@ -8770,7 +8824,24 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
     // correctly today (many DO literally say "2nd Season") are completely unaffected.
     let expectedEpisodeCount = null;
     let seasonTitleVariants = [];
-    if (tmdbId) {
+    // overrideSeasonTitle/overrideEpisodeCount come from the frontend's own already-resolved
+    // season-groups data (js/moviePlayer.js's window.__resolvedSeasonGroups, built from
+    // /api/anime-season-groups) whenever this "season" is a synthetic cour-split entry with no
+    // real TMDB season number of its own - resolveAnimeIds(tmdbId, wantedSeason) below has
+    // nothing to look up in that case (TMDB genuinely has no matching season), which used to
+    // leave KAA's disambiguation with zero signal and let it silently pick the wrong candidate
+    // or fail outright (confirmed live: Tower of God's synthetic "season 3" == Workshop Battle
+    // returned nothing at all from KAA, forcing a fallback to Neko, even though KAA DOES have a
+    // "Tower of God Season 2: Workshop Battle" entry in its own catalog - it just had no anchor
+    // title to recognize it by). Skipping the TMDB-season lookup entirely when a direct override
+    // is provided sidesteps that gap completely instead of trying to patch resolveAnimeIds itself.
+    if (overrideSeasonTitle) {
+        seasonTitleVariants = [String(overrideSeasonTitle).toLowerCase()];
+        if (Number.isFinite(overrideEpisodeCount) && overrideEpisodeCount > 0) {
+            expectedEpisodeCount = overrideEpisodeCount;
+        }
+        logKaaDebug('[KAA Resolve] using override season title (synthetic/cour-split season)', { overrideSeasonTitle, overrideEpisodeCount });
+    } else if (tmdbId) {
         try {
             const seasonIds = await resolveAnimeIds(tmdbId, wantedSeason);
             if (seasonIds?.anilistId || seasonIds?.malId) {
@@ -8870,8 +8941,17 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
             continue;
         }
 
-        // When wantedSeason is specified (not 1), skip candidates from wrong seasons
-        if (wantedSeason !== 1 && parsed.season !== wantedSeason) {
+        // When wantedSeason is specified (not 1), skip candidates from wrong seasons - but only
+        // when there's no overrideSeasonTitle. parsed.season comes from literal text markers
+        // ("Season 2", "2nd", "II") in the candidate's OWN title, which a synthetic/cour-split
+        // season (e.g. Workshop Battle) never has at all - confirmed live: ALL FOUR of Tower of
+        // God's KAA candidates parse as "season 1" via this literal check, including "Kami no
+        // Tou: Koubou-sen" itself, since KAA titles cours by subtitle, not by a literal season
+        // number. With no override, this gate is the right/only signal available; WITH one, the
+        // sort above has already ranked candidates by title similarity against the override
+        // (which correctly put Koubou-sen first for this case) - trust that instead of also
+        // requiring a literal season-number match that a synthetic season can never produce.
+        if (!overrideSeasonTitle && wantedSeason !== 1 && parsed.season !== wantedSeason) {
             logKaaDebug('[KAA Resolve] skipping wrong season candidate', {
                 title: entry.result.title,
                 candidateSeason: parsed.season,
@@ -9133,7 +9213,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         return res.status(500).send('Proxy failed');
     }
 });
-async function resolveExactWatchUrl(title, targetSeason = '1') {
+async function resolveExactWatchUrl(title, targetSeason = '1', overrideSeasonTitle) {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
     'X-Requested-With': 'XMLHttpRequest',
@@ -9232,6 +9312,24 @@ async function resolveExactWatchUrl(title, targetSeason = '1') {
     // For regular seasons: match explicit season if it exists
     if (isSpecialSearch) {
       targetResult = rankedResults[0];
+    } else if (overrideSeasonTitle) {
+      // Synthetic/cour-split seasons (e.g. Workshop Battle) have no real TMDB season number,
+      // and their anikoto title often doesn't even say the RIGHT literal season either -
+      // confirmed live: Tower of God's "Workshop Battle" page is titled "Tower of God Season
+      // 2: Workshop Battle" - it says "Season 2", not "Season 3", so the seasonRegex path
+      // below (which requires the literal wanted season number to appear in the title/url)
+      // can never match it no matter what seasonNum is passed. Same fix as KAA's own
+      // overrideSeasonTitle: rank candidates by title similarity against the season-group's
+      // own already-known title instead of requiring a literal season-number string match.
+      const overrideNorm = normalizeAnimeTitle(overrideSeasonTitle);
+      const byOverrideSimilarity = (r) => stringSimilarity.compareTwoStrings(overrideNorm, normalizeAnimeTitle(r.title));
+      targetResult = [...regularCandidates].sort((a, b) => byOverrideSimilarity(b) - byOverrideSimilarity(a))[0]
+        || rankedResults[0];
+      logKaaDebug('[Search Resolver] override season title match', {
+        overrideSeasonTitle,
+        picked: targetResult?.title,
+        similarity: targetResult ? byOverrideSimilarity(targetResult) : null
+      });
     } else if (seasonNum === 1) {
       targetResult = regularCandidates[0] || rankedResults[0];
     } else {
@@ -10018,12 +10116,12 @@ async function ensureAnikotoCommentUserAccounts(commenterInfo) {
 // stream pipeline and the comments endpoint below, so comment scraping doesn't depend
 // on the user ever picking the Neko video server (KAA is the default anime server).
 // Extracted verbatim from what was previously inlined in /api/anime-neko-log.
-async function resolveAnikotoEpisode(rawTitle, season, episode) {
+async function resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTitle) {
     // For Season 0 (Specials), ignore season filtering and search by title only
     // Anikoto usually doesn't have separate season 0 pages; specials are on main series page
     const searchSeason = season === 0 ? null : season;
     logNekoDebug(`[Neko] 0. Resolving watch URL for: "${rawTitle}"${searchSeason ? ` (Season ${searchSeason})` : ' (Specials - ignoring season filter)'}`);
-    const animeWatchUrl = await resolveExactWatchUrl(rawTitle, searchSeason);
+    const animeWatchUrl = await resolveExactWatchUrl(rawTitle, searchSeason, overrideSeasonTitle);
     logNekoDebug('[Neko] Resolved watch URL', animeWatchUrl);
 
     const baseHeaders = {
@@ -10200,8 +10298,12 @@ const anikotoEpisodeResolveInFlight = new Map(); // key -> Promise
 // turns out to matter in practice.
 const ANIKOTO_RESOLVE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-function resolveAnikotoEpisodeCached(rawTitle, season, episode) {
-    const key = `${String(rawTitle).toLowerCase().trim()}::${season}::${episode}`;
+function resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTitle) {
+    // overrideSeasonTitle folded into the key too - a plain (title, season, episode) lookup and
+    // an overridden one for the SAME triple must never share a cache slot, or whichever caller
+    // happens to run first (the download-availability check has no override at all) permanently
+    // poisons the result for every other caller of that exact key.
+    const key = `${String(rawTitle).toLowerCase().trim()}::${season}::${episode}::${overrideSeasonTitle || ''}`;
     const cached = anikotoEpisodeResolveCache.get(key);
     if (cached && (Date.now() - cached.resolvedAt) < ANIKOTO_RESOLVE_CACHE_TTL_MS) {
         logTempDebug('[AnikotoResolve] Reusing cached resolution', { key });
@@ -10210,7 +10312,7 @@ function resolveAnikotoEpisodeCached(rawTitle, season, episode) {
     if (anikotoEpisodeResolveInFlight.has(key)) {
         return anikotoEpisodeResolveInFlight.get(key);
     }
-    const p = resolveAnikotoEpisode(rawTitle, season, episode)
+    const p = resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTitle)
         .then(result => {
             anikotoEpisodeResolveCache.set(key, { result, resolvedAt: Date.now() });
             return result;
@@ -11075,6 +11177,378 @@ function resolveAnikotoEpisodeCountsCached(rawTitle, altTitles, tmdbSeasonCount)
     })();
 }
 
+// ============================================================================================
+// NATIVE (KAA + RU-MV/animego) episode-count lookup - replaces the anikoto scrape above as the
+// live source for /api/anikoto-episode-counts as of 2026-08-18. Both KAA and RU-MV already do
+// their own independent title matching to resolve actual playback (kickass.search/fetchAnimeInfo
+// for KAA, animego.me for RU-MV) - anikoto was never load-bearing for either of them, only used
+// as a third aggregator for the episode-count BADGE specifically. Neko is NOT touched by this -
+// its playback resolution goes through resolveAnikotoEpisodeCached (a different function,
+// unrelated to this file section) and still genuinely needs anikoto, since that's the only place
+// Neko's own VidTube server token/slug comes from. The OLD anikoto-based badge path above is
+// left fully intact and un-deleted (just no longer called by the route below) so it can be
+// flipped back on in one line if this turns out worse in practice.
+// ============================================================================================
+
+const nativeEpisodeCountsInFlight = new Map();
+
+// KAA's search() result already carries a `totalEpisodes` field straight from kaa.lt's own
+// catalog metadata (anime.episode_count in the raw API response) - that's the same "planned
+// total" role anikoto's own `.ep-status.total` badge played, just sourced directly from the
+// provider we actually stream from instead of a third party. fetchAnimeInfo(id, lang) then
+// gives the REAL per-locale released count (episodes.length) - calling it once per locale
+// (ja-JP for sub, en-US for dub) mirrors exactly what resolveKickAssAnimeSources already does
+// during real playback, just without that function's heavier season-disambiguation work, which
+// a badge doesn't need (computeAnikotoMatchScore is a good enough single-best-match here).
+//
+// Same multi-season problem as anikoto's own catalog: kaa.lt lists each season as its own
+// separate entry too (confirmed live: searching "Tower of God" returns "Kami no Tou" [S1, 13
+// eps], "Kami no Tou: Ouji no Kikan" [S2, its own entry], etc., all in one results page) - so
+// this reuses the SAME grouping signal already proven for anikoto (isAnikotoVariantDivergence
+// to find siblings in the same results page, computeAnikotoMatchScore to find the primary) and
+// the same clamp-then-sum-whatever's-known logic already fixed there, just sourced from KAA's
+// own fetchAnimeInfo per sibling instead of a scraped badge. Unlike anikoto's HTML, KAA's search
+// API has no media-type field to filter Movies/OVAs/Specials out by - `totalEpisodes > 1` is
+// used as a weak stand-in (a real season almost never has exactly 1 episode, a movie/special
+// almost always does) since nothing better is available from this endpoint.
+async function fetchKaaNativeEpisodeCounts(title, altTitles) {
+    const queries = [title, ...(Array.isArray(altTitles) ? altTitles : [])].filter(Boolean);
+    let primary = null;
+    let bestScore = 0;
+    let resultPool = [];
+
+    for (const q of queries) {
+        let search;
+        try {
+            search = await kickass.search(q);
+        } catch (err) {
+            logAnikotoDebug(`[Native/KAA] search failed for "${q}"`, { error: err.message || String(err) });
+            continue;
+        }
+        const results = Array.isArray(search?.results) ? search.results : [];
+        if (!results.length) continue;
+        let localBest = null, localBestScore = 0;
+        for (const r of results) {
+            // KAA's own `.title` is the Japanese/romaji name ("Kami no Tou") - the English name
+            // (what AniList/TMDB/our own titles actually look like) lives in `.otherName`
+            // instead (confirmed live: every Tower of God entry has otherName "Tower of God...",
+            // title "Kami no Tou..."). Scoring against title alone means an English query would
+            // rarely clear the confidence bar at all - check both, take whichever's better.
+            const score = Math.max(computeAnikotoMatchScore(title, r.title), computeAnikotoMatchScore(title, r.otherName));
+            if (score > localBestScore) { localBestScore = score; localBest = r; }
+        }
+        if (localBestScore > bestScore) { bestScore = localBestScore; primary = localBest; resultPool = results; }
+        if (bestScore === 1) break; // exact match already found, no need to try altTitles too
+    }
+
+    // Same 0.6 high-confidence bar the anikoto fuzzy-match path uses - below that, a "best
+    // guess" is more likely to attach the wrong show's episode counts than to be useful.
+    if (!primary || bestScore < 0.6) return null;
+
+    // Anchor sibling-matching on whichever of primary's own fields is actually in English
+    // (otherName, when present) so it's compared apples-to-apples against other candidates'
+    // English names too - comparing one candidate's Japanese title against another's English
+    // otherName would never line up even for genuine siblings.
+    const primaryAnchor = primary.otherName || primary.title;
+    const candidateEntries = [primary];
+    for (const c of resultPool) {
+        if (c === primary) continue;
+        const candidateAnchor = c.otherName || c.title;
+        if (!isAnikotoVariantDivergence(primaryAnchor, candidateAnchor)) continue;
+        candidateEntries.push(c);
+    }
+
+    // Fetch every divergence-matched candidate's REAL per-locale episode list up front, rather
+    // than pre-filtering on the search result's own `totalEpisodes` metadata field first - that
+    // field turned out to be unreliable on its own (confirmed live: kaa.lt's search API reported
+    // 0 for "Tower of God Season 2: Return of the Prince" even though it genuinely has 16 real
+    // episodes - manually verified on kaa.lt directly). Gating inclusion on the REAL fetched
+    // episode count instead fixes that false exclusion, while still correctly excluding genuine
+    // recap/compilation shorts like "Tower of God in 15 Minutes" (which really does only have 2
+    // episodes, confirmed by the same real fetch, not just a bad metadata field) - the
+    // isAnikotoVariantDivergence qualifier-regex false positive that wrongly grouped that recap
+    // in by title text alone (treating "15" as a season number) still can't be avoided at the
+    // title-matching stage, but a real episode count below the floor catches it downstream
+    // either way.
+    const fetchLocaleCounts = async (entry) => {
+        let sub = null, dub = null;
+        try {
+            const subInfo = await kickass.fetchAnimeInfo(entry.id, 'ja-JP');
+            sub = Number.isFinite(subInfo?.totalEpisodes) && subInfo.totalEpisodes > 0 ? subInfo.totalEpisodes : null;
+        } catch (err) {
+            logAnikotoDebug(`[Native/KAA] fetchAnimeInfo(ja-JP) failed for "${entry.title}"`, { error: err.message || String(err) });
+        }
+        try {
+            const dubInfo = await kickass.fetchAnimeInfo(entry.id, 'en-US');
+            dub = Number.isFinite(dubInfo?.totalEpisodes) && dubInfo.totalEpisodes > 0 ? dubInfo.totalEpisodes : null;
+        } catch (err) {
+            // Most shows are sub-only - kaa.lt returning nothing for the en-US locale is the
+            // expected, common case here, not really a failure worth alarming about.
+        }
+        // Search metadata is only trusted as a FLOOR, never on its own - a stale-low or zero
+        // value there must never override a real, live-fetched episode count, but a metadata
+        // value HIGHER than both real counts is still useful signal (planned-but-not-yet-listed
+        // episodes that fetchAnimeInfo's actual list can't show).
+        const metaTotal = Number.isFinite(entry.totalEpisodes) && entry.totalEpisodes > 0 ? entry.totalEpisodes : null;
+        const total = [sub, dub, metaTotal].filter(Number.isFinite).reduce((max, v) => Math.max(max, v), 0) || null;
+        return { sub, dub, total };
+    };
+
+    const entryCounts = await Promise.all(candidateEntries.map(fetchLocaleCounts));
+
+    let sub = 0, dub = 0, total = 0;
+    let subKnown = false, dubKnown = false, totalKnown = false;
+    for (const c of entryCounts) {
+        // A real recap/compilation short (e.g. "Tower of God in 15 Minutes", 2 real episodes)
+        // still needs excluding even after switching off the flaky search metadata gate above -
+        // this floor is now applied to the REAL fetched count, not metadata, so it no longer
+        // misfires on entries whose metadata was merely stale/wrong.
+        if (!(Number.isFinite(c.total) && c.total >= 4)) continue;
+
+        // An entry with NEITHER a real sub nor dub count is one fetchAnimeInfo couldn't verify
+        // at all - blindly trusting its metadata `total` in that case is what let a same-
+        // franchise SPIN-OFF show through (confirmed live: Overlord's "Ple Ple Pleiades" - a
+        // separate chibi/comedy side series, not a real Overlord season - matched the title-
+        // divergence heuristic and inflated total to 91 while sub/dub only summed to 52, since
+        // its real per-episode fetch came back null for both locales but its metadata total:13
+        // still got counted). Requiring at least one real, verified locale count before trusting
+        // an entry's total at all closes that without needing a smarter title-matching pass.
+        if (!Number.isFinite(c.sub) && !Number.isFinite(c.dub)) continue;
+
+        // A season can never legitimately have more released sub/dub episodes than its own
+        // total - same defensive clamp already proven necessary on the anikoto side.
+        const cSub = Number.isFinite(c.sub) ? Math.min(c.sub, c.total) : c.sub;
+        const cDub = Number.isFinite(c.dub) ? Math.min(c.dub, c.total) : c.dub;
+        if (Number.isFinite(cSub)) { sub += cSub; subKnown = true; }
+        if (Number.isFinite(cDub)) { dub += cDub; dubKnown = true; }
+        total += c.total; totalKnown = true;
+    }
+
+    if (!subKnown && !dubKnown && !totalKnown) return null;
+    return { sub: subKnown ? sub : null, dub: dubKnown ? dub : null, total: totalKnown ? total : null };
+}
+
+// Binary search for the highest episode number MegaPlay has a working DUB source for, under
+// ONE MAL id, with no upper bound known in advance - doubles outward (1, 2, 4, 8, ...) until a
+// probe fails, then binary-searches the gap between the last success and that failure. Assumes
+// dub releases are contiguous from episode 1 (true for every real dub production - a studio
+// doesn't dub episode 10 before episode 9), so a working/not-working probe is enough to narrow
+// the range each time, same as searching a sorted array. Checks episode 1 first as a cheap
+// short-circuit: if MegaPlay doesn't have even the first episode dubbed under this MAL id,
+// there's no ceiling to find and everything else is skipped.
+//
+// IMPORTANT: this must be called with ONE SEASON's own MAL id, not a franchise-wide "combined"
+// episode count - confirmed live this was the actual bug behind an earlier version of this
+// function reporting Tower of God's dub ceiling as 13 instead of the real 26 (S1 fully dubbed +
+// S2's first cour dubbed through its own episode 13). MegaPlay numbers episodes PER SEASON,
+// keyed to that season's own MAL id (Tower of God Season 1 = MAL 40221, capped at its own 13
+// real episodes; Season 2 = a completely different MAL id, 52635) - probing episode 14+ under
+// season 1's MAL id fails because that episode number doesn't exist there at all, not because
+// the dub is missing. See findMegaplayDubTotalAcrossSeasons below for the fix: resolve and
+// probe EACH season's own MAL id separately, then sum.
+async function findMegaplayDubCeilingForOneSeason(malId) {
+    if (!malId) return 0;
+    try {
+        await resolveMegaplaySourcesCached(malId, 1, 'dub');
+    } catch (err) {
+        return 0;
+    }
+
+    let lastGood = 1, probe = 2;
+    while (probe <= 2000) { // sane upper bound - no real season runs anywhere near this long
+        try {
+            await resolveMegaplaySourcesCached(malId, probe, 'dub');
+            lastGood = probe;
+            probe *= 2;
+        } catch (err) {
+            break;
+        }
+    }
+
+    let lo = lastGood + 1, hi = probe, best = lastGood;
+    while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        try {
+            await resolveMegaplaySourcesCached(malId, mid, 'dub');
+            best = mid;
+            lo = mid + 1;
+        } catch (err) {
+            hi = mid - 1;
+        }
+    }
+    return best;
+}
+
+// Resolves each of a show's seasons to its OWN MAL id (resolveAnimeIds already does exactly
+// this - it's the same per-season TMDB-season-number lookup KAA's own season disambiguation
+// uses, see resolveKickAssAnimeSources) and sums each season's independently-found MegaPlay dub
+// ceiling. This is what actually fixes the bug above: Season 1 (13/13 dubbed) + Season 2's first
+// cour (13/26 dubbed) correctly sums to 26, instead of one MAL id's probe capping out at 13.
+async function findMegaplayDubTotalAcrossSeasons(tmdbId, numberOfSeasons) {
+    if (!tmdbId || !Number.isFinite(numberOfSeasons) || numberOfSeasons < 1) return null;
+    let total = 0;
+    let foundAny = false;
+    for (let season = 1; season <= numberOfSeasons; season++) {
+        let seasonMalId;
+        try {
+            const ids = await resolveAnimeIds(tmdbId, season);
+            seasonMalId = ids?.malId;
+        } catch (err) {
+            continue;
+        }
+        if (!seasonMalId) continue;
+        const ceiling = await findMegaplayDubCeilingForOneSeason(seasonMalId);
+        if (ceiling > 0) { total += ceiling; foundAny = true; }
+    }
+    return foundAny ? total : null;
+}
+
+// The actual live lookup: KAA first, then RU-MV/animego fills in whatever KAA's match left
+// null (no match at all, or matched but missing a locale) - same backfill role animego played
+// for the old anikoto path, just no longer gated on "anikoto found something but dub was
+// missing" specifically, since there's no anikoto result to gate on anymore. Finally, MegaPlay
+// gets probed directly by MAL id whenever dub looks suspiciously behind sub - KAA just doesn't
+// carry many dubs at all, so treating "KAA/animego found no dub" as "no dub exists" was too
+// pessimistic; MegaPlay (a real, separately-maintained provider we already stream from) often
+// has it even when KAA doesn't.
+async function fetchNativeEpisodeCounts(rawTitle, altTitles, malId, tmdbId, numberOfSeasons) {
+    const kaaResult = await fetchKaaNativeEpisodeCounts(rawTitle, altTitles).catch(err => {
+        logAnikotoDebug(`[Native] KAA lookup threw for "${rawTitle}"`, { error: err.message || String(err) });
+        return null;
+    });
+
+    let sub = kaaResult?.sub ?? null;
+    let dub = kaaResult?.dub ?? null;
+    let total = kaaResult?.total ?? null;
+
+    if (sub == null || dub == null || total == null) {
+        try {
+            const animegoResult = await fetchAnimegoReleasedEpisodeCount(rawTitle, altTitles);
+            if (animegoResult?.episodeCount != null) {
+                if (total == null) total = animegoResult.episodeCount;
+                if (sub == null) sub = animegoResult.episodeCount;
+                if (dub == null && animegoResult.hasDub) dub = animegoResult.episodeCount;
+            }
+        } catch (err) {
+            logAnikotoDebug(`[Native] animego backfill failed for "${rawTitle}"`, { error: err.message || String(err) });
+        }
+    }
+
+    // MegaPlay is reached directly by MAL id (megaplay.buzz/stream/mal/{malId}/{ep}/{lang}) -
+    // no title search/matching risk the way KAA/animego have. Dub production is usually well
+    // BEHIND sub, not caught all the way up - probing only the latest sub episode (an earlier
+    // version of this) is all-or-nothing and misses real partial coverage entirely. Multi-season
+    // shows ALSO need each season probed under its OWN MAL id (see findMegaplayDubCeilingForOne
+    // Season's comment) - confirmed live: Tower of God's dub was stuck reporting 13 because
+    // Season 1's MAL id was being probed across the whole 39-episode combined range, when the
+    // real answer (26 - S1 fully dubbed + S2's first cour through its own ep 13) needed Season
+    // 2's own MAL id probed separately. Falls back to the single-MAL-id version when tmdbId/
+    // numberOfSeasons aren't available (e.g. a title with no TMDB match at all) - can't do
+    // better than that without a season-to-MAL-id mapping to work from.
+    if (Number.isFinite(sub) && sub > 0 && (dub == null || dub < sub)) {
+        try {
+            let megaplayDubTotal = null;
+            if (tmdbId && Number.isFinite(numberOfSeasons) && numberOfSeasons >= 1) {
+                megaplayDubTotal = await findMegaplayDubTotalAcrossSeasons(tmdbId, numberOfSeasons);
+            } else if (malId) {
+                megaplayDubTotal = await findMegaplayDubCeilingForOneSeason(malId);
+            }
+            if (Number.isFinite(megaplayDubTotal) && megaplayDubTotal > (dub ?? 0)) {
+                dub = megaplayDubTotal;
+                logAnikotoDebug(`[Native] MegaPlay dub backfill for "${rawTitle}" - real dub total is ${megaplayDubTotal} (sub is ${sub})`);
+            }
+        } catch (err) {
+            logAnikotoDebug(`[Native] MegaPlay dub search failed for "${rawTitle}"`, { error: err.message || String(err) });
+        }
+    }
+
+    if (sub == null && dub == null && total == null) return null; // genuinely nothing found anywhere
+    return { sub, dub, total };
+}
+
+// Same TTL reasoning as the anikoto table (ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS etc.) - reused
+// directly rather than duplicated, since the freshness tradeoffs are identical regardless of
+// which site the data came from.
+function getAnyCachedNativeRow(normalizedTitle, tmdbSeasonCount) {
+    return new Promise((resolve) => {
+        animeCacheDb.get(
+            `SELECT sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count FROM native_episode_counts WHERE normalized_title = ?`,
+            [normalizedTitle],
+            (err, row) => {
+                if (err || !row) return resolve(undefined);
+                const seasonCountBust = row.is_finished === 1 && Number.isFinite(tmdbSeasonCount) &&
+                    Number.isFinite(row.tmdb_season_count) && tmdbSeasonCount > row.tmdb_season_count;
+                const isNegative = row.sub_count == null && row.dub_count == null && row.total_count == null;
+                const finishedTtl = Number.isFinite(row.tmdb_season_count)
+                    ? ANIKOTO_FINISHED_CACHE_TTL_MS
+                    : ANIKOTO_FINISHED_NO_SIGNAL_CACHE_TTL_MS;
+                const ttl = row.is_finished === 1 ? finishedTtl
+                    : (isNegative ? ANIKOTO_NEGATIVE_CACHE_TTL_MS : ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS);
+                const age = Date.now() - Number(row.cached_at || 0);
+                resolve({
+                    counts: isNegative ? null : { sub: row.sub_count, dub: row.dub_count, total: row.total_count },
+                    stale: seasonCountBust || age > ttl
+                });
+            }
+        );
+    });
+}
+
+function setCachedNativeEpisodeCounts(normalizedTitle, counts, tmdbSeasonCount) {
+    const isFinished = counts?.sub != null && counts?.total != null && counts.sub >= counts.total ? 1 : 0;
+    animeCacheDb.run(
+        `INSERT INTO native_episode_counts (normalized_title, sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(normalized_title) DO UPDATE SET
+            sub_count = excluded.sub_count, dub_count = excluded.dub_count,
+            total_count = excluded.total_count, cached_at = excluded.cached_at,
+            is_finished = excluded.is_finished, tmdb_season_count = excluded.tmdb_season_count`,
+        [normalizedTitle, counts?.sub ?? null, counts?.dub ?? null, counts?.total ?? null, Date.now(), counts ? isFinished : null,
+            Number.isFinite(tmdbSeasonCount) ? tmdbSeasonCount : null],
+        (err) => { if (err) logAnikotoDebug('[Native] Cache write failed', { error: err.message }); }
+    );
+}
+
+function runLiveNativeLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId) {
+    if (nativeEpisodeCountsInFlight.has(normalizedTitle)) {
+        return nativeEpisodeCountsInFlight.get(normalizedTitle);
+    }
+
+    const p = (async () => {
+        const fresh = await fetchNativeEpisodeCounts(rawTitle, altTitles, malId, tmdbId, tmdbSeasonCount);
+        setCachedNativeEpisodeCounts(normalizedTitle, fresh, tmdbSeasonCount);
+        return fresh;
+    })();
+
+    nativeEpisodeCountsInFlight.set(normalizedTitle, p);
+    p.finally(() => nativeEpisodeCountsInFlight.delete(normalizedTitle)).catch(() => {});
+    return p;
+}
+
+// Same stale-while-revalidate shape as resolveAnikotoEpisodeCountsCached above - see that
+// function's comment for the full reasoning, identical here. malId/tmdbId are optional - only
+// used for the MegaPlay dub-backfill probe inside fetchNativeEpisodeCounts (tmdbId specifically
+// enables the per-season version, findMegaplayDubTotalAcrossSeasons); when absent, that step
+// just falls back to whatever's still possible, same as it always did before this was added.
+function resolveNativeEpisodeCountsCached(rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId) {
+    const normalizedTitle = normalizeAnikotoTitleKey(rawTitle);
+    if (!normalizedTitle) return Promise.resolve(null);
+
+    return (async () => {
+        const cached = await getAnyCachedNativeRow(normalizedTitle, tmdbSeasonCount);
+
+        if (cached !== undefined) {
+            if (cached.stale) {
+                runLiveNativeLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId)
+                    .catch(err => logAnikotoDebug(`[Native] Background refresh failed for "${rawTitle}"`, { error: err.message || String(err) }));
+            }
+            return cached.counts;
+        }
+
+        return runLiveNativeLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId);
+    })();
+}
+
 // Attempted a "sum each season's own anikoto entry" feature here to properly combine
 // multi-season TMDB ids (e.g. "Love, Chunibyo & Other Delusions!" totals 24 across two
 // 12-episode seasons) - reverted. buildAnikotoTitleCandidates() strips " Season N" off every
@@ -11104,10 +11578,48 @@ app.get('/api/anikoto-episode-counts', async (req, res) => {
     // finished show's cache row self-invalidate the moment TMDB lists a new season.
     const parsedSeasons = parseInt(req.query.numberOfSeasons, 10);
     const tmdbSeasonCount = Number.isFinite(parsedSeasons) ? parsedSeasons : undefined;
+    // Optional - lets the native path's MegaPlay dub-backfill probe run (megaplay.buzz is
+    // reached directly by MAL id, no title matching needed). Skipped entirely when absent.
+    const parsedMalId = parseInt(req.query.malId, 10);
+    const malId = Number.isFinite(parsedMalId) ? parsedMalId : undefined;
+    // Optional - the caller's own already-computed TMDB released-episode total (see
+    // computeReleasedTmdbEpisodeTotal in episodeCountBadges.js). KAA's own per-episode listing
+    // can have numbering quirks a provider-native lookup has no way to detect on its own
+    // (confirmed live: Tower of God's real total is 39, but KAA's own episode list for one cour
+    // came back as 15 real entries instead of 13 - some gap/bonus-numbering artifact on their
+    // end) - TMDB's total is the more authoritative ground truth when it's available, so it
+    // wins over whatever KAA/animego/MegaPlay individually added up to.
+    const parsedTmdbTotal = parseInt(req.query.tmdbTotal, 10);
+    const tmdbTotal = Number.isFinite(parsedTmdbTotal) && parsedTmdbTotal > 0 ? parsedTmdbTotal : undefined;
+    // Optional - lets the MegaPlay dub-backfill probe EACH season under its own MAL id (see
+    // findMegaplayDubTotalAcrossSeasons) instead of just the single malId above, which only
+    // covers whichever one season that malId belongs to.
+    const parsedTmdbId = parseInt(req.query.tmdbId, 10);
+    const tmdbId = Number.isFinite(parsedTmdbId) ? parsedTmdbId : undefined;
     try {
-        const counts = await resolveAnikotoEpisodeCountsCached(title, altTitles, tmdbSeasonCount);
+        // Native (KAA + RU-MV/animego + MegaPlay dub-backfill) lookup - see the block above
+        // resolveNativeEpisodeCountsCached for the full reasoning. Replaces the anikoto scrape
+        // as of 2026-08-18.
+        const counts = await resolveNativeEpisodeCountsCached(title, altTitles, tmdbSeasonCount, malId, tmdbId);
+
+        // --- OLD anikoto-scrape path, commented out (not deleted) for a quick revert if the
+        // native path above turns out worse in practice - just swap which line is commented:
+        // const counts = await resolveAnikotoEpisodeCountsCached(title, altTitles, tmdbSeasonCount);
+
         if (!counts) return res.json({ ok: false });
-        res.json({ ok: true, sub: counts.sub, dub: counts.dub, total: counts.total });
+
+        // Applied at RESPONSE time, not baked into the cached row - the cache keeps storing
+        // KAA/animego/MegaPlay's own raw combined numbers, and this reshapes them fresh on the
+        // way out using whatever tmdbTotal the CURRENT caller happens to have (which can itself
+        // change over time as TMDB's own data improves, independent of the provider cache's TTL).
+        let sub = counts.sub, dub = counts.dub, total = counts.total;
+        if (tmdbTotal != null) {
+            total = tmdbTotal;
+            if (Number.isFinite(sub)) sub = Math.min(sub, tmdbTotal);
+            if (Number.isFinite(dub)) dub = Math.min(dub, tmdbTotal);
+        }
+
+        res.json({ ok: true, sub, dub, total });
     } catch (err) {
         logAnikotoDebug(`✗ Lookup threw for "${title}"`, { error: err.message || String(err) });
         res.status(500).json({ ok: false, error: err.message });
@@ -11606,8 +12118,13 @@ app.get('/api/anime-neko-log', async (req, res) => {
     const audio = req.query.type || req.query.audio || 'sub';
     const episode = req.query.ep || req.query.episode || '1';
     const season = parseInt(req.query.season || req.query.s || '1', 10);
+    // Optional - see resolveExactWatchUrl's overrideSeasonTitle comment. Sent by the frontend
+    // whenever `season` is a synthetic cour-split entry from /api/anime-season-groups, so
+    // anikoto's own title-similarity match has a real anchor instead of trying (and failing) to
+    // find a literal season-number string that a synthetic season's anikoto page never has.
+    const overrideSeasonTitle = req.query.seasonTitle || undefined;
 
-    logNekoDebug('[NekoLog] START', { malId, tmdbId, rawTitle, audio, episode, season });
+    logNekoDebug('[NekoLog] START', { malId, tmdbId, rawTitle, audio, episode, season, overrideSeasonTitle });
 
     if (!rawTitle) {
         return res.status(400).json({ ok: false, error: 'Title is required' });
@@ -11659,7 +12176,7 @@ app.get('/api/anime-neko-log', async (req, res) => {
         }
 
         const { internalAnimeId, anikotoEpisodeId, serverToken, mal, epSlug, timestamp, baseHeaders } =
-            await resolveAnikotoEpisodeCached(rawTitle, season, episode);
+            await resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTitle);
 
         // Fire-and-forget: pull Anikoto's comment section for this episode into our own
         // anime_comments table. Never blocks/breaks playback if it fails. (This is a bonus
@@ -12980,7 +13497,7 @@ async function runKinoHealthCheck() {
     // "KINO IS DOWN" for what's actually just local resource contention. Skip this cycle and
     // let the next one (10 min later) catch a genuine outage instead.
     if (kinoInFlight.size > 0) {
-        console.log(`[Kino Health] Skipped - ${kinoInFlight.size} real extraction(s) already in flight`);
+        logHealthStatus(`[Kino Health] Skipped - ${kinoInFlight.size} real extraction(s) already in flight`);
         return;
     }
     kinoHealthCheckRunning = true;
@@ -12989,12 +13506,12 @@ async function runKinoHealthCheck() {
         // Deliberately bypasses resolveKinoCached/kinoCache - this must exercise the real
         // extraction every time, not report "healthy" off a stale cached success.
         await runKinoExtraction(`movie/${KINO_HEALTH_CHECK_TMDB_ID}`, 'movie');
-        console.log(`[Kino Health] OK (${Date.now() - startedAt}ms)`);
+        logHealthStatus(`[Kino Health] OK (${Date.now() - startedAt}ms)`);
     } catch (err) {
         const banner = '!'.repeat(70);
-        console.error(`\n${banner}\n⚠️  ⚠️  ⚠️   KINO IS DOWN   ⚠️  ⚠️  ⚠️\n${banner}`);
-        console.error(`[Kino Health] Extraction failed: ${err.message}`);
-        console.error(`${banner}\n`);
+        logHealthStatus(`\n${banner}\n⚠️  ⚠️  ⚠️   KINO IS DOWN   ⚠️  ⚠️  ⚠️\n${banner}`);
+        logHealthStatus(`[Kino Health] Extraction failed: ${err.message}`);
+        logHealthStatus(`${banner}\n`);
     } finally {
         kinoHealthCheckRunning = false;
     }
@@ -13228,6 +13745,13 @@ app.get('/api/anime-kaa-servers', async (req, res) => {
         const episodeNumber = req.query.ep || req.query.episode || 1;
         const audioType = req.query.audio || 'sub'; // Separate from itemType
         const frontendTitle = req.query.title || "";
+        // Optional - see resolveKickAssAnimeSources's overrideSeasonTitle comment. Sent by the
+        // frontend whenever `season` is a synthetic cour-split entry from /api/anime-season-
+        // groups rather than a real TMDB season number, so KAA's own disambiguation has an
+        // anchor to match against instead of trying (and failing) to look one up from TMDB.
+        const overrideSeasonTitle = req.query.seasonTitle || undefined;
+        const parsedOverrideEpisodeCount = parseInt(req.query.seasonEpisodeCount, 10);
+        const overrideEpisodeCount = Number.isFinite(parsedOverrideEpisodeCount) ? parsedOverrideEpisodeCount : undefined;
         if (tmdbId) {
             await ensureAnimeMalListLoaded();
             let entry = _animeMalList.find(item => {
@@ -13272,7 +13796,9 @@ app.get('/api/anime-kaa-servers', async (req, res) => {
                 episodeNumber,
                 audioType,
                 frontendTitle,
-                season
+                season,
+                overrideSeasonTitle,
+                overrideEpisodeCount
             });
             animeId = rawResult.animeId;
             animeTitle = rawResult.animeTitle;
@@ -13768,6 +14294,7 @@ async function aniListGetMediaWithRelations(anilistId) {
                 idMal
                 format
                 episodes
+                duration
                 title { romaji english }
                 startDate { year month day }
                 streamingEpisodes { title thumbnail }
@@ -13779,6 +14306,7 @@ async function aniListGetMediaWithRelations(anilistId) {
                             type
                             format
                             episodes
+                            duration
                             title { romaji english }
                             startDate { year month day }
                         }
@@ -13850,6 +14378,12 @@ async function buildSeasonGroupsFromAniList(anilistId) {
         if (isTvFormat) {
             metaList.push({
                 title: media.title?.english || media.title?.romaji || `Season ${metaList.length + 1}`,
+                // Kept separately from `title` above (which prefers English) - MAL's own search
+                // results come back in romaji/Japanese, not English, so matching a MAL search
+                // hit against a KNOWN sibling needs to compare romaji-to-romaji (see
+                // findMalOnlyCourSiblings below). Never sent to the frontend, metaListToGroups
+                // only reads `title`/`malId`/etc.
+                romajiTitle: media.title?.romaji || null,
                 episodesCount: Number(media.episodes || 0),
                 airDate: aniListDateToIso(media.startDate),
                 // Real per-episode titles/thumbnails when AniList has them (it often does, via
@@ -13933,19 +14467,401 @@ async function buildSeasonGroupsFromJikan(malId) {
     return { metaList, failedLookups };
 }
 
+// Used purely to decide season-groups cache freshness (see ANIME_SEASON_GROUPS_FINISHED_TTL) -
+// TMDB's own `status` field ("Ended"/"Canceled" vs "Returning Series"/"In Production") is a
+// direct, authoritative "is this show done airing" signal, no guessing needed. number_of_seasons
+// doubles as the early-bust trigger the cache already needs.
+async function fetchTmdbShowStatus(tmdbId) {
+    const res = await axios.get(`${TMDB_BASE_URL}/tv/${tmdbId}`, { params: { api_key: TMDB_API_KEY } });
+    const numberOfSeasons = Number.isFinite(res.data?.number_of_seasons) ? res.data.number_of_seasons : undefined;
+    const isFinished = res.data?.status === 'Ended' || res.data?.status === 'Canceled';
+    return { numberOfSeasons, isFinished };
+}
+
 // TMDB often doesn't split a multi-cour anime into separate seasons at all — it just
 // lists one long season covering every cour (e.g. tmdb:100565 "86" has one 23-episode
 // season, episodes 1-11 being Part 1 and 12-23 being Part 2, matching AniList's own
 // 11+12 split exactly). That real, per-episode TMDB data (titles/dates/thumbnails) is
 // almost always better than anything AniList/Jikan can offer at the episode level, so
 // use AniList/Jikan only to find the *split point* and slice TMDB's real array by it.
+//
+// Concatenates EVERY real TMDB season, not just the single largest one - fetching only
+// the largest was built for the "one combined TMDB season" case above and silently broke
+// for a show that has BOTH a separate TMDB season 1 AND a combined TMDB season 2 (confirmed
+// live: Tower of God has TMDB season 1 [13 real eps] and season 2 [26 real eps, itself a
+// hidden two-cour split] - fetching only the largest [season 2] and slicing it across all
+// THREE metaListToGroups entries handed Season 1's own real 13-episode data to nobody, gave
+// group 1 [really Season 1] a wrong slice of season 2's real data instead, and left group 3
+// [Workshop Battle] with nothing at all once that one 26-episode array ran out). Concatenating
+// every season in season-number order (== chronological order here) means the sequential
+// slice in metaListToGroups lines up against the FULL real timeline instead of one arbitrary
+// season's worth of it.
 async function fetchTmdbRealSeasonEpisodes(tmdbId) {
     const showRes = await axios.get(`${TMDB_BASE_URL}/tv/${tmdbId}`, { params: { api_key: TMDB_API_KEY } });
     const seasons = Array.isArray(showRes.data?.seasons) ? showRes.data.seasons.filter(s => Number(s.season_number) > 0) : [];
     if (seasons.length === 0) return [];
-    const target = seasons.reduce((a, b) => (Number(b.episode_count) > Number(a.episode_count) ? b : a));
-    const seasonRes = await axios.get(`${TMDB_BASE_URL}/tv/${tmdbId}/season/${target.season_number}`, { params: { api_key: TMDB_API_KEY } });
-    return Array.isArray(seasonRes.data?.episodes) ? seasonRes.data.episodes : [];
+    seasons.sort((a, b) => Number(a.season_number) - Number(b.season_number));
+
+    const allEpisodes = [];
+    for (const season of seasons) {
+        try {
+            const seasonRes = await axios.get(`${TMDB_BASE_URL}/tv/${tmdbId}/season/${season.season_number}`, { params: { api_key: TMDB_API_KEY } });
+            const episodes = Array.isArray(seasonRes.data?.episodes) ? seasonRes.data.episodes : [];
+            allEpisodes.push(...episodes);
+        } catch (err) {
+            console.warn(`[TMDB real episodes] season ${season.season_number} fetch failed for tmdb ${tmdbId}:`, err.message);
+        }
+    }
+    return allEpisodes;
+}
+
+// --- MAL-only cour-split discovery -------------------------------------------------------
+// AniList and Jikan/MAL's own relations graphs are the primary source for cour siblings above,
+// but they can genuinely be missing a real split entirely (confirmed live: Tower of God's
+// "Workshop Battle" cour is its own MAL entry, id 59989, with NO relations edge pointing to it
+// from either AniList's or MAL's side - AniList's own catalog just lists the whole of "Season 2"
+// as one combined 26-episode show, and Workshop Battle simply isn't a node in that graph at
+// all). MegaPlay (and other providers) still key episodes to that separate MAL id though, so a
+// user landing on "Season 2 episode 14" 404s - the site has no idea that id even exists.
+//
+// This is a last-resort discovery layer: search MAL's own website directly for the base title,
+// and use the SAME title-divergence heuristic already proven for anikoto's season-sibling
+// grouping to recognize genuine cour siblings among the results, instead of relying on either
+// site's relations data at all.
+const MAL_SEARCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+// In-memory only (process-lifetime, cleared on restart) - the OUTER /api/anime-season-groups
+// cache (disk-backed, long TTL for finished shows) already protects repeat lookups of the same
+// tmdbId. These protect a NARROWER but real risk: the burst pattern WITHIN one fresh season-
+// groups computation - a single title with several MAL search candidates (confirmed live:
+// Overlord's Ple Ple Pleiades entries) fires one search plus several detail-page fetches to MAL
+// in a row, which is exactly the pattern that gets a raw scraper's IP flagged/CAPTCHA'd, unlike
+// one request every so often. Long TTLs are safe either way - a MAL search's result SET for a
+// given franchise name, and any single anime's own episode count/air date/type/English title,
+// are all essentially static once determined; these are correctness backstops, not an actual
+// expectation that MAL's answer will change.
+const _malSearchCache = new Map(); // query (lowercased) -> { results, cachedAt }
+const MAL_SEARCH_CACHE_TTL = 14 * 24 * 60 * 60 * 1000; // 14 days
+const _malDetailsCache = new Map(); // malId -> { details, cachedAt }
+const MAL_DETAILS_CACHE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+async function searchMalWebsiteUncached(query) {
+    const res = await axios.get('https://myanimelist.net/anime.php', {
+        params: { q: query, cat: 'anime' },
+        headers: { 'User-Agent': MAL_SEARCH_UA },
+        timeout: 15000
+    });
+    const $ = cheerio.load(res.data);
+    const results = [];
+    const seen = new Set();
+    $('a.hoverinfo_trigger').each((i, el) => {
+        const href = $(el).attr('href') || '';
+        const m = href.match(/\/anime\/(\d+)\//);
+        const title = $(el).find('strong').text().trim() || $(el).text().trim();
+        if (!m || !title) return;
+        const malId = parseInt(m[1], 10);
+        if (seen.has(malId)) return;
+        seen.add(malId);
+        results.push({ malId, title });
+    });
+    return results;
+}
+
+async function searchMalWebsite(query) {
+    const key = String(query || '').toLowerCase().trim();
+    if (!key) return [];
+    const cached = _malSearchCache.get(key);
+    if (cached && (Date.now() - cached.cachedAt) < MAL_SEARCH_CACHE_TTL) return cached.results;
+    const results = await searchMalWebsiteUncached(query);
+    _malSearchCache.set(key, { results, cachedAt: Date.now() });
+    return results;
+}
+
+// Scrapes a MAL anime page directly for its episode count and air date - the equivalent of
+// what Jikan's /anime/{id} would normally give, but self-contained (no dependency on Jikan's
+// uptime, which has been unreliable) since this only needs two fields, both present in MAL's
+// own sidebar on every anime page.
+async function fetchMalAnimeDetailsUncached(malId) {
+    const res = await axios.get(`https://myanimelist.net/anime/${malId}`, {
+        headers: { 'User-Agent': MAL_SEARCH_UA },
+        timeout: 15000
+    });
+    const $ = cheerio.load(res.data);
+    let episodes = null;
+    let airDate = null;
+    let titleEn = null;
+    let type = null;
+    // The page's own <h1> is MAL's main/native title (usually romaji) - separate from the
+    // "English:" sidebar field below. Needed for scrapeMalRelations/buildSeasonGroupsFromMal
+    // Relations, which push this straight into the same romajiTitle field
+    // buildSeasonGroupsFromAniList already populates.
+    const titleNative = $('h1.title-name').first().text().trim() || $('h1').first().text().trim() || null;
+    $('.spaceit_pad, .spaceit').each((i, el) => {
+        const text = $(el).text().trim();
+        const epMatch = text.match(/^Episodes:\s*(\d+)/i);
+        if (epMatch) episodes = parseInt(epMatch[1], 10);
+        const airMatch = text.match(/^Aired:\s*([A-Za-z]+\s+\d{1,2},\s*\d{4})/);
+        if (airMatch) {
+            const d = new Date(airMatch[1]);
+            if (!Number.isNaN(d.getTime())) airDate = d.toISOString().slice(0, 10);
+        }
+        // MAL's sidebar carries an explicit "English:" alternative-title field distinct from
+        // the page's own (often romaji/native) main title - needed because anikoto's own
+        // catalog is titled in English, not romaji (confirmed live: matching a MAL-only
+        // sibling's romaji title "Kami no Tou: Koubou-sen" against anikoto's candidates, whose
+        // titles are "Tower of God Season 2: Workshop Battle" etc., scored near-zero
+        // similarity across the board and picked a completely unrelated show).
+        const enMatch = text.match(/^English:\s*(.+)$/i);
+        if (enMatch) titleEn = enMatch[1].trim();
+        // "Type: TV" vs "ONA"/"Special"/"Movie" - needed to reject spin-off shorts sharing the
+        // base franchise name (confirmed live: Overlord's "Ple Ple Pleiades" chibi-comedy shorts
+        // are type ONA, 2 minutes/episode, but their titles diverge from "Overlord" in exactly
+        // the "base + trailing number" shape the title-divergence check already accepts for
+        // genuine season siblings like "Overlord II"/"III"/"IV" - title matching alone can't
+        // tell these apart, only the real catalog type can).
+        const typeMatch = text.match(/^Type:\s*([A-Za-z]+)/i);
+        if (typeMatch) type = typeMatch[1].trim().toUpperCase();
+    });
+    return { episodes, airDate, titleEn, type, titleNative };
+}
+
+async function fetchMalAnimeDetails(malId) {
+    const cached = _malDetailsCache.get(malId);
+    if (cached && (Date.now() - cached.cachedAt) < MAL_DETAILS_CACHE_TTL) return cached.details;
+    const details = await fetchMalAnimeDetailsUncached(malId);
+    _malDetailsCache.set(malId, { details, cachedAt: Date.now() });
+    return details;
+}
+
+// --- MAL relations scrape (Jikan replacement) --------------------------------------------
+// Jikan's own "sunset" date is under a month out at the time this was written, and it's been
+// unreliable well before that (504/429 on individual anime lookups all session) - this scrapes
+// the exact same "Related Anime" data directly off MAL's own page instead of going through
+// Jikan's API layer at all, so buildSeasonGroupsFromMalRelations below has no Jikan dependency.
+// Every related entry sits in a `.entry` block under `.related-entries`, each with a
+// `.content .relation` line ("Sequel", "Prequel", "Adaptation", ...) and a `.content .title a`
+// link - manga/light-novel/other non-anime relations are filtered out by requiring the link's
+// own href to be an /anime/ URL, not by trying to parse the relation type text's parenthetical.
+const _malRelationsCache = new Map(); // malId -> { relations, cachedAt }
+const MAL_RELATIONS_CACHE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 days - same reasoning as MAL_DETAILS_CACHE_TTL, a show's own relations essentially never change once established
+
+async function scrapeMalRelationsUncached(malId) {
+    const res = await axios.get(`https://myanimelist.net/anime/${malId}`, {
+        headers: { 'User-Agent': MAL_SEARCH_UA },
+        timeout: 15000
+    });
+    const $ = cheerio.load(res.data);
+    const relations = [];
+    $('.related-entries .entry').each((i, el) => {
+        const relationText = $(el).find('.content .relation').first().text().trim();
+        const relationType = relationText.split('(')[0].trim().toUpperCase();
+        const link = $(el).find('.content .title a').first();
+        const href = link.attr('href') || '';
+        const title = link.text().trim();
+        const animeMatch = href.match(/\/anime\/(\d+)\//);
+        if (!animeMatch || !title) return; // not an anime relation (manga/LN/etc.) - skip
+        relations.push({ relationType, malId: parseInt(animeMatch[1], 10), title });
+    });
+    return relations;
+}
+
+async function scrapeMalRelations(malId) {
+    const cached = _malRelationsCache.get(malId);
+    if (cached && (Date.now() - cached.cachedAt) < MAL_RELATIONS_CACHE_TTL) return cached.relations;
+    const relations = await scrapeMalRelationsUncached(malId);
+    _malRelationsCache.set(malId, { relations, cachedAt: Date.now() });
+    return relations;
+}
+
+// Direct MAL replacement for buildSeasonGroupsFromJikan above (kept intact, not deleted, in
+// case this ever needs reverting) - same BFS-over-SEQUEL/PREQUEL-relations shape, just sourced
+// from scrapeMalRelations/fetchMalAnimeDetails (both plain MAL scrapes) instead of jikanGet.
+async function buildSeasonGroupsFromMalRelations(malId) {
+    const visited = new Set();
+    const queue = [Number(malId)];
+    const metaList = [];
+    let failedLookups = 0;
+
+    while (queue.length && metaList.length < 8) {
+        const id = Number(queue.shift());
+        if (!id || visited.has(id)) continue;
+        visited.add(id);
+
+        let details;
+        try {
+            details = await fetchMalAnimeDetails(id);
+        } catch (err) {
+            failedLookups++;
+            console.warn(`[anime-season-groups] mal ${id} detail lookup failed (${err.message}); keeping ${metaList.length} season(s) already resolved`);
+            continue;
+        }
+
+        // Same reasoning as the AniList/Jikan walkers: only TV entries are real seasons.
+        if (details.type === 'TV') {
+            metaList.push({
+                title: details.titleEn || details.titleNative || `Season ${metaList.length + 1}`,
+                romajiTitle: details.titleNative || null,
+                episodesCount: Number(details.episodes || 0),
+                airDate: details.airDate || null,
+                malId: id
+            });
+        }
+
+        let relations;
+        try {
+            relations = await scrapeMalRelations(id);
+        } catch (err) {
+            failedLookups++;
+            console.warn(`[anime-season-groups] mal ${id} relations lookup failed (${err.message})`);
+            continue;
+        }
+        relations.forEach(rel => {
+            if (rel.relationType !== 'SEQUEL' && rel.relationType !== 'PREQUEL') return;
+            if (rel.malId > 0 && !visited.has(rel.malId)) queue.push(rel.malId);
+        });
+    }
+
+    return { metaList, failedLookups };
+}
+
+// --- Health check log file ---------------------------------------------------------------
+// The terminal gets spammed with real request logs constantly - a health check result can
+// easily scroll off screen and out of scrollback before anyone notices it failed. Every health
+// check below (Kino's included) now ALSO appends to this one durable, append-only file, so
+// "did a check fail overnight" is always answerable by opening one file instead of hoping the
+// terminal buffer still has it.
+const HEALTH_STATUS_LOG_PATH = path.join(__dirname, 'Health_Status_checker VM.txt');
+function logHealthStatus(line) {
+    const stamped = `[${new Date().toISOString()}] ${line}`;
+    console.log(stamped);
+    fs.appendFile(HEALTH_STATUS_LOG_PATH, stamped + '\n', (err) => {
+        if (err) console.error('[HealthLog] Failed to write to Health_Status_checker VM.txt:', err.message);
+    });
+}
+
+// --- MAL health check -------------------------------------------------------------------
+// Same reasoning as the Kino health check above: MAL can change its own markup, start
+// rate-limiting/blocking us, or go down, with nothing alerting us until a title's season
+// discovery quietly stops finding real data. Runs the three raw scrapes (search, detail page,
+// relations) against a fixed, never-changing reference title on a timer, and checks the ACTUAL
+// PARSED VALUES against known-correct answers, not just "didn't throw" - a markup change often
+// makes cheerio's selectors silently return null/empty instead of erroring, which a bare
+// try/catch would report as "healthy" right up until every real lookup started coming back
+// empty too.
+//
+// Attack on Titan (not Cowboy Bebop - tried that first, reverted) specifically: confirmed live
+// that Cowboy Bebop's own MAL page genuinely lists ZERO anime-type relations (only two manga
+// adaptations), which made the relations assertion below fail against a perfectly healthy
+// scraper. AoT's season 1 entry has a real, stable Sequel relation to Season 2 - a much better
+// reference for exercising all three scrapes meaningfully.
+const MAL_HEALTH_CHECK_MAL_ID = 16498; // Attack on Titan (Season 1) - finished franchise, 25 episodes and its Sequel relation will never change
+const MAL_HEALTH_CHECK_TITLE = 'Attack on Titan';
+const MAL_HEALTH_CHECK_RELATED_MAL_ID = 25777; // Attack on Titan Season 2 - the known Sequel relation
+const MAL_HEALTH_CHECK_INTERVAL_MS = 30 * 60 * 1000; // less frequent than Kino's 10min - MAL's markup doesn't shift on the same short, unpredictable timescale vidsrcme's fingerprint check did
+let malHealthCheckRunning = false;
+
+async function runMalHealthCheck() {
+    if (malHealthCheckRunning) return; // don't overlap if a run somehow takes a while
+    malHealthCheckRunning = true;
+    const startedAt = Date.now();
+    // Deliberately calls the *Uncached variants directly - this must exercise the real scrape
+    // every time, not report "healthy" off a stale cached success from hours/days ago.
+    const failures = [];
+    try {
+        const results = await searchMalWebsiteUncached(MAL_HEALTH_CHECK_TITLE);
+        if (!results.some(r => r.malId === MAL_HEALTH_CHECK_MAL_ID)) {
+            failures.push(`search: expected mal ${MAL_HEALTH_CHECK_MAL_ID} in results for "${MAL_HEALTH_CHECK_TITLE}", got ${results.length} result(s) without it`);
+        }
+    } catch (err) {
+        failures.push(`search threw: ${err.message}`);
+    }
+    try {
+        const details = await fetchMalAnimeDetailsUncached(MAL_HEALTH_CHECK_MAL_ID);
+        if (details.episodes !== 25) failures.push(`details: expected 25 episodes, got ${details.episodes}`);
+        if (details.type !== 'TV') failures.push(`details: expected type TV, got ${details.type}`);
+        if (!details.titleNative || !details.titleNative.toLowerCase().includes('shingeki')) {
+            failures.push(`details: expected titleNative to contain "shingeki", got "${details.titleNative}"`);
+        }
+    } catch (err) {
+        failures.push(`details threw: ${err.message}`);
+    }
+    try {
+        const relations = await scrapeMalRelationsUncached(MAL_HEALTH_CHECK_MAL_ID);
+        const hasSequel = relations.some(r => r.relationType === 'SEQUEL' && r.malId === MAL_HEALTH_CHECK_RELATED_MAL_ID);
+        if (!hasSequel) {
+            failures.push(`relations: expected a SEQUEL relation to mal ${MAL_HEALTH_CHECK_RELATED_MAL_ID}, got ${JSON.stringify(relations)}`);
+        }
+    } catch (err) {
+        failures.push(`relations threw: ${err.message}`);
+    }
+
+    if (failures.length === 0) {
+        logHealthStatus(`[MAL Health] OK (${Date.now() - startedAt}ms)`);
+    } else {
+        const banner = '!'.repeat(70);
+        logHealthStatus(`\n${banner}\n⚠️  ⚠️  ⚠️   MAL SCRAPING IS BROKEN   ⚠️  ⚠️  ⚠️\n${banner}`);
+        failures.forEach(f => logHealthStatus(`[MAL Health] ${f}`));
+        logHealthStatus(`${banner}\n`);
+    }
+    malHealthCheckRunning = false;
+}
+
+// anchorRomajiTitle should be a KNOWN sibling's own romaji/native title (matching the language
+// MAL's search results come back in - an English query still works for the search itself, MAL's
+// engine is alias-aware, but the RESULT titles need a same-language anchor to compare against,
+// same lesson learned fixing KAA's own title/otherName mismatch earlier). excludeMalIds skips
+// entries already known via AniList/Jikan, so this only ever ADDS genuinely new siblings.
+async function findMalOnlyCourSiblings(searchQuery, anchorRomajiTitle, excludeMalIds) {
+    if (!searchQuery || !anchorRomajiTitle) return [];
+    let results;
+    try {
+        results = await searchMalWebsite(searchQuery);
+    } catch (err) {
+        logAnikotoDebug(`[MAL siblings] search failed for "${searchQuery}"`, { error: err.message || String(err) });
+        return [];
+    }
+
+    const exclude = new Set((excludeMalIds || []).filter(Number.isFinite));
+    const candidates = results.filter(r =>
+        Number.isFinite(r.malId) && !exclude.has(r.malId) && isAnikotoVariantDivergence(anchorRomajiTitle, r.title)
+    );
+    if (!candidates.length) return [];
+
+    const siblings = [];
+    for (const c of candidates) {
+        try {
+            const details = await fetchMalAnimeDetails(c.malId);
+            // Same recap/short exclusion floor already proven on the KAA native lookup - a
+            // real cour is rarely under 4 episodes, a music video/recap short usually is.
+            if (!Number.isFinite(details.episodes) || details.episodes < 4) continue;
+            // Only accept genuine TV seasons - title-divergence matching alone can't tell a
+            // real season sibling ("Overlord II") apart from a same-franchise spin-off short
+            // ("Overlord: Ple Ple Pleiades 2", type ONA) when both fit the "base + trailing
+            // number" shape. MAL's own catalog type is the one signal that actually
+            // distinguishes them (confirmed live: Ple Ple Pleiades entries are ONA, not TV).
+            if (details.type && details.type !== 'TV') {
+                logAnikotoDebug(`[MAL siblings] rejecting non-TV candidate "${c.title}" (mal ${c.malId}, type ${details.type})`);
+                continue;
+            }
+            // Prefer the English title for the group's primary display/matching title, same
+            // convention buildSeasonGroupsFromAniList already follows (media.title?.english ||
+            // media.title?.romaji) - keeps every downstream consumer (Neko/anikoto's own
+            // English-titled catalog, the frontend UI) working the same way regardless of
+            // whether a season came from AniList or this MAL-only fallback. The raw MAL/romaji
+            // title is kept as titleNative for KAA, whose own catalog IS titled in
+            // romaji/native form.
+            siblings.push({
+                malId: c.malId,
+                title: details.titleEn || c.title,
+                titleNative: c.title,
+                episodesCount: details.episodes,
+                airDate: details.airDate
+            });
+        } catch (err) {
+            logAnikotoDebug(`[MAL siblings] detail fetch failed for mal ${c.malId}`, { error: err.message || String(err) });
+        }
+    }
+    return siblings;
 }
 
 function metaListToGroups(metaList, tmdbEpisodes = []) {
@@ -14011,6 +14927,12 @@ function metaListToGroups(metaList, tmdbEpisodes = []) {
         return {
             seasonNumber: idx + 1,
             label: m.title || `Season ${idx + 1}`,
+            // English title above (`label`) is what Neko/anikoto's own English-titled catalog
+            // needs to match against; KAA's catalog is titled in romaji/native form instead, so
+            // its own override uses this field specifically. Falls back to `label` itself for
+            // AniList-sourced entries that never had a distinct romaji field captured, same as
+            // before this field existed.
+            romajiTitle: m.romajiTitle || m.title || `Season ${idx + 1}`,
             malId: m.malId || null,
             episodes
         };
@@ -14163,9 +15085,20 @@ app.get('/api/anime-season-groups', async (req, res) => {
     const tmdbId = parseInt(req.query.tmdbId, 10);
     if (!tmdbId) return res.status(400).json({ error: 'Missing tmdbId' });
 
+    // Fetched once, up front - used both to decide whether an existing cache row is stale (the
+    // tmdb_season_count early-bust check) and, later, to record a fresh is_finished/season-count
+    // alongside a newly-computed result. Cheap and safe to always fetch - TMDB is our own
+    // trusted first-party dependency already hit everywhere else in this file, not a scrape.
+    let tmdbStatus = { numberOfSeasons: undefined, isFinished: false };
+    try {
+        tmdbStatus = await fetchTmdbShowStatus(tmdbId);
+    } catch (err) {
+        console.warn(`[anime-season-groups] TMDB status fetch failed for tmdb ${tmdbId}:`, err.message);
+    }
+
     let diskCache = null;
     try {
-        diskCache = await animeSeasonGroupsCacheGet(tmdbId, ANIME_SEASON_GROUPS_TTL);
+        diskCache = await animeSeasonGroupsCacheGet(tmdbId, tmdbStatus.numberOfSeasons);
         if (diskCache && !diskCache.stale) {
             return res.json({ groups: diskCache.groups, cached: true });
         }
@@ -14175,8 +15108,13 @@ app.get('/api/anime-season-groups', async (req, res) => {
 
     try {
         const cacheHit = _animeSeasonGroupsCache.get(String(tmdbId));
-        if (cacheHit && (Date.now() - cacheHit.cachedAt <= ANIME_SEASON_GROUPS_TTL)) {
-            return res.json({ groups: cacheHit.groups, cached: true });
+        if (cacheHit) {
+            const ttl = cacheHit.isFinished ? ANIME_SEASON_GROUPS_FINISHED_TTL : ANIME_SEASON_GROUPS_ONGOING_TTL;
+            const seasonCountBust = Number.isFinite(tmdbStatus.numberOfSeasons) && Number.isFinite(cacheHit.tmdbSeasonCount) &&
+                tmdbStatus.numberOfSeasons > cacheHit.tmdbSeasonCount;
+            if (!seasonCountBust && (Date.now() - cacheHit.cachedAt <= ttl)) {
+                return res.json({ groups: cacheHit.groups, cached: true });
+            }
         }
 
         const ids = await resolveAnimeIds(tmdbId, 1);
@@ -14201,17 +15139,23 @@ app.get('/api/anime-season-groups', async (req, res) => {
             }
         }
 
-        // Fallback: Jikan/MAL relations graph, only if AniList found nothing beyond the base season.
+        // Fallback: MAL's own relations graph (scraped directly), only if AniList found nothing
+        // beyond the base season. Was Jikan-backed (buildSeasonGroupsFromJikan, still defined
+        // above, kept intact not deleted) - switched to buildSeasonGroupsFromMalRelations since
+        // Jikan is both unreliable (504/429 on individual lookups all session) and headed for
+        // its own sunset within about a month at the time of this change. Scraping MAL directly
+        // removes that dependency entirely for this fallback layer.
         if (metaList.length <= 1 && ids.malId) {
             try {
-                const r = await buildSeasonGroupsFromJikan(ids.malId);
+                const r = await buildSeasonGroupsFromMalRelations(ids.malId);
+                // const r = await buildSeasonGroupsFromJikan(ids.malId); // old Jikan path, see above
                 if (r.metaList.length > metaList.length) {
                     metaList = r.metaList;
                     failedLookups = r.failedLookups;
-                    source = 'jikan';
+                    source = 'mal-relations';
                 }
             } catch (err) {
-                console.warn(`[anime-season-groups] jikan fallback failed for tmdb ${tmdbId}:`, err.message);
+                console.warn(`[anime-season-groups] mal-relations fallback failed for tmdb ${tmdbId}:`, err.message);
             }
         }
 
@@ -14220,6 +15164,103 @@ app.get('/api/anime-season-groups', async (req, res) => {
             // title-search fallback (buildTmdbRelatedSeasonGroups) is the last tier.
             if (diskCache) return res.json({ groups: diskCache.groups, cached: true, stale: true });
             return res.status(404).json({ error: 'Could not resolve season groups from AniList or MAL' });
+        }
+
+        // Last-resort layer: a cour split that exists ONLY on MAL's side, with no relations
+        // edge on either AniList's or MAL's own graph (confirmed live: Tower of God's
+        // "Workshop Battle" - see findMalOnlyCourSiblings above for the full story). Anchored
+        // on the FIRST/earliest known entry's own romaji title, not the latest - a later
+        // season's own title usually carries its own qualifier suffix (e.g. "... 2nd Season"),
+        // which pushes isAnikotoVariantDivergence's short-remainder check past its 3-token cap
+        // and silently finds nothing (confirmed live: anchoring on Season 2's own title matched
+        // zero candidates; anchoring on Season 1's clean base title correctly found Workshop
+        // Battle). The base/earliest entry's title is the closest thing to the franchise's
+        // "clean" name every real sibling should share a prefix with.
+        try {
+            const anchor = metaList[0];
+            const malSiblings = await findMalOnlyCourSiblings(
+                anchor.title,
+                anchor.romajiTitle || anchor.title,
+                metaList.map(m => m.malId)
+            );
+            if (malSiblings.length) {
+                // AniList's own `episodes` count for an entry can be the COMBINED total across
+                // a split it doesn't track separately (confirmed live: AniList's "Tower of God
+                // Season 2" entry, mal id 52635, reports episodes:26 - the real total across
+                // BOTH cours together - while MAL's OWN page for that exact same id says
+                // Episodes: 13, matching only "Return of the Prince"; "Workshop Battle"'s other
+                // 13 episodes live under the separate mal id just discovered above). Leaving the
+                // existing entries' counts at AniList's inflated number would make the site keep
+                // trying to map local episodes 1-26 onto an id that only has 13 - the exact same
+                // 404 this whole layer exists to fix, just moved rather than solved. Re-checking
+                // every existing entry's OWN MAL page and correcting DOWNWARD only (never up -
+                // AniList's number is still trusted when it's the smaller/more conservative one)
+                // is what actually closes that gap.
+                for (const existing of metaList) {
+                    if (!existing.malId) continue;
+                    try {
+                        const details = await fetchMalAnimeDetails(existing.malId);
+                        if (Number.isFinite(details.episodes) && details.episodes > 0 && details.episodes < existing.episodesCount) {
+                            logAnikotoDebug(`[anime-season-groups] correcting mal ${existing.malId} episodesCount ${existing.episodesCount} -> ${details.episodes} (AniList total appears combined across a split MAL doesn't)`);
+                            existing.episodesCount = details.episodes;
+                            // metaListToGroups computes each group's real episode count as
+                            // Math.max(episodesCount, streamingEpisodes.length) - correcting
+                            // episodesCount alone is silently overridden if AniList's own
+                            // streamingEpisodes listing still has the old, larger (combined)
+                            // count sitting in it (confirmed live: this exact gap is what made
+                            // Workshop Battle's thumbnails come up blank - "Return of the Prince"
+                            // kept consuming 26 slots from the concatenated TMDB array via its
+                            // uncorrected streamingEpisodes length, leaving nothing for Workshop
+                            // Battle's own slice). Truncating it to match keeps both signals
+                            // consistent with the real, corrected count.
+                            if (Array.isArray(existing.streamingEpisodes) && existing.streamingEpisodes.length > details.episodes) {
+                                existing.streamingEpisodes = existing.streamingEpisodes.slice(0, details.episodes);
+                            }
+                        }
+                    } catch (err) {
+                        logAnikotoDebug(`[anime-season-groups] episode-count re-check failed for mal ${existing.malId}`, { error: err.message || String(err) });
+                    }
+                }
+            }
+            for (const s of malSiblings) {
+                logAnikotoDebug(`[anime-season-groups] MAL-only sibling found for tmdb ${tmdbId}: "${s.title}" (mal ${s.malId})`);
+                metaList.push({
+                    title: s.title,
+                    // The romaji/native title (findMalOnlyCourSiblings' titleNative) - kept
+                    // separately for KAA specifically, whose own catalog is titled in romaji,
+                    // not English. `title` above is now English (see findMalOnlyCourSiblings),
+                    // matching every other entry's convention and what Neko/anikoto need.
+                    romajiTitle: s.titleNative || s.title,
+                    episodesCount: s.episodesCount,
+                    airDate: s.airDate,
+                    streamingEpisodes: [],
+                    malId: s.malId
+                });
+            }
+            if (malSiblings.length) {
+                source = source ? `${source}+mal-search` : 'mal-search';
+                // Universal safety net, applied to EVERY entry (not just the ones the targeted
+                // correction above touched) - AniList's own streamingEpisodes listing can be
+                // duplicated/inflated onto a sibling it doesn't actually belong to (the same
+                // quirk metaListToGroups already documents further down: "AniList sometimes
+                // duplicates one season's streamingEpisodes listing onto a sibling season's
+                // entry"). Confirmed live: Tower of God's own SEASON 1 entry (mal 40221) came
+                // back with episodesCount:26 in the final output despite its own episodesCount
+                // field always having been the correct 13 - its streamingEpisodes array itself
+                // had ballooned past 13 entries, and metaListToGroups' `total = Math.max(...,
+                // streaming.length)` let that alone widen the count. Only reachable once a
+                // MAL-only split is confirmed to exist for this title at all (malSiblings.length
+                // > 0) - a title with no such split has no reason to distrust its own data here.
+                for (const existing of metaList) {
+                    if (Array.isArray(existing.streamingEpisodes) && Number.isFinite(existing.episodesCount) &&
+                        existing.streamingEpisodes.length > existing.episodesCount) {
+                        logAnikotoDebug(`[anime-season-groups] truncating streamingEpisodes for mal ${existing.malId}: ${existing.streamingEpisodes.length} -> ${existing.episodesCount}`);
+                        existing.streamingEpisodes = existing.streamingEpisodes.slice(0, existing.episodesCount);
+                    }
+                }
+            }
+        } catch (err) {
+            logAnikotoDebug(`[anime-season-groups] MAL-only sibling discovery failed for tmdb ${tmdbId}`, { error: err.message || String(err) });
         }
 
         let tmdbEpisodes = [];
@@ -14238,9 +15279,11 @@ app.get('/api/anime-season-groups', async (req, res) => {
             return res.json({ groups: diskCache.groups, cached: true, stale: true });
         }
 
-        _animeSeasonGroupsCache.set(String(tmdbId), { groups, cachedAt: Date.now() });
+        _animeSeasonGroupsCache.set(String(tmdbId), {
+            groups, cachedAt: Date.now(), isFinished: tmdbStatus.isFinished, tmdbSeasonCount: tmdbStatus.numberOfSeasons
+        });
         try {
-            await animeSeasonGroupsCacheSet(tmdbId, ids.malId || null, groups);
+            await animeSeasonGroupsCacheSet(tmdbId, ids.malId || null, groups, tmdbStatus.isFinished, tmdbStatus.numberOfSeasons);
         } catch (err) {
             console.error('[anime-season-groups] disk cache write failed:', err.message);
         }
@@ -14921,4 +15964,8 @@ const server = app.listen(PORT, 'localhost', () => {
     console.log(`   Kino health check: every ${KINO_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
     setInterval(runKinoHealthCheck, KINO_HEALTH_CHECK_INTERVAL_MS);
     runKinoHealthCheck(); // also check once right away instead of waiting 10min for the first read
+
+    console.log(`   MAL health check: every ${MAL_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
+    setInterval(runMalHealthCheck, MAL_HEALTH_CHECK_INTERVAL_MS);
+    runMalHealthCheck(); // also check once right away instead of waiting 30min for the first read
 });
