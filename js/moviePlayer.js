@@ -382,6 +382,43 @@ document.addEventListener('DOMContentLoaded', function() {
         btn.style.display = window.currentServer === 'srvPahe1' ? 'flex' : 'none';
     }
 
+    // Splits volume/settings/captions/pip out of Plyr's bottom bar into a separate top-right
+    // row - ONLY below the site's own mobile breakpoint (css/style.css's @media (max-width:850px)).
+    // At that width the bottom bar gets too cramped for all 11 controls in one row; above it,
+    // desktop keeps everything in Plyr's normal single bar (matches the public embed player).
+    // Checked once at build time (same as this function's only call site, right after `new
+    // Plyr(...)`) rather than on resize - a mid-playback device rotation reflowing the control
+    // layout out from under the user would be more jarring than just not doing it live.
+    function movePlyrTopControls() {
+        if (!window.matchMedia('(max-width: 850px)').matches) return;
+        const playerContainer = window.plyrInstance?.elements?.container;
+        const controls = window.plyrInstance?.elements?.controls;
+        if (!playerContainer || !controls) return;
+
+        let topControls = playerContainer.querySelector('.kaa-top-controls');
+        if (!topControls) {
+            topControls = document.createElement('div');
+            topControls.className = 'kaa-top-controls';
+            topControls.style.cssText = 'position:absolute;top:12px;right:12px;display:flex;gap:8px;align-items:center;z-index:10010;pointer-events:none;';
+            playerContainer.appendChild(topControls);
+        }
+
+        const moveSelectors = [
+            '.plyr__volume',
+            '[data-plyr="settings"]',
+            '[data-plyr="captions"]',
+            '[data-plyr="pip"]'
+        ];
+
+        moveSelectors.forEach(selector => {
+            const element = controls.querySelector(selector);
+            if (element && !topControls.contains(element)) {
+                element.style.pointerEvents = 'auto';
+                topControls.appendChild(element);
+            }
+        });
+    }
+
     function attachKaaSkipOverlay() {
         const playerContainer = window.plyrInstance?.elements?.container;
         if (!playerContainer) {
@@ -1668,6 +1705,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         // a top-level config.qualityLabel is silently ignored.
                         i18n: { qualityLabel: { 0: 'Auto' } }
                     });
+                    movePlyrTopControls();
                     setTimeout(() => {
                         console.log(window.plyrInstance.elements);
                         console.log(window.plyrInstance.elements.container);
