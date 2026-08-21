@@ -12792,6 +12792,203 @@ app.get('/api/anikoto-episode-counts', async (req, res) => {
     }
 });
 
+// --- Batch episode-count-badge resolution -----------------------------------------------
+// A grid page can have 250+ visible cards, each needing its own multi-hop chain (malId lookup +
+// TMDB details + anikoto-episode-counts) - confirmed live via indexBrowse's DevTools Network
+// tab: ~270 shows x 3 requests = ~800+ separate HTTP round-trips, which no amount of client-side
+// throttling/prioritization collapses, since it's the browser's connection-per-origin limit
+// fighting sheer REQUEST COUNT, not request speed (individual endpoints already respond in
+// tens-to-hundreds of ms warm). This route is a faithful, direct port of episodeCountBadges.js's
+// fetchCountsFor (the exact same movie/tv/anime branches, same TMDB-detail Japanese-origin gate,
+// same season-scoping, same movie-fallback and upcoming-date handling) so N cards become ONE
+// request instead of up to 3*N - internally it calls the same functions the existing single-item
+// routes call (getTmdbDetailCached, resolveAnimeIds, resolveNativeEpisodeCountsCached) directly,
+// not via internal HTTP, so none of this adds new browser-visible requests of its own.
+//
+// The old single-item routes (/api/anikoto-episode-counts, /api/anime-mal-id, /api/tmdb-proxy)
+// are UNTOUCHED and still used by movieInfo.html and anywhere else that only ever needs one
+// show's counts - this is purely an additive fast path for grid pages with many cards at once.
+
+async function getTmdbDetailCached(mediaType, tmdbId) {
+    const cacheKey = `/${mediaType}/${tmdbId}?`;
+    const cached = await tmdbDetailCacheGet(cacheKey);
+    if (cached) return cached;
+    try {
+        const data = await tmdbGet(`/${mediaType}/${tmdbId}`, {});
+        tmdbDetailCacheSet(cacheKey, data);
+        return data;
+    } catch (err) {
+        return null;
+    }
+}
+
+// Direct port of episodeCountBadges.js's computeReleasedTmdbEpisodeTotal - see that function's
+// comment for the full reasoning (TMDB's number_of_episodes can be inflated by an unaired
+// season). Used only by the 'tv' (non-anime) badge branch below.
+function computeReleasedTmdbEpisodeTotalServer(tmdbData) {
+    const seasons = Array.isArray(tmdbData?.seasons) ? tmdbData.seasons : [];
+    const now = Date.now();
+    const realSeasons = seasons.filter(s => s.season_number >= 1);
+    const released = realSeasons.filter(s => s.air_date && new Date(s.air_date).getTime() <= now);
+    const firstAirDate = tmdbData?.first_air_date;
+    const hasStartedAiring = firstAirDate && new Date(firstAirDate).getTime() <= now;
+    const coverage = realSeasons.length ? released.length / realSeasons.length : 0;
+    if (released.length && coverage >= 0.5) {
+        return released.reduce((acc, s) => acc + (Number.isFinite(s.episode_count) ? s.episode_count : 0), 0) || null;
+    }
+    return hasStartedAiring && Number.isFinite(tmdbData?.number_of_episodes) ? tmdbData.number_of_episodes : null;
+}
+
+// Direct port of episodeCountBadges.js's extractSeasonNumber - see that function's comment.
+const BADGE_ROMAN_SEASON_MAP = { ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10 };
+function extractSeasonNumberServer(title) {
+    if (!title) return 1;
+    const t = String(title);
+    const wordMatch = t.match(/\bSeason\s+(\d+)\b/i) || t.match(/\b(\d+)(?:st|nd|rd|th)\s+Season\b/i);
+    if (wordMatch) {
+        const n = parseInt(wordMatch[1], 10);
+        if (Number.isFinite(n) && n > 0) return n;
+    }
+    const romanMatch = t.match(/[:\-–]\s*(II|III|IV|V|VI|VII|VIII|IX|X)\s*$/i);
+    if (romanMatch) {
+        const n = BADGE_ROMAN_SEASON_MAP[romanMatch[1].toLowerCase()];
+        if (n) return n;
+    }
+    return 1;
+}
+
+// Direct port of episodeCountBadges.js's computeSeasonOneEpisodeTotal - see that function's
+// comment (the "1 season, 1 problem" / MANY_SEASONS_THRESHOLD reasoning). Used only by the
+// anime badge branch below.
+const BADGE_MANY_SEASONS_THRESHOLD = 8;
+function computeSeasonOneEpisodeTotalServer(tmdbData, seasonNumber) {
+    const targetSeason = Number.isFinite(seasonNumber) && seasonNumber > 0 ? seasonNumber : 1;
+    const seasons = Array.isArray(tmdbData?.seasons) ? tmdbData.seasons : [];
+    const now = Date.now();
+    const realSeasonCount = seasons.filter(s => s.season_number >= 1).length;
+    const seasonEntry = realSeasonCount <= BADGE_MANY_SEASONS_THRESHOLD ? seasons.find(s => s.season_number === targetSeason) : null;
+    if (seasonEntry && Number.isFinite(seasonEntry.episode_count) && seasonEntry.episode_count > 0) {
+        if (seasonEntry.air_date && new Date(seasonEntry.air_date).getTime() > now) return null;
+        return seasonEntry.episode_count;
+    }
+    if (targetSeason > 1) return null;
+    const firstAirDate = tmdbData?.first_air_date;
+    const hasStartedAiring = firstAirDate && new Date(firstAirDate).getTime() <= now;
+    return hasStartedAiring && Number.isFinite(tmdbData?.number_of_episodes) ? tmdbData.number_of_episodes : null;
+}
+
+// Direct port of episodeCountBadges.js's fetchCountsFor's anime branch (lines ~348-478 there) -
+// same tmdbDetailsPromise/malIdPromise parallel fetch, same anikoto-complete-vs-partial check via
+// resolveNativeEpisodeCountsCached, same movie-fallback and upcoming-date handling, same
+// title-then-each-alt-title retry order (fetchAnikotoCountsWithFallback there) - altTitles rides
+// along as resolveNativeEpisodeCountsCached's own altTitles param on EVERY attempt (matching the
+// client's "altTitles rides along even on this primary-title call" comment), only the primary
+// `rawTitle`/cache-key argument changes between attempts.
+async function resolveAnimeBadgeCounts(title, tmdbId, altTitles) {
+    const numericTmdbId = Number(tmdbId);
+    const hasTmdbId = Number.isFinite(numericTmdbId) && numericTmdbId > 0;
+
+    const tmdbDetailsPromise = !hasTmdbId ? Promise.resolve(null) : getTmdbDetailCached('tv', numericTmdbId).then(data => {
+        if (!data) return null;
+        const isJapaneseOrigin = data.original_language === 'ja' ||
+            (Array.isArray(data.origin_country) && data.origin_country.includes('JP'));
+        return isJapaneseOrigin ? data : null;
+    });
+
+    const seasonNumber = extractSeasonNumberServer(title);
+
+    const malIdPromise = !hasTmdbId ? Promise.resolve(null) : resolveAnimeIds(numericTmdbId, seasonNumber)
+        .then(ids => Number.isFinite(ids?.malId) ? ids.malId : null)
+        .catch(() => null);
+
+    const [tmdbData, malId] = await Promise.all([tmdbDetailsPromise, malIdPromise]);
+
+    const seasonCount = Number.isFinite(tmdbData?.number_of_seasons) ? tmdbData.number_of_seasons : undefined;
+    const tmdbTotal = computeSeasonOneEpisodeTotalServer(tmdbData, seasonNumber);
+    const now = Date.now();
+    const seasonEntry = Array.isArray(tmdbData?.seasons) ? tmdbData.seasons.find(s => s.season_number === seasonNumber) : null;
+    const seasonAirDate = seasonEntry?.air_date || tmdbData?.first_air_date;
+    const upcomingDate = seasonAirDate && new Date(seasonAirDate).getTime() > now ? seasonAirDate : null;
+
+    // Sequential (not parallel) on purpose, same as fetchAnikotoCountsWithFallback - most titles
+    // match on the first try, so firing every alt title's lookup in parallel would usually just
+    // be wasted work for the common case.
+    const candidateTitles = [title, ...(Array.isArray(altTitles) ? altTitles.filter(alt => alt && alt !== title) : [])];
+    let nativeResult = null;
+    for (const candidateTitle of candidateTitles) {
+        const r = await resolveNativeEpisodeCountsCached(candidateTitle, altTitles, seasonCount, malId, hasTmdbId ? numericTmdbId : undefined, tmdbTotal, upcomingDate, seasonNumber);
+        if (r) { nativeResult = r; break; }
+    }
+    if (nativeResult?.upcomingDate) return { upcoming: true, releaseDate: nativeResult.upcomingDate };
+    if (nativeResult && Number.isFinite(nativeResult.sub) && Number.isFinite(nativeResult.total)) {
+        let sub = nativeResult.sub, dub = nativeResult.dub, total = nativeResult.total, ruDub = nativeResult.ruDub;
+        if (tmdbTotal != null) {
+            total = tmdbTotal;
+            if (Number.isFinite(sub)) sub = Math.min(sub, tmdbTotal);
+            if (Number.isFinite(dub)) dub = Math.min(dub, tmdbTotal);
+            if (Number.isFinite(ruDub)) ruDub = Math.min(ruDub, tmdbTotal);
+        }
+        return { sub, dub, total, ruDub };
+    }
+
+    if (upcomingDate) {
+        return { upcoming: true, releaseDate: upcomingDate };
+    }
+    if (hasTmdbId && (!Array.isArray(tmdbData?.seasons) || !tmdbData.seasons.length)) {
+        const movieData = await getTmdbDetailCached('movie', numericTmdbId);
+        const movieIsJapanese = movieData?.original_language === 'ja';
+        if (movieData?.id && movieData.release_date && movieIsJapanese) {
+            if (new Date(movieData.release_date).getTime() > now) {
+                return { upcoming: true, releaseDate: movieData.release_date };
+            }
+            return { sub: 1, dub: 1, total: 1 };
+        }
+    }
+
+    return Number.isFinite(tmdbTotal) ? { sub: tmdbTotal, dub: null, total: tmdbTotal } : null;
+}
+
+// Direct port of fetchCountsFor's 'tv' (non-anime) branch.
+async function resolveTvBadgeCounts(tmdbId) {
+    const numericTmdbId = Number(tmdbId);
+    if (!Number.isFinite(numericTmdbId) || numericTmdbId <= 0) return null;
+    const data = await getTmdbDetailCached('tv', numericTmdbId);
+    const n = computeReleasedTmdbEpisodeTotalServer(data) ?? data?.number_of_episodes;
+    return Number.isFinite(n) ? { sub: n, dub: n, total: n } : null;
+}
+
+const BADGE_BATCH_CONCURRENCY = 10;
+
+app.post('/api/anime-episode-counts-batch', async (req, res) => {
+    const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 400) : [];
+    if (!items.length) return res.json({ results: {} });
+
+    const results = {};
+    let cursor = 0;
+    async function runNext() {
+        while (cursor < items.length) {
+            const item = items[cursor++];
+            const key = String(item?.key || '');
+            if (!key) continue;
+            try {
+                if (item.type === 'movie') {
+                    results[key] = { sub: 1, dub: 1, total: 1 };
+                } else if (item.type === 'tv') {
+                    results[key] = await resolveTvBadgeCounts(item.tmdbId);
+                } else {
+                    results[key] = await resolveAnimeBadgeCounts(item.title, item.tmdbId, Array.isArray(item.altTitles) ? item.altTitles : []);
+                }
+            } catch (err) {
+                logAnikotoDebug(`✗ Batch lookup threw for key "${key}"`, { error: err.message || String(err) });
+                results[key] = null;
+            }
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(BADGE_BATCH_CONCURRENCY, items.length) }, runNext));
+
+    res.json({ results });
+});
+
 // A user's own comments across every anime (home page "Your Comments"
 // widget's anime-mode). source='user' excludes the anikoto-imported ones --
 // those never belong to a real site user_uid anyway, this is just explicit.

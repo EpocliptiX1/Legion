@@ -14,41 +14,16 @@
     const badgeCountCache = new Map(); // badgeKey -> Promise<{sub,dub,total}|null>
 
     // A cold grid can have 250+ unique shows across all rows (confirmed live: indexBrowse's
-    // IntersectionObserver rootMargin is generous enough that most/all 15 rows end up loading
-    // within the first couple seconds, not just the 3 "eager" ones), each needing its own multi-
-    // hop fetch chain (malId lookup + TMDB details + anikoto-episode-counts) - that's 750+
-    // requests flooding the browser's ~6-connections-per-origin limit (HTTP/1.1; the HTTP/2
-    // upgrade that would remove this cap was tried and reverted, see middleware.js), stuck
-    // fighting the hero's own trailer/recommendation fetches for a slot (mitigated separately via
-    // fetch priority hints below).
-    //
-    // This is a GLOBAL semaphore, not a per-call limit - mountEpisodeCountBadges gets invoked
-    // once per MutationObserver batch (see setupAutoMount below), i.e. roughly once per row as
-    // each one renders, NOT once for the whole page. A per-call concurrency cap would only limit
-    // chains within a single row's own batch, doing nothing to stop 15 rows landing close
-    // together from each spinning up their own independent pool (15 rows x 8 = 120 concurrent
-    // chains again, right back where this started).
-    const BADGE_FETCH_CONCURRENCY = 8;
-    let activeBadgeChains = 0;
-    const badgeChainQueue = [];
-
-    function runBadgeChainGloballyLimited(task) {
-        return new Promise((resolve) => {
-            const run = async () => {
-                activeBadgeChains++;
-                try {
-                    await task();
-                } finally {
-                    activeBadgeChains--;
-                    const next = badgeChainQueue.shift();
-                    if (next) next();
-                    resolve();
-                }
-            };
-            if (activeBadgeChains < BADGE_FETCH_CONCURRENCY) run();
-            else badgeChainQueue.push(run);
-        });
-    }
+    // IntersectionObserver rootMargin was generous enough that most/all 15 rows ended up loading
+    // within the first couple seconds - DevTools confirmed 854-917 requests / ~20MB on a fresh
+    // load). Used to fetch each show's counts as its own 3-hop chain (malId + TMDB details +
+    // anikoto-episode-counts), which no amount of client-side throttling could fix - it's the
+    // browser's ~6-connections-per-origin limit fighting sheer REQUEST COUNT (750+), not request
+    // speed. mountEpisodeCountBadges now sends ALL of a mutation batch's shows in ONE POST to
+    // /api/anime-episode-counts-batch (server.js - a direct port of fetchCountsFor/
+    // fetchAnikotoCounts/fetchAnikotoCountsWithFallback below, same matching logic, just resolved
+    // server-side in one round trip instead of N). Those old per-item functions are kept, not
+    // deleted, as a documented rollback path - see the batch route's own comment in server.js.
 
     function escapeAttr(value) {
         return String(value || '').replace(/"/g, '&quot;');
@@ -496,13 +471,41 @@
             byKey.get(key).push(node);
         });
 
-        await Promise.all(Array.from(byKey.values()).map(els => runBadgeChainGloballyLimited(async () => {
+        // Build one batch item per not-yet-cached unique key. Keys already cached (or already
+        // in flight from a previous mutation batch, e.g. the same show in two rows) are skipped
+        // here and just read out of badgeCountCache below - no duplicate request either way.
+        const batchItems = [];
+        byKey.forEach((els, key) => {
+            if (badgeCountCache.has(key)) return;
             const { badgeType: type, badgeTitle: title, badgeTmdbid: tmdbId, badgeAltTitles } = els[0].dataset;
             let altTitles = [];
             if (badgeAltTitles) {
                 try { altTitles = JSON.parse(badgeAltTitles); } catch (e) { altTitles = []; }
             }
-            const counts = await fetchCountsFor({ type, title, tmdbId, altTitles });
+            batchItems.push({ key, type, title, tmdbId, altTitles });
+        });
+
+        if (batchItems.length) {
+            const batchPromise = fetch('/api/anime-episode-counts-batch', {
+                method: 'POST',
+                priority: 'low',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items: batchItems }),
+            })
+                .then(res => res.ok ? res.json() : { results: {} })
+                .then(data => data.results || {})
+                .catch(() => ({}));
+
+            // Each key gets its own promise derived from the shared batch response, so
+            // badgeCountCache's existing per-key contract (used by the render loop below,
+            // unchanged) keeps working whether a key was just batched or was already cached.
+            batchItems.forEach(item => {
+                badgeCountCache.set(item.key, batchPromise.then(results => results[item.key] ?? null));
+            });
+        }
+
+        await Promise.all(Array.from(byKey.entries()).map(async ([key, els]) => {
+            const counts = await badgeCountCache.get(key);
             els.forEach(el => {
                 const inline = el.dataset.badgeInline === '1';
                 // Badges sit position:absolute over the poster corner (see .card-episode-badges
@@ -542,7 +545,7 @@
                     });
                 }
             });
-        })));
+        }));
     }
 
     window.buildEpisodeCountBadgesPlaceholder = buildEpisodeCountBadgesPlaceholder;

@@ -7,18 +7,19 @@
 
     <link rel="stylesheet" href="/css/style.css">
     <link rel="stylesheet" href="/css/theme-enhancements.css">
-    <script src="/js/theme.js"></script>
-    <script src="/js/i18n.js"></script>
-    <script src="/js/translator.js"></script>
-    <script src="/js/tmdb.js"></script>
-    <script src="/js/netflixFeatures.js"></script>
-    <script src="/js/keyboardShortcuts.js"></script>
-    <script src="/js/enhancedSearch.js"></script>
-    <script src="/js/movieLoading.js"></script>
-    <script src="/js/mainPageControls.js"></script>
-    <script src="/js/recommendations.js"></script>
-    <script src="/js/apiStatusPanel.js"></script>
-    <script src="/js/animePage.js"></script>
+    <script src="/js/theme.js" defer></script>
+    <script src="/js/i18n.js" defer></script>
+    <script src="/js/translator.js" defer></script>
+    <script src="/js/tmdb.js" defer></script>
+    <script src="/js/episodeCountBadges.js" defer></script>
+    <script src="/js/netflixFeatures.js" defer></script>
+    <script src="/js/keyboardShortcuts.js" defer></script>
+    <script src="/js/enhancedSearch.js" defer></script>
+    <script src="/js/movieLoading.js" defer></script>
+    <script src="/js/mainPageControls.js" defer></script>
+    <script src="/js/recommendations.js" defer></script>
+    <script src="/js/apiStatusPanel.js" defer></script>
+    <script src="/js/animePage.js" defer></script>
 </head>
 <body>
 
@@ -281,7 +282,7 @@
                 </p>
                 <div class="hero-buttons">
                     <button class="btn btn-play" onclick="triggerPlay()">▶ <span data-i18n="hero_play">Watch Now</span></button>
-                    <button class="btn btn-info" onclick="toggleHeroMyList()">+ <span data-i18n="hero_more_info">My List</span></button>
+                    <button class="btn btn-info" id="heroMyListBtn" onclick="toggleHeroMyList()"><span class="hero-mylist-icon">+</span> <span data-i18n="hero_more_info">My List</span></button>
                 </div>
             </div>
             <div class="hero-main-poster">
