@@ -4397,7 +4397,13 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
 
 .ep-badge-sub { background: #4ade80; color: #ffffff; }
 .ep-badge-dub { background: #ef4444; color: #ffffff; }
+/* No real (English) dub found - showing animego.me's Russian dub count instead. Blue on purpose,
+   never red, so it can never be mistaken for a real English dub count at a glance. */
+.ep-badge-dub-ru { background: #3b82f6; color: #ffffff; }
 .ep-badge-total { background: #6b7280; color: #ffffff; }
+/* Not yet released (unaired TV show or an unreleased movie) - a distinct amber, never the sub/
+   dub/total colors, so it never reads as a real (and possibly wrong) episode count. */
+.ep-badge-upcoming { background: #f59e0b; color: #1a1a1a; }
 
 /* Used where the badges sit inline in normal document flow (e.g. calendar list rows)
    instead of overlaid on a poster corner. */
@@ -9147,8 +9153,24 @@ body.blur-active {
     display: none !important;
 }
 /* THE ACTUAL USEFUL SHIT */
+/* Was #F1D6AB (light gold) - Plyr uses this variable directly for things our other #ff8000
+   overrides below don't touch (progress bar fill, volume slider thumb/track), so the player
+   looked gold in some spots and orange in others. Matches the embed player (server.js) now -
+   one consistent orange throughout. */
 :root {
-    --plyr-color-main: #F1D6AB;
+    --plyr-color-main: #ff8000;
+}
+
+/* .player-main-pane/#moviePlayerFrameWrap (movieInfo.html) never actually had this rule despite
+   the "aspect-ratio:16/9" comment left on .player-main-pane in the HTML - with nothing sizing it,
+   the video/iframe/plyr container all fell back to the browser's default replaced-element size
+   (300x150), squishing the whole player down to ~150px tall regardless of how wide the page is. */
+.player-main-pane {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+}
+#moviePlayerFrameWrap {
+    height: 100%;
 }
 
 .plyr {
@@ -9588,11 +9610,6 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
 .plyr.plyr--stopped .kaa-download-btn-top {
     opacity: 1;
     pointer-events: auto;
-}
-@media (min-width: 480px) {
-    .plyr--video .plyr__controls {
-        padding-top: calc(var(--plyr-control-spacing, 1px) * 3.5) !important;
-    }
 }
 .kaa-download-btn-top:hover {
     background: #ff8000;

@@ -382,35 +382,6 @@ document.addEventListener('DOMContentLoaded', function() {
         btn.style.display = window.currentServer === 'srvPahe1' ? 'flex' : 'none';
     }
 
-    function movePlyrTopControls() {
-        const playerContainer = window.plyrInstance?.elements?.container;
-        const controls = window.plyrInstance?.elements?.controls;
-        if (!playerContainer || !controls) return;
-
-        let topControls = playerContainer.querySelector('.kaa-top-controls');
-        if (!topControls) {
-            topControls = document.createElement('div');
-            topControls.className = 'kaa-top-controls';
-            topControls.style.cssText = 'position:absolute;top:12px;right:12px;display:flex;gap:8px;align-items:center;z-index:10010;pointer-events:none;';
-            playerContainer.appendChild(topControls);
-        }
-
-        const moveSelectors = [
-            '.plyr__volume',
-            '[data-plyr="settings"]',
-            '[data-plyr="captions"]',
-            '[data-plyr="pip"]'
-        ];
-
-        moveSelectors.forEach(selector => {
-            const element = controls.querySelector(selector);
-            if (element && !topControls.contains(element)) {
-                element.style.pointerEvents = 'auto';
-                topControls.appendChild(element);
-            }
-        });
-    }
-
     function attachKaaSkipOverlay() {
         const playerContainer = window.plyrInstance?.elements?.container;
         if (!playerContainer) {
@@ -955,6 +926,28 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log('[Preload] ✗ RU-MV returned no stream:', data);
                 }
             }).catch(err => console.log('[Preload] ✗ RU-MV preload failed:', err));
+
+            // Preload MegaPlay sources - was never wired up here at all, unlike KAA/Neko/RU-MV
+            // above, so "Watch Now" always paid this fetch live even when MegaPlay ended up
+            // being the server that actually played. /api/anime-megaplay-log is the real payload
+            // loadMegaPlayFrame's native-playback path consumes (tokenized stream + skip markers
+            // + subtitle tracks) - same endpoint, same malId-per-season lookup loadMegaPlayFrame
+            // itself does, just run ahead of time instead of on click.
+            if (malId) {
+                const megaplaySeasonMatchForPreload = kaaSeasonGroupsForPreload.find(g => Number(g.seasonNumber) === Number(season));
+                const megaplayMalIdForPreload = megaplaySeasonMatchForPreload?.malId || malId;
+                const megaUrl = `/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalIdForPreload)}&episode=${encodeURIComponent(episode)}&lang=${encodeURIComponent(audioType)}`;
+                console.log('[Preload] MegaPlay fetch URL:', megaUrl);
+                fetch(megaUrl).then(res => res.json()).then(data => {
+                    if (data?.ok && data.stream) {
+                        window.__preloadedMegaSources = data;
+                        window.__preloadedMegaEpisode = { season, ep: episode, audioType };
+                        console.log('[Preload] ✓ MegaPlay sources cached for S' + season + 'E' + episode);
+                    } else {
+                        console.log('[Preload] ✗ MegaPlay returned no stream:', data);
+                    }
+                }).catch(err => console.log('[Preload] ✗ MegaPlay preload failed:', err));
+            }
 
         } catch (err) {
             console.log('[Preload] Background preload error:', err);
@@ -1675,7 +1668,6 @@ document.addEventListener('DOMContentLoaded', function() {
                         // a top-level config.qualityLabel is silently ignored.
                         i18n: { qualityLabel: { 0: 'Auto' } }
                     });
-                    movePlyrTopControls();
                     setTimeout(() => {
                         console.log(window.plyrInstance.elements);
                         console.log(window.plyrInstance.elements.container);
@@ -1873,8 +1865,17 @@ document.addEventListener('DOMContentLoaded', function() {
                     // need different languages here).
                     const seasonTitleParam = (kaaSeasonMatch?.romajiTitle || kaaSeasonMatch?.label) ? `&seasonTitle=${encodeURIComponent(kaaSeasonMatch.romajiTitle || kaaSeasonMatch.label)}` : '';
                     const seasonEpCountParam = Number.isFinite(kaaSeasonMatch?.episodes?.length) ? `&seasonEpisodeCount=${kaaSeasonMatch.episodes.length}` : '';
+                    // `malId` alone is whatever lookupMalId() resolved ONCE at page load with no
+                    // season awareness (defaults to season 1 server-side) - a multi-season show
+                    // (e.g. Sword Art Online, 4 real seasons each under a DIFFERENT MAL id) kept
+                    // getting season 1's own episodes back for every season, since this always
+                    // sent that same stale id regardless of which season was actually selected.
+                    // kaaSeasonMatch.malId (this season's own real id, from the same season-groups
+                    // resolution megaplayMalId below already trusts) is the fix - only falls back
+                    // to the stale id when this season isn't in the resolved groups at all.
+                    const kaaMalId = kaaSeasonMatch?.malId || malId;
                     const res = await fetch(
-                        `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=${encodeURIComponent(requestedType)}&title=${encodeURIComponent(title)}${seasonTitleParam}${seasonEpCountParam}`
+                        `/api/anime-kaa-servers?malId=${encodeURIComponent(kaaMalId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=${encodeURIComponent(requestedType)}&title=${encodeURIComponent(title)}${seasonTitleParam}${seasonEpCountParam}`
                     );
                     data = await res.json().catch(() => ({}));
                     if (!res.ok) {
@@ -2090,10 +2091,16 @@ document.addEventListener('DOMContentLoaded', function() {
             const seasonSelectEl = document.getElementById('seasonSelect');
             const selectedSeason = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || season || 1;
             const title = document.getElementById('title')?.textContent.trim() || '';
+            // Same stale-malId issue as the main KAA loader above (see kaaMalId's comment) -
+            // this borrow-KAA's-subtitles path needs this season's own id too, not whatever
+            // lookupMalId() resolved once at page load for season 1.
+            const subSeasonGroups = window.__resolvedSeasonGroups || [];
+            const subSeasonMatch = subSeasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
+            const kaaSubMalId = subSeasonMatch?.malId || malId;
             const fetchFor = async (kaaAudio) => {
                 try {
                     const query = new URLSearchParams({
-                        malId: malId || '', tmdbId: tmdbId || '',
+                        malId: kaaSubMalId || '', tmdbId: tmdbId || '',
                         season: selectedSeason, ep: episode || 1, type: kaaAudio, title
                     });
                     const res = await fetch(`/api/anime-kaa-servers?${query.toString()}`);
@@ -2145,11 +2152,24 @@ document.addEventListener('DOMContentLoaded', function() {
                 const activityUID = window.getActivityUID();
                 await fetchWatchHistory(activityUID, tmdbId).then(setWatchHistoryCache);
             }
+            // Same preload-reuse pattern KAA's real loader uses (see window.preloadEpisodeSources
+            // above) - was never wired up for MegaPlay at all before, so "Watch Now" always paid
+            // both the /api/stream/mal health-check AND the /api/anime-megaplay-log extraction
+            // live, even on the common path where the page-load preload had already resolved the
+            // exact same season/episode/audio combo well before the click happened.
+            const preloadedMegaEp = window.__preloadedMegaEpisode;
+            const hasMatchingMegaPreload = window.__preloadedMegaSources && preloadedMegaEp &&
+                parseInt(selectedSeason) === parseInt(preloadedMegaEp.season || 1) &&
+                parseInt(episode) === parseInt(preloadedMegaEp.ep || 1) &&
+                preloadedMegaEp.audioType === audioType;
+
             try {
-                const res = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(episode)}/${encodeURIComponent(audioType)}`);
-                if (!res.ok) {
-                    if (infoDiv) infoDiv.textContent = 'MegaPlay: Failed to resolve stream.';
-                    return false;
+                if (!hasMatchingMegaPreload) {
+                    const res = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(episode)}/${encodeURIComponent(audioType)}`);
+                    if (!res.ok) {
+                        if (infoDiv) infoDiv.textContent = 'MegaPlay: Failed to resolve stream.';
+                        return false;
+                    }
                 }
                 // Prefer NATIVE playback via the extracted stream: our own player instead of
                 // megaplay's iframe, which also means no megaplay ads/branding, real subtitle
@@ -2157,8 +2177,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 // markers, which an iframe can't expose to our skip overlay at all.
                 // Falls back to the original iframe below if extraction fails.
                 try {
-                    const exRes = await fetch(`/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalId)}&episode=${encodeURIComponent(episode)}&lang=${encodeURIComponent(audioType)}`);
-                    const ex = exRes.ok ? await exRes.json() : null;
+                    let ex;
+                    if (hasMatchingMegaPreload) {
+                        console.log('[MegaPlay] Using preloaded sources for S' + selectedSeason + 'E' + episode);
+                        ex = window.__preloadedMegaSources;
+                        window.__preloadedMegaSources = null;
+                        window.__preloadedMegaEpisode = null;
+                    } else {
+                        const exRes = await fetch(`/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalId)}&episode=${encodeURIComponent(episode)}&lang=${encodeURIComponent(audioType)}`);
+                        ex = exRes.ok ? await exRes.json() : null;
+                    }
                     if (ex?.ok && ex.stream) {
                         // {start,end} is already the shape getKaaSegmentStart/End read; `type`
                         // is what getKaaSkipRole keys off. Zeroed markers mean "none known"

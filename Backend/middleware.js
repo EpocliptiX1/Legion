@@ -78,6 +78,21 @@ const authLimiter = rateLimit({
     message: { error: 'Too many authentication attempts. Please try again later.' }
 });
 
+// Public embed player (/embed/*) - unlike everything else here, this is DELIBERATELY reachable
+// cross-origin (that's the entire point of an embeddable player) and carries no shared-secret
+// auth at all, so it needs its own protection instead of requireSameOrigin/apiLimiter. Budget:
+// one real embed view is a handful of requests (the player page itself + a provider resolve call
+// or two), so 40/5min per IP comfortably covers one viewer loading/reloading a player without
+// leaving real headroom for scraping or bulk automation.
+const embedLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 40,
+    skip: skipLocalhost,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many embed requests. Please slow down.' }
+});
+
 // ── Static files ──────────────────────────────────────────────────────────────
 // Serve ONLY the actual frontend asset directories - never the project root itself.
 // Pentest (2026-08-17) found the previous `express.static(path.join(__dirname, '..'))`
@@ -127,6 +142,11 @@ app.use(
 // separately-hosted frontend), not required for the normal case.
 function requireSameOrigin(req, res, next) {
     if (skipLocalhost(req)) return next();
+    // Public embed routes are MEANT to be loaded cross-origin - a third-party site putting
+    // /embed/... in an <iframe src> sends ITS OWN Referer/Origin, not ours, so this check would
+    // otherwise 403 every real embed view. Protected by embedLimiter instead (see its own
+    // comment above) rather than same-origin enforcement.
+    if (req.path.startsWith('/embed/')) return next();
 
     const host = req.headers['host'];
     const validOrigins = host ? [`https://${host}`, `http://${host}`, ...ALLOWED_ORIGINS] : ALLOWED_ORIGINS;
@@ -148,6 +168,7 @@ function requireSameOrigin(req, res, next) {
 // Apply limits before proxying to backend.
 app.use(['/api/megacloud', '/api/anime-embed', '/api/anime-allanime', '/api/anime-animetsu', '/api/anime-kite-servers', '/api/yt-search', '/api/jikan', '/api/anime-mal-id'], heavyApiLimiter);
 app.use(['/users/register', '/users/auth', '/users/change-password'], authLimiter);
+app.use('/embed', embedLimiter);
 
 // Friendly redirects
 app.get('/', (req, res) => res.redirect('/html/indexMain.html'));

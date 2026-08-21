@@ -7588,15 +7588,22 @@ async function searchTmdbAnimeIdByTitle(title, options = {}) {
 
         const fieldName = mediaType === 'movie' ? 'title' : 'name';
         const fieldOriginal = mediaType === 'movie' ? 'original_title' : 'original_name';
+        const isJapaneseOrigin = item => item?.original_language === 'ja' ||
+            (Array.isArray(item?.origin_country) && item.origin_country.includes('JP'));
+        // TMDB sorts by popularity, and a real anime frequently shares its exact title with an
+        // unrelated non-Japanese show (confirmed live: "One Piece" the anime, tmdb 37854/ja/JP,
+        // lost to "ONE PIECE" the 2023 Netflix live-action, tmdb 111110/en/US, because the live-
+        // action's higher popularity put it first in results and .find() just took the first
+        // exact match). Among several equally-exact (or equally-partial) matches, prefer whichever
+        // one is actually Japanese-origin instead of trusting API result order.
+        const pickBestMatch = predicate => {
+            const matches = results.filter(item => predicate(normalize(item[fieldName] || item[fieldOriginal])));
+            if (!matches.length) return undefined;
+            return matches.find(isJapaneseOrigin) || matches[0];
+        };
 
-        const exactMatch = results.find(item => {
-            const name = normalize(item[fieldName] || item[fieldOriginal]);
-            return name === searchText;
-        });
-        const partialMatch = results.find(item => {
-            const name = normalize(item[fieldName] || item[fieldOriginal]);
-            return name.includes(searchText) || searchText.includes(name);
-        });
+        const exactMatch = pickBestMatch(name => name === searchText);
+        const partialMatch = pickBestMatch(name => name.includes(searchText) || searchText.includes(name));
         const chosenId = exactMatch?.id || partialMatch?.id || results[0]?.id || null;
         appendTmdbLogLine(`[TMDB SEARCH RESULT] type=${mediaType} query="${query}" count=${results.length} exact=${exactMatch?.id || 'none'} partial=${partialMatch?.id || 'none'} chosen=${chosenId || 'none'}`);
 
@@ -17671,6 +17678,311 @@ async function fetchAndIngestUserList(token, userUID) {
         return false;
     }
 }
+// =========================================
+//  9c. PUBLIC EMBED API (/embed/*) - Phase 1: anime only
+// =========================================
+// Deliberately separate from every other route in this file - those are all locked to our own
+// frontend (requireSameOrigin in middleware.js, the x-middleware-secret header). /embed/* is the
+// opposite on purpose: it's meant to be loaded from ANY site's <iframe>, so middleware.js exempts
+// it from requireSameOrigin and gives it its own strict rate limiter (embedLimiter) instead. See
+// middleware.js's own comments on both for the reasoning.
+//
+// Security approach: extract MegaPlay's real stream (same resolveMegaplaySourcesCached call the
+// internal player's PREFERRED path already uses - see loadMegaPlayFrame's "native playback"
+// comment in moviePlayer.js) and serve it through OUR OWN <video> player, not a nested MegaPlay
+// iframe - the whole point of an embed API is that visitors see AniKino's player, not a second
+// middleman's UI/branding inside ours. The raw MegaPlay CDN URL is still never exposed anywhere:
+// it's wrapped via the same session-bound, expiring proxy-token machinery
+// (buildM3u8ProxyUrl/tokenizeMegaplayTracks) the internal player uses, so only /api/m3u8-proxy
+// ever talks to the real CDN, and only for the same browser session that resolved it. That
+// machinery has no same-origin requirement of its own to worry about here either - the ONLY
+// cross-origin moment is the initial /embed/anime/... navigation (which middleware.js's
+// requireSameOrigin already exempts); every request after that (loading the HLS manifest,
+// segments, subtitles) is JS on OUR OWN served page fetching OUR OWN domain, which is same-origin
+// regardless of which third-party site iframed the page in. Falls back to nesting MegaPlay's own
+// iframe (same as the internal player's own fallback) only if extraction itself fails.
+
+// Resolves either a numeric TMDB id or an IMDB id (tt1234567) to a numeric TMDB tv id. Anime on
+// this site is always represented as a TMDB TV entry (even "movies" - see getTmdbAnimeTitle's own
+// Japanese-origin gate elsewhere in this file), so external_source is always tv here.
+async function resolvePublicEmbedTmdbId(rawId) {
+    const idStr = String(rawId || '').trim();
+    if (/^tt\d+$/i.test(idStr)) {
+        try {
+            const data = await tmdbGet(`/find/${idStr}`, { external_source: 'imdb_id' });
+            const match = Array.isArray(data?.tv_results) && data.tv_results[0];
+            return match?.id || null;
+        } catch (err) {
+            return null;
+        }
+    }
+    const numeric = parseInt(idStr, 10);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+// Real AniKino player: a native <video> element (custom-skinned controls, not the bare browser
+// default) + hls.js playing the session-bound PROXIED stream URL (never the raw CDN URL). Values
+// are pre-validated by the route below (a proxy token string built server-side, subtitle tracks
+// built server-side) before reaching here, so straight interpolation is safe - nothing here is
+// unsanitized user input.
+//
+// Branding watchdog: a true cross-origin <iframe> already can't be reached by whatever page
+// embeds it (the browser's own same-origin policy blocks that outright) - the real risk this
+// guards against is someone SCRAPING this page's HTML server-side, stripping the brand element
+// out, and re-serving the modified copy from their own domain while keeping our <script> tags
+// (and therefore our player/proxy logic) intact. respawnBrand() keeps re-inserting fresh,
+// uniquely-classed brand nodes on an interval AND the instant a MutationObserver sees one
+// removed, so a one-time strip script loses that race almost immediately. Client-side JS below
+// avoids template-literal ${...} syntax entirely (string concatenation instead) so it can't
+// collide with this function's own server-side interpolation.
+function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title }) {
+    const trackTags = (Array.isArray(tracks) ? tracks : [])
+        .map(t => `<track kind="subtitles" src="${t.url}" srclang="${escapeHtmlAttr(t.lang)}" label="${escapeHtmlAttr(t.lang)}" ${t.default ? 'default' : ''}>`)
+        .join('\n  ');
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title} - AniKino Embed</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { position: relative; width: 100%; height: 100%; background: #000; }
+  .wrap, .plyr, .plyr__video-wrapper { width: 100%; height: 100%; }
+  video { object-fit: contain; }
+
+  /* Same Plyr theming as the internal site player (css/style.css) - kept in sync by hand since
+     this page deliberately doesn't load the full stylesheet (see html/apiDocs.html's own
+     standalone-CSS precedent). */
+  :root { --plyr-color-main: #F1D6AB; }
+  .plyr { border-radius: 0; }
+  .plyr--video { background: #000; }
+  .plyr__control:hover { background: rgba(241,214,171,.2); }
+  .plyr--video .plyr__control--overlaid { background: rgba(255, 128, 0, 0.9); }
+  .plyr--full-ui input[type=range] { color: #ff8000; }
+  .plyr--video .plyr__controls { background: linear-gradient(transparent, rgba(0, 0, 0, 0.85)); backdrop-filter: blur(8px); }
+  .plyr__control { color: #ffffff; }
+  .plyr__control:hover, .plyr__control[aria-expanded="true"] { background: #ff8000; color: #fff; }
+  .plyr__menu__container { background: #121212 !important; border: 1px solid #2a2a2a; border-radius: 10px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+  .plyr__menu__container [role="menu"] { max-height: min(50vh, 320px); overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: #ff8000 #1a1a1a; }
+  .plyr__menu__container [role="menu"]::-webkit-scrollbar { width: 6px; }
+  .plyr__menu__container [role="menu"]::-webkit-scrollbar-track { background: #1a1a1a; }
+  .plyr__menu__container [role="menu"]::-webkit-scrollbar-thumb { background: #ff8000; border-radius: 3px; }
+  .plyr__menu__container .plyr__control { color: #e0e0e0; }
+  .plyr__menu__container .plyr__control:hover { background: rgba(255,128,0,.15); color: #ff8000; }
+  .plyr__menu__container .plyr__control[aria-checked="true"] { background: rgba(255,128,0,.2); color: #ff8000; }
+  .plyr__badge { background: #ff8000; color: #000; }
+  .plyr__control--back { border-bottom: 1px solid #222; background: #181818; }
+  .plyr__control[aria-expanded="true"] svg { transform: rotate(90deg); }
+
+  .ani-brand { position: absolute; top: 10px; left: 12px; color: rgba(255,255,255,0.65);
+    font-weight: 800; font-size: 13px; letter-spacing: 0.02em; pointer-events: none; user-select: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8); z-index: 30; }
+  .ani-brand .accent { color: #ff8000; }
+</style>
+</head>
+<body>
+  <div class="wrap" id="wrap">
+    <video id="player" playsinline controls>
+      ${trackTags}
+    </video>
+  </div>
+  <script>
+    (function () {
+      var video = document.getElementById('player');
+      var wrap = document.getElementById('wrap');
+      var src = ${JSON.stringify(streamUrl)};
+
+      // Same buildPlyrPlayer-after-MANIFEST_PARSED pattern the internal site player uses
+      // (moviePlayer.js) - quality options come from the manifest's real levels instead of a
+      // guessed list, with a timeout fallback if the manifest never parses.
+      var plyrBuilt = false;
+      function buildPlyr(qualityOptions) {
+        if (plyrBuilt) return;
+        plyrBuilt = true;
+        new Plyr(video, {
+          controls: ['play-large', 'rewind', 'play', 'fast-forward', 'progress', 'current-time',
+            'duration', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
+          settings: ['captions', 'quality', 'speed'],
+          quality: {
+            default: 0,
+            options: qualityOptions,
+            forced: true,
+            onChange: function (newQuality) {
+              if (!hls) return;
+              if (newQuality === 0) { hls.currentLevel = -1; return; }
+              var idx = hls.levels.findIndex(function (l) { return l.height === newQuality; });
+              if (idx >= 0) hls.currentLevel = idx;
+            }
+          },
+          i18n: { qualityLabel: { 0: 'Auto' } }
+        });
+      }
+
+      var hls = null;
+      if (window.Hls && window.Hls.isSupported()) {
+        hls = new window.Hls();
+        hls.loadSource(src);
+        hls.attachMedia(video);
+        hls.once(window.Hls.Events.MANIFEST_PARSED, function (event, data) {
+          var heights = (data.levels || []).map(function (l) { return l.height; }).filter(function (h) { return h > 0; });
+          heights = heights.filter(function (h, i) { return heights.indexOf(h) === i; }).sort(function (a, b) { return b - a; });
+          buildPlyr([0].concat(heights));
+        });
+        setTimeout(function () { buildPlyr([0, 1080, 720, 360]); }, 8000);
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src;
+        buildPlyr([0]);
+      }
+
+      // --- Branding watchdog ---------------------------------------------------------------
+      // A true cross-origin <iframe> already can't be reached by whatever page embeds it (the
+      // browser's same-origin policy blocks that outright) - the real risk this guards against
+      // is someone SCRAPING this page's HTML server-side, stripping the brand element out, and
+      // re-serving the modified copy from their own domain while keeping our <script> tags (and
+      // therefore our player/proxy logic) intact. spawnBrand() keeps re-inserting fresh,
+      // uniquely-classed brand nodes on an interval AND the instant a MutationObserver sees one
+      // removed, so a one-time strip script loses that race almost immediately.
+      var brandCount = 0;
+      function spawnBrand() {
+        brandCount++;
+        var el = document.createElement('div');
+        el.className = 'ani-brand ani-brand-' + brandCount;
+        el.setAttribute('data-ani-brand', '1');
+        el.innerHTML = 'Ani<span class="accent">Kino</span>';
+        wrap.appendChild(el);
+        var all = wrap.querySelectorAll('[data-ani-brand]');
+        if (all.length > 3) {
+          for (var i = 0; i < all.length - 3; i++) all[i].remove();
+        }
+      }
+      spawnBrand();
+      setInterval(spawnBrand, 4000);
+      new MutationObserver(function () {
+        if (!wrap.querySelector('[data-ani-brand]')) spawnBrand();
+      }).observe(wrap, { childList: true, subtree: true });
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+function escapeHtmlAttr(value) {
+    return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Fallback only - used when native extraction itself fails (matches the internal player's own
+// MegaPlay fallback behavior). Values are pre-validated (numeric malId/episode, whitelisted
+// audio) before reaching here.
+function renderPublicEmbedIframeFallbackHtml({ providerSrc, title }) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title} - AniKino Embed</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  iframe { border: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+  <iframe src="${providerSrc}" allowfullscreen allow="autoplay; fullscreen; encrypted-media"></iframe>
+</body>
+</html>`;
+}
+
+function renderPublicEmbedErrorHtml(message) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>AniKino Embed</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0a0a; color: #ccc; display: flex; align-items: center; justify-content: center;
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; text-align: center; }
+</style>
+</head>
+<body><div>${message}</div></body>
+</html>`;
+}
+
+// MegaPlay's own subtitle track is thin (usually just one language baked into the stream) -
+// the internal player never actually relies on it directly either. It "borrows" KAA's richer
+// multi-language subtitle set instead (see fetchKaaSubtitlesForEpisode in moviePlayer.js: try
+// KAA's 'sub' entry first, then 'dub' - KAA's sub/dub searches can land on different catalog
+// entries with different subtitle coverage - and only fall back to MegaPlay's own track if KAA
+// has nothing at all). Same order here, called in-process (resolveKickAssAnimeSources +
+// tokenizeKaaResult directly) rather than through the internal /api/anime-kaa-servers route.
+async function resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks }) {
+    try {
+        const { title } = await getTmdbAnimeTitle(tmdbId);
+        if (title) {
+            for (const kaaAudio of ['sub', 'dub']) {
+                try {
+                    const raw = await resolveKickAssAnimeSources({
+                        malId, tmdbId, itemType: 'tv', episodeNumber: episode,
+                        audioType: kaaAudio, frontendTitle: title, season
+                    });
+                    const subtitles = tokenizeKaaResult(raw, sessionId).subtitles;
+                    if (Array.isArray(subtitles) && subtitles.length) {
+                        return subtitles.map((s, i) => ({ url: s.url, lang: s.lang || `Subtitle ${i + 1}`, default: i === 0 }));
+                    }
+                } catch (err) {
+                    // try the next audio type / fall through to MegaPlay's own track below
+                }
+            }
+        }
+    } catch (err) {
+        // title lookup failed - fall through to MegaPlay's own track below
+    }
+    return tokenizeMegaplayTracks(megaplayTracks, sessionId);
+}
+
+// GET /embed/anime/{id}/{episode}?season=1&audio=sub
+// {id}: numeric TMDB id or IMDB id (tt1234567). {episode}: episode number within {season}
+// (default 1). audio: 'sub' (default) or 'dub'.
+app.get('/embed/anime/:id/:episode', async (req, res) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
+    const episode = parseInt(req.params.episode, 10);
+    if (!Number.isFinite(episode) || episode <= 0) {
+        return res.status(400).send(renderPublicEmbedErrorHtml('Invalid episode number.'));
+    }
+    const seasonParam = parseInt(req.query.season, 10);
+    const season = Number.isFinite(seasonParam) && seasonParam > 0 ? seasonParam : 1;
+    const audio = req.query.audio === 'dub' ? 'dub' : 'sub';
+
+    const tmdbId = await resolvePublicEmbedTmdbId(req.params.id);
+    if (!tmdbId) {
+        return res.status(404).send(renderPublicEmbedErrorHtml('Could not resolve this id to a known title.'));
+    }
+
+    let malId;
+    try {
+        const ids = await resolveAnimeIds(tmdbId, season);
+        malId = ids?.malId;
+    } catch (err) {
+        malId = null;
+    }
+    if (!Number.isFinite(malId)) {
+        return res.status(404).send(renderPublicEmbedErrorHtml('This title/season could not be resolved to a playable source yet.'));
+    }
+
+    const providerSrc = `https://megaplay.buzz/stream/mal/${malId}/${episode}/${audio}`;
+    try {
+        const data = await resolveMegaplaySourcesCached(malId, episode, audio);
+        if (!data?.stream) throw new Error('no stream in resolved data');
+        const streamUrl = buildM3u8ProxyUrl(data.stream, data.proxyRef || null, req.sessionId);
+        const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId: req.sessionId, megaplayTracks: data.tracks });
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `Episode ${episode}` }));
+    } catch (err) {
+        console.warn('[Public Embed] native extraction failed, falling back to MegaPlay iframe:', err.message || err);
+        return res.send(renderPublicEmbedIframeFallbackHtml({ providerSrc, title: `Episode ${episode}` }));
+    }
+});
+
 // =========================================
 //  10. START SERVER (HTTPS with fallback to HTTP)
 // =========================================
