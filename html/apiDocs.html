@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Documentation - AniKino</title>
+    <link rel="stylesheet" href="/css/apiDocs.css">
+    <script src="/js/theme.js" defer></script>
+</head>
+<body class="docs-body">
+    <div class="docs-topbar">
+        <a href="/html/indexMain.html" class="docs-brand">
+            <img src="/img/LOGO_Short.png" alt="AniKino">
+            Ani<span class="accent">Kino</span> API
+        </a>
+        <div class="docs-topbar-links">
+            <a href="/html/indexMain.html">← Back to site</a>
+        </div>
+    </div>
+
+    <div class="docs-layout">
+        <nav class="docs-nav">
+            <div class="docs-nav-group">
+                <h4>Getting Started</h4>
+                <a href="#introduction" class="active">Introduction</a>
+                <a href="#providers">Providers</a>
+            </div>
+            <div class="docs-nav-group">
+                <h4>Endpoints</h4>
+                <a href="#movie-embed">Movie Embed</a>
+                <a href="#tv-embed">TV Show Embed</a>
+                <a href="#anime-embed">Anime Embed</a>
+            </div>
+            <div class="docs-nav-group">
+                <h4>Customization</h4>
+                <a href="#query-parameters">Query Parameters</a>
+            </div>
+            <div class="docs-nav-group">
+                <h4>Advanced</h4>
+                <a href="#player-events">Player Events</a>
+                <a href="#resume-playback">Resume Playback</a>
+            </div>
+            <div class="docs-nav-group">
+                <h4>Roadmap</h4>
+                <a href="#ads-and-domains">Ads &amp; Custom Domains</a>
+            </div>
+        </nav>
+
+        <main class="docs-main">
+            <h1>API Documentation</h1>
+            <p class="lead">
+                Embed movies, TV shows, and anime on your own site through AniKino - one iframe,
+                one URL, pulling from our Mega, KAA, Neko, RU MV, and Kino sources under the hood
+                so you don't have to juggle providers yourself.
+            </p>
+
+            <div class="callout">
+                <span class="icon">🚧</span>
+                <div>
+                    <strong>This page is a work-in-progress skeleton.</strong> The endpoints,
+                    parameters, and examples below outline the shape the API will take - the
+                    actual paths, request/response formats, and code samples aren't finalized
+                    yet, so those sections are intentionally left blank for now.
+                </div>
+            </div>
+
+            <section class="docs-section" id="introduction">
+                <h2>Introduction</h2>
+                <p>
+                    The AniKino embed API will let you drop a single <code>&lt;iframe&gt;</code>
+                    into your own site and get a fully working player - no API key, no sign-up,
+                    same idea as VidSrc's embed model. Behind the scenes, AniKino resolves the
+                    best available source across our providers (Mega, KAA, Neko, RU MV, Kino) and
+                    serves whichever one is fastest/most reliable for that title.
+                </p>
+                <div class="code-block">
+                    <div class="code-block-tabs">
+                        <span class="code-block-tab active">Movie</span>
+                        <span class="code-block-tab">TV Show</span>
+                        <span class="code-block-tab">Anime</span>
+                    </div>
+                    <pre class="placeholder">&lt;!-- Embed snippet - format not finalized yet --&gt;
+&lt;iframe
+  src=""
+  width="100%" height="560"
+  frameborder="0" allowfullscreen
+&gt;&lt;/iframe&gt;</pre>
+                </div>
+            </section>
+
+            <section class="docs-section" id="providers">
+                <h2>Providers</h2>
+                <p>
+                    Every embed pulls from one (or more, with automatic fallback) of these
+                    sources. Most integrators won't need to pick one manually - AniKino resolves
+                    the best option automatically - but a <code>server</code> parameter to force a
+                    specific provider is planned.
+                </p>
+                <div class="provider-grid">
+                    <div class="provider-card">
+                        <h4>Mega</h4>
+                        <p>General-purpose fallback source, broad title coverage.</p>
+                        <span class="server-value">server=mega</span>
+                    </div>
+                    <div class="provider-card">
+                        <h4>KAA</h4>
+                        <p>Primary anime source - fastest resolution for most airing/finished anime.</p>
+                        <span class="server-value">server=kaa</span>
+                    </div>
+                    <div class="provider-card">
+                        <h4>Neko</h4>
+                        <p>Secondary anime source, used as a fallback alongside KAA.</p>
+                        <span class="server-value">server=neko</span>
+                    </div>
+                    <div class="provider-card">
+                        <h4>RU MV</h4>
+                        <p>Russian-dub source - used for dub coverage other providers miss.</p>
+                        <span class="server-value">server=rumv</span>
+                    </div>
+                    <div class="provider-card">
+                        <h4>Kino</h4>
+                        <p>Movie/TV source for non-anime content.</p>
+                        <span class="server-value">server=kino</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="docs-section" id="movie-embed">
+                <div class="endpoint-header">
+                    <span class="method-badge">GET</span>
+                    <span class="endpoint-path">/embed/movie/{id} <span class="tbd">(path TBD)</span></span>
+                </div>
+                <h2 style="border:none;padding-top:0;font-size:1.1rem;">Movie Embed</h2>
+                <p>Embed a movie player by TMDB id. Returns a fully responsive player.</p>
+                <table class="param-table">
+                    <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>{id}</code></td><td>Yes</td><td class="tbd">TBD</td></tr>
+                    </tbody>
+                </table>
+                <div class="code-block">
+                    <div class="code-block-tabs"><span class="code-block-tab active">URL</span></div>
+                    <pre class="placeholder">(example not available yet)</pre>
+                </div>
+            </section>
+
+            <section class="docs-section" id="tv-embed">
+                <div class="endpoint-header">
+                    <span class="method-badge">GET</span>
+                    <span class="endpoint-path">/embed/tv/{id}/{season}/{episode} <span class="tbd">(path TBD)</span></span>
+                </div>
+                <h2 style="border:none;padding-top:0;font-size:1.1rem;">TV Show Embed</h2>
+                <p>Embed a specific episode, or the whole series with a season/episode picker.</p>
+                <table class="param-table">
+                    <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>{id}</code></td><td>Yes</td><td class="tbd">TBD</td></tr>
+                        <tr><td><code>{season}</code></td><td>Optional</td><td class="tbd">TBD</td></tr>
+                        <tr><td><code>{episode}</code></td><td>Optional</td><td class="tbd">TBD</td></tr>
+                    </tbody>
+                </table>
+                <div class="code-block">
+                    <div class="code-block-tabs"><span class="code-block-tab active">URL</span></div>
+                    <pre class="placeholder">(example not available yet)</pre>
+                </div>
+            </section>
+
+            <section class="docs-section" id="anime-embed">
+                <div class="endpoint-header">
+                    <span class="method-badge">GET</span>
+                    <span class="endpoint-path">/embed/anime/{id}/{episode} <span class="tbd">(path TBD)</span></span>
+                </div>
+                <h2 style="border:none;padding-top:0;font-size:1.1rem;">Anime Embed</h2>
+                <p>Embed an anime episode with sub/dub selection, resolved across Mega, KAA, Neko, and RU MV automatically.</p>
+                <table class="param-table">
+                    <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>{id}</code></td><td>Yes</td><td class="tbd">TBD</td></tr>
+                        <tr><td><code>{episode}</code></td><td>Yes</td><td class="tbd">TBD</td></tr>
+                        <tr><td><code>audio</code></td><td>Optional</td><td class="tbd">sub / dub - TBD</td></tr>
+                        <tr><td><code>server</code></td><td>Optional</td><td class="tbd">Force a specific provider - TBD</td></tr>
+                    </tbody>
+                </table>
+                <div class="code-block">
+                    <div class="code-block-tabs"><span class="code-block-tab active">URL</span></div>
+                    <pre class="placeholder">(example not available yet)</pre>
+                </div>
+            </section>
+
+            <section class="docs-section" id="query-parameters">
+                <h2>Query Parameters</h2>
+                <p>All embed endpoints will support optional query parameters for customization - final list TBD.</p>
+                <table class="param-table">
+                    <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>autoplay</code></td><td>0 / 1</td><td class="tbd">TBD</td></tr>
+                        <tr><td><code>autonext</code></td><td>0 / 1</td><td class="tbd">TBD - TV/anime only</td></tr>
+                        <tr><td><code>startAt</code></td><td>Float</td><td class="tbd">TBD</td></tr>
+                        <tr><td><code>server</code></td><td>String</td><td class="tbd">TBD - see Providers</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section class="docs-section" id="player-events">
+                <h2>Player Events</h2>
+                <p>Planned: the player will post <code>postMessage</code> events to the parent window so your page can track playback state. Payload shape not finalized.</p>
+                <div class="code-block">
+                    <div class="code-block-tabs"><span class="code-block-tab active">JSON</span></div>
+                    <pre class="placeholder">(event payload format not available yet)</pre>
+                </div>
+            </section>
+
+            <section class="docs-section" id="resume-playback">
+                <h2>Resume Playback</h2>
+                <p>Planned: save and restore a viewer's watch position using player events and a <code>startAt</code> parameter, same idea as VidSrc's resume flow. Not implemented yet.</p>
+            </section>
+
+            <section class="docs-section" id="ads-and-domains">
+                <h2>Ads &amp; Custom Domains</h2>
+                <div class="callout planned">
+                    <span class="icon">📌</span>
+                    <div>
+                        <strong>Planned, not live yet.</strong> Once the embed API ships, we plan
+                        to introduce ad support on embedded players (similar to how VidSrc runs
+                        ads on their embeds) and, later, custom-domain embedding for reduced ads /
+                        no branding. Details will be published here once built.
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,225 @@
+/* Standalone stylesheet for html/apiDocs.html - deliberately NOT part of style.css (which is
+   already huge and mostly irrelevant to a docs page). Relies only on the CSS custom properties
+   theme.js sets on :root (--bg-primary, --accent-primary, etc.) for light/dark theming - nothing
+   else here depends on style.css being loaded. */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+.docs-body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+.docs-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border-color);
+    position: sticky;
+    top: 0;
+    background: var(--bg-primary);
+    z-index: 50;
+}
+.docs-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-decoration: none;
+    color: var(--text-primary);
+    font-weight: 800;
+    font-size: 1.1rem;
+}
+.docs-brand img { height: 28px; width: auto; border-radius: 6px; }
+.docs-brand span.accent { color: var(--accent-primary); }
+.docs-topbar-links { display: flex; gap: 18px; align-items: center; }
+.docs-topbar-links a {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.9rem;
+}
+.docs-topbar-links a:hover { color: var(--accent-primary); }
+
+.docs-layout {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 820px);
+    gap: 48px;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 32px 24px 96px;
+    justify-content: center;
+}
+@media (max-width: 900px) {
+    .docs-layout { grid-template-columns: 1fr; }
+    .docs-nav { display: none; }
+}
+
+.docs-nav {
+    position: sticky;
+    top: 70px;
+    align-self: start;
+    font-size: 0.85rem;
+}
+.docs-nav-group { margin-bottom: 20px; }
+.docs-nav-group h4 {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin: 0 0 8px;
+}
+.docs-nav-group a {
+    display: block;
+    color: var(--text-secondary);
+    text-decoration: none;
+    padding: 6px 10px;
+    border-radius: 6px;
+    margin-bottom: 2px;
+}
+.docs-nav-group a:hover { color: var(--text-primary); background: var(--bg-hover); }
+.docs-nav-group a.active { color: var(--accent-primary); background: var(--bg-hover); font-weight: 600; }
+
+.docs-main h1 { font-size: 2rem; margin: 0 0 12px; }
+.docs-main > p.lead { color: var(--text-secondary); font-size: 1rem; line-height: 1.6; margin-bottom: 24px; }
+
+section.docs-section { margin-bottom: 56px; scroll-margin-top: 84px; }
+section.docs-section h2 { font-size: 1.4rem; margin: 0 0 8px; border-top: 1px solid var(--border-color); padding-top: 40px; }
+section.docs-section h2:first-of-type { border-top: none; padding-top: 0; }
+section.docs-section > p { color: var(--text-secondary); line-height: 1.6; margin-bottom: 16px; }
+
+.callout {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin: 16px 0;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+.callout .icon { font-size: 1.1rem; flex-shrink: 0; }
+.callout.planned { border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-card)); }
+.callout.planned strong { color: var(--accent-primary); }
+
+.method-badge {
+    display: inline-block;
+    background: var(--accent-primary);
+    color: #000;
+    font-weight: 800;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    padding: 3px 8px;
+    border-radius: 5px;
+    margin-right: 8px;
+}
+.endpoint-path {
+    font-family: 'Courier New', monospace;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+}
+.endpoint-header { margin-bottom: 6px; }
+
+.code-block {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 12px 0;
+}
+.code-block-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+}
+.code-block-tab {
+    font-size: 0.72rem;
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: var(--bg-hover);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.code-block-tab.active { color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 15%, var(--bg-hover)); }
+.code-block pre {
+    margin: 0;
+    padding: 16px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    color: var(--text-secondary);
+}
+.code-block pre.placeholder {
+    color: var(--text-muted);
+    font-style: italic;
+    border-top: 1px dashed var(--border-color);
+}
+
+table.param-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 20px;
+    font-size: 0.85rem;
+}
+table.param-table th {
+    text-align: left;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+}
+table.param-table td {
+    padding: 10px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    vertical-align: top;
+}
+table.param-table td code {
+    font-family: 'Courier New', monospace;
+    color: var(--text-primary);
+    background: var(--bg-hover);
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+td.tbd, pre.placeholder-inline {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.provider-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    margin: 16px 0 24px;
+}
+.provider-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 14px 16px;
+}
+.provider-card h4 { margin: 0 0 4px; font-size: 0.95rem; color: var(--text-primary); }
+.provider-card p { margin: 0; font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; }
+.provider-card .server-value {
+    display: inline-block;
+    margin-top: 8px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.75rem;
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-hover));
+    padding: 2px 7px;
+    border-radius: 5px;
+}
