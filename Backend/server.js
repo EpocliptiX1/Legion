@@ -132,6 +132,40 @@ app.get('/api/tmdb/search', async (req, res) => {
     }
 });
 
+// A few hours, not days - "currently airing" genuinely shifts as the day goes on (a show
+// crossing into/out of the vote_count floor, a new episode nudging popularity), unlike the
+// curated homepage rows (ANIME_ROW_CACHE_TTL, 48h) which are fine sitting stale far longer.
+// Still turns "two live TMDB discover calls on literally every homepage visit" into "one live
+// call every few hours, everyone else served from SQLite."
+const TMDB_DISCOVER_CACHE_TTL = 3 * 60 * 60 * 1000; // 3 hours
+
+function tmdbDiscoverCacheGet(cacheKey) {
+    return new Promise((resolve) => {
+        animeCacheDb.get(
+            `SELECT json, cached_at FROM tmdb_discover_cache WHERE cache_key = ?`,
+            [cacheKey],
+            (err, row) => {
+                if (err || !row) return resolve(null);
+                if (Date.now() - row.cached_at > TMDB_DISCOVER_CACHE_TTL) return resolve(null);
+                try {
+                    resolve(JSON.parse(row.json));
+                } catch {
+                    resolve(null);
+                }
+            }
+        );
+    });
+}
+
+function tmdbDiscoverCacheSet(cacheKey, data) {
+    animeCacheDb.run(
+        `INSERT INTO tmdb_discover_cache (cache_key, json, cached_at) VALUES (?, ?, ?)
+         ON CONFLICT(cache_key) DO UPDATE SET json = excluded.json, cached_at = excluded.cached_at`,
+        [cacheKey, JSON.stringify(data), Date.now()],
+        (err) => { if (err) console.warn('[TMDB Discover Cache] write failed:', err.message); }
+    );
+}
+
 // --- TMDB Proxy (keeps the API key out of the browser) ---
 // Frontend calls /api/tmdb-proxy/tv/123?language=en-US
 // → this route adds the key and forwards to https://api.themoviedb.org/3/tv/123
@@ -139,6 +173,22 @@ app.use('/api/tmdb-proxy', async (req, res) => {
     try {
         const tmdbPath = req.path;
         const query    = { ...req.query, api_key: TMDB_API_KEY };
+
+        // Discover queries (currently only hit by the homepage's "Currently Airing" row) used
+        // to go straight to TMDB live on every single request - see tmdbDiscoverCacheGet's
+        // comment above the TTL constant.
+        if (tmdbPath === '/discover/tv' || tmdbPath === '/discover/movie') {
+            const cacheKey = `${tmdbPath}?${new URLSearchParams(req.query).toString()}`;
+            const cached = await tmdbDiscoverCacheGet(cacheKey);
+            if (cached) return res.json(cached);
+
+            const tmdbRes = await axios.get(`${TMDB_BASE_URL}${tmdbPath}`, {
+                params: query,
+                headers: { Accept: 'application/json' },
+            });
+            tmdbDiscoverCacheSet(cacheKey, tmdbRes.data);
+            return res.json(tmdbRes.data);
+        }
 
         // Check if this is a season request: /tv/{id}/season/{num}
         const seasonMatch = tmdbPath.match(/^\/tv\/(\d+)\/season\/(\d+)$/);
@@ -839,6 +889,23 @@ animeCacheDb.serialize(() => {
             cached_at INTEGER NOT NULL
         );
     `);
+    // validated_at: confirmed live this table accumulates real wrong entries - getTmdbIdForAniList
+    // resolved a bunch of AniList ids to totally unrelated TMDB shows/movies before
+    // searchTmdbAnimeIdByTitle's requireConfidence guard existed (see that function's comment),
+    // and a cache hit here short-circuits BEFORE any of that fixed matching logic ever runs again -
+    // a bad row just stays wrong forever regardless of how much better the resolver gets. NULL
+    // means "never checked by the audit" (every pre-existing row, plus anything written before
+    // this column existed) - runAnimeTmdbMappingAudit below re-verifies a small batch at a time
+    // and deletes anything that doesn't hold up, forcing a fresh (now-fixed) resolution next time.
+    animeCacheDb.all(`PRAGMA table_info(anime_tmdb_mapping)`, [], (err, columns) => {
+        if (err) return;
+        const names = new Set((columns || []).map(c => c.name));
+        if (!names.has('validated_at')) {
+            animeCacheDb.run(`ALTER TABLE anime_tmdb_mapping ADD COLUMN validated_at INTEGER`, (alterErr) => {
+                if (alterErr) console.error('[AnimeTmdbMapping] Failed to add validated_at column', alterErr.message);
+            });
+        }
+    });
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS anime_cache (
             anilist_id INTEGER PRIMARY KEY,
@@ -901,6 +968,27 @@ animeCacheDb.serialize(() => {
                 if (alterErr) console.error('[SeasonGroupsCache] Failed to add tmdb_season_count column', alterErr.message);
             });
         }
+        // title_en/title_romaji/title_native: the base show's own title in all three forms -
+        // needed by runFinishedShowScheduleAudit to fuzzy-match a "finished" cached entry
+        // against AniList's daily airing schedule (a real sequel's schedule entry won't share
+        // the finished show's own mal id - it's a DIFFERENT id entirely - so this can only ever
+        // be a title match, and different sources/fansubs render the same franchise's title
+        // differently enough that checking all three forms matters).
+        if (!names.has('title_en')) {
+            animeCacheDb.run(`ALTER TABLE anime_season_groups_cache ADD COLUMN title_en TEXT`, (alterErr) => {
+                if (alterErr) console.error('[SeasonGroupsCache] Failed to add title_en column', alterErr.message);
+            });
+        }
+        if (!names.has('title_romaji')) {
+            animeCacheDb.run(`ALTER TABLE anime_season_groups_cache ADD COLUMN title_romaji TEXT`, (alterErr) => {
+                if (alterErr) console.error('[SeasonGroupsCache] Failed to add title_romaji column', alterErr.message);
+            });
+        }
+        if (!names.has('title_native')) {
+            animeCacheDb.run(`ALTER TABLE anime_season_groups_cache ADD COLUMN title_native TEXT`, (alterErr) => {
+                if (alterErr) console.error('[SeasonGroupsCache] Failed to add title_native column', alterErr.message);
+            });
+        }
     });
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS episode_load_cache (
@@ -939,6 +1027,19 @@ animeCacheDb.serialize(() => {
             PRIMARY KEY(tmdb_id, season_number, episode_number)
         )
     `);
+    // Caches specific /api/tmdb-proxy paths that get hit LIVE on every single page load with
+    // no caching at all (confirmed: the homepage's "Currently Airing" row calls /discover/tv
+    // and /discover/movie directly, every visitor, every load - the proxy's only existing
+    // cache is the /tv/{id}/season/{num} special case above, nothing else). Keyed by the full
+    // path+query string since discover results depend on every filter param, not just the
+    // path. See tmdbDiscoverCacheGet/Set below and their TTL.
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS tmdb_discover_cache (
+            cache_key   TEXT PRIMARY KEY,
+            json        TEXT NOT NULL,
+            cached_at   INTEGER NOT NULL
+        )
+    `);
     // Filler/canon status per episode (animefillerlist.com), keyed by normalized title
     // rather than mal_id/tmdb_id -- the frontend needs to request this before malId has
     // necessarily resolved (populateEpisodes() can render before lookupMalId() finishes),
@@ -955,8 +1056,14 @@ animeCacheDb.serialize(() => {
         );
     `);
     animeCacheDb.run(`CREATE INDEX IF NOT EXISTS idx_anime_episode_filler_key ON anime_episode_filler(cache_key)`);
+    // Deprecated as of the 2026-08-18 migration to the native (KAA-based) episode-count path -
+    // nothing reads or writes this table anymore (resolveAnikotoEpisodeCountsCached, the only
+    // function that ever touched it, has its sole call site commented out). Renamed rather than
+    // dropped so it stays visibly marked instead of silently rotting under a name that looks
+    // active. CREATE TABLE IF NOT EXISTS below is now a no-op against the already-renamed real
+    // table - it only matters if this ever runs against a DB that never had the table at all.
     animeCacheDb.run(`
-        CREATE TABLE IF NOT EXISTS anikoto_episode_counts (
+        CREATE TABLE IF NOT EXISTS "[deprecated] anikoto_episode_counts" (
             normalized_title TEXT    PRIMARY KEY,
             sub_count        INTEGER,
             dub_count        INTEGER,
@@ -970,11 +1077,11 @@ animeCacheDb.serialize(() => {
     // the table already had rows in production, so this is a migration, not part of the
     // CREATE TABLE above - ALTER TABLE ADD COLUMN throws if the column already exists, so
     // check first rather than re-running it every boot.
-    animeCacheDb.all(`PRAGMA table_info(anikoto_episode_counts)`, [], (err, columns) => {
+    animeCacheDb.all(`PRAGMA table_info("[deprecated] anikoto_episode_counts")`, [], (err, columns) => {
         if (err) return;
         const names = new Set((columns || []).map(c => c.name));
         if (!names.has('is_finished')) {
-            animeCacheDb.run(`ALTER TABLE anikoto_episode_counts ADD COLUMN is_finished INTEGER`, (alterErr) => {
+            animeCacheDb.run(`ALTER TABLE "[deprecated] anikoto_episode_counts" ADD COLUMN is_finished INTEGER`, (alterErr) => {
                 if (alterErr) console.error('[AnikotoCounts] Failed to add is_finished column', alterErr.message);
             });
         }
@@ -984,7 +1091,7 @@ animeCacheDb.serialize(() => {
         // what was true when cached, that's concrete evidence something changed, worth an
         // immediate fresh lookup regardless of how "finished" looked at the time.
         if (!names.has('tmdb_season_count')) {
-            animeCacheDb.run(`ALTER TABLE anikoto_episode_counts ADD COLUMN tmdb_season_count INTEGER`, (alterErr) => {
+            animeCacheDb.run(`ALTER TABLE "[deprecated] anikoto_episode_counts" ADD COLUMN tmdb_season_count INTEGER`, (alterErr) => {
                 if (alterErr) console.error('[AnikotoCounts] Failed to add tmdb_season_count column', alterErr.message);
             });
         }
@@ -1003,6 +1110,119 @@ animeCacheDb.serialize(() => {
             cached_at         INTEGER NOT NULL,
             is_finished       INTEGER,
             tmdb_season_count INTEGER
+        );
+    `);
+    // tmdb_id: added after this table already had rows in production - normalized_title alone
+    // is NOT a reliable identity for the same show. Confirmed live: "That Time I Got
+    // Reincarnated as a Slime" (base title, from movieInfo.html, which uses TMDB's own clean
+    // show name) and "That Time I Got Reincarnated as a Slime Season 4" (from an AniList-sourced
+    // homepage row, which titles a sequel season as its own separate media entry - same pattern
+    // as Code Geass R1/R2) both resolve to the exact SAME tmdbId, but landed in two permanently
+    // separate cache rows under their two different title strings - one correct (92/88/92), one
+    // wrong (18/18/18, a narrower KAA match for just that one season). tmdb_id is the one
+    // identity every caller actually agrees on regardless of which title string it happened to
+    // render with; lookups/writes now prefer it over normalized_title whenever it's known (see
+    // getAnyCachedNativeRow/setCachedNativeEpisodeCounts below). normalized_title stays the
+    // table's PRIMARY KEY (unchanged, avoids an unsupported SQLite PK migration) and remains the
+    // only key for the rarer caller that has no tmdbId at all.
+    animeCacheDb.all(`PRAGMA table_info(native_episode_counts)`, [], (err, columns) => {
+        if (err) return;
+        const names = new Set((columns || []).map(c => c.name));
+        if (!names.has('tmdb_id')) {
+            animeCacheDb.run(`ALTER TABLE native_episode_counts ADD COLUMN tmdb_id INTEGER`, (alterErr) => {
+                if (alterErr) console.error('[NativeCounts] Failed to add tmdb_id column', alterErr.message);
+            });
+        }
+        // ru_dub_count: animego.me is a RUSSIAN site (its "Озвучка"/voicing studio links, its
+        // Cyrillic release-date parsing - see fetchAnimegoReleasedEpisodeCount) - its own dub
+        // number was being written straight into dub_count as if it were the same kind of dub
+        // KAA/MegaPlay/anikoto track (English), silently mislabeling a Russian dub count as an
+        // English one. Tracked in its own column now, never merged into dub_count - the frontend
+        // badge only ever shows it as an explicit, differently-colored fallback (see
+        // buildEpisodeCountBadgesHtml) when the real dub count is missing/zero, not silently
+        // swapped in as if it were the same thing.
+        if (!names.has('ru_dub_count')) {
+            animeCacheDb.run(`ALTER TABLE native_episode_counts ADD COLUMN ru_dub_count INTEGER`, (alterErr) => {
+                if (alterErr) console.error('[NativeCounts] Failed to add ru_dub_count column', alterErr.message);
+            });
+        }
+        // matched_title: debug-only visibility into WHICH anikoto entry's title actually supplied
+        // this row's sub/dub/total - confirmed live this can silently be the wrong entry (e.g. a
+        // "Season 2" query's row ending up with the ORIGINAL finished season's numbers instead of
+        // the real season 2 entry, or a franchise-wide entry's total getting attached to a single
+        // season's badge). Purely informational, never read by the lookup/caching logic itself -
+        // lets a wrong-looking badge be diagnosed with one query instead of grepping the debug log.
+        if (!names.has('matched_title')) {
+            animeCacheDb.run(`ALTER TABLE native_episode_counts ADD COLUMN matched_title TEXT`, (alterErr) => {
+                if (alterErr) console.error('[NativeCounts] Failed to add matched_title column', alterErr.message);
+            });
+        }
+        // data_source: which provider(s) actually supplied this row's sub/dub/total -
+        // 'anikoto', 'kaa', 'kaa+megaplay', 'kaa+animego+megaplay', 'tmdb-movie', etc. Purely
+        // informational (never read by the lookup/caching logic), same spirit as matched_title -
+        // answers "did this come from anikoto or the KAA/MegaPlay fallback" at a glance instead
+        // of grepping the debug log for one title's whole live-scrape trace.
+        if (!names.has('data_source')) {
+            animeCacheDb.run(`ALTER TABLE native_episode_counts ADD COLUMN data_source TEXT`, (alterErr) => {
+                if (alterErr) console.error('[NativeCounts] Failed to add data_source column', alterErr.message);
+            });
+        }
+        // upcoming_date: the caller's own already-fetched TMDB season air_date / movie
+        // release_date, ISO string, ONLY populated when the native lookup found nothing AND that
+        // date is still in the future - lets the "Upcoming" badge (see buildEpisodeCountBadgesHtml)
+        // survive a cache hit instead of only ever appearing on the one call that computed it live.
+        if (!names.has('upcoming_date')) {
+            animeCacheDb.run(`ALTER TABLE native_episode_counts ADD COLUMN upcoming_date TEXT`, (alterErr) => {
+                if (alterErr) console.error('[NativeCounts] Failed to add upcoming_date column', alterErr.message);
+            });
+        }
+        // season_number: tmdb_id keying above fixed "two title strings, same season" colliding
+        // into separate rows - but it over-corrected into the opposite bug, confirmed live: TMDB
+        // routinely keeps EVERY season of a franchise under ONE tmdb_id (Attack on Titan, Saga of
+        // Tanya the Evil, Re:ZERO all do this - not the rare case, the common one for anything
+        // TMDB hasn't split into per-season show entries). Season 2's card, Final Season's card,
+        // and an OVA card all shared tmdb_id 1429 and were reading/overwriting the exact SAME
+        // cache row - whichever one ran last silently won for every other season's badge too.
+        // Defaults to 1 (not NULL) so every row - old and new - compares equal under the same
+        // rule; the overwhelming majority of tmdbIds really do mean season 1 when nothing else is
+        // known, and a real ambiguity here is far less costly than a silent collision.
+        animeCacheDb.run(`CREATE INDEX IF NOT EXISTS idx_native_episode_counts_tmdb_id ON native_episode_counts(tmdb_id)`);
+
+        // node-sqlite3's .run() calls aren't automatically serialized - the UNIQUE INDEX below
+        // references season_number, and confirmed live it can fire (and crash the whole process
+        // on startup, "no such column: season_number") BEFORE the ALTER TABLE above it actually
+        // finishes, since nothing here waited for that column to really exist first. Nested in
+        // the ALTER's own callback (or run directly when the column was already there) so the
+        // index is only ever created once the column genuinely exists.
+        const createSeasonIndex = () => {
+            animeCacheDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_native_episode_counts_tmdb_season ON native_episode_counts(tmdb_id, season_number) WHERE tmdb_id IS NOT NULL`, (idxErr) => {
+                if (idxErr) console.error('[NativeCounts] Failed to create tmdb_id/season_number index', idxErr.message);
+            });
+        };
+        if (!names.has('season_number')) {
+            animeCacheDb.run(`ALTER TABLE native_episode_counts ADD COLUMN season_number INTEGER NOT NULL DEFAULT 1`, (alterErr) => {
+                if (alterErr) console.error('[NativeCounts] Failed to add season_number column', alterErr.message);
+                else createSeasonIndex();
+            });
+        } else {
+            createSeasonIndex();
+        }
+    });
+    // anime_trailer_cache: a YouTube trailer key for a given TMDB show/movie is effectively
+    // static (doesn't change once TMDB has it listed), but the hero was re-fetching it live from
+    // TMDB's /videos endpoint on every single render. Caches the full candidate list (not just
+    // one key) so the hero's own existing fallback-to-the-next-trailer-if-one's-unavailable
+    // logic still works unchanged. Written proactively for "recommended based on your last
+    // watched" candidates as soon as those are known (see /api/anime-trailer-prefetch), so by
+    // the time the hero actually needs one, it's usually already a cache hit. Deliberately its
+    // own new table, not touching anything in the anime_recommendations cache section above.
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS anime_trailer_cache (
+            tmdb_id      INTEGER NOT NULL,
+            media_type   TEXT    NOT NULL DEFAULT 'tv',
+            trailer_keys TEXT    NOT NULL,
+            cached_at    INTEGER NOT NULL,
+            PRIMARY KEY (tmdb_id, media_type)
         );
     `);
     animeCacheDb.run(`
@@ -3050,7 +3270,7 @@ async function generateNewEpisodeNotifications(userUID) {
                 'https://graphql.anilist.co',
                 {
                     query: `query ($id: Int) { Media(id: $id, type: ANIME) {
-                        title { romaji english }
+                        title { romaji english native }
                         coverImage { large }
                         nextAiringEpisode { airingAt episode }
                     } }`,
@@ -4281,14 +4501,13 @@ app.post('/notifications/mark-read', (req, res) => {
 });
 
 // ── YouTube trailer scraper (server-side, no API key needed) ──
-app.get('/api/yt-search', async (req, res) => {
-    const q = req.query.q;
-    if (!q || typeof q !== 'string' || q.length > 200) {
-        return res.status(400).json({ videoId: '' });
-    }
+// Returns up to `limit` videoIds in result order, no filtering - callers dedupe against
+// whatever they already have (e.g. TMDB's own trailer keys) themselves.
+async function scrapeYoutubeSearch(query, limit = 1) {
+    if (!query || typeof query !== 'string' || query.length > 200) return [];
     try {
         const ytRes = await axios.get(
-            `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`,
+            `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
             {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -4300,22 +4519,28 @@ app.get('/api/yt-search', async (req, res) => {
         const html = ytRes.data;
         const marker = 'var ytInitialData = ';
         const start = html.indexOf(marker);
-        if (start === -1) return res.json({ videoId: '' });
+        if (start === -1) return [];
         const jsonStart = start + marker.length;
         const jsonEnd = html.indexOf(';</script>', jsonStart);
-        if (jsonEnd === -1) return res.json({ videoId: '' });
+        if (jsonEnd === -1) return [];
         const data = JSON.parse(html.slice(jsonStart, jsonEnd));
         const contents =
             data?.contents?.twoColumnSearchResultsRenderer
                 ?.primaryContents?.sectionListRenderer
                 ?.contents?.[0]?.itemSectionRenderer?.contents || [];
-        const firstVideo = contents.find(c => c.videoRenderer);
-        const videoId = firstVideo?.videoRenderer?.videoId || '';
-        res.json({ videoId });
+        return contents
+            .map(c => c.videoRenderer?.videoId)
+            .filter(Boolean)
+            .slice(0, limit);
     } catch (e) {
         console.error('[yt-search] Error:', e.message);
-        res.json({ videoId: '' });
+        return [];
     }
+}
+
+app.get('/api/yt-search', async (req, res) => {
+    const [videoId] = await scrapeYoutubeSearch(req.query.q, 1);
+    res.json({ videoId: videoId || '' });
 });
 
 // ── Random movie pick ──────────────────────────────────────────
@@ -6165,9 +6390,12 @@ const _animeSeasonGroupsCache = new Map();
 // season structure (which MAL ids exist, their episode counts) is essentially permanent once
 // determined - blindly refetching (and re-scraping MAL) every 24h bought nothing. The 24h value
 // is kept only for a still-ONGOING show, where a new episode/season can genuinely appear on a
-// short timescale. The real safety net for catching a genuine new season either way is the
-// tmdb_season_count early-bust check in animeSeasonGroupsCacheGet below, not either TTL.
-const ANIME_SEASON_GROUPS_FINISHED_TTL = 90 * 24 * 60 * 60 * 1000; // 90 days
+// short timescale. No periodic refresh at all for "finished" - the only way a finished show's
+// state can go stale is a newly-announced sequel, and that's caught by
+// runFinishedShowScheduleAudit's once-a-day sweep against the airing schedule, not a TTL walk
+// (see hasUpcomingSequel above and the audit function below). The tmdb_season_count early-bust
+// check in animeSeasonGroupsCacheGet is a second, independent safety net either way.
+const ANIME_SEASON_GROUPS_FINISHED_TTL = Infinity;
 const ANIME_SEASON_GROUPS_ONGOING_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 function sleep(ms) {
@@ -6490,12 +6718,15 @@ function animeSeasonGroupsCacheGet(tmdbId, currentTmdbSeasonCount) {
     });
 }
 
-function animeSeasonGroupsCacheSet(tmdbId, malId, groups, isFinished, tmdbSeasonCount) {
+function animeSeasonGroupsCacheSet(tmdbId, malId, groups, isFinished, tmdbSeasonCount, titleTriple) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
+        const titleEn = titleTriple?.english || null;
+        const titleRomaji = titleTriple?.romaji || null;
+        const titleNative = titleTriple?.native || null;
         animeCacheDb.run(
-            `INSERT INTO anime_season_groups_cache (tmdb_id, mal_id, groups_json, group_count, cached_at, last_accessed, is_finished, tmdb_season_count)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO anime_season_groups_cache (tmdb_id, mal_id, groups_json, group_count, cached_at, last_accessed, is_finished, tmdb_season_count, title_en, title_romaji, title_native)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(tmdb_id) DO UPDATE SET
                  mal_id = excluded.mal_id,
                  groups_json = excluded.groups_json,
@@ -6503,9 +6734,13 @@ function animeSeasonGroupsCacheSet(tmdbId, malId, groups, isFinished, tmdbSeason
                  cached_at = excluded.cached_at,
                  last_accessed = excluded.last_accessed,
                  is_finished = excluded.is_finished,
-                 tmdb_season_count = excluded.tmdb_season_count`,
+                 tmdb_season_count = excluded.tmdb_season_count,
+                 title_en = excluded.title_en,
+                 title_romaji = excluded.title_romaji,
+                 title_native = excluded.title_native`,
             [tmdbId, malId, JSON.stringify(groups), groups.length, now, now,
-                isFinished ? 1 : 0, Number.isFinite(tmdbSeasonCount) ? tmdbSeasonCount : null],
+                isFinished ? 1 : 0, Number.isFinite(tmdbSeasonCount) ? tmdbSeasonCount : null,
+                titleEn, titleRomaji, titleNative],
             function (err) {
                 if (err) return reject(err);
                 resolve(this.changes || 0);
@@ -7209,6 +7444,68 @@ function animeTmdbMappingUpsert({ tmdbId, malId = null, anilistId = null, title 
     });
 }
 
+// Confirms a cached tmdb_id is still Japanese-origin content in EITHER the tv or movie
+// namespace - the same check the badge pipeline's genre/origin gate already uses (see
+// getTmdbAnimeTitle's comment), reused here for the same reason: a wrong mapping (an
+// AniList anime id pointed at an unrelated Western show/movie, or an id that's since 404ing)
+// is virtually always non-Japanese or nonexistent, so this catches it without needing to know
+// what the ORIGINAL AniList entry's format/title even were.
+async function isTmdbIdStillJapaneseAnime(tmdbId) {
+    for (const mediaType of ['tv', 'movie']) {
+        try {
+            const data = await tmdbGet(`/${mediaType}/${tmdbId}`, { language: 'en-US' });
+            const isJapanese = data?.original_language === 'ja' ||
+                (Array.isArray(data?.origin_country) && data.origin_country.includes('JP'));
+            if (isJapanese) return true;
+        } catch (err) { /* 404 or other failure - try the other media type / fall through */ }
+    }
+    return false;
+}
+
+// Throttled background cleanup for anime_tmdb_mapping - see validated_at's migration comment
+// for why this exists at all. Small batch per run (never a burst that could trip TMDB's own
+// rate limiting, the same mistake the old unbounded MegaPlay/TMDB-search cascades made earlier
+// this session) - a full first pass over an existing ~1700-row table spreads out over hours
+// rather than happening all at once, which is fine since this is pure cleanup, nothing user-
+// facing is waiting on it.
+const ANIME_TMDB_MAPPING_AUDIT_BATCH_SIZE = 25;
+const ANIME_TMDB_MAPPING_AUDIT_REQUEST_SPACING_MS = 300;
+
+async function runAnimeTmdbMappingAudit() {
+    const rows = await new Promise((resolve, reject) => {
+        animeCacheDb.all(
+            `SELECT tmdb_id FROM anime_tmdb_mapping ORDER BY validated_at IS NOT NULL, validated_at ASC LIMIT ?`,
+            [ANIME_TMDB_MAPPING_AUDIT_BATCH_SIZE],
+            (err, r) => err ? reject(err) : resolve(r || [])
+        );
+    });
+    if (!rows.length) return;
+
+    let deleted = 0;
+    for (const row of rows) {
+        try {
+            const stillValid = await isTmdbIdStillJapaneseAnime(row.tmdb_id);
+            if (stillValid) {
+                await new Promise((resolve, reject) => {
+                    animeCacheDb.run(`UPDATE anime_tmdb_mapping SET validated_at = ? WHERE tmdb_id = ?`, [Date.now(), row.tmdb_id],
+                        (err) => err ? reject(err) : resolve());
+                });
+            } else {
+                await new Promise((resolve, reject) => {
+                    animeCacheDb.run(`DELETE FROM anime_tmdb_mapping WHERE tmdb_id = ?`, [row.tmdb_id],
+                        (err) => err ? reject(err) : resolve());
+                });
+                deleted++;
+                logAnikotoDebug(`[TmdbMappingAudit] Deleted bad mapping for tmdb_id ${row.tmdb_id} - no longer resolves to Japanese-origin content in either namespace`);
+            }
+        } catch (err) {
+            logAnikotoDebug(`[TmdbMappingAudit] Check failed for tmdb_id ${row.tmdb_id}`, { error: err.message || String(err) });
+        }
+        await sleep(ANIME_TMDB_MAPPING_AUDIT_REQUEST_SPACING_MS);
+    }
+    logHealthStatus(`[TmdbMappingAudit] Checked ${rows.length} mapping(s), deleted ${deleted} bad one(s)`);
+}
+
 async function searchTmdbAnimeIdByTitle(title, options = {}) {
     if (!title) return null;
     const query = String(title || '').trim();
@@ -7250,9 +7547,32 @@ async function searchTmdbAnimeIdByTitle(title, options = {}) {
             }
         }
 
-        if (!results.length) return null;
         if (exactMatch) return exactMatch.id;
         if (partialMatch) return partialMatch.id;
+
+        // No confident TV match - before blindly trusting whatever TMDB's tv search happened to
+        // rank #1 (confirmed live: "Kimi no Na wa." - actually a MOVIE, "Your Name." - got mapped
+        // to a totally unrelated TV show, "Name Your Adventure", purely because the primary
+        // resolution loop only ever searches /search/tv, never /search/movie, for the primary
+        // title; movie search only kicked in later, for a SHORTENED fallback title, by which
+        // point the wrong tv id had already been cached and returned). An exact/partial MOVIE
+        // match on the SAME query is real evidence a tv position-0 guess never was.
+        if (mediaType === 'tv' && !options._movieRetried) {
+            const movieId = await searchTmdbAnimeIdByTitle(title, { ...options, mediaType: 'movie', _movieRetried: true });
+            if (movieId) return movieId;
+        }
+
+        // requireConfidence: never fall back to a bare position-0 guess - only for callers whose
+        // query already had something stripped off it (see getTmdbIdForAniList's fallback tier).
+        // Confirmed live this is exactly how "Youjo Senki II" (Season 2) got mapped to a wrong
+        // tmdb_id: the fallback tier strips "II" - the ONE word distinguishing this season from
+        // the rest of the franchise - searches the now-ambiguous bare "Youjo Senki", gets a single
+        // unrelated result, and (before this flag existed) trusted it outright with zero
+        // corroboration. A query that's already had its season/qualifier text stripped is a much
+        // weaker signal than a caller's original, full title - not safe to guess from at all.
+        if (options.requireConfidence) return null;
+
+        if (!results.length) return null;
         return results[0]?.id || null;
     } catch (err) {
         console.warn('[Anime TMDB Lookup] failed for title:', title, err.message || err);
@@ -7295,21 +7615,28 @@ function cleanAnimeSearchTitle(title) {
     return cleaned || null;
 }
 
+// Returns { full, stripped } instead of one flat list - cleanAnimeSearchTitle strips season/
+// qualifier suffixes ("Season N", roman numerals, trailing digits), and confirmed live that's
+// exactly what turned "Youjo Senki II" into the genuinely ambiguous "Youjo Senki" (matches
+// Season 1, Season 2, OVAs, and the movie all at once). A stripped variant is a strictly weaker
+// signal than the caller's own full title and needs to be searched with requireConfidence - see
+// searchTmdbAnimeIdByTitle's comment for the wrong-tmdb_id case this caused.
 function buildAniListSearchTitles({ title, englishTitle, romajiTitle, nativeTitle }) {
-    const variants = [];
-    const add = value => {
+    const full = [];
+    const stripped = [];
+    const addTo = (list, value) => {
         const normalized = String(value || '').trim();
         if (!normalized) return;
-        if (!variants.includes(normalized)) variants.push(normalized);
+        if (!full.includes(normalized) && !stripped.includes(normalized)) list.push(normalized);
     };
 
-    add(romajiTitle);
-    add(cleanAnimeSearchTitle(romajiTitle));
-    add(englishTitle || title);
-    add(cleanAnimeSearchTitle(englishTitle || title));
-    add(nativeTitle);
+    addTo(full, romajiTitle);
+    addTo(stripped, cleanAnimeSearchTitle(romajiTitle));
+    addTo(full, englishTitle || title);
+    addTo(stripped, cleanAnimeSearchTitle(englishTitle || title));
+    addTo(full, nativeTitle);
 
-    return variants;
+    return { full, stripped };
 }
 
 function normalizeTmdbFallbackTitle(title) {
@@ -7355,28 +7682,35 @@ async function getTmdbIdForAniList(anilistId, title, malId = null, titleEnglish 
         return cached.tmdb_id;
     }
 
-    const titles = buildAniListSearchTitles({
+    const { full: fullTitles, stripped: strippedTitles } = buildAniListSearchTitles({
         title,
         englishTitle: titleEnglish,
         romajiTitle: titleRomaji,
         nativeTitle: titleNative
     });
 
-    appendTmdbLogLine(`[AniList ${anilistId}] initial title variants=${JSON.stringify(titles)}`);
+    appendTmdbLogLine(`[AniList ${anilistId}] initial title variants full=${JSON.stringify(fullTitles)} stripped=${JSON.stringify(strippedTitles)}`);
 
     const triedTitles = new Set();
+    // Each entry pairs a title with whether it's a season/qualifier-STRIPPED variant - a
+    // position-0 guess is only safe to trust for the caller's own full, unaltered title.
     const searchTitles = [];
-
-    for (const rawTitle of titles) {
+    for (const rawTitle of fullTitles) {
         const normalized = String(rawTitle || '').trim();
         if (!normalized || triedTitles.has(normalized)) continue;
         triedTitles.add(normalized);
-        searchTitles.push(normalized);
+        searchTitles.push({ title: normalized, stripped: false });
+    }
+    for (const rawTitle of strippedTitles) {
+        const normalized = String(rawTitle || '').trim();
+        if (!normalized || triedTitles.has(normalized)) continue;
+        triedTitles.add(normalized);
+        searchTitles.push({ title: normalized, stripped: true });
     }
 
-    for (const searchTitle of searchTitles) {
-        appendTmdbLogLine(`[AniList ${anilistId}] searching primary title="${searchTitle}"`);
-        const tmdbId = await searchTmdbAnimeIdByTitle(searchTitle);
+    for (const { title: searchTitle, stripped } of searchTitles) {
+        appendTmdbLogLine(`[AniList ${anilistId}] searching primary title="${searchTitle}"${stripped ? ' (stripped)' : ''}`);
+        const tmdbId = await searchTmdbAnimeIdByTitle(searchTitle, { requireConfidence: stripped });
         if (tmdbId) {
             appendTmdbLogLine(`[AniList ${anilistId}] resolved tmdb_id=${tmdbId} from title="${searchTitle}"`);
             await animeTmdbMappingUpsert({
@@ -7389,7 +7723,7 @@ async function getTmdbIdForAniList(anilistId, title, malId = null, titleEnglish 
         }
     }
 
-    for (const searchTitle of searchTitles) {
+    for (const { title: searchTitle } of searchTitles) {
         const fallbackTitles = buildTmdbFallbackTitles(searchTitle);
         if (!fallbackTitles.length) continue;
 
@@ -7402,9 +7736,16 @@ async function getTmdbIdForAniList(anilistId, title, malId = null, titleEnglish 
             appendTmdbLogLine(`[AniList ${anilistId}] searching fallback title="${fallbackTitle}"`);
 
             const attemptData = {};
+            // requireConfidence: this query has already had a trailing word stripped off (see
+            // buildTmdbFallbackTitles) - confirmed live that word can be exactly the season
+            // qualifier ("Youjo Senki II" -> "Youjo Senki"), making the stripped query genuinely
+            // ambiguous between seasons/movies/OVAs of the same franchise. A confident exact/
+            // partial match is still fine to trust; a bare "whatever TMDB ranked first" guess on
+            // an already-weakened query is not.
             let tmdbId = await searchTmdbAnimeIdByTitle(fallbackTitle, {
                 onResponse: info => Object.assign(attemptData, info),
-                mediaType: 'tv'
+                mediaType: 'tv',
+                requireConfidence: true
             });
 
             fallbackAttempts.push({
@@ -7419,7 +7760,8 @@ async function getTmdbIdForAniList(anilistId, title, malId = null, titleEnglish 
                 const movieAttemptData = {};
                 tmdbId = await searchTmdbAnimeIdByTitle(fallbackTitle, {
                     onResponse: info => Object.assign(movieAttemptData, info),
-                    mediaType: 'movie'
+                    mediaType: 'movie',
+                    requireConfidence: true
                 });
                 fallbackAttempts.push({
                     query: fallbackTitle,
@@ -7504,6 +7846,24 @@ async function getTmdbAnimeTitle(tmdbId) {
         `/tv/${tmdbId}`,
         { language: 'en-US' }
     );
+
+    // TMDB movie ids and TV ids are separate numbering spaces that overlap numerically - an
+    // anime MOVIE routed through this (anime-badge) pipeline with its own movie-namespace id
+    // can collide with a totally unrelated TV show at that same number. Confirmed live: Ghost in
+    // the Shell's real TMDB MOVIE id (9323) is, in the TV namespace, some unrelated 1992 drama
+    // miniseries - a perfectly valid-looking /tv/ response for the WRONG show entirely, which
+    // then gets confidently searched on anikoto under a name that has nothing to do with the
+    // actual title. Japanese origin (original_language/origin_country) is the gate, NOT the
+    // Animation genre tag - genre turned out unreliable both ways: Popeye the Sailor (US) IS
+    // genuinely tagged Animation, while Devils' Crest (a real, correctly-matched upcoming anime,
+    // confirmed live) is tagged only Action & Adventure / Sci-Fi & Fantasy with no Animation id
+    // at all, so requiring it rejected a real match. Japanese origin alone correctly separates
+    // both of those. Fails back to null (same as a fetch failure) rather than a wrong title.
+    const isJapaneseOrigin = anime.original_language === 'ja' ||
+        (Array.isArray(anime.origin_country) && anime.origin_country.includes('JP'));
+    if (!isJapaneseOrigin) {
+        return { title: null, year: null };
+    }
 
     return {
         title: anime.name || anime.original_name || null,
@@ -7651,12 +8011,6 @@ function animeScheduleUpsert(date, day, json) {
     });
 }
 
-function getAnimeScheduleRefreshWindowDays() {
-    const dow = new Date().getDay();
-    const lookup = [1, 7, 6, 5, 4, 3, 2];
-    return lookup[dow] || 7;
-}
-
 // Dates are treated as plain calendar days (UTC midnight) so the weekday derived here always
 // matches what the frontend computed, regardless of either side's local timezone offset.
 function dayNameFromDate(dateStr) {
@@ -7701,6 +8055,11 @@ function transformAniListAiringSchedule(s) {
     return {
         title: s.media.title?.romaji || s.media.title?.native || '',
         title_english: s.media.title?.english || null,
+        // Kept separately from `title` above (which already falls back to native when romaji is
+        // missing, collapsing the distinction) - runFinishedShowScheduleAudit needs all three
+        // title forms distinctly available to fuzzy-match against a cached show's own three
+        // forms, not just whichever one happened to win that fallback.
+        title_native: s.media.title?.native || null,
         images: {
             jpg: {
                 image_url: s.media.coverImage?.large || '',
@@ -7768,13 +8127,29 @@ async function fetchAniListRangeScheduleByDate(startIso, endIso) {
     return grouped;
 }
 
+// AniList's own airing-schedule data for a month more than one month out is genuinely
+// incomplete right now, not just "sparse" -- new titles keep getting revealed/added to a
+// distant month right up until close to their own air date, so caching that month forever
+// would freeze it at whatever partial state it happened to be in the first time someone
+// browsed there. This month and next month are different: by the time anyone's looking,
+// AniList's lineup for them is effectively locked in already, so those (and any past date)
+// are safe to cache forever. Everything beyond next month instead gets a weekly refresh so
+// newly-revealed titles eventually show up.
+function isWithinReliableScheduleWindow(dateIso) {
+    const [y, m] = dateIso.split('-').map(Number);
+    const now = new Date();
+    const thisMonthIndex = now.getUTCFullYear() * 12 + now.getUTCMonth();
+    const dateMonthIndex = y * 12 + (m - 1);
+    return dateMonthIndex - thisMonthIndex <= 1;
+}
+const ANIME_SCHEDULE_FAR_FUTURE_REFRESH_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
+
 app.get('/api/anime-schedule', async (req, res) => {
     const dateParam = String(req.query.date || '').trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
         return res.status(400).json({ error: 'Missing or invalid date parameter (expected YYYY-MM-DD)' });
     }
     const day = dayNameFromDate(dateParam);
-    const isPast = dateParam < isoDateUTC(new Date());
 
     let cached = null;
     try {
@@ -7784,17 +8159,14 @@ app.get('/api/anime-schedule', async (req, res) => {
     }
 
     if (cached && cached.data) {
-        if (isPast) {
-            // Historical airings are immutable once the date has passed -- cache forever.
+        if (isWithinReliableScheduleWindow(dateParam)) {
             return res.json(cached.data);
         }
-        const refreshDays = getAnimeScheduleRefreshWindowDays();
-        const refreshWindowMs = refreshDays * 24 * 60 * 60 * 1000;
         const ageMs = Date.now() - cached.cached_at;
-        if (ageMs < refreshWindowMs) {
+        if (ageMs < ANIME_SCHEDULE_FAR_FUTURE_REFRESH_MS) {
             return res.json(cached.data);
         }
-        console.log(`[Anime Schedule] stale cache for ${dateParam} (${day}): age=${Math.round(ageMs / 1000 / 60)}m threshold=${refreshDays}d, refreshing cache`);
+        console.log(`[Anime Schedule] far-future cache stale for ${dateParam} (${day}): age=${Math.round(ageMs / 1000 / 60)}m, refreshing`);
     }
 
     try {
@@ -7834,10 +8206,6 @@ app.get('/api/anime-schedule-range', async (req, res) => {
         return res.status(400).json({ error: 'Invalid or excessive date range' });
     }
 
-    const todayIso = isoDateUTC(new Date());
-    const refreshWindowMs = getAnimeScheduleRefreshWindowDays() * 24 * 60 * 60 * 1000;
-    const now = Date.now();
-
     const result = {};
     const missing = [];
     for (const iso of dates) {
@@ -7847,8 +8215,10 @@ app.get('/api/anime-schedule-range', async (req, res) => {
         } catch (err) {
             console.warn('[Anime Schedule Range] cache read failed', iso, err.message || err);
         }
-        const isPast = iso < todayIso;
-        if (cached && cached.data && (isPast || (now - cached.cached_at) < refreshWindowMs)) {
+        const isFresh = cached && cached.data && (
+            isWithinReliableScheduleWindow(iso) || (Date.now() - cached.cached_at) < ANIME_SCHEDULE_FAR_FUTURE_REFRESH_MS
+        );
+        if (isFresh) {
             // animeScheduleGet's cached.data is the raw parsed row -- {data: items} --
             // not the items array itself (that's what animeScheduleUpsert stores).
             result[iso] = cached.data.data || [];
@@ -8298,6 +8668,134 @@ app.post('/api/temp-logging', (req, res) => {
         console.log('[tempLogging] SUCCESS - Logged', recommendations.length, 'recommendations');
         res.json({ success: true, logged: recommendations.length, path: logPath });
     });
+});
+
+// --- Anime hero trailer cache -------------------------------------------------------------
+// Separate from (and doesn't touch) the anime_recommendations cache section above - see
+// anime_trailer_cache's own migration comment for the full reasoning. A YouTube trailer key
+// doesn't change once TMDB has it, so this is a long-lived cache (30 days) rather than the
+// short TTLs everything episode-count-related uses.
+const ANIME_TRAILER_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+function getCachedTrailerKeys(tmdbId, mediaType) {
+    return new Promise((resolve) => {
+        animeCacheDb.get(
+            `SELECT trailer_keys, cached_at FROM anime_trailer_cache WHERE tmdb_id = ? AND media_type = ?`,
+            [tmdbId, mediaType],
+            (err, row) => {
+                if (err || !row) return resolve(undefined);
+                if (Date.now() - Number(row.cached_at || 0) > ANIME_TRAILER_CACHE_TTL_MS) return resolve(undefined);
+                try {
+                    resolve(JSON.parse(row.trailer_keys));
+                } catch (e) {
+                    resolve(undefined);
+                }
+            }
+        );
+    });
+}
+
+function setCachedTrailerKeys(tmdbId, mediaType, trailerKeys) {
+    animeCacheDb.run(
+        `INSERT INTO anime_trailer_cache (tmdb_id, media_type, trailer_keys, cached_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(tmdb_id, media_type) DO UPDATE SET
+            trailer_keys = excluded.trailer_keys, cached_at = excluded.cached_at`,
+        [tmdbId, mediaType, JSON.stringify(trailerKeys), Date.now()],
+        (err) => { if (err) console.error('[TrailerCache] write failed', err.message); }
+    );
+}
+
+// Same YouTube-video filtering the hero's own client-side code already did (see
+// animePage.js's trailer-loading block) - centralized here so the cache and a live fallback
+// both produce the identical shape/order.
+async function fetchTrailerKeysFromTmdb(tmdbId, mediaType) {
+    const data = await tmdbGet(`/${mediaType}/${tmdbId}/videos`, { language: 'en-US' });
+    const results = Array.isArray(data?.results) ? data.results : [];
+    const youtube = results.filter(v => v.site === 'YouTube');
+    // Real trailers first, then any other YouTube video (teasers, clips) as a fallback pool -
+    // matches the priority the "max popup" trailer picker already used.
+    const trailers = youtube.filter(v => v.type === 'Trailer');
+    const rest = youtube.filter(v => v.type !== 'Trailer');
+    return [...trailers, ...rest].map(v => v.key).filter(Boolean);
+}
+
+// TMDB usually only surfaces 1-2 YouTube keys per title, and in practice one is often
+// region-locked (JP-only) or blocked from embedding outside youtube.com - so a hero relying on
+// "the first TMDB key" frequently has nothing playable. Top up to a target pool via YouTube
+// search scraping, skipping any videoId TMDB already gave us.
+const ANIME_TRAILER_TARGET_COUNT = 5;
+const ANIME_TRAILER_YT_SCRAPE_MAX = 3;
+
+async function fetchAnimeTitleForTrailerSearch(tmdbId, mediaType) {
+    try {
+        const data = await tmdbGet(`/${mediaType}/${tmdbId}`, { language: 'en-US' });
+        return data?.title || data?.name || data?.original_title || data?.original_name || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+async function fetchTrailerKeysWithYoutubeFallback(tmdbId, mediaType) {
+    const tmdbKeys = await fetchTrailerKeysFromTmdb(tmdbId, mediaType);
+    const needed = Math.min(ANIME_TRAILER_YT_SCRAPE_MAX, ANIME_TRAILER_TARGET_COUNT - tmdbKeys.length);
+    if (needed <= 0) return tmdbKeys;
+    const title = await fetchAnimeTitleForTrailerSearch(tmdbId, mediaType);
+    if (!title) return tmdbKeys;
+    const existing = new Set(tmdbKeys);
+    // Overfetch since some scraped results will just be dupes of what TMDB already gave us.
+    const scraped = await scrapeYoutubeSearch(`${title} trailer`, needed + existing.size + 5);
+    const newKeys = scraped.filter(id => !existing.has(id)).slice(0, needed);
+    return [...tmdbKeys, ...newKeys];
+}
+
+async function resolveTrailerKeysCached(tmdbId, mediaType) {
+    const cached = await getCachedTrailerKeys(tmdbId, mediaType);
+    if (cached !== undefined) return cached;
+    try {
+        const keys = await fetchTrailerKeysWithYoutubeFallback(tmdbId, mediaType);
+        setCachedTrailerKeys(tmdbId, mediaType, keys);
+        return keys;
+    } catch (err) {
+        console.warn('[TrailerCache] live fetch failed for', mediaType, tmdbId, err.message || err);
+        return [];
+    }
+}
+
+// Cache-first trailer lookup for the hero itself - same data shape animePage.js's old direct
+// /videos call produced (an array of YouTube video keys, trailers-first), just usually served
+// from cache instead of live.
+app.get('/api/anime-trailer-keys', async (req, res) => {
+    const tmdbId = parseInt(req.query.tmdbId, 10);
+    if (!Number.isFinite(tmdbId)) return res.status(400).json({ error: 'tmdbId is required' });
+    const mediaType = req.query.type === 'movie' ? 'movie' : 'tv';
+    const trailerKeys = await resolveTrailerKeysCached(tmdbId, mediaType);
+    res.json({ trailerKeys });
+});
+
+// Fire-and-forget warmup - called right after "recommended based on your last watched anime"
+// resolves, so the trailers for THOSE specific candidates are already cached by the time the
+// hero needs one (this session's next load, or next visit). Responds immediately; the actual
+// lookups keep running in the background regardless of whether the caller is still listening.
+app.post('/api/anime-trailer-prefetch', (req, res) => {
+    const tmdbIds = Array.isArray(req.body?.tmdbIds) ? req.body.tmdbIds.filter(id => Number.isFinite(id)).slice(0, 20) : [];
+    const mediaType = req.body?.type === 'movie' ? 'movie' : 'tv';
+    const force = req.body?.force === true; // re-resolve even if already cached (e.g. backfilling the YT top-up)
+    res.json({ ok: true, queued: tmdbIds.length });
+    (async () => {
+        for (const tmdbId of tmdbIds) {
+            try {
+                if (!force) {
+                    const cached = await getCachedTrailerKeys(tmdbId, mediaType);
+                    if (cached !== undefined) continue; // already warm, nothing to do
+                }
+                const keys = await fetchTrailerKeysWithYoutubeFallback(tmdbId, mediaType);
+                setCachedTrailerKeys(tmdbId, mediaType, keys);
+            } catch (err) {
+                console.warn('[TrailerCache] prefetch failed for', mediaType, tmdbId, err.message || err);
+            }
+        }
+    })().catch(() => {});
 });
 
 function getAnimeCacheTitlesByMalId(malId) {
@@ -9214,49 +9712,37 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     }
 });
 async function resolveExactWatchUrl(title, targetSeason = '1', overrideSeasonTitle) {
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-    'X-Requested-With': 'XMLHttpRequest',
-    'Referer': 'https://anikoto.cz/'
-  };
-
   try {
-    logKaaDebug('[Search Resolver] Querying exact AJAX search API', {
-        title,
-        targetSeason,
-        url: `https://anikoto.cz/ajax/anime/search?keyword=${encodeURIComponent(title)}`
-    });
-    
-    // The exact endpoint captured in HTTP Toolkit!
-    const searchRes = await axios.get(`https://anikoto.cz/ajax/anime/search?keyword=${encodeURIComponent(title)}`, { headers });
-    
-    // Extract the HTML string inside the JSON result object
-    const htmlData = searchRes.data?.result?.html || searchRes.data?.html || searchRes.data || '';
-    const $ = cheerio.load(htmlData);
+    // Was hitting anikoto's own live-search-dropdown AJAX endpoint (/ajax/anime/search) directly
+    // - that endpoint is a much narrower typeahead than the full /filter?keyword= grid (the same
+    // one searchAnikotoGrid already uses reliably for the badge system), and for a franchise with
+    // a lot of spin-offs/movies/recaps sharing words with the real title, it can come back with
+    // NONE of the real entries in it at all (confirmed live: querying "Sword Art Online" here
+    // returned only 5 results - "Ordinal Scale", "Gun Gale Online - Refrain", "Alicization...
+    // Recap", "Progressive" x2 - and not the actual base show, "Sword Art Online II",
+    // "Alicization", or "Gun Gale Online II" at all). Every season 2+ request then had nothing
+    // real to season-match against, silently fell through to "just pick the top result" (see
+    // below), and kept landing on the same wrong spin-off for every season - the exact "episode 1
+    // is identical no matter which season I pick" bug this was chasing. searchAnikotoGrid's own
+    // /filter?keyword= query finds all of them (confirmed live: 30 results including the real
+    // base show and every real sequel), and already has multi-host rotation + rate-limit backoff
+    // this endpoint never had either.
+    logKaaDebug('[Search Resolver] Querying anikoto grid search', { title, targetSeason });
+    const { candidates: gridCandidates } = await searchAnikotoGrid(title);
 
     const foundResults = [];
-
-    // Parse every item anchor tag from the search popup HTML
-    $('a[href*="/watch/"]').each((i, el) => {
-      const linkHref = $(el).attr('href') || '';
-      if (linkHref.includes('/ep-')) return; // Skip deep episode links
-
-      const linkText = $(el).find('.name, .d-title').text().trim() || 
-                       $(el).text().trim() || 
-                       linkHref.replace('/watch/', '');
-
-      // Clean up slashes in URLs if needed
-      const cleanHref = linkHref.replace(/\\/g, '');
+    for (const c of gridCandidates) {
+      if (!c.href) continue;
+      const cleanHref = c.href.replace(/\\/g, '');
       const fullUrl = cleanHref.startsWith('http') ? cleanHref : `https://anikoto.cz${cleanHref}`;
-
       if (!foundResults.some(r => r.url === fullUrl)) {
-        foundResults.push({ index: foundResults.length + 1, title: linkText, url: fullUrl });
+        foundResults.push({ index: foundResults.length + 1, title: c.title, url: fullUrl });
       }
-    });
+    }
 
-    logKaaDebug('--- EXACT AJAX SEARCH RESULTS ---');
+    logKaaDebug('--- ANIKOTO GRID SEARCH RESULTS ---');
     if (foundResults.length === 0) {
-      logKaaDebug('   (No results found in AJAX search payload)');
+      logKaaDebug('   (No results found in grid search)');
     } else {
       foundResults.forEach(r => logKaaDebug(`   [${r.index}] ${r.title} -> ${r.url}`));
     }
@@ -9308,6 +9794,24 @@ async function resolveExactWatchUrl(title, targetSeason = '1', overrideSeasonTit
     const isRecapOrSpecial = (r) => /ple\s*ple|pleiades|special|ova|ona|movie|recap|trailer|pv/i.test(r.title);
     const regularCandidates = isSpecialSearch ? rankedResults : rankedResults.filter(r => !isRecapOrSpecial(r));
 
+    // The grid search above (searchAnikotoGrid) pulls from anikoto's FULL catalog, not a
+    // narrow title-scoped typeahead - a franchise-relevance filter is now load-bearing where it
+    // used to be redundant. Confirmed live: searching "Sword Art Online" successfully found
+    // "Sword Art Online II"/"...Alicization"/"...Gun Gale Online II" as real, distinct season
+    // candidates, but the season-2/3/4 regex below (which only checks "does this candidate's
+    // title/url contain the literal string '2nd'/'season 2'/etc", with NO check that the
+    // candidate is even about the same show) picked "Re:Zero...2nd Season" for season 2 and
+    // "Martial Universe 3rd Season" for season 3 - both real anikoto entries, both happen to
+    // contain the right literal season string, both completely unrelated to Sword Art Online.
+    // Restricting to candidates that actually share the base title first is what makes the
+    // broader, more complete grid pool safe to search against.
+    const isRelatedToTitle = (r) => {
+      const foundTitle = normalizeAnimeTitle(r.title);
+      return foundTitle.includes(wantedTitle) || wantedTitle.includes(foundTitle);
+    };
+    const relatedCandidates = regularCandidates.filter(isRelatedToTitle);
+    const relatedRanked = rankedResults.filter(isRelatedToTitle);
+
     // For specials: just pick top result (no season filtering)
     // For regular seasons: match explicit season if it exists
     if (isSpecialSearch) {
@@ -9321,9 +9825,12 @@ async function resolveExactWatchUrl(title, targetSeason = '1', overrideSeasonTit
       // can never match it no matter what seasonNum is passed. Same fix as KAA's own
       // overrideSeasonTitle: rank candidates by title similarity against the season-group's
       // own already-known title instead of requiring a literal season-number string match.
+      // Restricted to relatedCandidates first for the same reason as the season regex below -
+      // an unrelated title could otherwise still win on raw similarity to the override string.
       const overrideNorm = normalizeAnimeTitle(overrideSeasonTitle);
       const byOverrideSimilarity = (r) => stringSimilarity.compareTwoStrings(overrideNorm, normalizeAnimeTitle(r.title));
-      targetResult = [...regularCandidates].sort((a, b) => byOverrideSimilarity(b) - byOverrideSimilarity(a))[0]
+      const overridePool = relatedCandidates.length ? relatedCandidates : regularCandidates;
+      targetResult = [...overridePool].sort((a, b) => byOverrideSimilarity(b) - byOverrideSimilarity(a))[0]
         || rankedResults[0];
       logKaaDebug('[Search Resolver] override season title match', {
         overrideSeasonTitle,
@@ -9331,12 +9838,37 @@ async function resolveExactWatchUrl(title, targetSeason = '1', overrideSeasonTit
         similarity: targetResult ? byOverrideSimilarity(targetResult) : null
       });
     } else if (seasonNum === 1) {
-      targetResult = regularCandidates[0] || rankedResults[0];
+      targetResult = relatedCandidates[0] || regularCandidates[0] || rankedResults[0];
     } else {
-      // For Season 2+: Match explicit requested season (e.g. Season 2)
+      // For Season 2+: Match explicit requested season (e.g. Season 2) - only among candidates
+      // that are actually the same franchise (see isRelatedToTitle above). Never falls through
+      // to the unrelated pool once ANY related candidate exists - confirmed live this was the
+      // real remaining bug: Sword Art Online's own real sequels ("Sword Art Online II", "...
+      // Alicization...") don't literally contain the text "Season 2"/"Season 3" anywhere, so
+      // this regex found nothing among related candidates and used to fall through to searching
+      // ALL ~30 results, landing on "Re:Zero...2nd Season" and "Martial Universe 3rd Season" -
+      // both real anikoto entries, neither remotely Sword Art Online, purely because THEIR
+      // titles happen to contain the right literal season string.
       const seasonRegex = new RegExp(`season\\s*${seasonNum}|season-${seasonNum}|${seasonNum}nd|${seasonNum}rd|${seasonNum}th`, 'i');
-      targetResult = regularCandidates.find(r => seasonRegex.test(r.url) || seasonRegex.test(r.title))
-        || rankedResults.find(r => seasonRegex.test(r.url) || seasonRegex.test(r.title));
+      const literalSeasonMatch = relatedCandidates.find(r => seasonRegex.test(r.url) || seasonRegex.test(r.title))
+        || relatedRanked.find(r => seasonRegex.test(r.url) || seasonRegex.test(r.title));
+      if (literalSeasonMatch) {
+        targetResult = literalSeasonMatch;
+      } else if (relatedCandidates.length) {
+        // The franchise IS on anikoto, just not titled with a literal season number (roman
+        // numerals, subtitle-only sequels, etc). Nothing here can truly tell "II" from "III"
+        // apart without more signal - that's what overrideSeasonTitle above is for, and the
+        // frontend already sends it whenever season-groups has this season's own title. This is
+        // just the best guess when it doesn't: the next-highest-ranked related entry after
+        // whichever one season 1 would pick, which stays within the right franchise instead of
+        // reaching into a completely different show.
+        const season1Pick = relatedCandidates[0];
+        targetResult = relatedCandidates.find(r => r !== season1Pick) || season1Pick;
+      } else {
+        // Genuinely nothing related found at all - last resort, same as before this fix existed.
+        targetResult = regularCandidates.find(r => seasonRegex.test(r.url) || seasonRegex.test(r.title))
+          || rankedResults.find(r => seasonRegex.test(r.url) || seasonRegex.test(r.title));
+      }
     }
 
     if (!targetResult) {
@@ -10381,7 +10913,7 @@ function normalizeAnikotoTitleKey(title) {
 function getAnyCachedAnikotoRow(normalizedTitle, tmdbSeasonCount) {
     return new Promise((resolve) => {
         animeCacheDb.get(
-            `SELECT sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count FROM anikoto_episode_counts WHERE normalized_title = ?`,
+            `SELECT sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count FROM "[deprecated] anikoto_episode_counts" WHERE normalized_title = ?`,
             [normalizedTitle],
             (err, row) => {
                 if (err || !row) return resolve(undefined);
@@ -10413,7 +10945,7 @@ function getAnyCachedAnikotoRow(normalizedTitle, tmdbSeasonCount) {
 function setCachedAnikotoEpisodeCounts(normalizedTitle, counts, tmdbSeasonCount) {
     const isFinished = counts?.sub != null && counts?.total != null && counts.sub >= counts.total ? 1 : 0;
     animeCacheDb.run(
-        `INSERT INTO anikoto_episode_counts (normalized_title, sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count)
+        `INSERT INTO "[deprecated] anikoto_episode_counts" (normalized_title, sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(normalized_title) DO UPDATE SET
             sub_count = excluded.sub_count, dub_count = excluded.dub_count,
@@ -10442,6 +10974,14 @@ function buildAnikotoTitleCandidates(title) {
     add(title.replace(/\s+(II|III|IV|VI{0,3}|IX|X)$/, '').trim());
     add(title.replace(/\s+\d+$/, '').trim());
     add(title.split(/[:\-–]/)[0].trim());
+
+    // TMDB's own title text sometimes just has no space where anikoto's does (confirmed live:
+    // TMDB's name for this exact show is literally "Ranma1/2", no space at all) - anikoto's
+    // keyword search isn't fuzzy on its OWN end, so a letter-digit run with no space returns
+    // ZERO results outright, never even reaching our own fuzzy-match step. Inserting a space at
+    // every letter<->digit boundary recovers "Ranma 1/2" as a real, separately-searchable
+    // candidate without needing to special-case this one title.
+    add(title.replace(/([a-zA-Z])(\d)/g, '$1 $2').replace(/(\d)([a-zA-Z])/g, '$1 $2').replace(/\s+/g, ' ').trim());
 
     return candidates;
 }
@@ -10710,6 +11250,15 @@ function isAnikotoVariantDivergence(query, candidateTitle) {
     const qTokens = sanitizeAnikotoTitleTokens(query);
     const cTokens = sanitizeAnikotoTitleTokens(candidateTitle);
 
+    // Identical titles are NEVER a divergence, checked before any stripping - confirmed live
+    // this was rejecting literally every clean exact match with no season/qualifier words at
+    // all (e.g. "Cowboy Bebop" vs "Cowboy Bebop"): when neither side has anything to strip, the
+    // "same base after stripping" check below trivially matches identical titles too, since
+    // stripping a title with no qualifier words just returns it unchanged. That's a real
+    // divergence signal ONLY when something was actually stripped off - two titles already
+    // equal before stripping were never in question.
+    if (qTokens.join(' ') === cTokens.join(' ')) return false;
+
     // Same base once trailing qualifier/filler words are stripped from either side.
     const qBase = stripTrailingAnikotoQualifiers(qTokens).join(' ');
     const cBase = stripTrailingAnikotoQualifiers(cTokens).join(' ');
@@ -10737,77 +11286,6 @@ function isAnikotoVariantDivergence(query, candidateTitle) {
     }
 
     return false;
-}
-
-// A TMDB show id can combine multiple seasons into one entry (e.g. "Love, Chunibyo & Other
-// Delusions!" totals 24 episodes across two 12-episode seasons), while anikoto lists each
-// season as its own separate catalog entry. A single anikoto SEARCH already returns every
-// season alongside it though (confirmed live: searching the base title alone returned both
-// "Love, Chunibyo & Other Delusions!" and "...! 2nd Season: Heart Throb" in the same 30-result
-// grid, no extra query needed) - isAnikotoVariantDivergence already detects exactly this
-// "same base, different season/cour qualifier" relationship (built to REJECT it as a wrong
-// match; reused here as the grouping signal instead). Restricted to mediaType 'TV' so Movies/
-// OVAs/Specials sharing the franchise name never get summed in as if they were episodes.
-function sumAnikotoSeasonSiblings(primary, candidatePool) {
-    const group = [primary];
-    for (const c of candidatePool) {
-        if (c === primary) continue;
-        if (c.mediaType?.toLowerCase() !== 'tv') continue;
-        if (!isAnikotoVariantDivergence(primary.title, c.title)) continue;
-        group.push(c);
-    }
-
-    if (group.length === 1) return primary; // no siblings found in this pool
-
-    // NOTE: an earlier version of this function tried to detect and exclude "cour" entries
-    // (e.g. "Tower of God Season 2: Workshop Battle") as duplicates of their parent season,
-    // reasoning that anikoto's own inflated sub/dub numbers meant something was being double-
-    // counted. That was wrong and got reverted: a cour genuinely covers a DIFFERENT block of
-    // episodes than its parent card (episode 14-26, not a re-listing of 1-13), so excluding it
-    // undercounted the real total (confirmed live: Tower of God has 39 real episodes across
-    // Season 1 + Season 2's two cours, but excluding "Workshop Battle" left only 26). The
-    // per-entry clamp below is the correct, sufficient fix for the inflated-sub-number problem
-    // on its own - it brings sub down to at most that entry's own total, which naturally
-    // resolves to the real 39/39/39 once every genuine sibling is summed normally.
-    const kept = group;
-
-    let sub = 0, dub = 0, total = 0;
-    // Starts UNKNOWN and only flips to known once at least one sibling actually reports a
-    // value - the opposite of the old all-or-nothing version, which nulled the WHOLE group's
-    // field the moment any single sibling's card was missing it. That was too aggressive: a
-    // season card missing its dub badge (a stale/incomplete anikoto scrape, or a genuinely
-    // sub-only season) used to wipe out a perfectly good dub count the primary entry (or
-    // another sibling) already had - confirmed live on Tower of God, where "Season 2" briefly
-    // came back with no dub badge at all and silently erased the dub badge for the whole show
-    // even though the primary "Tower of God" entry had dub:13 the entire time. Summing
-    // whatever's actually known instead means one incomplete sibling can no longer erase good
-    // data from the others.
-    let subKnown = false, dubKnown = false, totalKnown = false;
-    const summedTitles = [];
-    for (const entry of kept) {
-        summedTitles.push(entry.title);
-        // anikoto's own sub/dub badge is occasionally the HIGHEST episode number it's seen for
-        // that entry rather than a true released-episode count, so a single season can show
-        // e.g. sub:14 against its own total:13 (confirmed live on Tower of God Season 2's
-        // card). A season can never legitimately have more sub/dub episodes released than its
-        // own total - clamp per-entry before summing so that impossible state can't propagate
-        // into (and inflate) the grouped total across siblings.
-        const entrySub = (Number.isFinite(entry.sub) && Number.isFinite(entry.total)) ? Math.min(entry.sub, entry.total) : entry.sub;
-        const entryDub = (Number.isFinite(entry.dub) && Number.isFinite(entry.total)) ? Math.min(entry.dub, entry.total) : entry.dub;
-        if (Number.isFinite(entrySub)) { sub += entrySub; subKnown = true; }
-        if (Number.isFinite(entryDub)) { dub += entryDub; dubKnown = true; }
-        if (Number.isFinite(entry.total)) { total += entry.total; totalKnown = true; }
-    }
-
-    if (summedTitles.length === 1) return primary; // everything else was a cour, nothing left to sum
-
-    logAnikotoDebug(`SEASON SUM grouped [${summedTitles.join(' + ')}] -> sub:${subKnown ? sub : null} dub:${dubKnown ? dub : null} total:${totalKnown ? total : null}`);
-    return {
-        title: primary.title,
-        sub: subKnown ? sub : null,
-        dub: dubKnown ? dub : null,
-        total: totalKnown ? total : null
-    };
 }
 
 // A bare Dice-coefficient score can't tell a real match from a coincidental one at the 0.5-0.6
@@ -10889,9 +11367,22 @@ async function fetchAnikotoEpisodeCounts(rawTitle) {
         const sanitizedQuery = sanitizeAnikotoTitleTokens(query).join(' ');
         const exact = candidates.find(c => c.title.toLowerCase() === normalizedQuery
             || sanitizeAnikotoTitleTokens(c.title).join(' ') === sanitizedQuery);
-        if (exact) {
+        // Checked against the ORIGINAL title, not the (possibly season-stripped) query that
+        // found it - confirmed live this was the actual bug behind EVERY "upcoming next season"
+        // card showing season 1's numbers: a query for "X Season 2" (nothing on anikoto yet, it
+        // hasn't aired) legitimately returns nothing, so the loop falls through to the next
+        // candidate - the season-STRIPPED "X" - which exact-matches season 1's real, already-
+        // released entry. That's a real exact match against the stripped query, but a wrong one
+        // against what was actually asked for. isAnikotoVariantDivergence exists specifically to
+        // catch "same base, different season" pairs (see its own comment) - applying it here too
+        // (not just in the fuzzy loop below) closes the same hole for the exact/slug/single-
+        // result shortcuts, which used to skip it entirely.
+        if (exact && !isAnikotoVariantDivergence(title, exact.title)) {
             logAnikotoDebug(`MATCH "${title}" -> "${exact.title}" (sub:${exact.sub} dub:${exact.dub} total:${exact.total})`);
-            return sumAnikotoSeasonSiblings(exact, candidates);
+            return exact; // 1 season, 1 problem - return this single matched entry as-is, no sibling summing (removed: merging multiple seasons' sub/dub/total into one number kept producing wrong results in ways that were hard to predict)
+        }
+        if (exact) {
+            logAnikotoDebug(`REJECTED exact match "${title}" -> "${exact.title}" - different season/variant of the same base title`);
         }
 
         // The DISPLAYED title can miss entirely while the URL SLUG still matches - confirmed
@@ -10904,9 +11395,14 @@ async function fetchAnikotoEpisodeCounts(rawTitle) {
         // much stronger signal than title-text fuzzy scoring could ever be for these.
         const slugQuery = slugifyForAnikoto(query);
         const slugMatch = slugQuery && candidates.find(c => extractAnikotoSlugBase(c.href) === slugQuery);
-        if (slugMatch) {
+        // Same divergence guard as the exact match above - a season-stripped query's slug can
+        // just as easily land on an unrelated (already-released) season's entry.
+        if (slugMatch && !isAnikotoVariantDivergence(title, slugMatch.title)) {
             logAnikotoDebug(`SLUG MATCH "${title}" -> "${slugMatch.title}" (sub:${slugMatch.sub} dub:${slugMatch.dub} total:${slugMatch.total})`);
-            return sumAnikotoSeasonSiblings(slugMatch, candidates);
+            return slugMatch; // 1 season, 1 problem - return this single matched entry as-is, no sibling summing (removed: merging multiple seasons' sub/dub/total into one number kept producing wrong results in ways that were hard to predict)
+        }
+        if (slugMatch) {
+            logAnikotoDebug(`REJECTED slug match "${title}" -> "${slugMatch.title}" - different season/variant of the same base title`);
         }
 
         // anikoto's own search sometimes resolves a query to a title that shares no
@@ -10917,9 +11413,15 @@ async function fetchAnikotoEpisodeCounts(rawTitle) {
         // already did whatever alias/translation matching got it there - a single result
         // for a specific query is anikoto itself telling us it found exactly one thing and
         // nothing else close, which is a stronger signal than our own fuzzy score.
-        if (candidates.length === 1) {
+        // Same divergence guard as above - a season-stripped query narrowing to a SINGLE result
+        // is still just as capable of landing on the wrong (already-released) season's entry as
+        // an exact/slug match is, so it needs the same check rather than being trusted outright.
+        if (candidates.length === 1 && !isAnikotoVariantDivergence(title, candidates[0].title)) {
             logAnikotoDebug(`SINGLE RESULT MATCH "${title}" (query "${query}") -> "${candidates[0].title}" (sub:${candidates[0].sub} dub:${candidates[0].dub} total:${candidates[0].total})`);
             return candidates[0];
+        }
+        if (candidates.length === 1) {
+            logAnikotoDebug(`REJECTED single result "${title}" (query "${query}") -> "${candidates[0].title}" - different season/variant of the same base title`);
         }
 
         // (Tried trusting anikoto's own #1-ranked result here as a last-resort fallback -
@@ -10948,7 +11450,7 @@ async function fetchAnikotoEpisodeCounts(rawTitle) {
 
     if (overallBestScore >= 0.6) {
         logAnikotoDebug(`FUZZY MATCH "${title}" -> "${overallBest.title}" (score:${overallBestScore.toFixed(2)}, sub:${overallBest.sub} dub:${overallBest.dub} total:${overallBest.total})`);
-        return sumAnikotoSeasonSiblings(overallBest, overallBestPool);
+        return overallBest; // 1 season, 1 problem - return this single matched entry as-is, no sibling summing (removed: merging multiple seasons' sub/dub/total into one number kept producing wrong results in ways that were hard to predict)
     }
 
     // A 0.5-0.6 tier lives here, gated on AniList corroboration (see
@@ -10961,7 +11463,7 @@ async function fetchAnikotoEpisodeCounts(rawTitle) {
         const validation = await validateAnikotoFuzzyMatchAgainstAniList(title, overallBest.total);
         if (validation.accept) {
             logAnikotoDebug(`LOW-CONFIDENCE FUZZY MATCH "${title}" -> "${overallBest.title}" (score:${overallBestScore.toFixed(2)}, AniList-corroborated: ${validation.reason}, sub:${overallBest.sub} dub:${overallBest.dub} total:${overallBest.total})`);
-            return sumAnikotoSeasonSiblings(overallBest, overallBestPool);
+            return overallBest; // 1 season, 1 problem - return this single matched entry as-is, no sibling summing (removed: merging multiple seasons' sub/dub/total into one number kept producing wrong results in ways that were hard to predict)
         }
         logAnikotoDebug(`✗ REJECTED low-confidence match "${title}" -> "${overallBest.title}" (score:${overallBestScore.toFixed(2)}) - ${validation.reason}`);
         if (validation.incomplete) anyIncomplete = true;
@@ -10991,13 +11493,15 @@ const RU_MONTH_INDEX = {
 // not have updated. Reuses searchAnimegoCandidates (already built for the RU video server)
 // with the same 0.6 similarity gate so a loose/wrong match never gets used as a "source of
 // truth" total.
-async function findAnimegoSlug(title) {
-    let candidates;
-    try {
-        candidates = await searchAnimegoCandidates(title);
-    } catch (err) {
-        logAnikotoDebug(`ANIMEGO search failed for "${title}"`, { error: err.message || String(err) });
-        return null;
+async function findAnimegoSlug(title, candidatesOverride) {
+    let candidates = candidatesOverride;
+    if (!candidates) {
+        try {
+            candidates = await searchAnimegoCandidates(title);
+        } catch (err) {
+            logAnikotoDebug(`ANIMEGO search failed for "${title}"`, { error: err.message || String(err) });
+            return null;
+        }
     }
     if (!candidates.length) return null;
 
@@ -11015,6 +11519,11 @@ async function findAnimegoSlug(title) {
         logAnikotoDebug(`ANIMEGO no confident match for "${title}" (best guess "${scored[0].title}" / "${scored[0].secondaryTitle || ''}" only scored ${scored[0].similarity.toFixed(2)})`);
         return null;
     }
+    // Logged on success too (not just rejection) - a silent success here was exactly what made
+    // a wrong-season match (a generic, season-ambiguous altTitle scoring well against the WRONG
+    // season's animego page) invisible until its downstream ruDub number showed up looking
+    // wrong, with nothing in between to point at why.
+    logAnikotoDebug(`ANIMEGO matched "${title}" -> "${scored[0].title}" / "${scored[0].secondaryTitle || ''}" (score ${scored[0].similarity.toFixed(2)})`);
     return scored[0].slug;
 }
 
@@ -11024,14 +11533,51 @@ async function findAnimegoSlug(title) {
 // case where the English query correctly scored too low against that to trust. altTitles
 // (the same romaji/native/synonym candidates already tried against anikoto) gives this a
 // real shot at the ones anikoto's own English-first title search would also miss.
-async function findAnimegoSlugWithFallback(title, altTitles) {
+//
+// Some shows have NO usable English/TMDB altTitle overlap at all (confirmed live: "I Became
+// a Legend After My 10 Year-Long Last Stand" vs animego's actual secondary title "Koko wa Ore
+// ni Makasete Saki ni Ike to Itte kara 10-nen ga Tattara Densetsu ni Natteita" scores 0.25,
+// even though animego's OWN search correctly ranks it #1 for the plain English query - its
+// relevance ranking clearly uses signals we don't have access to). When malId is available,
+// AniList's romaji/native title for that exact MAL entry is the same transliteration
+// convention animego's secondary title uses, so it recovers matches the TMDB-sourced
+// altTitles can't.
+async function findAnimegoSlugWithFallback(title, altTitles, malId) {
     const slug = await findAnimegoSlug(title);
     if (slug) return slug;
+
+    // Tried BEFORE the generic altTitles loop below on purpose - malId ties this lookup to one
+    // exact MAL entry (one specific season), so AniList's romaji/native title for THAT id is
+    // unambiguous. The generic altTitles list (TMDB/AniList synonyms, not scoped to a season at
+    // all) isn't: confirmed live a sequel's own synonym list can include a bare, season-1-flavored
+    // title ("Youjo Senki" with no "II") that scores confidently against the WRONG season's
+    // animego page - findAnimegoSlug has no way to tell "wrong season, high confidence" apart
+    // from "right show, high confidence" from text similarity alone, so whichever list gets
+    // checked first wins. Checking the unambiguous one first means a season-ambiguous altTitle
+    // later in the list never gets the chance to win over it.
+    if (malId) {
+        try {
+            const media = await aniListGetMediaBasic({ malId: Number(malId) });
+            const aniListAltTitles = [media?.title?.romaji, media?.title?.native, media?.title?.english].filter(Boolean);
+            for (const alt of aniListAltTitles) {
+                if (!alt || alt === title) continue;
+                const altSlug = await findAnimegoSlug(alt);
+                if (altSlug) {
+                    logAnikotoDebug(`ANIMEGO matched "${title}" via AniList title "${alt}" (malId ${malId})`);
+                    return altSlug;
+                }
+            }
+        } catch (err) {
+            logAnikotoDebug(`ANIMEGO AniList title fallback failed for "${title}"`, { error: err.message || String(err) });
+        }
+    }
+
     for (const alt of (altTitles || [])) {
         if (!alt || alt === title) continue;
         const altSlug = await findAnimegoSlug(alt);
         if (altSlug) return altSlug;
     }
+
     return null;
 }
 
@@ -11043,11 +11589,11 @@ async function findAnimegoSlugWithFallback(title, altTitles) {
 // not have updated. Reuses searchAnimegoCandidates (already built for the RU video server)
 // with the same 0.6 similarity gate so a loose/wrong match never gets used as a "source of
 // truth" total.
-async function fetchAnimegoReleasedEpisodeCount(rawTitle, altTitles) {
+async function fetchAnimegoReleasedEpisodeCount(rawTitle, altTitles, malId) {
     const title = String(rawTitle || '').trim();
     if (!title) return null;
 
-    const slug = await findAnimegoSlugWithFallback(title, altTitles);
+    const slug = await findAnimegoSlugWithFallback(title, altTitles, malId);
     if (!slug) return null;
 
     let pageRes;
@@ -11346,61 +11892,179 @@ async function fetchKaaNativeEpisodeCounts(title, altTitles) {
 // season 1's MAL id fails because that episode number doesn't exist there at all, not because
 // the dub is missing. See findMegaplayDubTotalAcrossSeasons below for the fix: resolve and
 // probe EACH season's own MAL id separately, then sum.
-async function findMegaplayDubCeilingForOneSeason(malId) {
-    if (!malId) return 0;
+// --- MegaPlay dub-backfill probe queue ---------------------------------------------------
+// Only the DUB-BACKFILL PROBE goes through this - real playback (resolveMegaplaySourcesCached
+// called directly elsewhere, e.g. the actual stream-source routes) must never wait behind it,
+// that needs to stay instant. A single movieInfo.html page load only ever triggers ONE badge
+// lookup, which even in the worst case (several seasons, all needing a full binary search) stays
+// nowhere near megaplay.buzz's 20-requests-per-10s limit (confirmed live: 20 requests succeed
+// back-to-back, the 21st gets a 429 with `Retry-After: 10`). Browsing pages (indexMain.html/
+// indexBrowse.html/allMovies.html) are the real problem - dozens of badges render on one page
+// load, each independently able to trigger its own multi-season probe chain, and without a
+// SHARED gate those all fire in parallel and blow past the limit almost immediately. This
+// serializes every actual outbound megaplay.buzz probe request site-wide (across every
+// concurrent title lookup, not just within one), spaced out enough that the combined total can
+// never cross the limit no matter how many badges are loading at once.
+const MEGAPLAY_QUEUE_SPACING_MS = 600; // ~16-17 req/10s once serialized - safely under the 20 measured
+const MEGAPLAY_QUEUE_MAX_LENGTH = 30; // ~18s of backlog at the spacing above - past this, not worth the wait
+
+// The last-episode-first + binary-search probe (findMegaplayDubCeilingForOneSeason) only stays
+// cheap AND accurate because it assumes dub/sub coverage is one clean, contiguous block starting
+// at episode 1 - true for basically every normal show, false for something like One Piece
+// (1000+ episodes across 20+ years of separately-dubbed batches, nowhere near a single
+// contiguous run). Below this size the binary search is both fast (usually 1-3 requests) and
+// trustworthy; above it, the same search would still run in only ~log2(n) requests, but the
+// CEILING it finds is likely meaningless - it'd report wherever coverage happens to break, not
+// how much is actually, patchily available. Past this size, skip MegaPlay probing entirely and
+// go straight to the anikoto fallback instead.
+const MEGAPLAY_MAX_EPISODES_FOR_PROBE = 100;
+let megaplayQueueTail = Promise.resolve();
+let megaplayQueueLength = 0;
+let megaplayQueueJobCounter = 0;
+
+// File-only, dedicated to just this queue's own add/run/done/skip events - separate from the
+// general "anikoto number yoinking.txt" debug log so the queue's behavior (is it backing up? how
+// long does a job actually wait?) can be watched on its own without wading through every other
+// KAA/animego/anikoto line.
+const MEGAPLAY_QUEUE_LOG_PATH = path.join(__dirname, 'megaplay-queue.txt');
+function logMegaplayQueue(line) {
+    const stamped = `[${new Date().toISOString()}] ${line}`;
     try {
-        await resolveMegaplaySourcesCached(malId, 1, 'dub');
+        fs.appendFileSync(MEGAPLAY_QUEUE_LOG_PATH, stamped + '\n');
     } catch (err) {
-        return 0;
+        // Silent fail, same as the other file-only debug loggers.
+    }
+}
+
+// Exposed so callers can bail to a fallback BEFORE joining an already-long queue, rather than
+// silently waiting tens of seconds behind everyone else's badge lookups.
+function isMegaplayQueueTooLong() {
+    const tooLong = megaplayQueueLength >= MEGAPLAY_QUEUE_MAX_LENGTH;
+    if (tooLong) logMegaplayQueue(`SKIP queueLength=${megaplayQueueLength} (>= max ${MEGAPLAY_QUEUE_MAX_LENGTH}) - caller falling back instead of waiting`);
+    return tooLong;
+}
+
+function enqueueMegaplayProbe(fn, label) {
+    const jobId = ++megaplayQueueJobCounter;
+    const tag = label ? ` ${label}` : '';
+    megaplayQueueLength++;
+    logMegaplayQueue(`+ENQUEUE job#${jobId}${tag} queueLength=${megaplayQueueLength}`);
+    const enqueuedAt = Date.now();
+
+    const run = megaplayQueueTail.then(async () => {
+        logMegaplayQueue(`>RUN job#${jobId}${tag} waitedMs=${Date.now() - enqueuedAt}`);
+        try {
+            return await fn();
+        } finally {
+            await sleep(MEGAPLAY_QUEUE_SPACING_MS);
+        }
+    });
+    // Keep the tail alive regardless of any individual job's outcome - otherwise one rejected
+    // job would break every job queued behind it.
+    megaplayQueueTail = run.catch(() => {});
+    return run.finally(() => {
+        megaplayQueueLength--;
+        logMegaplayQueue(`-DONE job#${jobId}${tag} tookMs=${Date.now() - enqueuedAt} queueLength=${megaplayQueueLength}`);
+    });
+}
+
+// A probe result is one of three things, not two - `megaplayConfirmedAbsent` (set on
+// fetchMegaplaySources' own thrown errors, see above) means the page genuinely has no dub for
+// this episode; anything else (429 rate-limit, timeout, 5xx) is NOT evidence either way. Treating
+// those identically to a real absence is what silently under-reported real dub coverage before
+// (confirmed live: megaplay.buzz starts 429-ing partway through a burst of ~15-20 back-to-back
+// probes, well within what a single badge lookup used to fire across 3 seasons).
+async function probeMegaplayEpisode(malId, episode, lang = 'dub', titleHint) {
+    const run = async () => {
+        try {
+            await resolveMegaplaySourcesCached(malId, episode, lang);
+            return 'present';
+        } catch (err) {
+            return err.megaplayConfirmedAbsent ? 'absent' : 'unknown';
+        }
+    };
+    // A cache hit resolves instantly with no real HTTP call - no reason to make it wait in
+    // line behind unrelated titles' network probes.
+    const key = `${malId}:${episode}:${lang}`;
+    const cachedEntry = megaplaySourceCache.get(key);
+    const isCached = cachedEntry && (Date.now() - cachedEntry.resolvedAt) < MEGAPLAY_CACHE_TTL_MS;
+    // titleHint is purely for megaplay-queue.txt's own readability - malId alone told you
+    // nothing about which show a queue entry belonged to when eyeballing the log live.
+    const label = titleHint ? `${key} "${titleHint}"` : key;
+    return isCached ? run() : enqueueMegaplayProbe(run, label);
+}
+
+// Only paid on the (now rare) path that needs more than 1-2 probes - cheap insurance against
+// re-tripping megaplay.buzz's own rate limit on a season that turns out to be partially dubbed.
+const MEGAPLAY_PROBE_DELAY_MS = 250;
+
+// knownTotal (the season's own real episode count, from AniList/TMDB via the season-groups
+// system) lets the two overwhelmingly common cases - a season that's either fully dubbed or not
+// dubbed at all - resolve in 1-2 requests by checking the LAST episode first, instead of the old
+// blind exponential-from-episode-1 search that always paid ~7-10 requests even for those same
+// cases (and that request volume is exactly what was tripping the rate limit). Only a genuinely
+// partial season needs the binary search in between.
+//
+// Returns { ceiling, confident }. confident=false means a probe came back 'unknown'
+// (rate-limited/network error, NOT a real "not found") - the caller must not trust ceiling as
+// the true answer here, only as a floor, and must not cache it as if it were final.
+async function findMegaplayDubCeilingForOneSeason(malId, knownTotal, lang = 'dub', titleHint) {
+    if (!malId) return { ceiling: 0, confident: true };
+
+    if (Number.isFinite(knownTotal) && knownTotal > 0) {
+        const lastState = await probeMegaplayEpisode(malId, knownTotal, lang, titleHint);
+        if (lastState === 'present') return { ceiling: knownTotal, confident: true };
+        if (lastState === 'unknown') return { ceiling: 0, confident: false };
+
+        await sleep(MEGAPLAY_PROBE_DELAY_MS);
+        const firstState = await probeMegaplayEpisode(malId, 1, lang, titleHint);
+        if (firstState === 'absent') return { ceiling: 0, confident: true };
+        if (firstState === 'unknown') return { ceiling: 0, confident: false };
+
+        // Known good = episode 1, known bad = knownTotal - binary search the real boundary.
+        let lo = 2, hi = knownTotal - 1, best = 1, confident = true;
+        while (lo <= hi) {
+            const mid = Math.floor((lo + hi) / 2);
+            await sleep(MEGAPLAY_PROBE_DELAY_MS);
+            const state = await probeMegaplayEpisode(malId, mid, lang, titleHint);
+            if (state === 'present') { best = mid; lo = mid + 1; }
+            else if (state === 'absent') { hi = mid - 1; }
+            else { confident = false; break; }
+        }
+        return { ceiling: best, confident };
     }
 
-    let lastGood = 1, probe = 2;
-    while (probe <= 2000) { // sane upper bound - no real season runs anywhere near this long
-        try {
-            await resolveMegaplaySourcesCached(malId, probe, 'dub');
-            lastGood = probe;
-            probe *= 2;
-        } catch (err) {
-            break;
-        }
+    // No known total (malId resolved outside the season-groups system) - fall back to the
+    // original unbounded doubling-then-binary-search probe.
+    const firstState = await probeMegaplayEpisode(malId, 1, lang, titleHint);
+    if (firstState === 'absent') return { ceiling: 0, confident: true };
+    if (firstState === 'unknown') return { ceiling: 0, confident: false };
+
+    let lastGood = 1, probe = 2, confident = true;
+    // Lowered from 2000 - MEGAPLAY_MAX_EPISODES_FOR_PROBE already refuses to even enter this
+    // function for anything estimated over 100 episodes, so 2000 was never a realistic ceiling
+    // to actually reach, only a worst-case latency risk (confirmed live: this doubling path
+    // alone can burn 10+ sequential network round trips, each 700ms-2s, before ever confirming
+    // an answer). 128 keeps comfortable headroom above that 100-episode gate with a much lower
+    // worst case.
+    while (probe <= 128) {
+        await sleep(MEGAPLAY_PROBE_DELAY_MS);
+        const state = await probeMegaplayEpisode(malId, probe, lang, titleHint);
+        if (state === 'present') { lastGood = probe; probe *= 2; }
+        else { if (state === 'unknown') confident = false; break; }
     }
+    if (!confident) return { ceiling: lastGood, confident: false };
 
     let lo = lastGood + 1, hi = probe, best = lastGood;
     while (lo <= hi) {
         const mid = Math.floor((lo + hi) / 2);
-        try {
-            await resolveMegaplaySourcesCached(malId, mid, 'dub');
-            best = mid;
-            lo = mid + 1;
-        } catch (err) {
-            hi = mid - 1;
-        }
+        await sleep(MEGAPLAY_PROBE_DELAY_MS);
+        const state = await probeMegaplayEpisode(malId, mid, lang, titleHint);
+        if (state === 'present') { best = mid; lo = mid + 1; }
+        else if (state === 'absent') { hi = mid - 1; }
+        else { confident = false; break; }
     }
-    return best;
-}
-
-// Resolves each of a show's seasons to its OWN MAL id (resolveAnimeIds already does exactly
-// this - it's the same per-season TMDB-season-number lookup KAA's own season disambiguation
-// uses, see resolveKickAssAnimeSources) and sums each season's independently-found MegaPlay dub
-// ceiling. This is what actually fixes the bug above: Season 1 (13/13 dubbed) + Season 2's first
-// cour (13/26 dubbed) correctly sums to 26, instead of one MAL id's probe capping out at 13.
-async function findMegaplayDubTotalAcrossSeasons(tmdbId, numberOfSeasons) {
-    if (!tmdbId || !Number.isFinite(numberOfSeasons) || numberOfSeasons < 1) return null;
-    let total = 0;
-    let foundAny = false;
-    for (let season = 1; season <= numberOfSeasons; season++) {
-        let seasonMalId;
-        try {
-            const ids = await resolveAnimeIds(tmdbId, season);
-            seasonMalId = ids?.malId;
-        } catch (err) {
-            continue;
-        }
-        if (!seasonMalId) continue;
-        const ceiling = await findMegaplayDubCeilingForOneSeason(seasonMalId);
-        if (ceiling > 0) { total += ceiling; foundAny = true; }
-    }
-    return foundAny ? total : null;
+    return { ceiling: best, confident };
 }
 
 // The actual live lookup: KAA first, then RU-MV/animego fills in whatever KAA's match left
@@ -11411,28 +12075,188 @@ async function findMegaplayDubTotalAcrossSeasons(tmdbId, numberOfSeasons) {
 // carry many dubs at all, so treating "KAA/animego found no dub" as "no dub exists" was too
 // pessimistic; MegaPlay (a real, separately-maintained provider we already stream from) often
 // has it even when KAA doesn't.
-async function fetchNativeEpisodeCounts(rawTitle, altTitles, malId, tmdbId, numberOfSeasons) {
-    const kaaResult = await fetchKaaNativeEpisodeCounts(rawTitle, altTitles).catch(err => {
-        logAnikotoDebug(`[Native] KAA lookup threw for "${rawTitle}"`, { error: err.message || String(err) });
+// Every live search below (KAA/animego/anikoto) used to run on whatever title string THIS
+// caller happened to have rendered - fine when only one caller ever asked about a given show,
+// but confirmed live to actively break once the cache started being shared by tmdb_id (see that
+// migration's comment): an AniList-sourced homepage card ("...Season 3") and movieInfo.html
+// (TMDB's own clean base name) now write to the SAME row, and whichever one happened to search
+// LAST just overwrites the other with a different, independently wrong-or-right answer - a
+// flicker instead of a stable mismatch. Resolving TMDB's own canonical name here and searching
+// under THAT instead, whenever tmdbId is known, means every caller for the same show now
+// searches under the exact same title regardless of what text its own card rendered. The
+// caller's own original title is kept as an alt-title candidate, not discarded - some titles
+// genuinely only match under a caller's own (e.g. romaji) variant.
+// TMDB's own show name never carries a season qualifier - a show's name doesn't change per
+// season, but plenty of franchises (confirmed live: "Saga of Tanya the Evil", "Re:ZERO") keep
+// the SAME tmdb_id for every season instead of splitting into separate show entries. When the
+// caller's own title has a qualifier canonical's bare name lacks, that qualifier is the only
+// signal distinguishing which season this call is even about.
+function hasAnikotoSeasonQualifier(title) {
+    const t = String(title || '');
+    return /\bSeason\s+\d+\b/i.test(t) || /\b\d+(st|nd|rd|th)\s+Season\b/i.test(t) ||
+        /\bPart\s+\d+\b/i.test(t) || /\bCour\s+\d+\b/i.test(t) ||
+        /[:\-–]\s*(Part|Season)?\s*(II|III|IV|V|VI|VII|VIII|IX|X)\s*$/i.test(t);
+}
+
+async function resolveCanonicalSearchTitle(rawTitle, altTitles, tmdbId) {
+    if (!Number.isFinite(tmdbId)) return { searchTitle: rawTitle, searchAltTitles: altTitles };
+    try {
+        const canonical = await getTmdbAnimeTitle(tmdbId);
+        if (canonical?.title && canonical.title !== rawTitle) {
+            // Overriding a season-qualified caller title ("...Season 2") with canonical's bare
+            // show name throws that qualifier away entirely - confirmed live this collapses
+            // EVERY season sharing one tmdb_id down to the same search, which anikoto's own
+            // fuzzy-match then resolves to whichever season it ranks highest (usually the
+            // oldest/most-established one, not the one this card is actually about). Only
+            // override when canonical isn't discarding a real season signal the caller had.
+            if (hasAnikotoSeasonQualifier(rawTitle) && !hasAnikotoSeasonQualifier(canonical.title)) {
+                logAnikotoDebug(`[Native] keeping caller's season-qualified title "${rawTitle}" over bare canonical "${canonical.title}" for tmdb ${tmdbId}`);
+                return {
+                    searchTitle: rawTitle,
+                    searchAltTitles: [canonical.title, ...(Array.isArray(altTitles) ? altTitles : [])].filter(Boolean)
+                };
+            }
+            logAnikotoDebug(`[Native] using canonical TMDB title "${canonical.title}" instead of caller's "${rawTitle}" for tmdb ${tmdbId}`);
+            return {
+                searchTitle: canonical.title,
+                searchAltTitles: [rawTitle, ...(Array.isArray(altTitles) ? altTitles : [])].filter(Boolean)
+            };
+        }
+    } catch (err) {
+        logAnikotoDebug(`[Native] canonical title lookup failed for tmdb ${tmdbId}, using caller's own title`, { error: err.message || String(err) });
+    }
+    return { searchTitle: rawTitle, searchAltTitles: altTitles };
+}
+
+// skipAnikotoFallback: true when the caller (fetchAnimeEpisodeCounts below) already tried
+// anikoto as the PRIMARY source and it came up empty - running the exact same anikoto search
+// again here as a "fallback" would just be a wasted duplicate scrape of a site that already said
+// no, not a real second opinion.
+async function fetchNativeEpisodeCounts(rawTitle, altTitles, malId, tmdbId, numberOfSeasons, tmdbTotal, skipAnikotoFallback, precomputedSearchTitle) {
+    const { searchTitle, searchAltTitles } = precomputedSearchTitle
+        ? precomputedSearchTitle
+        : await resolveCanonicalSearchTitle(rawTitle, altTitles, tmdbId);
+
+    const kaaResult = await fetchKaaNativeEpisodeCounts(searchTitle, searchAltTitles).catch(err => {
+        logAnikotoDebug(`[Native] KAA lookup threw for "${searchTitle}"`, { error: err.message || String(err) });
         return null;
     });
 
     let sub = kaaResult?.sub ?? null;
     let dub = kaaResult?.dub ?? null;
     let total = kaaResult?.total ?? null;
+    // animego.me is a RUSSIAN site - its own dub studio listing is a different language's dub
+    // than what KAA/MegaPlay/anikoto track, tracked separately here and never written into
+    // `dub` itself (see ru_dub_count's migration comment for the full story).
+    let ruDub = null;
+    // Debug-only: whichever anikoto entry's title actually supplied these numbers, so a wrong
+    // match (e.g. "Saga of Tanya the Evil Season 2" landing on the original season's finished
+    // "The Saga of Tanya the Evil" entry) is visible directly in the cache row instead of only
+    // in the scroll-past debug log - see matched_title's migration comment below.
+    let matchedTitle = null;
+    // data_source: every provider that actually contributed a real number to this result, in the
+    // order they contributed - answers "did this come from anikoto, KAA, or MegaPlay" at a
+    // glance instead of having to grep the debug log for one title's whole live-scrape trace.
+    const dataSources = [];
+    if (kaaResult && (sub != null || dub != null || total != null)) dataSources.push('kaa');
 
     if (sub == null || dub == null || total == null) {
         try {
-            const animegoResult = await fetchAnimegoReleasedEpisodeCount(rawTitle, altTitles);
+            const animegoResult = await fetchAnimegoReleasedEpisodeCount(searchTitle, searchAltTitles, malId);
             if (animegoResult?.episodeCount != null) {
                 if (total == null) total = animegoResult.episodeCount;
                 if (sub == null) sub = animegoResult.episodeCount;
-                if (dub == null && animegoResult.hasDub) dub = animegoResult.episodeCount;
+                if (dub == null && animegoResult.hasDub) ruDub = animegoResult.episodeCount;
+                dataSources.push('animego');
             }
         } catch (err) {
-            logAnikotoDebug(`[Native] animego backfill failed for "${rawTitle}"`, { error: err.message || String(err) });
+            logAnikotoDebug(`[Native] animego backfill failed for "${searchTitle}"`, { error: err.message || String(err) });
         }
     }
+
+    // One shared size estimate for both gap checks below - see MEGAPLAY_MAX_EPISODES_FOR_PROBE's
+    // comment for why a long-running show gets routed away from MegaPlay's probe entirely,
+    // straight to the anikoto fallback instead. Takes the max of every signal seen so far so a
+    // show that's long by ANY of them (KAA's own count, animego's, or TMDB's) gets caught, not
+    // just whichever one happens to be set.
+    const probeEpisodeEstimate = Math.max(Number(sub) || 0, Number(dub) || 0, Number(total) || 0, Number(tmdbTotal) || 0);
+    const tooLongForMegaplayProbe = probeEpisodeEstimate > MEGAPLAY_MAX_EPISODES_FOR_PROBE;
+
+    // KAA's own sub/dub search is title-based and has no concept of a sequel airing under a
+    // DIFFERENT title as a second "season" of the same franchise (confirmed live: "Code Geass:
+    // Lelouch of the Rebellion" vs its own sequel "...R2" - a real 50-episode franchise across
+    // the two, but a KAA search for the base title only ever finds R1's 25; `total` separately
+    // comes out correct via the TMDB-total override, so this shows up as sub stuck well below a
+    // total that's otherwise right, not as a missing/null value the null-check below would
+    // normally catch). Reuses the exact same season-groups-aware MegaPlay probe the dub check
+    // below uses, just for 'sub' this time - MegaPlay carries subs too, same per-season MAL ids.
+    // Runs BEFORE the dub check on purpose: fixing sub here first means the dub gap below gets
+    // computed against the CORRECTED sub, so a franchise like Code Geass (both sub AND dub
+    // equally capped at R1's 25) naturally falls through into the dub check too once sub is
+    // right, instead of looking falsely "fine" because dub happened to equal the wrong sub.
+    // Compared against tmdbTotal (the caller's own authoritative TMDB count), NOT the raw
+    // `total` KAA/animego themselves reported - that raw total can be capped by the exact same
+    // title-search limitation as sub (confirmed live: Code Geass's own KAA total came back 25,
+    // matching its own wrong sub, so comparing sub against IT never looked short at all; TMDB's
+    // real 50 is what actually exposes the gap). Falls back to the raw total when the caller
+    // didn't supply one.
+    const subReferenceTotal = Number.isFinite(tmdbTotal) ? tmdbTotal : total;
+    const subGap = Number.isFinite(subReferenceTotal) && Number.isFinite(sub) ? subReferenceTotal - sub : null;
+    const subGapThreshold = Number.isFinite(subReferenceTotal) ? Math.max(3, Math.ceil(subReferenceTotal * 0.25)) : Infinity;
+    const subWorthChecking = sub == null || (subGap != null && subGap >= subGapThreshold);
+    if (Number.isFinite(subReferenceTotal) && subReferenceTotal > 0 && (sub == null || sub < subReferenceTotal) && subWorthChecking) {
+        logAnikotoDebug(`[Native] sub gap check for "${rawTitle}" - sub:${sub} total:${total} tmdbTotal:${tmdbTotal} gap:${subGap} threshold:${subGapThreshold} - trying MegaPlay`);
+        let megaplaySubTotal = null;
+        if (tooLongForMegaplayProbe) {
+            logAnikotoDebug(`[Native] "${rawTitle}" has ~${probeEpisodeEstimate} episodes (> ${MEGAPLAY_MAX_EPISODES_FOR_PROBE}) - too long for a contiguous-coverage probe to mean anything, skipping straight to anikoto fallback`);
+        } else if (isMegaplayQueueTooLong()) {
+            logAnikotoDebug(`[Native] MegaPlay queue too long (${megaplayQueueLength}), skipping sub backfill for "${rawTitle}"`);
+        } else {
+            try {
+                // 1 season, 1 problem - probes ONLY malId's own season, never walks/sums every
+                // season in the franchise (findMegaplayDubTotalAcrossSeasons, no longer called
+                // here). That season-groups walk kept surfacing new failure modes (title
+                // mismatches, incomplete season resolution, MegaPlay's own contiguous-coverage
+                // assumption breaking on real gaps, non-deterministic results under concurrent
+                // queue load) - one malId, one season, one number is far more predictable, even
+                // though it means the badge only ever reflects THIS season, not the franchise.
+                if (malId) {
+                    // subReferenceTotal (already computed above) is exactly the "known total"
+                    // findMegaplayDubCeilingForOneSeason wants - passing it takes the fast
+                    // check-the-last-episode-first path (1-2 probes for the overwhelmingly
+                    // common "fully covered" or "not covered at all" cases) instead of the
+                    // unbounded doubling fallback, which was blindly probing 1,2,4,8,16... with
+                    // no idea where to stop, confirmed live to burn 10+ seconds and 10+ requests
+                    // per title even when it never found a confident answer at all.
+                    const { ceiling, confident } = await findMegaplayDubCeilingForOneSeason(malId, subReferenceTotal, 'sub', searchTitle);
+                    megaplaySubTotal = confident ? ceiling : null;
+                }
+                logAnikotoDebug(`[Native] MegaPlay sub probe result for "${rawTitle}" - ${megaplaySubTotal == null ? 'no confident answer' : `found ${megaplaySubTotal}`} (current sub is ${sub})`);
+            } catch (err) {
+                logAnikotoDebug(`[Native] MegaPlay sub search failed for "${rawTitle}"`, { error: err.message || String(err) });
+            }
+        }
+        if (Number.isFinite(megaplaySubTotal) && megaplaySubTotal > (sub ?? 0)) {
+            sub = megaplaySubTotal;
+            dataSources.push('megaplay');
+            logAnikotoDebug(`[Native] MegaPlay sub backfill for "${rawTitle}" - real sub total is ${megaplaySubTotal} (total is ${total})`);
+        }
+        // No separate anikoto-sub-only fallback here - the anikoto fallback below (gated on the
+        // dub check) already backfills sub too whenever IT fires; a second full anikoto scrape
+        // here just to maybe also get sub isn't worth doubling that request cost.
+    }
+
+    // Dub is NORMALLY somewhat behind sub for anything still simulcasting - that's just how dub
+    // production works, not a sign anything's wrong, and isn't worth spending a MegaPlay probe
+    // (and a slot in the shared queue below) on every single time. Only worth checking when
+    // either the show is already finished (sub caught up to the real total - dub should have too,
+    // eventually) or the gap is unusually large relative to how many episodes exist at all.
+    const isLikelyFinished = Number.isFinite(sub) && Number.isFinite(total) && sub >= total;
+    const dubGap = Number.isFinite(sub) && Number.isFinite(dub) ? sub - dub : null;
+    // At least 3 episodes, or a quarter of sub's count, whichever is bigger - e.g. sub 20/dub 12
+    // (gap 8) clears a 5-episode threshold and is worth checking; sub 5/dub 4 (gap 1) doesn't.
+    const dubGapThreshold = Number.isFinite(sub) ? Math.max(3, Math.ceil(sub * 0.25)) : Infinity;
+    const dubWorthChecking = dub == null || isLikelyFinished || (dubGap != null && dubGap >= dubGapThreshold);
 
     // MegaPlay is reached directly by MAL id (megaplay.buzz/stream/mal/{malId}/{ep}/{lang}) -
     // no title search/matching risk the way KAA/animego have. Dub production is usually well
@@ -11441,82 +12265,307 @@ async function fetchNativeEpisodeCounts(rawTitle, altTitles, malId, tmdbId, numb
     // shows ALSO need each season probed under its OWN MAL id (see findMegaplayDubCeilingForOne
     // Season's comment) - confirmed live: Tower of God's dub was stuck reporting 13 because
     // Season 1's MAL id was being probed across the whole 39-episode combined range, when the
-    // real answer (26 - S1 fully dubbed + S2's first cour through its own ep 13) needed Season
-    // 2's own MAL id probed separately. Falls back to the single-MAL-id version when tmdbId/
-    // numberOfSeasons aren't available (e.g. a title with no TMDB match at all) - can't do
-    // better than that without a season-to-MAL-id mapping to work from.
-    if (Number.isFinite(sub) && sub > 0 && (dub == null || dub < sub)) {
-        try {
-            let megaplayDubTotal = null;
-            if (tmdbId && Number.isFinite(numberOfSeasons) && numberOfSeasons >= 1) {
-                megaplayDubTotal = await findMegaplayDubTotalAcrossSeasons(tmdbId, numberOfSeasons);
-            } else if (malId) {
-                megaplayDubTotal = await findMegaplayDubCeilingForOneSeason(malId);
+    // real answer (39 - every season fully dubbed) needed each season's OWN MAL id probed
+    // separately. Falls back to the single-MAL-id version when tmdbId/numberOfSeasons aren't
+    // available (e.g. a title with no TMDB match at all) - can't do better than that without a
+    // season-to-MAL-id mapping to work from.
+    let megaplayDubTotal = null;
+    if (Number.isFinite(sub) && sub > 0 && (dub == null || dub < sub) && dubWorthChecking) {
+        logAnikotoDebug(`[Native] dub gap check for "${rawTitle}" - sub:${sub} dub:${dub} total:${total} finished:${isLikelyFinished} gap:${dubGap} threshold:${dubGapThreshold} - trying MegaPlay`);
+        // Browsing pages (indexMain/indexBrowse/allMovies) can trigger dozens of these at once,
+        // each wanting its own probe chain - joining an already-long shared queue means waiting
+        // behind everyone else's badge lookups for a probe that may not even be worth it. Skip
+        // straight to the anikoto fallback below instead of piling on.
+        if (tooLongForMegaplayProbe) {
+            logAnikotoDebug(`[Native] "${rawTitle}" has ~${probeEpisodeEstimate} episodes (> ${MEGAPLAY_MAX_EPISODES_FOR_PROBE}) - too long for a contiguous-coverage probe to mean anything, skipping straight to anikoto fallback`);
+        } else if (isMegaplayQueueTooLong()) {
+            logAnikotoDebug(`[Native] MegaPlay queue too long (${megaplayQueueLength}), skipping straight to anikoto fallback for "${rawTitle}"`);
+        } else {
+            try {
+                // 1 season, 1 problem - see the sub-gap check's identical comment above for why
+                // this only ever probes malId's own single season now.
+                if (malId) {
+                    // `sub` (already known/fresh at this point) is the right ceiling to check
+                    // first - dub can never exceed sub, so this takes the fast last-episode-
+                    // first path instead of blind unbounded doubling, same reasoning as the
+                    // sub-gap check above.
+                    const { ceiling, confident } = await findMegaplayDubCeilingForOneSeason(malId, sub, 'dub', searchTitle);
+                    megaplayDubTotal = confident ? ceiling : null;
+                }
+                logAnikotoDebug(`[Native] MegaPlay probe result for "${rawTitle}" - ${megaplayDubTotal == null ? 'no confident answer' : `found ${megaplayDubTotal}`} (current dub is ${dub})`);
+            } catch (err) {
+                logAnikotoDebug(`[Native] MegaPlay dub search failed for "${rawTitle}"`, { error: err.message || String(err) });
             }
-            if (Number.isFinite(megaplayDubTotal) && megaplayDubTotal > (dub ?? 0)) {
-                dub = megaplayDubTotal;
-                logAnikotoDebug(`[Native] MegaPlay dub backfill for "${rawTitle}" - real dub total is ${megaplayDubTotal} (sub is ${sub})`);
+        }
+
+        if (Number.isFinite(megaplayDubTotal) && megaplayDubTotal > (dub ?? 0)) {
+            dub = megaplayDubTotal;
+            dataSources.push('megaplay');
+            logAnikotoDebug(`[Native] MegaPlay dub backfill for "${rawTitle}" - real dub total is ${megaplayDubTotal} (sub is ${sub})`);
+        } else if (skipAnikotoFallback) {
+            logAnikotoDebug(`[Native] skipping anikoto fallback for "${searchTitle}" - already tried it as the primary source, came up empty`);
+        } else {
+            // MegaPlay came back empty/unconfident/not-better, or we skipped it entirely (queue
+            // too long) - anikoto.cz's own grid page carries its own independent sub/dub/total
+            // per title (the pre-KAA path, kept around specifically for this). A live scrape here
+            // is a real fallback, not a repeat of the same probe under another name.
+            try {
+                const anikotoResult = await fetchAnikotoEpisodeCounts(searchTitle);
+                logAnikotoDebug(`[Native] anikoto fallback result for "${searchTitle}"`, { anikotoResult, currentDub: dub });
+                if (Number.isFinite(anikotoResult?.dub) && anikotoResult.dub > (dub ?? 0)) {
+                    dub = anikotoResult.dub;
+                    if (sub == null && Number.isFinite(anikotoResult.sub)) sub = anikotoResult.sub;
+                    if (total == null && Number.isFinite(anikotoResult.total)) total = anikotoResult.total;
+                    matchedTitle = anikotoResult.title || null;
+                    dataSources.push('anikoto');
+                    logAnikotoDebug(`[Native] anikoto dub fallback for "${searchTitle}" - dub is ${dub}`);
+                }
+            } catch (err) {
+                logAnikotoDebug(`[Native] anikoto dub fallback failed for "${searchTitle}"`, { error: err.message || String(err) });
             }
-        } catch (err) {
-            logAnikotoDebug(`[Native] MegaPlay dub search failed for "${rawTitle}"`, { error: err.message || String(err) });
         }
     }
 
-    if (sub == null && dub == null && total == null) return null; // genuinely nothing found anywhere
-    return { sub, dub, total };
+    // Last resort: sub and total are both known but dub is STILL missing after KAA, animego,
+    // MegaPlay, and the anikoto fallback above all came up empty. Only counts as a real ruDub
+    // fallback when animego actually lists a dub studio (hasDub) - previously used episodeCount
+    // regardless of hasDub, which fabricated a dub number for subtitle-only shows just because
+    // they had a release schedule at all (every animego-tracked show has one).
+    if (!ruDub && dub == null && Number.isFinite(sub) && sub > 0 && Number.isFinite(total)) {
+        try {
+            const animegoResult = await fetchAnimegoRuDubWithQueue(searchTitle, searchAltTitles, malId, tmdbId, rawTitle);
+            if (animegoResult?.hasDub && Number.isFinite(animegoResult.episodeCount) && animegoResult.episodeCount > 0) {
+                ruDub = animegoResult.episodeCount;
+                logAnikotoDebug(`[Native] animego final RU dub fallback for "${searchTitle}" - ru dub is ${ruDub}`);
+            } else {
+                logAnikotoDebug(`[Native] animego final RU dub fallback found nothing for "${searchTitle}" - dub stays null`);
+            }
+        } catch (err) {
+            logAnikotoDebug(`[Native] animego final RU dub fallback failed for "${searchTitle}"`, { error: err.message || String(err) });
+        }
+    }
+
+    if (sub == null && dub == null && total == null && ruDub == null) return null; // genuinely nothing found anywhere
+    return { sub, dub, total, ruDub, matchedTitle, dataSource: dataSources.length ? [...new Set(dataSources)].join('+') : null };
 }
 
 // Same TTL reasoning as the anikoto table (ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS etc.) - reused
 // directly rather than duplicated, since the freshness tradeoffs are identical regardless of
 // which site the data came from.
-function getAnyCachedNativeRow(normalizedTitle, tmdbSeasonCount) {
+//
+// Looked up by tmdb_id FIRST whenever it's known, falling back to normalized_title only when it
+// isn't - see the tmdb_id column's migration comment above for why title text alone isn't a
+// reliable identity (an AniList-titled homepage card and TMDB-titled movieInfo.html can send
+// completely different title strings for the exact same show).
+function getAnyCachedNativeRow(normalizedTitle, tmdbSeasonCount, tmdbId, seasonNumber) {
     return new Promise((resolve) => {
-        animeCacheDb.get(
-            `SELECT sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count FROM native_episode_counts WHERE normalized_title = ?`,
-            [normalizedTitle],
-            (err, row) => {
-                if (err || !row) return resolve(undefined);
-                const seasonCountBust = row.is_finished === 1 && Number.isFinite(tmdbSeasonCount) &&
-                    Number.isFinite(row.tmdb_season_count) && tmdbSeasonCount > row.tmdb_season_count;
-                const isNegative = row.sub_count == null && row.dub_count == null && row.total_count == null;
-                const finishedTtl = Number.isFinite(row.tmdb_season_count)
-                    ? ANIKOTO_FINISHED_CACHE_TTL_MS
-                    : ANIKOTO_FINISHED_NO_SIGNAL_CACHE_TTL_MS;
-                const ttl = row.is_finished === 1 ? finishedTtl
-                    : (isNegative ? ANIKOTO_NEGATIVE_CACHE_TTL_MS : ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS);
-                const age = Date.now() - Number(row.cached_at || 0);
-                resolve({
-                    counts: isNegative ? null : { sub: row.sub_count, dub: row.dub_count, total: row.total_count },
-                    stale: seasonCountBust || age > ttl
-                });
-            }
-        );
+        const byId = Number.isFinite(tmdbId);
+        const season = Number.isFinite(seasonNumber) && seasonNumber > 0 ? seasonNumber : 1;
+        // tmdb_id ALONE isn't a unique row identity - see season_number's migration comment.
+        // Every tmdb_id-keyed lookup/write below is scoped to (tmdb_id, season_number) together.
+        const sql = byId
+            ? `SELECT sub_count, dub_count, total_count, ru_dub_count, cached_at, is_finished, tmdb_season_count, upcoming_date FROM native_episode_counts WHERE tmdb_id = ? AND season_number = ?`
+            : `SELECT sub_count, dub_count, total_count, ru_dub_count, cached_at, is_finished, tmdb_season_count, upcoming_date FROM native_episode_counts WHERE normalized_title = ?`;
+        animeCacheDb.get(sql, byId ? [tmdbId, season] : [normalizedTitle], (err, row) => {
+            if (err || !row) return resolve(undefined);
+            const seasonCountBust = row.is_finished === 1 && Number.isFinite(tmdbSeasonCount) &&
+                Number.isFinite(row.tmdb_season_count) && tmdbSeasonCount > row.tmdb_season_count;
+            const isNegative = row.sub_count == null && row.dub_count == null && row.total_count == null;
+            // An "upcoming" row IS a negative row (no real counts) but isn't a genuine miss the
+            // way an unmatched already-aired title is - the stored date already tells the caller
+            // exactly what to show, so it's returned as real data instead of collapsing to null.
+            // Once that date passes it naturally stops clearing this check on its own next read,
+            // and the row goes stale on the normal negative-cache TTL below either way.
+            const upcomingStillFuture = row.upcoming_date && new Date(row.upcoming_date).getTime() > Date.now();
+            const finishedTtl = Number.isFinite(row.tmdb_season_count)
+                ? ANIKOTO_FINISHED_CACHE_TTL_MS
+                : ANIKOTO_FINISHED_NO_SIGNAL_CACHE_TTL_MS;
+            const ttl = row.is_finished === 1 ? finishedTtl
+                : (isNegative ? ANIKOTO_NEGATIVE_CACHE_TTL_MS : ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS);
+            const age = Date.now() - Number(row.cached_at || 0);
+            resolve({
+                counts: isNegative && !upcomingStillFuture ? null : {
+                    sub: row.sub_count, dub: row.dub_count, total: row.total_count, ruDub: row.ru_dub_count,
+                    upcomingDate: upcomingStillFuture ? row.upcoming_date : null
+                },
+                stale: seasonCountBust || age > ttl
+            });
+        });
     });
 }
 
-function setCachedNativeEpisodeCounts(normalizedTitle, counts, tmdbSeasonCount) {
-    const isFinished = counts?.sub != null && counts?.total != null && counts.sub >= counts.total ? 1 : 0;
-    animeCacheDb.run(
-        `INSERT INTO native_episode_counts (normalized_title, sub_count, dub_count, total_count, cached_at, is_finished, tmdb_season_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(normalized_title) DO UPDATE SET
-            sub_count = excluded.sub_count, dub_count = excluded.dub_count,
-            total_count = excluded.total_count, cached_at = excluded.cached_at,
-            is_finished = excluded.is_finished, tmdb_season_count = excluded.tmdb_season_count`,
-        [normalizedTitle, counts?.sub ?? null, counts?.dub ?? null, counts?.total ?? null, Date.now(), counts ? isFinished : null,
-            Number.isFinite(tmdbSeasonCount) ? tmdbSeasonCount : null],
-        (err) => { if (err) logAnikotoDebug('[Native] Cache write failed', { error: err.message }); }
-    );
+// Written by tmdb_id whenever it's known: first checks for an EXISTING row under this tmdb_id
+// (regardless of what normalized_title that row currently has - it may have been written by a
+// caller using a completely different title string) and updates it in place, only ever falling
+// back to a fresh title-keyed insert when no such row exists yet. This is what actually stops
+// the same show accumulating multiple permanently-diverging cache rows under different callers'
+// title text - normalized_title still gets refreshed to whatever title this write used, purely
+// for readability when eyeballing the table, but it's no longer the row's real identity once
+// tmdb_id is set.
+function setCachedNativeEpisodeCounts(normalizedTitle, counts, tmdbSeasonCount, tmdbId, seasonNumber, tmdbTotal) {
+    // Checked against tmdbTotal (the caller's own authoritative TMDB released-episode count)
+    // when it's available, NOT counts.total (KAA/anikoto's own raw total field) - confirmed
+    // live this matters: KAA reported total:7 for a currently-airing show whose real TMDB total
+    // is 13 (episode 8 airs later this month) - its "total" field for an ongoing show is really
+    // just "however many episodes we've listed so far", not the planned season length. Trusting
+    // that field marked the row permanently is_finished=1 (the 180-day "leave alone" bucket)
+    // while it was still 6 episodes short of actually being done, so new episodes would never
+    // get picked up until the finished-show schedule audit happened to catch it or the 180 days
+    // ran out.
+    const referenceTotal = Number.isFinite(tmdbTotal) ? tmdbTotal : counts?.total;
+    const isFinished = counts?.sub != null && referenceTotal != null && counts.sub >= referenceTotal ? 1 : 0;
+    const now = Date.now();
+    const season = Number.isFinite(seasonNumber) && seasonNumber > 0 ? seasonNumber : 1;
+    const params = [normalizedTitle, counts?.sub ?? null, counts?.dub ?? null, counts?.total ?? null,
+        counts?.ruDub ?? null, now, counts ? isFinished : null, Number.isFinite(tmdbSeasonCount) ? tmdbSeasonCount : null,
+        counts?.matchedTitle ?? null, counts?.upcomingDate ?? null, season, counts?.dataSource ?? null];
+
+    if (!Number.isFinite(tmdbId)) {
+        animeCacheDb.run(
+            `INSERT INTO native_episode_counts (normalized_title, sub_count, dub_count, total_count, ru_dub_count, cached_at, is_finished, tmdb_season_count, matched_title, upcoming_date, season_number, data_source)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(normalized_title) DO UPDATE SET
+                sub_count = excluded.sub_count, dub_count = excluded.dub_count,
+                total_count = excluded.total_count, ru_dub_count = excluded.ru_dub_count,
+                cached_at = excluded.cached_at,
+                is_finished = excluded.is_finished, tmdb_season_count = excluded.tmdb_season_count,
+                matched_title = excluded.matched_title, upcoming_date = excluded.upcoming_date,
+                season_number = excluded.season_number, data_source = excluded.data_source`,
+            params,
+            (err) => { if (err) logAnikotoDebug('[Native] Cache write failed', { error: err.message }); }
+        );
+        return;
+    }
+
+    // Scoped to (tmdb_id, season_number) together, NOT tmdb_id alone - see season_number's
+    // migration comment for why a bare tmdb_id match silently collapsed every season of a
+    // franchise sharing one tmdb_id (Attack on Titan, Tanya, Re:ZERO...) onto a single row.
+    animeCacheDb.get(`SELECT normalized_title FROM native_episode_counts WHERE tmdb_id = ? AND season_number = ?`, [tmdbId, season], (err, existing) => {
+        if (err) { logAnikotoDebug('[Native] Cache tmdb_id lookup failed', { error: err.message }); return; }
+        if (existing) {
+            animeCacheDb.run(
+                `UPDATE native_episode_counts SET
+                    normalized_title = ?, sub_count = ?, dub_count = ?, total_count = ?, ru_dub_count = ?,
+                    cached_at = ?, is_finished = ?, tmdb_season_count = ?, matched_title = ?, upcoming_date = ?, season_number = ?, data_source = ?
+                 WHERE tmdb_id = ? AND season_number = ?`,
+                [...params, tmdbId, season],
+                (updateErr) => { if (updateErr) logAnikotoDebug('[Native] Cache update failed', { error: updateErr.message }); }
+            );
+        } else {
+            animeCacheDb.run(
+                `INSERT INTO native_episode_counts (normalized_title, sub_count, dub_count, total_count, ru_dub_count, cached_at, is_finished, tmdb_season_count, matched_title, upcoming_date, season_number, data_source, tmdb_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(normalized_title) DO UPDATE SET
+                    sub_count = excluded.sub_count, dub_count = excluded.dub_count,
+                    total_count = excluded.total_count, ru_dub_count = excluded.ru_dub_count,
+                    cached_at = excluded.cached_at,
+                    is_finished = excluded.is_finished, tmdb_season_count = excluded.tmdb_season_count,
+                    matched_title = excluded.matched_title, upcoming_date = excluded.upcoming_date,
+                    season_number = excluded.season_number, data_source = excluded.data_source, tmdb_id = excluded.tmdb_id`,
+                [...params, tmdbId],
+                (insertErr) => { if (insertErr) logAnikotoDebug('[Native] Cache insert failed', { error: insertErr.message }); }
+            );
+        }
+    });
 }
 
-function runLiveNativeLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId) {
+// Anikoto-first, KAA/animego/MegaPlay as the fallback - reversed from the 2026-08-18 migration
+// that made KAA primary. KAA's a great source when it has a title at all, but a real chunk of
+// anime just isn't in its catalog (confirmed repeatedly this session - Code Geass, Mushoku
+// Tensei's later seasons, etc.), and anikoto's own catalog turned out broader. Runs anikoto's
+// full matching pipeline (exact/slug/single-result/fuzzy+AniList-corroborated - see
+// fetchAnikotoEpisodeCounts) FIRST; only falls through to the native pipeline when anikoto has
+// genuinely nothing at all for this title. The native pipeline's own internal anikoto fallback is
+// skipped in that case (skipAnikotoFallback) - re-running the exact same anikoto search a second
+// time inside the fallback would just repeat the same "no" anikoto already gave here, not
+// provide a real second opinion, and risks exactly the kind of redundant-request loop that
+// defeats the whole point of having a fallback tier at all.
+async function fetchAnimeEpisodeCounts(rawTitle, altTitles, malId, tmdbId, numberOfSeasons, tmdbTotal) {
+    const canonical = await resolveCanonicalSearchTitle(rawTitle, altTitles, tmdbId);
+
+    let anikotoResult = null;
+    try {
+        anikotoResult = await fetchAnikotoEpisodeCounts(canonical.searchTitle);
+    } catch (err) {
+        logAnikotoDebug(`[Native] anikoto primary lookup threw for "${canonical.searchTitle}"`, { error: err.message || String(err) });
+    }
+
+    const anikotoComplete = anikotoResult && Number.isFinite(anikotoResult.sub) && Number.isFinite(anikotoResult.total);
+    const anikotoPartial = anikotoResult && (Number.isFinite(anikotoResult.sub) || Number.isFinite(anikotoResult.dub) || Number.isFinite(anikotoResult.total));
+
+    // numberOfSeasons arrives undefined when the CALLER's own TV lookup already found nothing
+    // usable (no real seasons, or rejected by its origin check - see episodeCountBadges.js) -
+    // the same signal the frontend uses to try this tmdbId as a MOVIE instead. Tried BEFORE
+    // settling for an INCOMPLETE anikoto result (not just "anikoto found nothing at all") -
+    // confirmed live this is exactly what a movie listing on anikoto looks like: a real match
+    // with sub:1/dub:1 but a blank total field ("Your Name", "A Silent Voice" both did this).
+    // Without this check running first, that partial hit satisfied the old any-field condition
+    // below and got returned/cached as-is with total permanently null - the frontend's OWN
+    // stricter "needs sub AND total" check then rejected it every single time and re-fetched
+    // TMDB's movie endpoint live on every page load, never writing the real 1/1/1 back to this
+    // row at all. Skips KAA/animego/MegaPlay entirely for a confirmed movie - there's no
+    // episode-level data for any of them to usefully add.
+    if (!anikotoComplete && !Number.isFinite(numberOfSeasons) && Number.isFinite(tmdbId)) {
+        try {
+            const movie = await tmdbGet(`/movie/${tmdbId}`, { language: 'en-US' });
+            if (movie?.id && movie.original_language === 'ja' && movie.release_date) {
+                const releaseMs = new Date(movie.release_date).getTime();
+                if (releaseMs > Date.now()) {
+                    logAnikotoDebug(`[Native] movie check for "${rawTitle}" (tmdb ${tmdbId}) - not yet released (${movie.release_date})`);
+                    return { sub: null, dub: null, total: null, ruDub: null, upcomingDate: movie.release_date, dataSource: 'tmdb-movie' };
+                }
+                logAnikotoDebug(`[Native] movie check for "${rawTitle}" (tmdb ${tmdbId}) - released movie, 1/1/1`);
+                return { sub: 1, dub: 1, total: 1, ruDub: null, dataSource: 'tmdb-movie' };
+            }
+        } catch (err) {
+            logAnikotoDebug(`[Native] movie check failed for "${rawTitle}" (tmdb ${tmdbId})`, { error: err.message || String(err) });
+        }
+    }
+
+    if (anikotoPartial) {
+        logAnikotoDebug(`[Native] anikoto primary hit for "${canonical.searchTitle}"`, { anikotoResult });
+        const result = { sub: anikotoResult.sub ?? null, dub: anikotoResult.dub ?? null, total: anikotoResult.total ?? null, ruDub: null, matchedTitle: anikotoResult.title || null, dataSource: 'anikoto' };
+
+        // anikoto found the show but has no (or a genuine zero) English dub on file - animego.me
+        // is a RUSSIAN site, so its own dub studio listing is a DIFFERENT language's dub, never
+        // written into `dub` itself (see ru_dub_count's migration comment) - only offered up
+        // separately so the frontend can show it as an explicit, differently-colored fallback
+        // instead of silently passing a Russian dub count off as an English one.
+        if (!result.dub) {
+            try {
+                const animegoResult = await fetchAnimegoRuDubWithQueue(canonical.searchTitle, canonical.searchAltTitles, malId, tmdbId, rawTitle);
+                if (animegoResult?.hasDub && Number.isFinite(animegoResult.episodeCount) && animegoResult.episodeCount > 0) {
+                    result.ruDub = animegoResult.episodeCount;
+                    logAnikotoDebug(`[Native] animego RU dub backfill for "${canonical.searchTitle}" - ru dub is ${result.ruDub} (real dub is ${result.dub})`);
+                }
+            } catch (err) {
+                logAnikotoDebug(`[Native] animego RU dub backfill failed for "${canonical.searchTitle}"`, { error: err.message || String(err) });
+            }
+        }
+
+        return result;
+    }
+
+    logAnikotoDebug(`[Native] anikoto primary found nothing for "${canonical.searchTitle}" - falling back to KAA/animego/MegaPlay`);
+    return fetchNativeEpisodeCounts(rawTitle, altTitles, malId, tmdbId, numberOfSeasons, tmdbTotal, true, canonical);
+}
+
+function runLiveNativeLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId, tmdbTotal, upcomingDate, seasonNumber) {
     if (nativeEpisodeCountsInFlight.has(normalizedTitle)) {
         return nativeEpisodeCountsInFlight.get(normalizedTitle);
     }
 
     const p = (async () => {
-        const fresh = await fetchNativeEpisodeCounts(rawTitle, altTitles, malId, tmdbId, tmdbSeasonCount);
-        setCachedNativeEpisodeCounts(normalizedTitle, fresh, tmdbSeasonCount);
+        let fresh = await fetchAnimeEpisodeCounts(rawTitle, altTitles, malId, tmdbId, tmdbSeasonCount, tmdbTotal);
+        // Genuinely nothing found anywhere (anikoto/KAA/animego/MegaPlay all came up empty) AND
+        // the caller's own TMDB fetch says this season/movie hasn't released yet - that's not a
+        // real "miss" the way an unmatched already-aired title is, it's an accurate "ask again
+        // once it airs". Only attaches when fresh is genuinely null - a partial real result
+        // (some numbers, just not complete) always wins over this label.
+        if (!fresh && upcomingDate) {
+            fresh = { sub: null, dub: null, total: null, ruDub: null, upcomingDate };
+        }
+        setCachedNativeEpisodeCounts(normalizedTitle, fresh, tmdbSeasonCount, tmdbId, seasonNumber, tmdbTotal);
         return fresh;
     })();
 
@@ -11530,22 +12579,26 @@ function runLiveNativeLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCou
 // used for the MegaPlay dub-backfill probe inside fetchNativeEpisodeCounts (tmdbId specifically
 // enables the per-season version, findMegaplayDubTotalAcrossSeasons); when absent, that step
 // just falls back to whatever's still possible, same as it always did before this was added.
-function resolveNativeEpisodeCountsCached(rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId) {
+// tmdbTotal (also optional) is ONLY used as a cross-check signal for the sub-gap probe inside
+// fetchNativeEpisodeCounts - it does NOT get stored as this row's own `total` field (that stays
+// whatever KAA/animego actually reported, same as always); the route still reshapes `total` to
+// tmdbTotal fresh on every response, same as before this existed.
+function resolveNativeEpisodeCountsCached(rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId, tmdbTotal, upcomingDate, seasonNumber) {
     const normalizedTitle = normalizeAnikotoTitleKey(rawTitle);
     if (!normalizedTitle) return Promise.resolve(null);
 
     return (async () => {
-        const cached = await getAnyCachedNativeRow(normalizedTitle, tmdbSeasonCount);
+        const cached = await getAnyCachedNativeRow(normalizedTitle, tmdbSeasonCount, tmdbId, seasonNumber);
 
         if (cached !== undefined) {
             if (cached.stale) {
-                runLiveNativeLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId)
+                runLiveNativeLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId, tmdbTotal, upcomingDate, seasonNumber)
                     .catch(err => logAnikotoDebug(`[Native] Background refresh failed for "${rawTitle}"`, { error: err.message || String(err) }));
             }
             return cached.counts;
         }
 
-        return runLiveNativeLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId);
+        return runLiveNativeLookup(normalizedTitle, rawTitle, altTitles, tmdbSeasonCount, malId, tmdbId, tmdbTotal, upcomingDate, seasonNumber);
     })();
 }
 
@@ -11596,11 +12649,26 @@ app.get('/api/anikoto-episode-counts', async (req, res) => {
     // covers whichever one season that malId belongs to.
     const parsedTmdbId = parseInt(req.query.tmdbId, 10);
     const tmdbId = Number.isFinite(parsedTmdbId) ? parsedTmdbId : undefined;
+    // Optional - the caller's own already-fetched TMDB season air_date / movie release_date
+    // (episodeCountBadges.js has this for free, no extra request). Only ever used as a fallback
+    // label when the native lookup finds genuinely nothing AND this date is still in the future -
+    // never overrides a real sub/dub/total. Cached alongside the row so the "Upcoming" badge
+    // survives a cache hit instead of only ever showing on the one call that computed it live.
+    const rawUpcomingDate = String(req.query.upcomingDate || '');
+    const upcomingDateMs = rawUpcomingDate ? new Date(rawUpcomingDate).getTime() : NaN;
+    const upcomingDate = Number.isFinite(upcomingDateMs) && upcomingDateMs > Date.now() ? rawUpcomingDate : undefined;
+    // Optional - which season of tmdbId this card is actually about (see extractSeasonNumber in
+    // episodeCountBadges.js). Required for the cache row to be a real, unique identity when
+    // tmdbId is known - see season_number's migration comment for why tmdb_id alone collapsed
+    // every season of a franchise sharing one tmdb_id onto a single row. Defaults to 1 when
+    // absent, matching every existing row's own default.
+    const parsedSeason = parseInt(req.query.season, 10);
+    const seasonNumber = Number.isFinite(parsedSeason) && parsedSeason > 0 ? parsedSeason : undefined;
     try {
         // Native (KAA + RU-MV/animego + MegaPlay dub-backfill) lookup - see the block above
         // resolveNativeEpisodeCountsCached for the full reasoning. Replaces the anikoto scrape
         // as of 2026-08-18.
-        const counts = await resolveNativeEpisodeCountsCached(title, altTitles, tmdbSeasonCount, malId, tmdbId);
+        const counts = await resolveNativeEpisodeCountsCached(title, altTitles, tmdbSeasonCount, malId, tmdbId, tmdbTotal, upcomingDate, seasonNumber);
 
         // --- OLD anikoto-scrape path, commented out (not deleted) for a quick revert if the
         // native path above turns out worse in practice - just swap which line is commented:
@@ -11608,18 +12676,23 @@ app.get('/api/anikoto-episode-counts', async (req, res) => {
 
         if (!counts) return res.json({ ok: false });
 
+        if (counts.upcomingDate) {
+            return res.json({ ok: true, upcoming: true, releaseDate: counts.upcomingDate });
+        }
+
         // Applied at RESPONSE time, not baked into the cached row - the cache keeps storing
         // KAA/animego/MegaPlay's own raw combined numbers, and this reshapes them fresh on the
         // way out using whatever tmdbTotal the CURRENT caller happens to have (which can itself
         // change over time as TMDB's own data improves, independent of the provider cache's TTL).
-        let sub = counts.sub, dub = counts.dub, total = counts.total;
+        let sub = counts.sub, dub = counts.dub, total = counts.total, ruDub = counts.ruDub;
         if (tmdbTotal != null) {
             total = tmdbTotal;
             if (Number.isFinite(sub)) sub = Math.min(sub, tmdbTotal);
             if (Number.isFinite(dub)) dub = Math.min(dub, tmdbTotal);
+            if (Number.isFinite(ruDub)) ruDub = Math.min(ruDub, tmdbTotal);
         }
 
-        res.json({ ok: true, sub, dub, total });
+        res.json({ ok: true, sub, dub, total, ruDub });
     } catch (err) {
         logAnikotoDebug(`✗ Lookup threw for "${title}"`, { error: err.message || String(err) });
         res.status(500).json({ ok: false, error: err.message });
@@ -12336,9 +13409,120 @@ const animegoResolveCache = new Map(); // key -> { result, resolvedAt }
 const animegoResolveInFlight = new Map();
 const ANIMEGO_RESOLVE_CACHE_TTL_MS = 30 * 60 * 1000;
 
+// animego.me has no rate-limit response to detect the way anikoto's 429/Retry-After does - it
+// just goes fully unreachable sometimes, and every single request waits out the full 15s
+// timeout with nothing to short-circuit the next one. Confirmed live: a run of consecutive
+// "timeout of 15000ms exceeded" failures across completely unrelated titles (Haikyu!!, Slam
+// Dunk, Kaiju No. 8...) - not a per-title matching problem, animego itself was just down,
+// and every RU-dub backfill attempt on the page independently paid the full 15s to find that
+// out. Same circuit-breaker shape as ANIKOTO_HOSTS' cooldown: after a few consecutive
+// failures in a short window, skip animego entirely for a cooldown instead of re-discovering
+// it's down 15 seconds at a time.
+const ANIMEGO_FAILURE_THRESHOLD = 3;
+const ANIMEGO_COOLDOWN_MS = 3 * 60 * 1000;
+let animegoConsecutiveFailures = 0;
+let animegoDownUntil = 0;
+
+// Titles whose RU-dub backfill got skipped specifically BECAUSE animego was in cooldown (not a
+// genuine "searched and found nothing" miss) - queued here instead of just giving up, so they
+// get a real answer once animego is back up instead of sitting with ru_dub_count stuck null
+// until their own cache TTL happens to force a re-scrape. Keyed by tmdb_id (or normalized_title
+// when tmdb_id isn't known) so a title queued twice just overwrites its own entry.
+const animegoPendingRetries = new Map();
+
+function queueAnimegoRuDubRetry({ tmdbId, normalizedTitle, searchTitle, searchAltTitles, malId }) {
+    if (!normalizedTitle) return;
+    const key = Number.isFinite(tmdbId) ? `id:${tmdbId}` : `title:${normalizedTitle}`;
+    animegoPendingRetries.set(key, { tmdbId, normalizedTitle, searchTitle, searchAltTitles, malId });
+}
+
+// Thin wrapper around fetchAnimegoReleasedEpisodeCount used by the two RU-dub-only backfill call
+// sites (fetchAnimeEpisodeCounts' primary hit, and fetchNativeEpisodeCounts' last-resort check) -
+// centralizes "was this null because animego is down, not because it genuinely found nothing" in
+// one place instead of duplicating the cooldown check at each call site. A cooldown-skip never
+// even attempts the live call (searchAnimegoCandidates would just return [] anyway) - it goes
+// straight to queuing.
+async function fetchAnimegoRuDubWithQueue(searchTitle, searchAltTitles, malId, tmdbId, rawTitleForKey) {
+    const normalizedTitle = normalizeAnikotoTitleKey(rawTitleForKey || searchTitle);
+    if (Date.now() < animegoDownUntil) {
+        queueAnimegoRuDubRetry({ tmdbId, normalizedTitle, searchTitle, searchAltTitles, malId });
+        return null;
+    }
+    try {
+        return await fetchAnimegoReleasedEpisodeCount(searchTitle, searchAltTitles, malId);
+    } catch (err) {
+        if (Date.now() < animegoDownUntil) {
+            queueAnimegoRuDubRetry({ tmdbId, normalizedTitle, searchTitle, searchAltTitles, malId });
+        }
+        throw err;
+    }
+}
+
+// Runs once animego's own circuit breaker clears - drains whatever queued up while it was down.
+// Sequential with a small gap between each (same spirit as anikoto's ANIKOTO_MIN_REQUEST_SPACING -
+// a whole backlog hitting animego in a burst the moment it recovers risks tripping it right back
+// into cooldown). Each entry is removed after ONE attempt regardless of outcome - a genuine "no
+// dub" answer from a now-working animego is real information, not something to keep retrying
+// forever, and a renewed failure just re-queues itself the normal way the next time a caller
+// hits this same title live.
+async function drainAnimegoPendingRetries() {
+    if (!animegoPendingRetries.size || Date.now() < animegoDownUntil) return;
+    const entries = Array.from(animegoPendingRetries.entries());
+    animegoPendingRetries.clear();
+    logAnikotoDebug(`[Animego] Draining ${entries.length} pending RU-dub retr${entries.length === 1 ? 'y' : 'ies'} now that animego.me is reachable again`);
+    for (let i = 0; i < entries.length; i++) {
+        const [, ctx] = entries[i];
+        try {
+            const result = await fetchAnimegoReleasedEpisodeCount(ctx.searchTitle, ctx.searchAltTitles, ctx.malId);
+            if (result?.hasDub && Number.isFinite(result.episodeCount) && result.episodeCount > 0) {
+                await new Promise((resolve) => {
+                    const sql = Number.isFinite(ctx.tmdbId)
+                        ? `UPDATE native_episode_counts SET ru_dub_count = ? WHERE tmdb_id = ? AND dub_count IS NULL`
+                        : `UPDATE native_episode_counts SET ru_dub_count = ? WHERE normalized_title = ? AND dub_count IS NULL`;
+                    animeCacheDb.run(sql, [result.episodeCount, Number.isFinite(ctx.tmdbId) ? ctx.tmdbId : ctx.normalizedTitle], (err) => {
+                        if (err) logAnikotoDebug(`[Animego] Retry cache write failed for "${ctx.searchTitle}"`, { error: err.message });
+                        resolve();
+                    });
+                });
+                logAnikotoDebug(`[Animego] Retry succeeded for "${ctx.searchTitle}" - ru dub is ${result.episodeCount}`);
+            }
+        } catch (err) {
+            logAnikotoDebug(`[Animego] Retry failed for "${ctx.searchTitle}"`, { error: err.message || String(err) });
+            if (Date.now() < animegoDownUntil) {
+                // Tripped the breaker again - the rest of this batch would just fail the same
+                // way; put the untried remainder back in the queue for the NEXT recovery instead
+                // of burning through them one 15s timeout at a time right now.
+                for (const [key, remaining] of entries.slice(i + 1)) animegoPendingRetries.set(key, remaining);
+                break;
+            }
+        }
+    }
+}
+
 async function searchAnimegoCandidates(query) {
+    if (Date.now() < animegoDownUntil) {
+        logAnikotoDebug(`ANIMEGO SKIP "${query}" - animego.me still in cooldown after repeated timeouts (${Math.ceil((animegoDownUntil - Date.now()) / 1000)}s left)`);
+        return [];
+    }
+
     const headers = { 'User-Agent': NEWSTREAM_UA, 'Referer': 'https://animego.me/' };
-    const searchRes = await axios.get(`https://animego.me/search/all?q=${encodeURIComponent(query)}`, { headers, timeout: 15000 });
+    let searchRes;
+    try {
+        searchRes = await axios.get(`https://animego.me/search/all?q=${encodeURIComponent(query)}`, { headers, timeout: 15000 });
+        const isRecovery = animegoConsecutiveFailures > 0;
+        animegoConsecutiveFailures = 0;
+        // Fire-and-forget - a successful search proves animego is reachable again, which is
+        // exactly the signal to go work through whatever queued up while it wasn't. Never blocks
+        // THIS request's own response on draining an unrelated backlog.
+        if (isRecovery) drainAnimegoPendingRetries().catch(() => {});
+    } catch (err) {
+        animegoConsecutiveFailures++;
+        if (animegoConsecutiveFailures >= ANIMEGO_FAILURE_THRESHOLD) {
+            animegoDownUntil = Date.now() + ANIMEGO_COOLDOWN_MS;
+            logAnikotoDebug(`ANIMEGO circuit breaker tripped - ${animegoConsecutiveFailures} consecutive failures, cooling down ${ANIMEGO_COOLDOWN_MS / 1000}s`);
+        }
+        throw err;
+    }
     const $search = cheerio.load(searchRes.data);
     const candidates = [];
     $search('a[href^="/anime/"]').each((i, el) => {
@@ -13973,7 +15157,14 @@ async function fetchMegaplaySources(malId, episode, lang) {
         timeout: 15000
     });
     const idMatch = String(page.data).match(/data-id=["'](\d+)["']/);
-    if (!idMatch) throw new Error('megaplay has no entry for this anime/episode');
+    if (!idMatch) {
+        // A real, confirmed "this episode isn't dubbed" - the page loaded fine (200), it just
+        // has no player embedded. Distinct from a 429/5xx/timeout below on purpose - see
+        // findMegaplayDubCeilingForOneSeason's comment for why that distinction matters.
+        const err = new Error('megaplay has no entry for this anime/episode');
+        err.megaplayConfirmedAbsent = true;
+        throw err;
+    }
 
     const srcRes = await axios.get(`${MEGAPLAY_ORIGIN}/stream/getSources?id=${idMatch[1]}`, {
         headers: {
@@ -13988,7 +15179,11 @@ async function fetchMegaplaySources(malId, episode, lang) {
     const file = typeof j?.sources?.file === 'string'
         ? j.sources.file
         : (Array.isArray(j?.sources) && j.sources[0]?.file) || null;
-    if (!file) throw new Error('megaplay returned no source file');
+    if (!file) {
+        const err = new Error('megaplay returned no source file');
+        err.megaplayConfirmedAbsent = true;
+        throw err;
+    }
 
     return {
         stream: file,
@@ -14295,7 +15490,8 @@ async function aniListGetMediaWithRelations(anilistId) {
                 format
                 episodes
                 duration
-                title { romaji english }
+                status
+                title { romaji english native }
                 startDate { year month day }
                 streamingEpisodes { title thumbnail }
                 relations {
@@ -14307,7 +15503,8 @@ async function aniListGetMediaWithRelations(anilistId) {
                             format
                             episodes
                             duration
-                            title { romaji english }
+                            status
+                            title { romaji english native }
                             startDate { year month day }
                         }
                     }
@@ -14352,6 +15549,19 @@ async function buildSeasonGroupsFromAniList(anilistId) {
     const queue = [Number(anilistId)];
     const metaList = [];
     let failedLookups = 0;
+    // A "FINISHED" show never flips back to RELEASING on AniList when a sequel is announced -
+    // the sequel shows up as its OWN, separate node in relations, initially NOT_YET_RELEASED,
+    // then RELEASING once it actually starts airing. TMDB's own season count only catches up
+    // once TMDB itself lists the new season, which can lag well behind AniList already knowing
+    // about it - checking this directly is what lets the cache distrust "is_finished" the moment
+    // a real sequel is announced, not just once TMDB notices.
+    let hasUpcomingSequel = false;
+    // The franchise's own title triple, captured from whichever node this walk starts at
+    // (the id the caller asked about) rather than metaList[0] -- that entry can be a
+    // different season's TV node, or absent entirely if the starting id isn't itself TV
+    // format. runFinishedShowScheduleAudit needs one stable identity per franchise to
+    // fuzzy-match against the daily airing schedule.
+    let baseTitle = null;
 
     while (queue.length && metaList.length < 8) {
         const id = Number(queue.shift());
@@ -14367,6 +15577,14 @@ async function buildSeasonGroupsFromAniList(anilistId) {
             continue;
         }
         if (!media) continue;
+
+        if (id === Number(anilistId) && !baseTitle) {
+            baseTitle = {
+                english: media.title?.english || null,
+                romaji: media.title?.romaji || null,
+                native: media.title?.native || null
+            };
+        }
 
         // Only TV broadcasts are real "seasons". Sequel/prequel edges also surface recap
         // movies and unreleased tie-in films (e.g. Solo Leveling's "-ReAwakening-" recap and
@@ -14404,6 +15622,15 @@ async function buildSeasonGroupsFromAniList(anilistId) {
             if (rType !== 'SEQUEL' && rType !== 'PREQUEL') return;
             const node = edge?.node;
             if (!node || String(node.type || '').toUpperCase() !== 'ANIME') return;
+            // Checked regardless of format/traversal below - a SEQUEL sitting at
+            // NOT_YET_RELEASED or RELEASING is real evidence more content is coming even if
+            // it's e.g. a movie we wouldn't otherwise walk into as a "season".
+            if (rType === 'SEQUEL') {
+                const nodeStatus = String(node.status || '').toUpperCase();
+                if (nodeStatus === 'NOT_YET_RELEASED' || nodeStatus === 'RELEASING') {
+                    hasUpcomingSequel = true;
+                }
+            }
             // Only keep walking through other TV entries. A movie/OVA branch off a real
             // season is very unlikely to lead anywhere but more movies/OVAs, and each
             // extra hop is a full GraphQL round trip we don't need to spend.
@@ -14413,7 +15640,7 @@ async function buildSeasonGroupsFromAniList(anilistId) {
         });
     }
 
-    return { metaList, failedLookups };
+    return { metaList, failedLookups, hasUpcomingSequel, baseTitle };
 }
 
 async function buildSeasonGroupsFromJikan(malId) {
@@ -15081,10 +16308,20 @@ app.get('/api/anime-filler-status', async (req, res) => {
     }
 });
 
-app.get('/api/anime-season-groups', async (req, res) => {
-    const tmdbId = parseInt(req.query.tmdbId, 10);
-    if (!tmdbId) return res.status(400).json({ error: 'Missing tmdbId' });
-
+// Shared by the route below AND findMegaplayDubTotalAcrossSeasons (the badge system's MegaPlay
+// dub-backfill) - both need the exact same "every real season/cour and its own MAL id" answer,
+// and this is also where that answer is cached. findMegaplayDubTotalAcrossSeasons used to run
+// its own, more limited resolveAnimeIds(tmdbId, season)-per-TMDB-season loop instead of this,
+// which can only ever find a season's COMBINED mal id, never a hidden MAL-only cour split like
+// Tower of God's Workshop Battle - confirmed live: the dub-backfill silently missed it the same
+// way playback used to before this whole system existed. Routing both callers through this one
+// function means they can never drift apart again, and the badge system gets this resolution's
+// cache for free instead of re-doing the AniList/MAL work from scratch.
+//
+// Returns { groups, cached, stale, source, partial } on success, or { groups: [], notFound: true,
+// notFoundReason } when nothing could be resolved at all. Throws only when there's truly no
+// fallback left (no disk cache either) - the route below is what turns that into a 500.
+async function resolveAnimeSeasonGroups(tmdbId) {
     // Fetched once, up front - used both to decide whether an existing cache row is stale (the
     // tmdb_season_count early-bust check) and, later, to record a fresh is_finished/season-count
     // alongside a newly-computed result. Cheap and safe to always fetch - TMDB is our own
@@ -15100,7 +16337,7 @@ app.get('/api/anime-season-groups', async (req, res) => {
     try {
         diskCache = await animeSeasonGroupsCacheGet(tmdbId, tmdbStatus.numberOfSeasons);
         if (diskCache && !diskCache.stale) {
-            return res.json({ groups: diskCache.groups, cached: true });
+            return { groups: diskCache.groups, cached: true };
         }
     } catch (err) {
         console.error('[anime-season-groups] disk cache read failed:', err.message);
@@ -15113,19 +16350,29 @@ app.get('/api/anime-season-groups', async (req, res) => {
             const seasonCountBust = Number.isFinite(tmdbStatus.numberOfSeasons) && Number.isFinite(cacheHit.tmdbSeasonCount) &&
                 tmdbStatus.numberOfSeasons > cacheHit.tmdbSeasonCount;
             if (!seasonCountBust && (Date.now() - cacheHit.cachedAt <= ttl)) {
-                return res.json({ groups: cacheHit.groups, cached: true });
+                return { groups: cacheHit.groups, cached: true };
             }
         }
 
         const ids = await resolveAnimeIds(tmdbId, 1);
         if (!ids || (!ids.malId && !ids.anilistId)) {
-            if (diskCache) return res.json({ groups: diskCache.groups, cached: true, stale: true });
-            return res.status(404).json({ error: 'No MAL/AniList mapping for this TMDB anime' });
+            if (diskCache) return { groups: diskCache.groups, cached: true, stale: true };
+            return { groups: [], notFound: true, notFoundReason: 'No MAL/AniList mapping for this TMDB anime' };
         }
 
         let metaList = [];
         let failedLookups = 0;
         let source = null;
+        // Set by buildSeasonGroupsFromAniList when it sees a SEQUEL relation sitting at
+        // NOT_YET_RELEASED/RELEASING - a "FINISHED" show never flips its OWN status back, the
+        // sequel is always a separate node, so this is the only way to catch an announced-but-
+        // not-yet-TMDB-listed continuation immediately instead of waiting on tmdb_season_count.
+        let hasUpcomingSequel = false;
+        // The franchise's own {english, romaji, native} title triple, used only to let
+        // runFinishedShowScheduleAudit fuzzy-match this cached row against AniList's daily
+        // airing schedule once it's marked finished - a real sequel airs under its OWN
+        // AniList id, so id-matching can't catch it, only title-matching can.
+        let baseTitle = null;
 
         // Primary: AniList relations graph.
         if (ids.anilistId) {
@@ -15133,6 +16380,8 @@ app.get('/api/anime-season-groups', async (req, res) => {
                 const r = await buildSeasonGroupsFromAniList(ids.anilistId);
                 metaList = r.metaList;
                 failedLookups = r.failedLookups;
+                hasUpcomingSequel = r.hasUpcomingSequel;
+                baseTitle = r.baseTitle;
                 source = 'anilist';
             } catch (err) {
                 console.warn(`[anime-season-groups] anilist primary failed for tmdb ${tmdbId}:`, err.message);
@@ -15162,8 +16411,8 @@ app.get('/api/anime-season-groups', async (req, res) => {
         if (metaList.length === 0) {
             // Neither AniList nor Jikan resolved anything; the frontend's own TMDB
             // title-search fallback (buildTmdbRelatedSeasonGroups) is the last tier.
-            if (diskCache) return res.json({ groups: diskCache.groups, cached: true, stale: true });
-            return res.status(404).json({ error: 'Could not resolve season groups from AniList or MAL' });
+            if (diskCache) return { groups: diskCache.groups, cached: true, stale: true };
+            return { groups: [], notFound: true, notFoundReason: 'Could not resolve season groups from AniList or MAL' };
         }
 
         // Last-resort layer: a cour split that exists ONLY on MAL's side, with no relations
@@ -15276,26 +16525,213 @@ app.get('/api/anime-season-groups', async (req, res) => {
         // so only overwrite the cache when this result is at least as complete.
         if (failedLookups > 0 && diskCache && diskCache.groups.length > groups.length) {
             console.warn(`[anime-season-groups] tmdb ${tmdbId}: partial walk (${groups.length} group(s) via ${source}, ${failedLookups} failed); serving cached ${diskCache.groups.length}`);
-            return res.json({ groups: diskCache.groups, cached: true, stale: true });
+            return { groups: diskCache.groups, cached: true, stale: true };
+        }
+
+        // TMDB's own status alone isn't enough - it can say "Ended" for weeks/months after
+        // AniList already knows a real sequel is announced or airing (see hasUpcomingSequel's
+        // comment above). Only trust the long "finished" TTL when BOTH agree nothing more is
+        // coming.
+        const trulyFinished = tmdbStatus.isFinished && !hasUpcomingSequel;
+        if (hasUpcomingSequel && tmdbStatus.isFinished) {
+            logAnikotoDebug(`[anime-season-groups] tmdb ${tmdbId}: TMDB says finished but AniList shows an upcoming/airing sequel - caching as ongoing, not finished`);
         }
 
         _animeSeasonGroupsCache.set(String(tmdbId), {
-            groups, cachedAt: Date.now(), isFinished: tmdbStatus.isFinished, tmdbSeasonCount: tmdbStatus.numberOfSeasons
+            groups, cachedAt: Date.now(), isFinished: trulyFinished, tmdbSeasonCount: tmdbStatus.numberOfSeasons
         });
         try {
-            await animeSeasonGroupsCacheSet(tmdbId, ids.malId || null, groups, tmdbStatus.isFinished, tmdbStatus.numberOfSeasons);
+            await animeSeasonGroupsCacheSet(tmdbId, ids.malId || null, groups, trulyFinished, tmdbStatus.numberOfSeasons, baseTitle);
         } catch (err) {
             console.error('[anime-season-groups] disk cache write failed:', err.message);
         }
-        res.json({ groups, cached: false, source, partial: failedLookups > 0 });
+        return { groups, cached: false, source, partial: failedLookups > 0 };
     } catch (err) {
         console.error('[anime-season-groups]', err.message);
         // Upstream is down but we resolved this title before: stale beats nothing, since the
         // caller's only other option is fuzzy TMDB title matching.
         if (diskCache) {
             console.warn(`[anime-season-groups] tmdb ${tmdbId}: serving stale cache after failure`);
-            return res.json({ groups: diskCache.groups, cached: true, stale: true });
+            return { groups: diskCache.groups, cached: true, stale: true };
         }
+        throw err;
+    }
+}
+
+// --- Finished-show schedule audit -------------------------------------------------------
+// A "finished" row (anime_season_groups_cache.is_finished=1, and native_episode_counts'
+// equivalent) is now essentially permanent (ANIME_SEASON_GROUPS_FINISHED_TTL = Infinity above) -
+// blind periodic re-checks per title were pure waste for the overwhelming majority of finished
+// shows that never get a sequel. The only real way that state can go stale is a genuinely new
+// sequel being announced/airing, and that's only ever discoverable by re-walking AniList's
+// relations graph per title - the exact expensive N-calls-per-title cost an infinite TTL exists
+// to avoid paying. This inverts the check: instead of N per-title live AniList audits, do ONE
+// shared daily fetch of "what's airing/scheduled across all of AniList soon" (the same
+// anime_schedule data the calendar feature already caches) and fuzzy-match every cached
+// "finished" title's own title triple against it. A hit means something is airing/scheduled
+// under a title that looks like this "finished" franchise - a real sequel airs under its OWN,
+// different AniList/MAL id, so this can only ever be a title match, never an id match.
+// Only this month and next month, not a flat day count - anything further out is the same
+// unreliable/still-being-revealed AniList data isWithinReliableScheduleWindow above exists to
+// stop caching forever. A distant month being sparse today would otherwise read as "nothing's
+// airing" and never get a chance to catch a real match once that month actually fills in.
+const FINISHED_SHOW_AUDIT_TITLE_MATCH_THRESHOLD = 0.8;
+
+function finishedAuditTitleVariants(...titles) {
+    return titles.filter(Boolean).map(t => String(t).toLowerCase().trim()).filter(Boolean);
+}
+
+function finishedAuditTitlesMatch(rowVariants, scheduleVariants, threshold) {
+    for (const r of rowVariants) {
+        for (const s of scheduleVariants) {
+            if (stringSimilarity.compareTwoStrings(r, s) >= threshold) return true;
+        }
+    }
+    return false;
+}
+
+async function runFinishedShowScheduleAudit() {
+    logHealthStatus('[FinishedShowAudit] Starting daily finished-show schedule audit...');
+    try {
+        const now = new Date();
+        const todayIso = isoDateUTC(now);
+        // Last day of NEXT month: day 0 of the month after next rolls back to the last day
+        // of the month before it.
+        const endIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 0)).toISOString().slice(0, 10);
+
+        const grouped = await fetchAniListRangeScheduleByDate(todayIso, endIso);
+        // Persist what this walk just paid for, so the calendar's own endpoints (now
+        // cache-forever, see /api/anime-schedule above) don't need to re-fetch these same
+        // dates later just because a user happens to browse to them.
+        for (const [iso, items] of Object.entries(grouped)) {
+            try {
+                await animeScheduleUpsert(iso, dayNameFromDate(iso), JSON.stringify({ data: items }));
+            } catch (err) {
+                logHealthStatus(`[FinishedShowAudit] schedule cache write failed for ${iso}: ${err.message}`);
+            }
+        }
+
+        // Dedup by idMal across the whole window - the same show airs on many dates.
+        const seenMalIds = new Set();
+        const scheduleCandidates = [];
+        for (const items of Object.values(grouped)) {
+            for (const item of items) {
+                if (item.idMal) {
+                    if (seenMalIds.has(item.idMal)) continue;
+                    seenMalIds.add(item.idMal);
+                }
+                const variants = finishedAuditTitleVariants(item.title, item.title_english, item.title_native);
+                if (variants.length) scheduleCandidates.push(variants);
+            }
+        }
+
+        // Beyond next month, don't pay for a live AniList fetch here at all - the calendar
+        // feature (/api/anime-schedule-range) already caches whatever far-future dates a user
+        // has actually browsed to, refreshing each one weekly (ANIME_SCHEDULE_FAR_FUTURE_REFRESH_MS)
+        // on its own. Reusing those rows here is free (no extra request) and widens this audit's
+        // catch window past the reliable 2-month one above for whatever's already sitting in the
+        // table - a sequel announced 6 months out that someone has browsed to on the calendar
+        // gets caught by this audit immediately instead of waiting for the 180-day finished TTL
+        // to expire on its own. Rows nobody's browsed to yet just aren't in the table - that's
+        // fine, they still get caught later once EITHER someone browses there OR the date itself
+        // rolls inside the reliable 2-month window and the live fetch above picks it up.
+        try {
+            const farFutureRows = await new Promise((resolve, reject) => {
+                animeCacheDb.all(
+                    `SELECT json FROM anime_schedule WHERE date > ?`,
+                    [endIso],
+                    (err, rows) => err ? reject(err) : resolve(rows || [])
+                );
+            });
+            for (const row of farFutureRows) {
+                let parsed;
+                try { parsed = JSON.parse(row.json); } catch (e) { continue; }
+                const items = parsed?.data;
+                if (!Array.isArray(items)) continue;
+                for (const item of items) {
+                    if (item.idMal) {
+                        if (seenMalIds.has(item.idMal)) continue;
+                        seenMalIds.add(item.idMal);
+                    }
+                    const variants = finishedAuditTitleVariants(item.title, item.title_english, item.title_native);
+                    if (variants.length) scheduleCandidates.push(variants);
+                }
+            }
+            logHealthStatus(`[FinishedShowAudit] widened with ${farFutureRows.length} far-future anime_schedule row(s) already cached from calendar browsing`);
+        } catch (err) {
+            logHealthStatus(`[FinishedShowAudit] far-future anime_schedule scan failed: ${err.message}`);
+        }
+
+        if (!scheduleCandidates.length) {
+            logHealthStatus('[FinishedShowAudit] No schedule candidates in window; nothing to audit.');
+            return;
+        }
+
+        let seasonGroupsBusted = 0;
+        let nativeBusted = 0;
+
+        const seasonGroupRows = await new Promise((resolve, reject) => {
+            animeCacheDb.all(
+                `SELECT tmdb_id, title_en, title_romaji, title_native FROM anime_season_groups_cache WHERE is_finished = 1`,
+                [],
+                (err, rows) => err ? reject(err) : resolve(rows || [])
+            );
+        });
+        for (const row of seasonGroupRows) {
+            const rowVariants = finishedAuditTitleVariants(row.title_en, row.title_romaji, row.title_native);
+            if (!rowVariants.length) continue;
+            const matched = scheduleCandidates.some(sv => finishedAuditTitlesMatch(rowVariants, sv, FINISHED_SHOW_AUDIT_TITLE_MATCH_THRESHOLD));
+            if (!matched) continue;
+            await new Promise((resolve, reject) => {
+                animeCacheDb.run(
+                    `UPDATE anime_season_groups_cache SET is_finished = 0 WHERE tmdb_id = ?`,
+                    [row.tmdb_id],
+                    (err) => err ? reject(err) : resolve()
+                );
+            });
+            _animeSeasonGroupsCache.delete(String(row.tmdb_id));
+            seasonGroupsBusted++;
+            logHealthStatus(`[FinishedShowAudit] anime_season_groups_cache tmdb ${row.tmdb_id} ("${row.title_en || row.title_romaji || row.title_native}") matched the airing schedule - busted back to ongoing TTL`);
+        }
+
+        const nativeRows = await new Promise((resolve, reject) => {
+            animeCacheDb.all(
+                `SELECT normalized_title FROM native_episode_counts WHERE is_finished = 1`,
+                [],
+                (err, rows) => err ? reject(err) : resolve(rows || [])
+            );
+        });
+        for (const row of nativeRows) {
+            const rowVariants = finishedAuditTitleVariants(row.normalized_title);
+            if (!rowVariants.length) continue;
+            const matched = scheduleCandidates.some(sv => finishedAuditTitlesMatch(rowVariants, sv, FINISHED_SHOW_AUDIT_TITLE_MATCH_THRESHOLD));
+            if (!matched) continue;
+            await new Promise((resolve, reject) => {
+                animeCacheDb.run(
+                    `UPDATE native_episode_counts SET is_finished = 0 WHERE normalized_title = ?`,
+                    [row.normalized_title],
+                    (err) => err ? reject(err) : resolve()
+                );
+            });
+            nativeBusted++;
+            logHealthStatus(`[FinishedShowAudit] native_episode_counts "${row.normalized_title}" matched the airing schedule - busted back to ongoing TTL`);
+        }
+
+        logHealthStatus(`[FinishedShowAudit] Done. season-groups: ${seasonGroupRows.length} finished row(s) checked, ${seasonGroupsBusted} busted. native: ${nativeRows.length} finished row(s) checked, ${nativeBusted} busted.`);
+    } catch (err) {
+        logHealthStatus(`[FinishedShowAudit] FAILED: ${err.message}`);
+    }
+}
+const FINISHED_SHOW_AUDIT_INTERVAL_MS = 24 * 60 * 60 * 1000; // once a day, per the user's spec
+
+app.get('/api/anime-season-groups', async (req, res) => {
+    const tmdbId = parseInt(req.query.tmdbId, 10);
+    if (!tmdbId) return res.status(400).json({ error: 'Missing tmdbId' });
+    try {
+        const result = await resolveAnimeSeasonGroups(tmdbId);
+        if (result.notFound) return res.status(404).json({ error: result.notFoundReason });
+        res.json(result);
+    } catch (err) {
         res.status(500).json({ error: 'Failed to build anime season groups', detail: err.message });
     }
 });
@@ -15968,4 +17404,24 @@ const server = app.listen(PORT, 'localhost', () => {
     console.log(`   MAL health check: every ${MAL_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
     setInterval(runMalHealthCheck, MAL_HEALTH_CHECK_INTERVAL_MS);
     runMalHealthCheck(); // also check once right away instead of waiting 30min for the first read
+
+    console.log(`   Finished-show schedule audit: every ${FINISHED_SHOW_AUDIT_INTERVAL_MS / 3600000}h`);
+    setInterval(runFinishedShowScheduleAudit, FINISHED_SHOW_AUDIT_INTERVAL_MS);
+    runFinishedShowScheduleAudit(); // also run once right away instead of waiting 24h for the first sweep
+
+    // Safety net for the animego RU-dub retry queue - drainAnimegoPendingRetries() also fires the
+    // moment a live search succeeds after a failure, but that only happens if something actually
+    // probes animego again. A quiet period with nothing hitting the RU-dub path would otherwise
+    // leave a fully-recovered queue sitting untried until the next live request happens to ask.
+    const ANIMEGO_RETRY_DRAIN_INTERVAL_MS = 5 * 60 * 1000;
+    setInterval(() => drainAnimegoPendingRetries().catch(() => {}), ANIMEGO_RETRY_DRAIN_INTERVAL_MS);
+
+    // Cleans up wrong anime_tmdb_mapping rows left over from before searchTmdbAnimeIdByTitle's
+    // requireConfidence guard existed (see runAnimeTmdbMappingAudit's comment) - small batch
+    // every few minutes so a full first pass over the existing table spreads out over hours
+    // instead of bursting TMDB all at once.
+    const ANIME_TMDB_MAPPING_AUDIT_INTERVAL_MS = 3 * 60 * 1000;
+    console.log(`   Anime TMDB mapping audit: every ${ANIME_TMDB_MAPPING_AUDIT_INTERVAL_MS / 60000}min, ${ANIME_TMDB_MAPPING_AUDIT_BATCH_SIZE}/batch`);
+    setInterval(() => runAnimeTmdbMappingAudit().catch(err => logHealthStatus(`[TmdbMappingAudit] FAILED: ${err.message}`)), ANIME_TMDB_MAPPING_AUDIT_INTERVAL_MS);
+    runAnimeTmdbMappingAudit().catch(err => logHealthStatus(`[TmdbMappingAudit] FAILED: ${err.message}`));
 });
