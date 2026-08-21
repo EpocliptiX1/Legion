@@ -166,6 +166,39 @@ function tmdbDiscoverCacheSet(cacheKey, data) {
     );
 }
 
+// Detail data (title, overview, poster, genres...) for a given show/movie is effectively
+// immutable on the timescale this app cares about - a few hours of staleness is invisible to
+// users but turns "every hero candidate + every episode badge hits TMDB live" into "one live
+// call per show every few hours, everyone else served from SQLite."
+const TMDB_DETAIL_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
+
+function tmdbDetailCacheGet(cacheKey) {
+    return new Promise((resolve) => {
+        animeCacheDb.get(
+            `SELECT json, cached_at FROM tmdb_detail_cache WHERE cache_key = ?`,
+            [cacheKey],
+            (err, row) => {
+                if (err || !row) return resolve(null);
+                if (Date.now() - row.cached_at > TMDB_DETAIL_CACHE_TTL) return resolve(null);
+                try {
+                    resolve(JSON.parse(row.json));
+                } catch {
+                    resolve(null);
+                }
+            }
+        );
+    });
+}
+
+function tmdbDetailCacheSet(cacheKey, data) {
+    animeCacheDb.run(
+        `INSERT INTO tmdb_detail_cache (cache_key, json, cached_at) VALUES (?, ?, ?)
+         ON CONFLICT(cache_key) DO UPDATE SET json = excluded.json, cached_at = excluded.cached_at`,
+        [cacheKey, JSON.stringify(data), Date.now()],
+        (err) => { if (err) console.warn('[TMDB Detail Cache] write failed:', err.message); }
+    );
+}
+
 // --- TMDB Proxy (keeps the API key out of the browser) ---
 // Frontend calls /api/tmdb-proxy/tv/123?language=en-US
 // → this route adds the key and forwards to https://api.themoviedb.org/3/tv/123
@@ -187,6 +220,23 @@ app.use('/api/tmdb-proxy', async (req, res) => {
                 headers: { Accept: 'application/json' },
             });
             tmdbDiscoverCacheSet(cacheKey, tmdbRes.data);
+            return res.json(tmdbRes.data);
+        }
+
+        // Plain detail lookup: /tv/{id} or /movie/{id}, no further path segments. Keyed by the
+        // full query string (not just tmdbId) so an `append_to_response=...` variant (used by
+        // movieInfo's full detail fetch) never collides with the bare lookup hero/badges use.
+        const detailMatch = tmdbPath.match(/^\/(tv|movie)\/(\d+)$/);
+        if (detailMatch) {
+            const cacheKey = `${tmdbPath}?${new URLSearchParams(req.query).toString()}`;
+            const cached = await tmdbDetailCacheGet(cacheKey);
+            if (cached) return res.json(cached);
+
+            const tmdbRes = await axios.get(`${TMDB_BASE_URL}${tmdbPath}`, {
+                params: query,
+                headers: { Accept: 'application/json' },
+            });
+            tmdbDetailCacheSet(cacheKey, tmdbRes.data);
             return res.json(tmdbRes.data);
         }
 
@@ -1035,6 +1085,17 @@ animeCacheDb.serialize(() => {
     // path. See tmdbDiscoverCacheGet/Set below and their TTL.
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS tmdb_discover_cache (
+            cache_key   TEXT PRIMARY KEY,
+            json        TEXT NOT NULL,
+            cached_at   INTEGER NOT NULL
+        )
+    `);
+    // Plain /tv/{id} and /movie/{id} detail lookups (no season, no discover) - hit LIVE on
+    // every request with zero caching, same problem as tmdb_discover_cache above. This is the
+    // single hottest path in the app: every hero-candidate resolution AND every episode-count
+    // badge on the visible grid calls this per show. See tmdbDetailCacheGet/Set below.
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS tmdb_detail_cache (
             cache_key   TEXT PRIMARY KEY,
             json        TEXT NOT NULL,
             cached_at   INTEGER NOT NULL
@@ -8736,26 +8797,43 @@ async function fetchAnimeTitleForTrailerSearch(tmdbId, mediaType) {
     }
 }
 
-async function fetchTrailerKeysWithYoutubeFallback(tmdbId, mediaType) {
-    const tmdbKeys = await fetchTrailerKeysFromTmdb(tmdbId, mediaType);
+// Runs the YouTube-scrape top-up AFTER the caller already has TMDB's own keys in hand, so a
+// cold cache-miss response never waits on a live YouTube search scrape (the single slowest step
+// in this whole path). Dedupes concurrent backfills for the same show (e.g. two badges/hero
+// candidates resolving the same id at once) via trailerBackfillInFlight.
+const trailerBackfillInFlight = new Set();
+
+function backfillTrailerKeysWithYoutube(tmdbId, mediaType, tmdbKeys) {
+    const dedupeKey = `${mediaType}:${tmdbId}`;
+    if (trailerBackfillInFlight.has(dedupeKey)) return;
     const needed = Math.min(ANIME_TRAILER_YT_SCRAPE_MAX, ANIME_TRAILER_TARGET_COUNT - tmdbKeys.length);
-    if (needed <= 0) return tmdbKeys;
-    const title = await fetchAnimeTitleForTrailerSearch(tmdbId, mediaType);
-    if (!title) return tmdbKeys;
-    const existing = new Set(tmdbKeys);
-    // Overfetch since some scraped results will just be dupes of what TMDB already gave us.
-    const scraped = await scrapeYoutubeSearch(`${title} trailer`, needed + existing.size + 5);
-    const newKeys = scraped.filter(id => !existing.has(id)).slice(0, needed);
-    return [...tmdbKeys, ...newKeys];
+    if (needed <= 0) return;
+    trailerBackfillInFlight.add(dedupeKey);
+    (async () => {
+        try {
+            const title = await fetchAnimeTitleForTrailerSearch(tmdbId, mediaType);
+            if (!title) return;
+            const existing = new Set(tmdbKeys);
+            // Overfetch since some scraped results will just be dupes of what TMDB already gave us.
+            const scraped = await scrapeYoutubeSearch(`${title} trailer`, needed + existing.size + 5);
+            const newKeys = scraped.filter(id => !existing.has(id)).slice(0, needed);
+            if (newKeys.length) setCachedTrailerKeys(tmdbId, mediaType, [...tmdbKeys, ...newKeys]);
+        } catch (err) {
+            console.warn('[TrailerCache] YouTube backfill failed for', mediaType, tmdbId, err.message || err);
+        } finally {
+            trailerBackfillInFlight.delete(dedupeKey);
+        }
+    })();
 }
 
 async function resolveTrailerKeysCached(tmdbId, mediaType) {
     const cached = await getCachedTrailerKeys(tmdbId, mediaType);
     if (cached !== undefined) return cached;
     try {
-        const keys = await fetchTrailerKeysWithYoutubeFallback(tmdbId, mediaType);
-        setCachedTrailerKeys(tmdbId, mediaType, keys);
-        return keys;
+        const tmdbKeys = await fetchTrailerKeysFromTmdb(tmdbId, mediaType);
+        setCachedTrailerKeys(tmdbId, mediaType, tmdbKeys);
+        backfillTrailerKeysWithYoutube(tmdbId, mediaType, tmdbKeys);
+        return tmdbKeys;
     } catch (err) {
         console.warn('[TrailerCache] live fetch failed for', mediaType, tmdbId, err.message || err);
         return [];
@@ -8789,8 +8867,23 @@ app.post('/api/anime-trailer-prefetch', (req, res) => {
                     const cached = await getCachedTrailerKeys(tmdbId, mediaType);
                     if (cached !== undefined) continue; // already warm, nothing to do
                 }
-                const keys = await fetchTrailerKeysWithYoutubeFallback(tmdbId, mediaType);
-                setCachedTrailerKeys(tmdbId, mediaType, keys);
+                // Nothing is waiting on this HTTP response by now, so unlike the live
+                // resolveTrailerKeysCached path there's no reason to skip the YT backfill and
+                // return early - fetch TMDB's keys, cache them, then await the top-up directly
+                // (not the fire-and-forget backfillTrailerKeysWithYoutube helper) so this batch
+                // job actually finishes with the full 5-key result before moving to the next id.
+                const tmdbKeys = await fetchTrailerKeysFromTmdb(tmdbId, mediaType);
+                setCachedTrailerKeys(tmdbId, mediaType, tmdbKeys);
+                const needed = Math.min(ANIME_TRAILER_YT_SCRAPE_MAX, ANIME_TRAILER_TARGET_COUNT - tmdbKeys.length);
+                if (needed > 0) {
+                    const title = await fetchAnimeTitleForTrailerSearch(tmdbId, mediaType);
+                    if (title) {
+                        const existing = new Set(tmdbKeys);
+                        const scraped = await scrapeYoutubeSearch(`${title} trailer`, needed + existing.size + 5);
+                        const newKeys = scraped.filter(id => !existing.has(id)).slice(0, needed);
+                        if (newKeys.length) setCachedTrailerKeys(tmdbId, mediaType, [...tmdbKeys, ...newKeys]);
+                    }
+                }
             } catch (err) {
                 console.warn('[TrailerCache] prefetch failed for', mediaType, tmdbId, err.message || err);
             }

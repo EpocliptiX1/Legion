@@ -195,7 +195,11 @@
 
     async function fetchTmdbObject(path) {
         try {
-            const res = await fetch(`${TMDB_BASE}${path}`);
+            // Backs the hero's own candidate resolution - explicitly high priority so it isn't
+            // stuck queued behind the grid's dozens of low-priority episode-badge fetches on the
+            // browser's shared connection pool (see episodeCountBadges.js's matching low-priority
+            // hints on those calls).
+            const res = await fetch(`${TMDB_BASE}${path}`, { priority: 'high' });
             if (!res.ok) return null;
             const data = await res.json();
             return normalizeTmdbResult(data);
@@ -230,35 +234,94 @@
         }
     }
 
-    async function buildAnimeHeroFromRecommendations(lastTmdbId) {
+    // Fire-and-forget - warms server.js's anime_trailer_cache for these specific candidates
+    // right when they're known, instead of waiting for the hero to actually need one. The
+    // point: by the time this SAME recommendation set backs the hero again (next load this
+    // session, or next visit), its trailer requests are already cache hits. Never awaited by
+    // any caller - deliberately doesn't block or slow down hero rendering itself.
+    function prefetchTrailerKeys(shows) {
+        const tmdbIds = shows.map(s => s?.id).filter(id => Number.isFinite(id)).slice(0, 20);
+        if (!tmdbIds.length) return;
+        fetch('/api/anime-trailer-prefetch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tmdbIds, type: 'tv' })
+        }).catch(() => {});
+    }
+
+    // Resolves to whichever promise in the array settles FIRST with a truthy value, without
+    // waiting for the rest - Promise.any() doesn't fit here since these candidates RESOLVE to
+    // null on failure rather than reject, which Promise.any can't skip past. Used to let the
+    // hero start on the very first candidate that resolves instead of waiting for the whole
+    // (up to 24-item) batch Promise.all below still needs for the full carousel.
+    function firstTruthy(promises) {
+        return new Promise((resolve) => {
+            if (!promises.length) return resolve(null);
+            let remaining = promises.length;
+            let settled = false;
+            promises.forEach(p => {
+                p.then(v => {
+                    if (!settled && v) { settled = true; resolve(v); }
+                }).finally(() => {
+                    remaining--;
+                    if (remaining === 0 && !settled) resolve(null);
+                });
+            });
+        });
+    }
+
+    // onFirstShow (optional): fires as soon as the FASTEST candidate resolves, well before this
+    // whole function returns - confirmed live the hero's trailer was starting behind a storm of
+    // ~80+ episode-badge requests from the grid rows below it, purely because it wasn't allowed
+    // to show/play ANYTHING until all up to 24 raw candidates had resolved via Promise.all, even
+    // though only the FIRST is actually needed to get the hero on screen and its trailer loading.
+    async function buildAnimeHeroFromRecommendations(lastTmdbId, onFirstShow) {
         if (!lastTmdbId) return [];
         try {
-            const response = await fetch(`/api/anime-recommendations?tmdbId=${encodeURIComponent(lastTmdbId)}`);
+            const response = await fetch(`/api/anime-recommendations?tmdbId=${encodeURIComponent(lastTmdbId)}`, { priority: 'high' });
             if (!response.ok) return [];
             const body = await response.json();
             if (body.status !== 'ready' || !Array.isArray(body.recommendations)) return [];
-            const shows = [];
-            const seen = new Set();
             // Was slicing to only 12 raw candidates before resolving each to a TMDB
             // id -- some of those inevitably fail to resolve (fetchTmdbItemById
             // miss, dupes), so the hero consistently landed on ~4 instead of the
             // intended 8. More raw candidates to draw from before giving up.
-            for (const rec of body.recommendations.slice(0, 24)) {
+            const candidates = body.recommendations.slice(0, 24);
+            // Same underlying promises are shared by firstTruthy (fast path, below) and
+            // Promise.all (full list, for the carousel) - resolved once, consumed twice, so
+            // wanting the fast path never doubles the actual request count.
+            const resolutionPromises = candidates.map(async (rec) => {
                 const tmdbId = rec?.ID || rec?.tmdb_id || null;
-                if (!tmdbId || seen.has(String(tmdbId))) continue;
+                if (!tmdbId) return null;
                 const show = await fetchTmdbItemById(tmdbId, 'tv');
-                if (!show) continue;
-                seen.add(String(tmdbId));
-                shows.push(show);
+                return show ? { tmdbId: String(tmdbId), show } : null;
+            });
+
+            if (typeof onFirstShow === 'function') {
+                firstTruthy(resolutionPromises).then(first => { if (first) onFirstShow(first.show); });
+            }
+
+            const resolved = await Promise.all(resolutionPromises);
+            const shows = [];
+            const seen = new Set();
+            for (const r of resolved) {
+                if (!r || seen.has(r.tmdbId)) continue;
+                seen.add(r.tmdbId);
+                shows.push(r.show);
                 if (shows.length >= 8) break;
             }
+            prefetchTrailerKeys(shows);
             return shows;
         } catch (err) {
             return [];
         }
     }
 
-    async function buildAnimeHeroFromMostPopularRow() {
+    // onFirstShow (optional): see buildAnimeHeroFromRecommendations' identical param - fires as
+    // soon as the fastest of up to 20 candidates resolves, instead of the hero waiting on the
+    // whole batch (this was the worse offender of the two: each item can chain
+    // getTmdbIdForAniList -> fetchTmdbItemById -> a TMDB title-search fallback).
+    async function buildAnimeHeroFromMostPopularRow(onFirstShow) {
         try {
             // Same deal as buildAnimeHeroFromRecommendations -- requesting exactly 8
             // raw AniList items left no headroom for ones that fail to resolve a
@@ -267,9 +330,11 @@
             const items = await fetchAniListRow('MOST_POPULAR', 1, 20);
             if (!items.length) return [];
 
-            const shows = [];
-            const seen = new Set();
-            for (const item of items) {
+            // Resolved in PARALLEL - see buildAnimeHeroFromRecommendations' identical comment.
+            // This was the worse offender of the two: each of up to 20 items could chain
+            // getTmdbIdForAniList -> fetchTmdbItemById -> a TMDB title-search fallback
+            // sequentially, one full item at a time, before the hero showed anything at all.
+            const resolutionPromises = items.map(async (item) => {
                 const title = item.title?.english || item.title?.romaji || item.title?.native || '';
                 const preferredType = /MOVIE|FILM/i.test(item.format || '') ? 'movie' : 'tv';
                 const tmdbId = await getTmdbIdForAniList(
@@ -288,12 +353,24 @@
                     const match = (results || []).find(r => r.original_language === 'ja') || results?.[0];
                     if (match) show = { ...match, type: searchType };
                 }
+                return show;
+            });
 
+            if (typeof onFirstShow === 'function') {
+                firstTruthy(resolutionPromises).then(first => { if (first) onFirstShow(first); });
+            }
+
+            const resolved = await Promise.all(resolutionPromises);
+
+            const shows = [];
+            const seen = new Set();
+            for (const show of resolved) {
                 if (!show || seen.has(String(show.id))) continue;
                 seen.add(String(show.id));
                 shows.push(show);
                 if (shows.length >= 8) break;
             }
+            prefetchTrailerKeys(shows);
             return shows;
         } catch (err) {
             return [];
@@ -336,10 +413,33 @@
 
     async function renderAniListRow(rowId, rowKey) {
         const items = await fetchAniListRow(rowKey, 1, 18);
-        const tmdbCounts = new Map();
-        const rendered = [];
 
-        for (const item of items) {
+        // Cards render IMMEDIATELY with tmdbId unresolved - this used to sequentially AWAIT
+        // every item's own tmdbId resolution (up to 18 separate round trips, one at a time, for
+        // EACH of the ~20 different rows across the site that call this) before returning
+        // anything at all, so a row sat visibly blank until its slowest item resolved - confirmed
+        // live as the "waits for the episode stuff before the cards even spawn" symptom.
+        // renderAniListGridCard already has a real fallback for a null tmdbId (a lazy
+        // navigateToAnimeByTitle click handler, same as "Because You Watched" cards elsewhere
+        // use), so every card can render instantly and swap in its real movieInfo link once its
+        // own resolution finishes, independently and in parallel, instead of one slow lookup
+        // blocking the other 17.
+        //
+        // Critically, renderAniListGridCard now OMITS the episode-badge placeholder entirely
+        // when tmdbId is null (see that function) - it used to render one anyway, which fired an
+        // IMMEDIATE badge fetch with no tmdbId/malId/tmdbTotal at all. That weaker, title-only
+        // request often WON the race against the properly-resolved one below (it had nothing to
+        // wait for) and got cached server-side under a normalized-title-only row - and since
+        // that's the SAME row every other page's fully-resolved request reads too, one badly-
+        // scoped first-paint fetch could poison the shared cache for every view of that show
+        // (confirmed live: this is what was actually producing One Piece's wildly inconsistent
+        // 61/16/8-style numbers, not a rendering bug). The badge placeholder is added back in on
+        // the very next line once tmdbId is genuinely known, so the badge fetch that actually
+        // fires is always the well-scoped one.
+        const rendered = items.map(item => renderAniListGridCard(item, null));
+
+        const tmdbCounts = new Map();
+        Promise.all(items.map(async (item, i) => {
             const title = item.title?.romaji || item.title?.english || item.title?.native || '';
             const tmdbId = await getTmdbIdForAniList(
                 item.id,
@@ -349,15 +449,21 @@
                 item.title?.romaji || null,
                 item.title?.native || null
             );
+            if (!tmdbId) return; // no better card to swap in - the lazy-title fallback stays
 
-            if (rowKey === 'KAIJU' && tmdbId != null) {
+            const container = document.getElementById(rowId);
+            const card = container?.children[i];
+            if (!card) return; // row re-rendered/left the page before this resolved
+
+            if (rowKey === 'KAIJU') {
                 const count = (tmdbCounts.get(tmdbId) || 0) + 1;
                 tmdbCounts.set(tmdbId, count);
-                if (count > 2) continue;
+                if (count > 2) { card.remove(); return; } // same de-dup the old loop did, just after the fact now
             }
 
-            rendered.push(renderAniListGridCard(item, tmdbId));
-        }
+            card.outerHTML = renderAniListGridCard(item, tmdbId);
+            window.mountEpisodeCountBadges?.(container);
+        })).catch(() => {});
 
         return rendered.join('');
     }
@@ -489,7 +595,7 @@
                  onmouseleave="handleCardLeave(this)"
                  onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle.replace(/'/g, "\\'")}');`}">
                 ${rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${rating}</span>` : ''}
-                ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title, altTitles: badgeAltTitles, tmdbId }) : ''}
+                ${tmdbId && window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title, altTitles: badgeAltTitles, tmdbId }) : ''}
                 <img src="${poster}" loading="lazy" alt="${title}" onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle.replace(/'/g, "\\'")}');`}" onerror="this.src='/img/LOGO_Short.png'">
                 <div class="card-title-label">
                     <div class="card-title-name">${title}</div>
@@ -676,7 +782,14 @@
                     if (task) runTask(task);
                     obs.unobserve(entry.target);
                 });
-            }, { root: null, rootMargin: '240px 0px', threshold: 0.1 });
+            // Confirmed live: 240px was generous enough that most/all 15 of indexBrowse's rows
+            // ended up rendering within the first couple seconds regardless of actual scroll
+            // position (854 requests / 20MB on a fresh load, not the handful a genuinely lazy
+            // page should produce) - each row that renders immediately populates its own batch
+            // of episode-badge placeholders too, so this wasn't just wasted poster bytes, it was
+            // feeding the badge flood directly. Tightened so a row only starts loading once it's
+            // actually close to being scrolled into view.
+            }, { root: null, rootMargin: '80px 0px', threshold: 0.1 });
 
             lazyTasks.forEach(task => {
                 if (task.target) observer.observe(task.target);
@@ -694,9 +807,27 @@
     let animeHeroList = [];
     let animeHeroIdx = 0;
 
+    // Standalone so the full candidate list (which arrives AFTER the hero has already started
+    // playing on just its first-resolved show - see buildAnimeHeroFromRecommendations'
+    // onFirstShow) can refresh the dots without re-running renderAnimeHero and restarting the
+    // trailer that's already loading/playing.
+    function updateHeroDots() {
+        const dotsEl = document.getElementById('sliderDots');
+        if (dotsEl) {
+            dotsEl.innerHTML = animeHeroList.map((_, i) =>
+                `<span class="dot${i === animeHeroIdx ? ' active' : ''}" onclick="window.__animeGoTo(${i})"></span>`
+            ).join('');
+        }
+    }
+
     function renderAnimeHero(show) {
         const content = document.querySelector('.hero-content');
         if (content) content.style.opacity = '0';
+
+        // Kick the trailer-key lookup off immediately, in parallel with the fade-out below,
+        // instead of behind it - the network round-trip shouldn't wait on a CSS transition.
+        const trailerKeysPromise = fetch(`/api/anime-trailer-keys?tmdbId=${encodeURIComponent(show.id)}&type=tv`, { priority: 'high' })
+            .then(r => r.json());
 
         setTimeout(() => {
             const title = show.name || show.original_name || '';
@@ -740,48 +871,48 @@
 
             if (content) content.style.opacity = '1';
 
-            // Update slider dots
-            const dotsEl = document.getElementById('sliderDots');
-            if (dotsEl) {
-                dotsEl.innerHTML = animeHeroList.map((_, i) =>
-                    `<span class="dot${i === animeHeroIdx ? ' active' : ''}" onclick="window.__animeGoTo(${i})"></span>`
-                ).join('');
-            }
+            updateHeroDots();
 
-            // Load trailer — use TMDB ID directly since we already have it
+            // Load trailer — use TMDB ID directly since we already have it. Goes through the
+            // trailer-key cache (see server.js's anime_trailer_cache) instead of hitting TMDB's
+            // /videos endpoint live every render - a trailer key is static once TMDB has it, and
+            // this is the exact same request that used to make the hero visibly wait, especially
+            // for franchises with a long candidate list. Prefetched proactively for "recommended
+            // based on your last watched" candidates elsewhere (see the prefetch call after
+            // buildAnimeHeroFromRecommendations), so this is usually already a cache hit here.
             const iframe = document.getElementById('heroTrailerFrame');
             if (iframe) {
-                const videosUrl = `/api/tmdb-proxy/tv/${show.id}/videos?language=en-US`;
-                fetch(videosUrl)
-                    .then(r => r.json())
+                trailerKeysPromise
                     .then(data => {
-                        const trailers = (data.results || []).filter(v => v.site === 'YouTube');
+                        // Already trailers-first, teasers/clips after - same priority order the
+                        // old client-side filtering produced.
+                        const trailerKeys = Array.isArray(data.trailerKeys) ? data.trailerKeys : [];
                         const lowData = localStorage.getItem('lowDataMode') === 'true';
                         const usedTrailers = new Set();
 
-                        const playTrailer = (candidate) => {
-                            if (!candidate || lowData) {
+                        const playTrailer = (key) => {
+                            if (!key || lowData) {
                                 return skipTrailer();
                             }
                             if (typeof window.setHeroTrailerSource === 'function') {
                                 window.setHeroTrailerSource(
                                     iframe,
-                                    candidate.key,
+                                    key,
                                     () => {
                                         if (typeof window.nextSlide === 'function') window.nextSlide();
                                     },
                                     () => {
-                                        usedTrailers.add(candidate.key);
-                                        const nextCandidate = trailers.find(t => t.site === 'YouTube' && !usedTrailers.has(t.key));
-                                        if (nextCandidate) {
-                                            playTrailer(nextCandidate);
+                                        usedTrailers.add(key);
+                                        const nextKey = trailerKeys.find(k => !usedTrailers.has(k));
+                                        if (nextKey) {
+                                            playTrailer(nextKey);
                                         } else {
                                             skipTrailer();
                                         }
                                     }
                                 );
                             } else {
-                                iframe.src = `https://www.youtube.com/embed/${candidate.key}?autoplay=1&mute=1&controls=0&loop=1&playlist=${candidate.key}&rel=0`;
+                                iframe.src = `https://www.youtube.com/embed/${key}?autoplay=1&mute=1&controls=0&loop=1&playlist=${key}&rel=0`;
                             }
                         };
 
@@ -800,8 +931,7 @@
                             }
                         };
 
-                        const primaryTrailer = trailers.find(v => v.type === 'Trailer') || trailers[0];
-                        playTrailer(primaryTrailer);
+                        playTrailer(trailerKeys[0]);
                     })
                     .catch(() => { iframe.src = ''; });
             }
@@ -874,11 +1004,10 @@
             if (maxTrailer) {
                 maxTrailer.src = '';
                 try {
-                    const data = await fetch(`/api/tmdb-proxy/tv/${show.id}/videos?language=en-US`).then(r => r.json());
-                    const trailer = (data.results || []).find(v => v.site === 'YouTube' && v.type === 'Trailer')
-                        || (data.results || []).find(v => v.site === 'YouTube');
-                    if (trailer) {
-                        maxTrailer.src = `https://www.youtube.com/embed/${trailer.key}?autoplay=1&rel=0&enablejsapi=1`;
+                    const data = await fetch(`/api/anime-trailer-keys?tmdbId=${encodeURIComponent(show.id)}&type=tv`, { priority: 'high' }).then(r => r.json());
+                    const trailerKey = Array.isArray(data.trailerKeys) ? data.trailerKeys[0] : null;
+                    if (trailerKey) {
+                        maxTrailer.src = `https://www.youtube.com/embed/${trailerKey}?autoplay=1&rel=0&enablejsapi=1`;
                     }
                 } catch (_) { /* no trailer available -- popup still shows title/plot */ }
             }
@@ -895,6 +1024,45 @@
         // Hero tag
         const heroTag = document.getElementById('heroTag');
         if (heroTag) heroTag.textContent = 'Trending Anime';
+
+        // Hero resolution kicked off FIRST, before anything else on this page - it's the single
+        // most visually important element here (fills the whole top of the page), but used to be
+        // the LAST thing to even start: it sat behind the "Currently Airing" row's own blocking
+        // TMDB fetch below AND the "Popular Anime" row's eager load, both of which fire real
+        // network requests before hero's own chain ever begins. Confirmed live: the pageLoading
+        // overlay would disappear (it doesn't wait on this) while the hero sat on its static
+        // "Loading..." placeholder for up to 10s after, purely because nothing had asked for its
+        // data yet. Started here as a promise (not awaited yet) so its requests are already in
+        // flight while the rest of the page sets up - only consumed/rendered further down, once
+        // everything else has had its own chance to start too.
+        // Set the instant the FIRST candidate (across either tier) resolves - lets the
+        // consumption code below skip re-rendering (and restarting the trailer) once the full
+        // list arrives, backfilling the carousel instead. See onFirstShow below.
+        let heroRenderedEarly = false;
+        const onFirstShow = (show, label) => {
+            if (heroRenderedEarly) return; // first candidate to resolve wins, ignore the rest
+            heroRenderedEarly = true;
+            animeHeroList = [show];
+            animeHeroIdx = 0;
+            if (label && heroTag) heroTag.textContent = label;
+            renderAnimeHero(show);
+            patchSlider();
+        };
+
+        const heroPromise = (async () => {
+            let heroShows = [];
+            let heroLabel = null;
+            const historyIds = await getAnimeBrowseHistoryTmdbIds();
+            if (historyIds.length > 0) {
+                heroShows = await buildAnimeHeroFromRecommendations(historyIds[0], show => onFirstShow(show, 'Recommended from your last watched anime'));
+                if (heroShows.length > 0) heroLabel = 'Recommended from your last watched anime';
+            }
+            if (heroShows.length === 0) {
+                heroShows = await buildAnimeHeroFromMostPopularRow(show => onFirstShow(show, 'Popular Anime'));
+                if (heroShows.length > 0) heroLabel = 'Popular Anime';
+            }
+            return { heroShows, heroLabel };
+        })();
 
         // Rename "Most Recent" → "Currently Airing"
         const rowNewest = document.getElementById('rowNewest');
@@ -1000,34 +1168,31 @@
 
         patchAnimeRowHoverBackgrounds();
 
-        // Load hero using history-based recommendations first, then AniList cache, then TMDB discover.
-        let heroShows = [];
-        const historyIds = await getAnimeBrowseHistoryTmdbIds();
-        if (historyIds.length > 0) {
-            heroShows = await buildAnimeHeroFromRecommendations(historyIds[0]);
-            if (heroShows.length > 0 && heroTag) {
-                heroTag.textContent = 'Recommended from your last watched anime';
-            }
-        }
-
-        if (heroShows.length === 0) {
-            heroShows = await buildAnimeHeroFromMostPopularRow();
-            if (heroShows.length > 0 && heroTag) {
-                heroTag.textContent = 'Popular Anime';
-            }
-        }
-
-        if (heroShows.length === 0) {
+        // Consumed here (kicked off at the very top of this function, see heroPromise) - by now
+        // every other request on the page (Currently Airing, row 1) has already had its own
+        // chance to start, so this await mostly just catches up to work already in flight rather
+        // than sitting behind it.
+        let { heroShows, heroLabel } = await heroPromise;
+        if (heroShows.length === 0 && !heroRenderedEarly) {
             heroShows = await tmdbFetch(`/discover/tv?${BASE}&vote_count.gte=50&sort_by=popularity.desc`);
-            if (heroShows.length > 0 && heroTag) {
-                heroTag.textContent = 'Trending Anime';
-            }
+            if (heroShows.length > 0) heroLabel = 'Trending Anime';
         }
 
-        animeHeroList = heroShows.slice(0, 8);
-        if (animeHeroList.length > 0) {
-            renderAnimeHero(animeHeroList[0]);
-            patchSlider();
+        if (heroRenderedEarly) {
+            // Hero is already showing/playing its first pick (see onFirstShow) - just backfill
+            // the rest of the carousel (dots, next/prev slides) without re-rendering, which
+            // would restart the trailer that's already loading/playing.
+            const shown = animeHeroList[0];
+            const rest = shown ? heroShows.filter(s => s.id !== shown.id) : heroShows;
+            animeHeroList = shown ? [shown, ...rest].slice(0, 8) : heroShows.slice(0, 8);
+            updateHeroDots();
+        } else {
+            if (heroLabel && heroTag) heroTag.textContent = heroLabel;
+            animeHeroList = heroShows.slice(0, 8);
+            if (animeHeroList.length > 0) {
+                renderAnimeHero(animeHeroList[0]);
+                patchSlider();
+            }
         }
 
         // Move static marketing sections to bottom of #subSec
@@ -1499,6 +1664,41 @@
             });
         }
 
+        // Hero resolution's own network requests fire NOW, before row loading/personal rows
+        // below get their turn - confirmed live the hero (the single most visually important
+        // element on the page) used to be the LAST thing to even start here, sitting behind 3
+        // eager rows (scheduleAnimeRowLoad's own eagerCount) AND loadAnimePersonalRows, both of
+        // which compete for the same limited connection/backend resources. Awaited further down,
+        // by which point everything else has already had its own chance to start too.
+        // Set the instant the FIRST candidate (across either tier) resolves - lets the
+        // consumption code below skip re-rendering (and restarting the trailer) once the full
+        // list arrives, backfilling the carousel instead. See onFirstShow below.
+        let heroRenderedEarly = false;
+        const onFirstShow = (show, label) => {
+            if (heroRenderedEarly) return; // first candidate to resolve wins, ignore the rest
+            heroRenderedEarly = true;
+            animeHeroList = [show];
+            animeHeroIdx = 0;
+            if (label && heroTag) heroTag.textContent = label;
+            renderAnimeHero(show);
+            patchSlider();
+        };
+
+        const heroPromise = (async () => {
+            let heroShows = [];
+            let heroLabel = null;
+            const historyIds = await getAnimeBrowseHistoryTmdbIds();
+            if (historyIds.length > 0) {
+                heroShows = await buildAnimeHeroFromRecommendations(historyIds[0], show => onFirstShow(show, 'Recommended from your last watched anime'));
+                if (heroShows.length > 0) heroLabel = 'Recommended from your last watched anime';
+            }
+            if (heroShows.length === 0) {
+                heroShows = await buildAnimeHeroFromMostPopularRow(show => onFirstShow(show, 'Popular Anime'));
+                if (heroShows.length > 0) heroLabel = 'Popular Anime';
+            }
+            return { heroShows, heroLabel };
+        })();
+
         scheduleAnimeRowLoad(rowTasks, 3);
 
         // Start personal rows immediately so they can finish behind the loading overlay.
@@ -1508,33 +1708,27 @@
         }
 
         // Hero
-        let heroShows = [];
-        const historyIds = await getAnimeBrowseHistoryTmdbIds();
-        if (historyIds.length > 0) {
-            heroShows = await buildAnimeHeroFromRecommendations(historyIds[0]);
-            if (heroShows.length > 0) {
-                heroTag.textContent = 'Recommended from your last watched anime';
-            }
-        }
-
-        if (heroShows.length === 0) {
-            heroShows = await buildAnimeHeroFromMostPopularRow();
-            if (heroShows.length > 0) {
-                heroTag.textContent = 'Popular Anime';
-            }
-        }
-
-        if (heroShows.length === 0) {
+        let { heroShows, heroLabel } = await heroPromise;
+        if (heroShows.length === 0 && !heroRenderedEarly) {
             heroShows = await tmdbFetch(`/discover/tv?${BASE}&vote_count.gte=50&sort_by=popularity.desc`);
-            if (heroShows.length > 0) {
-                heroTag.textContent = 'Trending Anime';
-            }
+            if (heroShows.length > 0) heroLabel = 'Trending Anime';
         }
 
-        animeHeroList = heroShows.slice(0, 8);
-        if (animeHeroList.length > 0) {
-            renderAnimeHero(animeHeroList[0]);
-            patchSlider();
+        if (heroRenderedEarly) {
+            // Hero is already showing/playing its first pick (see onFirstShow) - just backfill
+            // the rest of the carousel (dots, next/prev slides) without re-rendering, which
+            // would restart the trailer that's already loading/playing.
+            const shown = animeHeroList[0];
+            const rest = shown ? heroShows.filter(s => s.id !== shown.id) : heroShows;
+            animeHeroList = shown ? [shown, ...rest].slice(0, 8) : heroShows.slice(0, 8);
+            updateHeroDots();
+        } else {
+            if (heroLabel) heroTag.textContent = heroLabel;
+            animeHeroList = heroShows.slice(0, 8);
+            if (animeHeroList.length > 0) {
+                renderAnimeHero(animeHeroList[0]);
+                patchSlider();
+            }
         }
 
         const recommendationFirstPageReady = new Promise(resolve => {

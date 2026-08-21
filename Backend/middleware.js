@@ -216,6 +216,14 @@ app.use((req, res) => proxyToBackend(req, res));
 const certPath = path.join(__dirname, '..', 'cert', 'localhost.pfx');
 
 if (fs.existsSync(certPath)) {
+    // Tried upgrading this to http2.createSecureServer({allowHTTP1:true}) to remove the
+    // browser's ~6-connections-per-origin cap (HTTP/1.1) - reverted. On this Node version
+    // (v24.12.0) Express's http2 compat layer crashed the whole process twice from unrelated
+    // code paths: once via an unlistened 'error' event on an aborted request body stream, and
+    // again inside finalhandler's error-response path (`res.removeHeader` hitting an internal
+    // symbol http2's compat ServerResponse doesn't fully replicate on this Node build). Two
+    // independent crash sites means the compat layer itself is unstable here, not a one-off
+    // edge case worth patching around - not safe to run against real traffic.
     const tlsOptions = {
         pfx:        fs.readFileSync(certPath),
         passphrase: 'Damir_19032009',
