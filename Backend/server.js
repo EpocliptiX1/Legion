@@ -17702,15 +17702,18 @@ async function fetchAndIngestUserList(token, userUID) {
 // regardless of which third-party site iframed the page in. Falls back to nesting MegaPlay's own
 // iframe (same as the internal player's own fallback) only if extraction itself fails.
 
-// Resolves either a numeric TMDB id or an IMDB id (tt1234567) to a numeric TMDB tv id. Anime on
-// this site is always represented as a TMDB TV entry (even "movies" - see getTmdbAnimeTitle's own
-// Japanese-origin gate elsewhere in this file), so external_source is always tv here.
-async function resolvePublicEmbedTmdbId(rawId) {
+// Resolves either a numeric TMDB id or an IMDB id (tt1234567) to a numeric TMDB id. mediaType
+// picks which /find results array to read - anime is always represented as a TMDB TV entry (even
+// "movies" - see getTmdbAnimeTitle's own Japanese-origin gate elsewhere in this file) so the
+// anime embed route always passes 'tv', while the plain movie/tv embed routes pass whichever
+// matches their own path.
+async function resolvePublicEmbedTmdbId(rawId, mediaType = 'tv') {
     const idStr = String(rawId || '').trim();
     if (/^tt\d+$/i.test(idStr)) {
         try {
             const data = await tmdbGet(`/find/${idStr}`, { external_source: 'imdb_id' });
-            const match = Array.isArray(data?.tv_results) && data.tv_results[0];
+            const results = mediaType === 'movie' ? data?.movie_results : data?.tv_results;
+            const match = Array.isArray(results) && results[0];
             return match?.id || null;
         } catch (err) {
             return null;
@@ -17778,10 +17781,45 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title }) {
   .plyr__control--back { border-bottom: 1px solid #222; background: #181818; }
   .plyr__control[aria-expanded="true"] svg { transform: rotate(90deg); }
 
+  /* Volume: stock Plyr reserves 60-90px of permanent horizontal space for the range track even
+     though it's only ever touched to mute/adjust for a second - popping it up as a vertical
+     slider above the button on hover/focus (hidden by default, only takes space when open) frees
+     that width back up for the rest of the bar, same idea as YouTube's own volume control. */
+  .plyr__volume { position: relative; }
+  .plyr__volume input[type="range"] {
+    position: absolute;
+    bottom: calc(100% + 22px);
+    left: calc(50% + 2px);
+    /* rotated range inputs measure their OWN width along the now-vertical track, so "width" here
+       is the slider's vertical length once turned upright, not its (invisible) horizontal footprint */
+    width: 70px;
+    max-width: none;
+    min-width: 0;
+    transform: translateX(-50%) rotate(-90deg);
+    transform-origin: center;
+    background: rgba(18, 18, 18, 0.95);
+    border-radius: 6px;
+    padding: 8px 0;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    margin: 0;
+  }
+  .plyr__volume:hover input[type="range"],
+  .plyr__volume:focus-within input[type="range"] {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+
   .ani-brand { position: absolute; top: 10px; left: 12px; color: rgba(255,255,255,0.65);
     font-weight: 800; font-size: 13px; letter-spacing: 0.02em; pointer-events: none; user-select: none;
     text-shadow: 0 1px 3px rgba(0,0,0,0.8); z-index: 30; }
   .ani-brand .accent { color: #ff8000; }
+
+  .embed-top-controls { position: absolute; top: 12px; right: 12px; display: flex; gap: 8px;
+    align-items: center; z-index: 25; }
 </style>
 </head>
 <body>
@@ -17799,11 +17837,29 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title }) {
       // Same buildPlyrPlayer-after-MANIFEST_PARSED pattern the internal site player uses
       // (moviePlayer.js) - quality options come from the manifest's real levels instead of a
       // guessed list, with a timeout fallback if the manifest never parses.
+      // Moves just the settings and pip buttons into a top-right overlay, same idea as
+      // movieInfo.html's own kaa-top-controls but scoped to only these two (embed keeps
+      // volume/captions in the bottom bar, unlike the site's mobile-only split) - the embed is
+      // always a small, often-narrow iframe, not a responsive full page, so this stays on
+      // unconditionally rather than being gated behind a viewport width check.
+      function moveSettingsPipToTop(plyrInstance) {
+        var playerContainer = plyrInstance.elements.container;
+        var controls = plyrInstance.elements.controls;
+        if (!playerContainer || !controls) return;
+        var topControls = document.createElement('div');
+        topControls.className = 'embed-top-controls';
+        playerContainer.appendChild(topControls);
+        ['[data-plyr="settings"]', '[data-plyr="pip"]'].forEach(function (selector) {
+          var element = controls.querySelector(selector);
+          if (element) topControls.appendChild(element);
+        });
+      }
+
       var plyrBuilt = false;
       function buildPlyr(qualityOptions) {
         if (plyrBuilt) return;
         plyrBuilt = true;
-        new Plyr(video, {
+        var plyrInstance = new Plyr(video, {
           controls: ['play-large', 'rewind', 'play', 'fast-forward', 'progress', 'current-time',
             'duration', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
           settings: ['captions', 'quality', 'speed'],
@@ -17820,6 +17876,7 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title }) {
           },
           i18n: { qualityLabel: { 0: 'Auto' } }
         });
+        moveSettingsPipToTop(plyrInstance);
       }
 
       var hls = null;
@@ -17940,9 +17997,78 @@ async function resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, ses
     return tokenizeMegaplayTracks(megaplayTracks, sessionId);
 }
 
-// GET /embed/anime/{id}/{episode}?season=1&audio=sub
+// Resolves an anime episode's stream from whichever server the caller picked. mega (default) is
+// the only one with a graceful iframe fallback (see the route below) - kaa/neko/ru all either
+// resolve a real stream or the route returns an error page, matching how the plain movie/tv
+// embed routes behave for their own single provider.
+async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId }) {
+    if (server === 'kaa') {
+        const { title } = await getTmdbAnimeTitle(tmdbId);
+        if (!title) throw new Error('could not resolve a title for KAA');
+        const raw = await resolveKickAssAnimeSources({
+            malId, tmdbId, itemType: 'tv', episodeNumber: episode, audioType: audio, frontendTitle: title, season
+        });
+        const tokenized = tokenizeKaaResult(raw, sessionId);
+        const source = tokenized.sources?.[0];
+        if (!source?.proxiedUrl) throw new Error('KAA returned no sources');
+        const tracks = (tokenized.subtitles || []).map((s, i) => ({ url: s.url, lang: s.lang || `Subtitle ${i + 1}`, default: i === 0 }));
+        return { streamUrl: source.proxiedUrl, tracks };
+    }
+
+    if (server === 'neko') {
+        const { title } = await getTmdbAnimeTitle(tmdbId);
+        if (!title) throw new Error('could not resolve a title for Neko');
+        const epInfo = await resolveAnikotoEpisodeCached(title, season, episode);
+        try {
+            const { mediaId, embedUrl } = await resolveNekoMediaId(epInfo.serverToken, audio, epInfo.baseHeaders);
+            const sourcesRes = await axios.get(`https://vidtube.site/stream/getSourcesNew?id=${mediaId}&type=${audio}`, {
+                headers: { ...epInfo.baseHeaders, Referer: embedUrl }, timeout: 15000
+            });
+            const streamUrl = sourcesRes.data?.sources?.file || sourcesRes.data?.file;
+            if (!streamUrl) throw new Error('Neko/VidTube returned no stream file');
+            const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: [] });
+            return { streamUrl: buildM3u8ProxyUrl(streamUrl, null, sessionId), tracks };
+        } catch (err) {
+            // VidTube genuinely has no server for this audio type (not a transient failure) -
+            // same fallback fetchKaaSubtitlesForEpisode's caller uses internally.
+            if (!err.noVidtube) throw err;
+            const data = await resolveMegaplaySourcesCached(malId, episode, audio);
+            if (!data?.stream) throw new Error('Neko had nothing and MegaPlay fallback also failed');
+            const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: data.tracks });
+            return { streamUrl: buildM3u8ProxyUrl(data.stream, data.proxyRef || null, sessionId), tracks };
+        }
+    }
+
+    if (server === 'ru') {
+        const { title } = await getTmdbAnimeTitle(tmdbId);
+        if (!title) throw new Error('could not resolve a title for RU-MV');
+        const info = await resolveAnimegoAniboomCached(title, season, { malId, tmdbId });
+        const translations = Array.isArray(info?.translations) ? info.translations.slice(0, 4) : [];
+        let streamUrl = null;
+        for (const t of translations) {
+            try {
+                streamUrl = await fetchAniboomStream(info.aniboomId, info.parentEncoded, episode, t.id);
+                if (streamUrl) break;
+            } catch (err) {
+                // try the next translation
+            }
+        }
+        if (!streamUrl) throw new Error('RU-MV (animego/aniboom) has no playable translation for this episode');
+        const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: [] });
+        return { streamUrl: buildM3u8ProxyUrl(streamUrl, 'https://aniboom.one/', sessionId), tracks };
+    }
+
+    // default: mega (MegaPlay)
+    const data = await resolveMegaplaySourcesCached(malId, episode, audio);
+    if (!data?.stream) throw new Error('no stream in resolved data');
+    const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: data.tracks });
+    return { streamUrl: buildM3u8ProxyUrl(data.stream, data.proxyRef || null, sessionId), tracks };
+}
+
+// GET /embed/anime/{id}/{episode}?season=1&audio=sub&server=mega
 // {id}: numeric TMDB id or IMDB id (tt1234567). {episode}: episode number within {season}
-// (default 1). audio: 'sub' (default) or 'dub'.
+// (default 1). audio: 'sub' (default) or 'dub'. server: 'mega' (default, MegaPlay), 'kaa'
+// (KickAssAnime), 'neko' (NekoStream/VidTube), or 'ru' (RU-MV, animego.me -> aniboom.one).
 app.get('/embed/anime/:id/:episode', async (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
@@ -17953,8 +18079,9 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
     const seasonParam = parseInt(req.query.season, 10);
     const season = Number.isFinite(seasonParam) && seasonParam > 0 ? seasonParam : 1;
     const audio = req.query.audio === 'dub' ? 'dub' : 'sub';
+    const server = ['kaa', 'neko', 'ru'].includes(req.query.server) ? req.query.server : 'mega';
 
-    const tmdbId = await resolvePublicEmbedTmdbId(req.params.id);
+    const tmdbId = await resolvePublicEmbedTmdbId(req.params.id, 'tv');
     if (!tmdbId) {
         return res.status(404).send(renderPublicEmbedErrorHtml('Could not resolve this id to a known title.'));
     }
@@ -17970,16 +18097,107 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
         return res.status(404).send(renderPublicEmbedErrorHtml('This title/season could not be resolved to a playable source yet.'));
     }
 
-    const providerSrc = `https://megaplay.buzz/stream/mal/${malId}/${episode}/${audio}`;
     try {
-        const data = await resolveMegaplaySourcesCached(malId, episode, audio);
-        if (!data?.stream) throw new Error('no stream in resolved data');
-        const streamUrl = buildM3u8ProxyUrl(data.stream, data.proxyRef || null, req.sessionId);
-        const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId: req.sessionId, megaplayTracks: data.tracks });
+        const { streamUrl, tracks } = await resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId: req.sessionId });
         return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `Episode ${episode}` }));
     } catch (err) {
-        console.warn('[Public Embed] native extraction failed, falling back to MegaPlay iframe:', err.message || err);
-        return res.send(renderPublicEmbedIframeFallbackHtml({ providerSrc, title: `Episode ${episode}` }));
+        console.warn(`[Public Embed] anime/${server} resolution failed:`, err.message || err);
+        if (server === 'mega') {
+            // MegaPlay is the only server with a graceful public-iframe fallback - it's the one
+            // provider whose OWN embed URL is a legitimate, non-sensitive thing to nest directly.
+            const providerSrc = `https://megaplay.buzz/stream/mal/${malId}/${episode}/${audio}`;
+            return res.send(renderPublicEmbedIframeFallbackHtml({ providerSrc, title: `Episode ${episode}` }));
+        }
+        return res.status(502).send(renderPublicEmbedErrorHtml(`This server (${server}) could not resolve a playable source for this episode right now.`));
+    }
+});
+
+// Resolves OpenSubtitles-backed captions for the Kino (vidsrcme.ru) movie/TV path, same lookup
+// /api/kino-subtitles already does for the internal player - direct function calls here (no
+// internal HTTP round trip) since this route already has everything those functions need.
+async function resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType, season, episode }) {
+    try {
+        const imdbId = await getKinoImdbId(tmdbId, mediaType);
+        const cacheKey = mediaType === 'tv' ? `tv:${imdbId}:${season}:${episode}` : `movie:${imdbId}`;
+        const tracks = await getKinoSubtitlesCached(cacheKey, () => searchKinoSubtitles(imdbId, season, episode));
+        return (tracks || []).map((t, i) => ({
+            url: `/api/kino-subtitle-vtt?link=${encodeURIComponent(t.downloadLink)}&enc=${encodeURIComponent(t.encoding)}`,
+            lang: t.lang,
+            default: i === 0
+        }));
+    } catch (err) {
+        return [];
+    }
+}
+
+// GET /embed/movie/{id}?server=kino
+// {id}: numeric TMDB id or IMDB id. server: 'kino' (default, vidsrcme.ru) or 'ru' (RU-MV,
+// kinogo.mu -> cinemar.cc - single Russian dub track, no subtitles of its own).
+app.get('/embed/movie/:id', async (req, res) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    const server = req.query.server === 'ru' ? 'ru' : 'kino';
+
+    const tmdbId = await resolvePublicEmbedTmdbId(req.params.id, 'movie');
+    if (!tmdbId) {
+        return res.status(404).send(renderPublicEmbedErrorHtml('Could not resolve this id to a known title.'));
+    }
+
+    try {
+        let streamUrl, tracks;
+        if (server === 'ru') {
+            const movieData = await tmdbGet(`/movie/${tmdbId}`, { language: 'en-US' });
+            const title = movieData?.title || movieData?.original_title;
+            if (!title) throw new Error('could not resolve a title for RU-MV');
+            const ru = await resolveMovieRuData(title, tmdbId);
+            streamUrl = buildM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId);
+            tracks = [];
+        } else {
+            const kino = await resolveKinoCached(`movie:${tmdbId}`, () => runKinoExtraction(`movie/${tmdbId}`, 'movie'));
+            streamUrl = buildM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
+            tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'movie' });
+        }
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie' }));
+    } catch (err) {
+        console.warn(`[Public Embed] movie/${server} resolution failed:`, err.message || err);
+        return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
+    }
+});
+
+// GET /embed/tv/{id}/{season}/{episode}?server=kino
+// {id}: numeric TMDB id or IMDB id. server: 'kino' (default, vidsrcme.ru) or 'ru' (RU-MV,
+// kinogo.mu -> cinemar.cc).
+app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    const season = parseInt(req.params.season, 10);
+    const episode = parseInt(req.params.episode, 10);
+    if (!Number.isFinite(season) || season <= 0 || !Number.isFinite(episode) || episode <= 0) {
+        return res.status(400).send(renderPublicEmbedErrorHtml('Invalid season/episode number.'));
+    }
+    const server = req.query.server === 'ru' ? 'ru' : 'kino';
+
+    const tmdbId = await resolvePublicEmbedTmdbId(req.params.id, 'tv');
+    if (!tmdbId) {
+        return res.status(404).send(renderPublicEmbedErrorHtml('Could not resolve this id to a known title.'));
+    }
+
+    try {
+        let streamUrl, tracks;
+        if (server === 'ru') {
+            const tvData = await tmdbGet(`/tv/${tmdbId}`, { language: 'en-US' });
+            const title = tvData?.name || tvData?.original_name;
+            if (!title) throw new Error('could not resolve a title for RU-MV');
+            const ru = await resolveTvRuData(title, tmdbId, season, episode);
+            streamUrl = buildM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId);
+            tracks = [];
+        } else {
+            const kino = await resolveKinoCached(`tv:${tmdbId}:${season}:${episode}`, () => runKinoExtraction(`tv/${tmdbId}/${season}/${episode}`, 'tv'));
+            streamUrl = buildM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
+            tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'tv', season, episode });
+        }
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}` }));
+    } catch (err) {
+        console.warn(`[Public Embed] tv/${server} resolution failed:`, err.message || err);
+        return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
     }
 });
 

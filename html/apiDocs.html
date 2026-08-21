@@ -37,6 +37,7 @@
             </div>
             <div class="docs-nav-group">
                 <h4>Advanced</h4>
+                <a href="#security">Security</a>
                 <a href="#player-events">Player Events</a>
                 <a href="#resume-playback">Resume Playback</a>
             </div>
@@ -55,23 +56,24 @@
             </p>
 
             <div class="callout">
-                <span class="icon">🚧</span>
+                <span class="icon">✅</span>
                 <div>
-                    <strong>This page is a work-in-progress skeleton.</strong> The endpoints,
-                    parameters, and examples below outline the shape the API will take - the
-                    actual paths, request/response formats, and code samples aren't finalized
-                    yet, so those sections are intentionally left blank for now.
+                    <strong>The core embed endpoints below are live and working</strong> - every
+                    example on this page is a real, tested URL. What's still not built:
+                    <code>autoplay</code>/<code>startAt</code>/<code>autonext</code> query params,
+                    player <code>postMessage</code> events, and resume-playback (see their own
+                    sections further down) - those stay marked TBD.
                 </div>
             </div>
 
             <section class="docs-section" id="introduction">
                 <h2>Introduction</h2>
                 <p>
-                    The AniKino embed API will let you drop a single <code>&lt;iframe&gt;</code>
-                    into your own site and get a fully working player - no API key, no sign-up,
-                    same idea as VidSrc's embed model. Behind the scenes, AniKino resolves the
-                    best available source across our providers (Mega, KAA, Neko, RU MV, Kino) and
-                    serves whichever one is fastest/most reliable for that title.
+                    Drop a single <code>&lt;iframe&gt;</code> into your own site and get a fully
+                    working AniKino player back - no API key, no sign-up. Every embed resolves the
+                    real stream server-side and serves it through AniKino's own Plyr-based player,
+                    not a nested third-party iframe - the actual provider CDN URL is never exposed
+                    to your page or your visitors.
                 </p>
                 <div class="code-block">
                     <div class="code-block-tabs">
@@ -79,48 +81,71 @@
                         <span class="code-block-tab">TV Show</span>
                         <span class="code-block-tab">Anime</span>
                     </div>
-                    <pre class="placeholder">&lt;!-- Embed snippet - format not finalized yet --&gt;
-&lt;iframe
-  src=""
+                    <pre>&lt;iframe
+  src="https://your-domain.example/embed/movie/293660"
   width="100%" height="560"
   frameborder="0" allowfullscreen
 &gt;&lt;/iframe&gt;</pre>
+                </div>
+                <div class="callout">
+                    <span class="icon">🆔</span>
+                    <div>
+                        Every <code>{id}</code> below accepts either a <strong>numeric TMDB id</strong>
+                        or an <strong>IMDB id</strong> (<code>tt1300854</code>-style) - both are
+                        resolved automatically, no need to tell us which one you're sending.
+                    </div>
+                </div>
+                <div class="callout">
+                    <span class="icon">🐢</span>
+                    <div>
+                        <code>/embed/*</code> is rate-limited to <strong>40 requests / 5 minutes
+                        per IP</strong> - plenty for a real viewer loading/reloading a player, not
+                        enough for bulk scraping. It's also the only part of AniKino's API that's
+                        deliberately reachable cross-origin; everything else is locked to our own
+                        frontend.
+                    </div>
                 </div>
             </section>
 
             <section class="docs-section" id="providers">
                 <h2>Providers</h2>
                 <p>
-                    Every embed pulls from one (or more, with automatic fallback) of these
-                    sources. Most integrators won't need to pick one manually - AniKino resolves
-                    the best option automatically - but a <code>server</code> parameter to force a
-                    specific provider is planned.
+                    Each embed type has its own default source and an alternate you can force with
+                    <code>?server=</code>. Anime and Movie/TV don't share providers - the same
+                    <code>server=ru</code> value means a different backend depending on which embed
+                    you're calling, both labeled <strong>RU MV</strong> on the frontend since
+                    they're both "the Russian-dub source" for their respective content type.
                 </p>
                 <div class="provider-grid">
                     <div class="provider-card">
-                        <h4>Mega</h4>
-                        <p>General-purpose fallback source, broad title coverage.</p>
+                        <h4>Mega <span class="server-value" style="margin-left:6px;">anime, default</span></h4>
+                        <p>MegaPlay - broad anime coverage, usually the fastest to resolve.</p>
                         <span class="server-value">server=mega</span>
                     </div>
                     <div class="provider-card">
-                        <h4>KAA</h4>
-                        <p>Primary anime source - fastest resolution for most airing/finished anime.</p>
+                        <h4>KAA <span class="server-value" style="margin-left:6px;">anime</span></h4>
+                        <p>KickAssAnime - our most stable anime source, slower to load initially.</p>
                         <span class="server-value">server=kaa</span>
                     </div>
                     <div class="provider-card">
-                        <h4>Neko</h4>
-                        <p>Secondary anime source, used as a fallback alongside KAA.</p>
+                        <h4>Neko <span class="server-value" style="margin-left:6px;">anime</span></h4>
+                        <p>NekoStream/VidTube - faster than KAA, can go unavailable on some titles (falls back to Mega automatically when that happens).</p>
                         <span class="server-value">server=neko</span>
                     </div>
                     <div class="provider-card">
-                        <h4>RU MV</h4>
-                        <p>Russian-dub source - used for dub coverage other providers miss.</p>
-                        <span class="server-value">server=rumv</span>
+                        <h4>RU MV <span class="server-value" style="margin-left:6px;">anime</span></h4>
+                        <p>animego.me → aniboom.one - Russian dub. Only available when animego's own title match is confident; falls through to an error otherwise rather than guessing wrong.</p>
+                        <span class="server-value">server=ru</span>
                     </div>
                     <div class="provider-card">
-                        <h4>Kino</h4>
-                        <p>Movie/TV source for non-anime content.</p>
+                        <h4>Kino <span class="server-value" style="margin-left:6px;">movie/TV, default</span></h4>
+                        <p>vidsrcme.ru-backed extraction - our primary movie/TV source, broad English-language coverage.</p>
                         <span class="server-value">server=kino</span>
+                    </div>
+                    <div class="provider-card">
+                        <h4>RU MV <span class="server-value" style="margin-left:6px;">movie/TV</span></h4>
+                        <p>kinogo.mu → cinemar.cc - Russian dub, single track, no subtitles of its own.</p>
+                        <span class="server-value">server=ru</span>
                     </div>
                 </div>
             </section>
@@ -128,77 +153,141 @@
             <section class="docs-section" id="movie-embed">
                 <div class="endpoint-header">
                     <span class="method-badge">GET</span>
-                    <span class="endpoint-path">/embed/movie/{id} <span class="tbd">(path TBD)</span></span>
+                    <span class="endpoint-path">/embed/movie/{id}</span>
                 </div>
                 <h2 style="border:none;padding-top:0;font-size:1.1rem;">Movie Embed</h2>
-                <p>Embed a movie player by TMDB id. Returns a fully responsive player.</p>
+                <p>Embed a movie player. Resolves through Kino (default) or RU MV/kinogo.</p>
                 <table class="param-table">
                     <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
                     <tbody>
-                        <tr><td><code>{id}</code></td><td>Yes</td><td class="tbd">TBD</td></tr>
+                        <tr><td><code>{id}</code></td><td>Yes</td><td>TMDB movie id or IMDB id (<code>tt...</code>)</td></tr>
+                        <tr><td><code>server</code></td><td>Optional</td><td><code>kino</code> (default) or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
                     </tbody>
                 </table>
                 <div class="code-block">
-                    <div class="code-block-tabs"><span class="code-block-tab active">URL</span></div>
-                    <pre class="placeholder">(example not available yet)</pre>
+                    <div class="code-block-tabs">
+                        <span class="code-block-tab active">HTML</span>
+                        <span class="code-block-tab">URL</span>
+                    </div>
+                    <pre>&lt;iframe src="https://your-domain.example/embed/movie/293660" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;
+
+# By IMDB id
+/embed/movie/tt4425200
+
+# Force the RU MV (kinogo) source
+/embed/movie/293660?server=ru</pre>
                 </div>
             </section>
 
             <section class="docs-section" id="tv-embed">
                 <div class="endpoint-header">
                     <span class="method-badge">GET</span>
-                    <span class="endpoint-path">/embed/tv/{id}/{season}/{episode} <span class="tbd">(path TBD)</span></span>
+                    <span class="endpoint-path">/embed/tv/{id}/{season}/{episode}</span>
                 </div>
                 <h2 style="border:none;padding-top:0;font-size:1.1rem;">TV Show Embed</h2>
-                <p>Embed a specific episode, or the whole series with a season/episode picker.</p>
+                <p>Embed a specific episode. Resolves through Kino (default) or RU MV/kinogo.</p>
                 <table class="param-table">
                     <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
                     <tbody>
-                        <tr><td><code>{id}</code></td><td>Yes</td><td class="tbd">TBD</td></tr>
-                        <tr><td><code>{season}</code></td><td>Optional</td><td class="tbd">TBD</td></tr>
-                        <tr><td><code>{episode}</code></td><td>Optional</td><td class="tbd">TBD</td></tr>
+                        <tr><td><code>{id}</code></td><td>Yes</td><td>TMDB TV id or IMDB id (<code>tt...</code>)</td></tr>
+                        <tr><td><code>{season}</code></td><td>Yes</td><td>Season number</td></tr>
+                        <tr><td><code>{episode}</code></td><td>Yes</td><td>Episode number within that season</td></tr>
+                        <tr><td><code>server</code></td><td>Optional</td><td><code>kino</code> (default) or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
                     </tbody>
                 </table>
                 <div class="code-block">
-                    <div class="code-block-tabs"><span class="code-block-tab active">URL</span></div>
-                    <pre class="placeholder">(example not available yet)</pre>
+                    <div class="code-block-tabs">
+                        <span class="code-block-tab active">HTML</span>
+                        <span class="code-block-tab">URL</span>
+                    </div>
+                    <pre>&lt;iframe src="https://your-domain.example/embed/tv/1396/1/1" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;
+
+# Force the RU MV (kinogo) source
+/embed/tv/1396/1/1?server=ru</pre>
                 </div>
             </section>
 
             <section class="docs-section" id="anime-embed">
                 <div class="endpoint-header">
                     <span class="method-badge">GET</span>
-                    <span class="endpoint-path">/embed/anime/{id}/{episode} <span class="tbd">(path TBD)</span></span>
+                    <span class="endpoint-path">/embed/anime/{id}/{episode}</span>
                 </div>
                 <h2 style="border:none;padding-top:0;font-size:1.1rem;">Anime Embed</h2>
-                <p>Embed an anime episode with sub/dub selection, resolved across Mega, KAA, Neko, and RU MV automatically.</p>
+                <p>Embed an anime episode with sub/dub selection, resolved through Mega (default), KAA, Neko, or RU MV/animego.</p>
                 <table class="param-table">
                     <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
                     <tbody>
-                        <tr><td><code>{id}</code></td><td>Yes</td><td class="tbd">TBD</td></tr>
-                        <tr><td><code>{episode}</code></td><td>Yes</td><td class="tbd">TBD</td></tr>
-                        <tr><td><code>audio</code></td><td>Optional</td><td class="tbd">sub / dub - TBD</td></tr>
-                        <tr><td><code>server</code></td><td>Optional</td><td class="tbd">Force a specific provider - TBD</td></tr>
+                        <tr><td><code>{id}</code></td><td>Yes</td><td>TMDB TV id or IMDB id (<code>tt...</code>) - anime is always the TV namespace, even for movies</td></tr>
+                        <tr><td><code>{episode}</code></td><td>Yes</td><td>Episode number within <code>season</code></td></tr>
+                        <tr><td><code>season</code></td><td>Optional</td><td>Defaults to <code>1</code></td></tr>
+                        <tr><td><code>audio</code></td><td>Optional</td><td><code>sub</code> (default) or <code>dub</code></td></tr>
+                        <tr><td><code>server</code></td><td>Optional</td><td><code>mega</code> (default), <code>kaa</code>, <code>neko</code>, or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
                     </tbody>
                 </table>
                 <div class="code-block">
-                    <div class="code-block-tabs"><span class="code-block-tab active">URL</span></div>
-                    <pre class="placeholder">(example not available yet)</pre>
+                    <div class="code-block-tabs">
+                        <span class="code-block-tab active">HTML</span>
+                        <span class="code-block-tab">URL</span>
+                    </div>
+                    <pre>&lt;iframe src="https://your-domain.example/embed/anime/1429/1?season=1&amp;audio=dub" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;
+
+# Sub, season 2, forced KickAssAnime
+/embed/anime/1429/1?season=2&server=kaa
+
+# Dub, NekoStream (falls back to Mega automatically if unavailable)
+/embed/anime/1429/1?audio=dub&server=neko
+
+# RU MV (animego) - only succeeds when animego has a confident title match
+/embed/anime/1429/1?server=ru</pre>
+                </div>
+                <div class="callout">
+                    <span class="icon">💬</span>
+                    <div>
+                        Captions are borrowed from KAA's own (usually multi-language) subtitle set
+                        regardless of which <code>server</code> you pick, since Mega/Neko/RU MV
+                        don't carry a useful subtitle track of their own. Kino (movie/TV) instead
+                        pulls real OpenSubtitles-backed captions directly.
+                    </div>
                 </div>
             </section>
 
             <section class="docs-section" id="query-parameters">
                 <h2>Query Parameters</h2>
-                <p>All embed endpoints will support optional query parameters for customization - final list TBD.</p>
+                <p>Parameters supported today, plus what's still planned.</p>
                 <table class="param-table">
-                    <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+                    <thead><tr><th>Parameter</th><th>Type</th><th>Status</th><th>Description</th></tr></thead>
                     <tbody>
-                        <tr><td><code>autoplay</code></td><td>0 / 1</td><td class="tbd">TBD</td></tr>
-                        <tr><td><code>autonext</code></td><td>0 / 1</td><td class="tbd">TBD - TV/anime only</td></tr>
-                        <tr><td><code>startAt</code></td><td>Float</td><td class="tbd">TBD</td></tr>
-                        <tr><td><code>server</code></td><td>String</td><td class="tbd">TBD - see Providers</td></tr>
+                        <tr><td><code>server</code></td><td>String</td><td>✅ Live</td><td>Force a specific provider - see <a href="#providers">Providers</a> for values per endpoint</td></tr>
+                        <tr><td><code>season</code></td><td>Integer</td><td>✅ Live</td><td>Anime embed only - defaults to <code>1</code></td></tr>
+                        <tr><td><code>audio</code></td><td>sub / dub</td><td>✅ Live</td><td>Anime embed only - defaults to <code>sub</code></td></tr>
+                        <tr><td><code>autoplay</code></td><td>0 / 1</td><td class="tbd">Planned</td><td class="tbd">Not implemented yet</td></tr>
+                        <tr><td><code>autonext</code></td><td>0 / 1</td><td class="tbd">Planned</td><td class="tbd">TV/anime only - not implemented yet</td></tr>
+                        <tr><td><code>startAt</code></td><td>Float</td><td class="tbd">Planned</td><td class="tbd">Not implemented yet</td></tr>
                     </tbody>
                 </table>
+            </section>
+
+            <section class="docs-section" id="security">
+                <h2>Security</h2>
+                <p>
+                    The raw upstream stream URL is never exposed anywhere - not in the page source,
+                    not in a JSON response, not at any layer of a nested playlist. Every embed
+                    resolves the real stream <em>server-side</em> and hands the player a
+                    session-bound, encrypted, expiring proxy URL instead - only <code>/api/m3u8-proxy</code>
+                    ever talks to the real CDN, and only for the exact browser session that resolved
+                    it. Copying a resolved stream URL out of your browser's network tab and loading
+                    it in a different browser/session returns <code>403 This link does not belong
+                    to your session</code> - verified live.
+                </p>
+                <p>
+                    The player itself carries a self-healing "AniKino" watermark (re-inserts itself
+                    if removed via a <code>MutationObserver</code> + interval respawn) - this
+                    defends against someone scraping the embed page's HTML and re-serving a
+                    modified copy with the branding stripped while keeping the player logic intact.
+                    A true cross-origin <code>&lt;iframe&gt;</code> can't be reached by whatever page
+                    embeds it at all, by normal browser same-origin policy - that protection needs
+                    nothing from us.
+                </p>
             </section>
 
             <section class="docs-section" id="player-events">

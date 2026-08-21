@@ -9203,43 +9203,6 @@ body.blur-active {
     backdrop-filter: blur(8px);
 }
 
-/* Volume: stock Plyr reserves 60-90px of permanent horizontal space for the range track even
-   though it's only ever touched to mute/adjust for a second - popping it up as a vertical
-   slider above the button on hover/focus (muted default height 0, only takes space when open)
-   frees that width back up for the rest of the bar, same idea as YouTube's own volume control. */
-.plyr__volume {
-    position: relative;
-}
-/* !important throughout - plyr.css loads AFTER style.css in every page that uses it (movieInfo.html
-   etc.), so its own same-specificity .plyr__volume input[type=range] rule (position/margin/width)
-   would otherwise win purely on source order, silently no-op'ing this override. */
-.plyr__volume input[type="range"] {
-    position: absolute !important;
-    bottom: calc(100% + 10px) !important;
-    left: 50% !important;
-    /* rotated range inputs measure their OWN width along the now-vertical track, so "width" here
-       is the slider's vertical length once turned upright, not its (invisible) horizontal footprint */
-    width: 70px !important;
-    max-width: none !important;
-    min-width: 0 !important;
-    transform: translateX(-50%) rotate(-90deg) !important;
-    transform-origin: center !important;
-    background: rgba(18, 18, 18, 0.95);
-    border-radius: 6px;
-    padding: 8px 0;
-    opacity: 0;
-    visibility: hidden;
-    pointer-events: none;
-    transition: opacity 0.15s ease;
-    margin: 0 !important;
-}
-.plyr__volume:hover input[type="range"],
-.plyr__volume:focus-within input[type="range"] {
-    opacity: 1;
-    visibility: visible;
-    pointer-events: auto;
-}
-
 /* Buttons */
 .plyr__control {
     color: #ffffff;
