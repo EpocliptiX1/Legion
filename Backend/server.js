@@ -7359,13 +7359,25 @@ async function fetchAnimeLibraryFromAniList(filters, page, perPage) {
     return Array.isArray(items) ? items : [];
 }
 
-// allMovies.html's filtered/paged library browsing is read-heavy but low-churn (a given
-// sort+genre+tag+format+status+year combo's result set barely moves week to week), so it gets
-// its own longer TTL than ANIME_ROW_CACHE_TTL's 48h default (that one's for the homepage's
-// small set of curated rows, which stay fresher-feeling on purpose) - 7 days directly trades
-// staleness for never re-paying AniList's latency once a given (filters, page) has been seen
-// once, which is the whole point of scrolling deep into a filtered result set.
-const ANIME_LIBRARY_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// allMovies.html's filtered/paged library browsing is read-heavy but low-churn FOR MOST
+// FILTERS - a genre+format+status+year combo's result set barely moves week to week, so those
+// get a long TTL: never re-pay AniList's latency once a given (filters, page) has been seen
+// once, which is the whole point of scrolling deep into a filtered result set. Sort orders that
+// are themselves a live ranking (POPULARITY/TRENDING/FAVOURITES) are the opposite - AniList's
+// real ordering genuinely reshuffles day to day (today's #2 and #3 by popularity can swap by
+// tomorrow), so caching THAT for a week would mean serving a visibly wrong order long after it
+// stopped being true. Split by sort instead of one blanket TTL for the whole route - this is
+// scoped to allMovies.html's own cache only, the homepage's curated rows keep their separate
+// 48h ANIME_ROW_CACHE_TTL default untouched.
+const ANIME_LIBRARY_CACHE_TTL_STABLE_MS = 7 * 24 * 60 * 60 * 1000;
+const ANIME_LIBRARY_CACHE_TTL_RANKED_MS = 12 * 60 * 60 * 1000;
+const ANIME_LIBRARY_RANKED_SORTS = new Set([
+    'POPULARITY', 'POPULARITY_DESC', 'TRENDING', 'TRENDING_DESC',
+    'FAVOURITES', 'FAVOURITES_DESC', 'UPDATED_AT', 'UPDATED_AT_DESC'
+]);
+function getAnimeLibraryCacheTtl(sort) {
+    return ANIME_LIBRARY_RANKED_SORTS.has(sort) ? ANIME_LIBRARY_CACHE_TTL_RANKED_MS : ANIME_LIBRARY_CACHE_TTL_STABLE_MS;
+}
 
 app.get('/api/anime-library', async (req, res) => {
     const filters = {
@@ -7396,7 +7408,7 @@ app.get('/api/anime-library', async (req, res) => {
 
     const cacheKey = buildAnimeLibraryCacheKey(filters);
     try {
-        const ids = await animeRowCacheGet(cacheKey, page, perPage, ANIME_LIBRARY_CACHE_TTL_MS);
+        const ids = await animeRowCacheGet(cacheKey, page, perPage, getAnimeLibraryCacheTtl(filters.sort));
         if (ids && ids.length) {
             const cached = await animeCacheGetByAniListIds(ids);
             if (cached.length === ids.length) {
