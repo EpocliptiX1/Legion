@@ -17477,23 +17477,49 @@ const ANIME_SEASON_CARDS_QUERY = `
     }
 `;
 
+// Same retry-with-backoff shape as aniListGetMediaWithRelations - this function makes several
+// rapid sequential AniList calls per show (one per BFS hop, plus getTmdbIdForAniList per season
+// found), and AniList genuinely 429s under that pattern. Confirmed live this was the actual
+// cause of a real, reported "shows 2 seasons instead of 3" bug: no retry meant a single 429 on
+// any hop silently dropped that season for good (the catch below just skipped it), and the
+// resulting INCOMPLETE list then got cached as if it were the full, correct answer.
 async function fetchAniListMediaForSeasonCards(anilistId) {
-    const response = await axios.post(
-        'https://graphql.anilist.co',
-        { query: ANIME_SEASON_CARDS_QUERY, variables: { id: anilistId } },
-        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
-    );
-    if (response.data?.errors) throw new Error(`AniList error: ${JSON.stringify(response.data.errors)}`);
-    return response.data?.data?.Media || null;
+    const maxAttempts = 3;
+    let delay = 500;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const response = await axios.post(
+                'https://graphql.anilist.co',
+                { query: ANIME_SEASON_CARDS_QUERY, variables: { id: anilistId } },
+                { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
+            );
+            if (response.data?.errors) throw new Error(`AniList error: ${JSON.stringify(response.data.errors)}`);
+            return response.data?.data?.Media || null;
+        } catch (err) {
+            const status = err.response?.status;
+            if (status === 429 && attempt < maxAttempts) {
+                await sleep(delay);
+                delay *= 2;
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw new Error('AniList request failed');
 }
 
-const animeSeasonCardsCache = new Map(); // tmdbId -> { seasons, cachedAt }
+const animeSeasonCardsCache = new Map(); // tmdbId -> { seasons, cachedAt, incomplete }
 const ANIME_SEASON_CARDS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+// A result where any BFS hop failed even after retries might be missing a real season - cache
+// it much more briefly than a clean result so it self-heals on the next real request instead of
+// staying wrong for a full day.
+const ANIME_SEASON_CARDS_INCOMPLETE_CACHE_TTL_MS = 10 * 60 * 1000;
 
 async function resolveAnimeSeasonCards(tmdbId) {
     const cached = animeSeasonCardsCache.get(tmdbId);
-    if (cached && (Date.now() - cached.cachedAt) < ANIME_SEASON_CARDS_CACHE_TTL_MS) {
-        return cached.seasons;
+    if (cached) {
+        const effectiveTtl = cached.incomplete ? ANIME_SEASON_CARDS_INCOMPLETE_CACHE_TTL_MS : ANIME_SEASON_CARDS_CACHE_TTL_MS;
+        if ((Date.now() - cached.cachedAt) < effectiveTtl) return cached.seasons;
     }
 
     // anime_tmdb_mapping is keyed by tmdb_id already (see its own CREATE TABLE) - a direct
@@ -17524,6 +17550,7 @@ async function resolveAnimeSeasonCards(tmdbId) {
     const visited = new Set();
     const queue = [anilistId];
     const found = []; // { id, idMal, title, coverImage, airDate }
+    let hadFailure = false;
     while (queue.length && found.length < 8) {
         const id = Number(queue.shift());
         if (!id || visited.has(id)) continue;
@@ -17533,7 +17560,12 @@ async function resolveAnimeSeasonCards(tmdbId) {
         try {
             media = await fetchAniListMediaForSeasonCards(id);
         } catch (err) {
-            continue; // one unreachable node shouldn't drop the rest of the chain
+            // One unreachable node (even after fetchAniListMediaForSeasonCards' own retries)
+            // shouldn't drop the rest of the chain - but it DOES mean this result might be
+            // missing a real season reachable only through this node, so cache it short-lived
+            // instead of the normal 24h (see ANIME_SEASON_CARDS_INCOMPLETE_CACHE_TTL_MS above).
+            hadFailure = true;
+            continue;
         }
         if (!media) continue;
 
@@ -17583,7 +17615,7 @@ async function resolveAnimeSeasonCards(tmdbId) {
         });
     }
 
-    animeSeasonCardsCache.set(tmdbId, { seasons, cachedAt: Date.now() });
+    animeSeasonCardsCache.set(tmdbId, { seasons, cachedAt: Date.now(), incomplete: hadFailure });
     return seasons;
 }
 
