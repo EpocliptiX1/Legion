@@ -15144,6 +15144,64 @@ async function runKinoHealthCheck() {
     }
 }
 
+// --- Kinogo/Cinemar (RU-MV) health check ---------------------------------------------------
+// Same reasoning as the Kino health check above, for the same class of failure: kinogo.mu or
+// cinemar.cc can change their markup/API shape (exactly what happened - see
+// resolveCinemarTrackStream's comment for the "Proxy failed" bug this caught after the fact)
+// with nothing alerting us until a real viewer hits a dead stream. Runs the real extraction for
+// both movie and TV against fixed, known-good titles on a timer and asserts the ACTUAL returned
+// streamUrl looks like a real, absolute manifest URL - not just "didn't throw", since a markup
+// change can make the scrape return a garbage/placeholder value without erroring (exactly what
+// track.file === "#" did: fetchCinemarStream never threw, it just quietly returned "https:#").
+// Deadpool 2 / Breaking Bad S1E1 reused as the reference titles - already the fixed titles Kino's
+// own health check (movies) and this session's manual testing (TV) confirmed are reliably
+// resolvable on kinogo.mu.
+const KINOGO_HEALTH_CHECK_MOVIE_TITLE = 'Deadpool 2';
+const KINOGO_HEALTH_CHECK_TV_TITLE = 'Breaking Bad';
+const KINOGO_HEALTH_CHECK_INTERVAL_MS = 15 * 60 * 1000; // between Kino's 10min and MAL's 30min - also scrape-based, same failure class as Kino
+let kinogoHealthCheckRunning = false;
+
+function looksLikeRealCinemarStream(streamUrl) {
+    return typeof streamUrl === 'string' && /^https:\/\/[^#]+$/.test(streamUrl) && !streamUrl.includes('https:#');
+}
+
+async function runKinogoHealthCheck() {
+    if (kinogoHealthCheckRunning) return; // don't overlap if a run somehow takes a while
+    kinogoHealthCheckRunning = true;
+    const startedAt = Date.now();
+    const failures = [];
+
+    // Deliberately bypasses resolveMovieRuData/resolveTvRuData's tmdbId-keyed cache (no tmdbId
+    // passed here) - this must exercise the real kinogo.mu -> cinemar.cc chain every time, not
+    // report "healthy" off a stale cached success.
+    try {
+        const { streamUrl } = await resolveMovieRuData(KINOGO_HEALTH_CHECK_MOVIE_TITLE, null);
+        if (!looksLikeRealCinemarStream(streamUrl)) {
+            failures.push(`movie: expected a real https stream URL for "${KINOGO_HEALTH_CHECK_MOVIE_TITLE}", got ${JSON.stringify(streamUrl)}`);
+        }
+    } catch (err) {
+        failures.push(`movie threw: ${err.message}`);
+    }
+    try {
+        const { streamUrl } = await resolveTvRuData(KINOGO_HEALTH_CHECK_TV_TITLE, null, 1, 1);
+        if (!looksLikeRealCinemarStream(streamUrl)) {
+            failures.push(`tv: expected a real https stream URL for "${KINOGO_HEALTH_CHECK_TV_TITLE}" S1E1, got ${JSON.stringify(streamUrl)}`);
+        }
+    } catch (err) {
+        failures.push(`tv threw: ${err.message}`);
+    }
+
+    if (failures.length === 0) {
+        logHealthStatus(`[Kinogo Health] OK (${Date.now() - startedAt}ms)`);
+    } else {
+        const banner = '!'.repeat(70);
+        logHealthStatus(`\n${banner}\n⚠️  ⚠️  ⚠️   KINOGO/CINEMAR (RU-MV) IS BROKEN   ⚠️  ⚠️  ⚠️\n${banner}`);
+        failures.forEach(f => logHealthStatus(`[Kinogo Health] ${f}`));
+        logHealthStatus(`${banner}\n`);
+    }
+    kinogoHealthCheckRunning = false;
+}
+
 app.get('/api/movie-kino-log', async (req, res) => {
     const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
     if (!tmdbId) {
@@ -18486,6 +18544,10 @@ const server = app.listen(PORT, 'localhost', () => {
     console.log(`   MAL health check: every ${MAL_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
     setInterval(runMalHealthCheck, MAL_HEALTH_CHECK_INTERVAL_MS);
     runMalHealthCheck(); // also check once right away instead of waiting 30min for the first read
+
+    console.log(`   Kinogo (RU-MV) health check: every ${KINOGO_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
+    setInterval(runKinogoHealthCheck, KINOGO_HEALTH_CHECK_INTERVAL_MS);
+    runKinogoHealthCheck(); // also check once right away instead of waiting 15min for the first read
 
     console.log(`   Finished-show schedule audit: every ${FINISHED_SHOW_AUDIT_INTERVAL_MS / 3600000}h`);
     setInterval(runFinishedShowScheduleAudit, FINISHED_SHOW_AUDIT_INTERVAL_MS);
