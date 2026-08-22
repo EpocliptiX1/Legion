@@ -34,10 +34,17 @@
 .docs-brand {
     display: flex;
     align-items: center;
+    gap: 10px;
     text-decoration: none;
     color: var(--text-primary);
 }
-.docs-brand svg { height: 34px; width: auto; display: block; }
+.docs-brand img { height: 30px; width: auto; }
+.docs-brand .api-text {
+    font-weight: 800;
+    font-size: 1.1rem;
+    letter-spacing: 0.02em;
+    color: var(--text-primary);
+}
 .docs-topbar-links { display: flex; gap: 18px; align-items: center; }
 .docs-topbar-links a {
     color: var(--text-secondary);
