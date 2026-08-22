@@ -973,11 +973,40 @@ animeCacheDb.serialize(() => {
             format TEXT,
             status TEXT,
             episodes INTEGER,
+            genres TEXT,
+            tags TEXT,
+            season TEXT,
+            season_year INTEGER,
+            duration INTEGER,
+            studios TEXT,
+            source TEXT,
+            synonyms TEXT,
             json TEXT,
             cached_at INTEGER NOT NULL,
             last_accessed INTEGER NOT NULL
         );
     `);
+    // Every field this table's own two write paths (anime-row's curated homepage rows,
+    // anime-library's filter/page browsing) can get out of AniList in one request, captured as
+    // its own queryable column instead of only living inside the `json` blob - the whole point
+    // being that some FUTURE endpoint/algorithm can filter/sort/join on genres, season, studios,
+    // etc directly in SQL without needing to know this table's history or re-fetch anything.
+    // Existing installs need the ALTER; a fresh CREATE TABLE above already has these columns.
+    animeCacheDb.all(`PRAGMA table_info(anime_cache)`, [], (err, columns) => {
+        if (err) return;
+        const names = new Set((columns || []).map(c => c.name));
+        const newColumns = [
+            ['genres', 'TEXT'], ['tags', 'TEXT'], ['season', 'TEXT'], ['season_year', 'INTEGER'],
+            ['duration', 'INTEGER'], ['studios', 'TEXT'], ['source', 'TEXT'], ['synonyms', 'TEXT']
+        ];
+        for (const [name, type] of newColumns) {
+            if (!names.has(name)) {
+                animeCacheDb.run(`ALTER TABLE anime_cache ADD COLUMN ${name} ${type}`, (alterErr) => {
+                    if (alterErr) console.error(`[AnimeCache] Failed to add ${name} column`, alterErr.message);
+                });
+            }
+        }
+    });
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS anime_row_cache (
             row_key TEXT NOT NULL,
@@ -6838,6 +6867,22 @@ function animeCacheUpsertFromAniListItem(item) {
         const format = item.format || null;
         const status = item.status || null;
         const episodes = item.episodes != null ? item.episodes : null;
+        // genres/tags/studios/synonyms stored as JSON text (not comma-joined) so a future
+        // consumer gets the real array back via JSON.parse without having to worry about a
+        // genre/studio name that happens to contain a comma - tags also carries each tag's
+        // rank, which a plain name list would drop entirely.
+        const genres = Array.isArray(item.genres) ? JSON.stringify(item.genres) : null;
+        const tags = Array.isArray(item.tags)
+            ? JSON.stringify(item.tags.map(t => ({ name: t.name, rank: t.rank })))
+            : null;
+        const season = item.season || null;
+        const seasonYear = item.seasonYear != null ? item.seasonYear : (item.startDate?.year ?? null);
+        const duration = item.duration != null ? item.duration : null;
+        const studios = Array.isArray(item.studios?.nodes)
+            ? JSON.stringify(item.studios.nodes.map(s => s.name))
+            : null;
+        const source = item.source || null;
+        const synonyms = Array.isArray(item.synonyms) ? JSON.stringify(item.synonyms) : null;
         const json = JSON.stringify(item);
 
         appendTmdbLogLine(`[AnimeCache Upsert] anilist_id=${item.id} title="${englishTitle || romajiTitle || nativeTitle || ''}" tmdb_id=${item.tmdbId || 'null'} mal_id=${item.idMal || 'null'}`);
@@ -6845,8 +6890,9 @@ function animeCacheUpsertFromAniListItem(item) {
             `INSERT INTO anime_cache (
                 anilist_id, tmdb_id, mal_id, english_title, romaji_title, native_title,
                 cover_image, banner_image, score, popularity, favourites,
-                description, format, status, episodes, json, cached_at, last_accessed
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                description, format, status, episodes, genres, tags, season, season_year,
+                duration, studios, source, synonyms, json, cached_at, last_accessed
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(anilist_id) DO UPDATE SET
                  tmdb_id = COALESCE(excluded.tmdb_id, anime_cache.tmdb_id),
                  mal_id = COALESCE(excluded.mal_id, anime_cache.mal_id),
@@ -6862,6 +6908,14 @@ function animeCacheUpsertFromAniListItem(item) {
                  format = COALESCE(excluded.format, anime_cache.format),
                  status = COALESCE(excluded.status, anime_cache.status),
                  episodes = COALESCE(excluded.episodes, anime_cache.episodes),
+                 genres = COALESCE(excluded.genres, anime_cache.genres),
+                 tags = COALESCE(excluded.tags, anime_cache.tags),
+                 season = COALESCE(excluded.season, anime_cache.season),
+                 season_year = COALESCE(excluded.season_year, anime_cache.season_year),
+                 duration = COALESCE(excluded.duration, anime_cache.duration),
+                 studios = COALESCE(excluded.studios, anime_cache.studios),
+                 source = COALESCE(excluded.source, anime_cache.source),
+                 synonyms = COALESCE(excluded.synonyms, anime_cache.synonyms),
                  json = COALESCE(excluded.json, anime_cache.json),
                  cached_at = excluded.cached_at,
                  last_accessed = excluded.last_accessed`,
@@ -6881,6 +6935,14 @@ function animeCacheUpsertFromAniListItem(item) {
                 format,
                 status,
                 episodes,
+                genres,
+                tags,
+                season,
+                seasonYear,
+                duration,
+                studios,
+                source,
+                synonyms,
                 json,
                 now,
                 now
@@ -7109,6 +7171,20 @@ async function fetchAniListRowFromAniList(rowKey, page = 1, perPage = 18) {
                     episodes
                     format
                     status
+                    genres
+                    tags {
+                        name
+                        rank
+                    }
+                    season
+                    seasonYear
+                    duration
+                    source
+                    studios(isMain:true) {
+                        nodes {
+                            name
+                        }
+                    }
                 }
             }
         }
@@ -7235,6 +7311,7 @@ query (
             id
             idMal
             title { romaji english native }
+            synonyms
             coverImage { extraLarge }
             bannerImage
             averageScore
@@ -7246,7 +7323,12 @@ query (
             format
             status
             genres
-            tags { name }
+            tags { name rank }
+            season
+            seasonYear
+            duration
+            source
+            studios(isMain: true) { nodes { name } }
         }
     }
 }`;
@@ -7277,6 +7359,14 @@ async function fetchAnimeLibraryFromAniList(filters, page, perPage) {
     return Array.isArray(items) ? items : [];
 }
 
+// allMovies.html's filtered/paged library browsing is read-heavy but low-churn (a given
+// sort+genre+tag+format+status+year combo's result set barely moves week to week), so it gets
+// its own longer TTL than ANIME_ROW_CACHE_TTL's 48h default (that one's for the homepage's
+// small set of curated rows, which stay fresher-feeling on purpose) - 7 days directly trades
+// staleness for never re-paying AniList's latency once a given (filters, page) has been seen
+// once, which is the whole point of scrolling deep into a filtered result set.
+const ANIME_LIBRARY_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 app.get('/api/anime-library', async (req, res) => {
     const filters = {
         sort: req.query.sort || 'POPULARITY_DESC',
@@ -7306,7 +7396,7 @@ app.get('/api/anime-library', async (req, res) => {
 
     const cacheKey = buildAnimeLibraryCacheKey(filters);
     try {
-        const ids = await animeRowCacheGet(cacheKey, page, perPage);
+        const ids = await animeRowCacheGet(cacheKey, page, perPage, ANIME_LIBRARY_CACHE_TTL_MS);
         if (ids && ids.length) {
             const cached = await animeCacheGetByAniListIds(ids);
             if (cached.length === ids.length) {
@@ -7319,9 +7409,16 @@ app.get('/api/anime-library', async (req, res) => {
         const items = await fetchAnimeLibraryFromAniList(filters, page, perPage);
         if (!items.length) return res.json([]);
 
-        const idsToCache = [];
-        for (const item of items) {
-            idsToCache.push(item.id);
+        // Was a strictly sequential for-of, awaiting each item's tmdbId resolution one at a
+        // time - confirmed live this made a genuinely cold page (one never seen under ANY
+        // filter combo before, so nothing in animeTmdbMappingGetByAniListId's own cache either)
+        // take ~13s for a 30-item page, all of it this loop. mapWithConcurrency (already used
+        // elsewhere for the same "don't go fully sequential, don't hammer the target either"
+        // tradeoff) keeps a bounded number of TMDB lookups in flight instead of one - a repeat
+        // of the earlier unbounded MegaPlay/TMDB-search cascade mistake this session already
+        // learned from, so this stays capped rather than firing all 30 at once.
+        const idsToCache = items.map(item => item.id);
+        await mapWithConcurrency(items, 6, async (item) => {
             try {
                 const tmdbId = await getTmdbIdForAniList(
                     item.id,
@@ -7336,7 +7433,7 @@ app.get('/api/anime-library', async (req, res) => {
                 // No TMDB match -- still cache the AniList metadata, just without a tmdbId.
             }
             await animeCacheUpsertFromAniListItem(item);
-        }
+        });
         await animeRowCacheUpsert(cacheKey, page, perPage, idsToCache);
         res.json(items);
     } catch (err) {
