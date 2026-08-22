@@ -13415,10 +13415,119 @@ app.delete('/anime-comments/:id', requireAuth, (req, res) => {
     });
 });
 
+// --- Neko resolution, primary path: anikotoapi.site (public REST wrapper around anikoto's own
+// catalog - see https://megaplay.buzz/api and https://anikotoapi.site/) -------------------------
+// GET /series/{internalAnimeId} hands back EVERY episode in one request, each already carrying
+// its legacy HiAnime `episode_embed_id` and a pre-built `embed_url.{sub,dub}` pointing at
+// megaplay.buzz/stream/s-2/{episode_embed_id}/{lang}. Verified live (Attack on Titan, internal
+// id 1631): episode 1's embed_url resolves through the exact same megaplay.buzz page structure
+// fetchMegaplaySources() below already knows how to extract from (data-id attr -> /stream/getSources).
+// This replaces 3 of the old anikoto.cz ajax round trips (episode list, server list, embed
+// lookup) with 1, and sidesteps the VidPlay/8e4-vs-MegaPlay-embed distinction the old server-list
+// scraping needed, since this path always terminates at MegaPlay's own backend rather than
+// VidTube's. The one thing it can't do is HSUB (hard-subbed) - that's a VidTube-only stream type
+// with no megaplay.buzz equivalent, so hsub requests skip straight to the old path below.
+//
+// Kept as a genuinely separate, parallel implementation rather than folded into
+// fetchMegaplaySources() - that function is keyed by MAL id (mal/{malId}/{ep}/{lang}), this one
+// by anikoto's internal id + legacy embed id (s-2/{episodeEmbedId}/{lang}); different upstream
+// paths that happen to converge on the same /stream/getSources extraction step at the end.
+const ANIKOTOAPI_ORIGIN = 'https://anikotoapi.site';
+const anikotoApiSeriesCache = new Map(); // internalAnimeId -> { episodes, resolvedAt }
+const ANIKOTOAPI_SERIES_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // one series lookup covers every episode
+
+async function fetchAnikotoApiEpisodes(internalAnimeId) {
+    const cached = anikotoApiSeriesCache.get(internalAnimeId);
+    if (cached && (Date.now() - cached.resolvedAt) < ANIKOTOAPI_SERIES_CACHE_TTL_MS) {
+        return cached.episodes;
+    }
+    const res = await axios.get(`${ANIKOTOAPI_ORIGIN}/series/${encodeURIComponent(internalAnimeId)}`, {
+        headers: { 'User-Agent': KINO_UA },
+        timeout: 15000
+    });
+    const episodes = res.data?.data?.episodes;
+    if (!Array.isArray(episodes) || !episodes.length) throw new Error('anikotoapi.site returned no episodes for this series');
+    anikotoApiSeriesCache.set(internalAnimeId, { episodes, resolvedAt: Date.now() });
+    return episodes;
+}
+
+async function fetchMegaplaySourcesViaAnikotoApi(internalAnimeId, episodeNumber, audio) {
+    const episodes = await fetchAnikotoApiEpisodes(internalAnimeId);
+    const ep = episodes.find(e => Number(e.number) === Number(episodeNumber));
+    if (!ep || !ep.episode_embed_id) {
+        throw new Error(`anikotoapi.site has no episode ${episodeNumber} for this series`);
+    }
+
+    const lang = audio === 'dub' ? 'dub' : 'sub';
+    const embedUrl = `${MEGAPLAY_ORIGIN}/stream/s-2/${encodeURIComponent(ep.episode_embed_id)}/${lang}`;
+    const page = await axios.get(embedUrl, {
+        headers: { 'User-Agent': KINO_UA, 'Referer': `${MEGAPLAY_ORIGIN}/` },
+        timeout: 15000
+    });
+    const idMatch = String(page.data).match(/data-id=["'](\d+)["']/);
+    if (!idMatch) {
+        const err = new Error('megaplay (via anikotoapi.site) has no entry for this episode/audio');
+        err.megaplayConfirmedAbsent = true;
+        throw err;
+    }
+
+    const srcRes = await axios.get(`${MEGAPLAY_ORIGIN}/stream/getSources?id=${idMatch[1]}`, {
+        headers: {
+            'User-Agent': KINO_UA,
+            'Referer': embedUrl,
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        timeout: 15000
+    });
+    const j = srcRes.data;
+    const file = typeof j?.sources?.file === 'string'
+        ? j.sources.file
+        : (Array.isArray(j?.sources) && j.sources[0]?.file) || null;
+    if (!file) {
+        const err = new Error('megaplay (via anikotoapi.site) returned no source file');
+        err.megaplayConfirmedAbsent = true;
+        throw err;
+    }
+
+    return {
+        stream: file,
+        proxyRef: `${MEGAPLAY_ORIGIN}/`,
+        tracks: Array.isArray(j.tracks) ? j.tracks : [],
+        intro: j.intro || null,
+        outro: j.outro || null
+    };
+}
+
+// Single entry point every Neko call site should use. Tries the new anikotoapi.site path first;
+// on ANY failure (site down, episode not listed, megaplay has nothing for this s-2 id) falls
+// back to the original anikoto.cz -> VidTube scraping chain (resolveNekoMediaId, unchanged
+// below) so a bad day for anikotoapi.site degrades Neko back to how it already worked, instead
+// of breaking it. hsub skips the new path entirely since it has no megaplay.buzz equivalent.
+async function resolveNekoStreamSources({ internalAnimeId, episodeNumber, serverToken, audio, baseHeaders }) {
+    if (audio !== 'hsub') {
+        try {
+            return await fetchMegaplaySourcesViaAnikotoApi(internalAnimeId, episodeNumber, audio);
+        } catch (err) {
+            logNekoDebug('[Neko] anikotoapi.site path failed, falling back to VidTube scraping', { error: err.message });
+        }
+    }
+
+    const { mediaId, embedUrl } = await resolveNekoMediaId(serverToken, audio, baseHeaders);
+    const sourcesRes = await axios.get(`https://vidtube.site/stream/getSourcesNew?id=${mediaId}&type=${audio}`, {
+        headers: { ...baseHeaders, 'Referer': embedUrl },
+        timeout: 15000
+    });
+    const streamUrl = sourcesRes.data?.sources?.file || sourcesRes.data?.file;
+    if (!streamUrl) throw new Error('Could not resolve VidTube stream file.');
+    return { stream: streamUrl, proxyRef: null, tracks: [], intro: null, outro: null };
+}
+
 // serverToken -> anikoto's server list -> the link-id for the requested audio type -> resolve
 // that to a VidTube embed page -> scrape its numeric media id out of the HTML. Extracted
 // verbatim from what used to be inlined in /api/anime-neko-log, so both playback and download
 // (/api/anime-neko-download) share one implementation instead of two that could drift apart.
+// FALLBACK PATH as of the anikotoapi.site integration above - resolveNekoStreamSources() is now
+// the primary entry point every call site uses; this only still runs when that fails.
 async function resolveNekoMediaId(serverToken, audio, baseHeaders) {
     logNekoDebug('[Neko] 2. Fetching server list...');
     const serverListRes = await axios.get(`https://anikoto.cz/ajax/server/list?servers=${encodeURIComponent(serverToken)}`, { headers: baseHeaders });
@@ -13605,27 +13714,26 @@ app.get('/api/anime-neko-log', async (req, res) => {
             }
         }
 
-        // 2-4. Server list -> pick the link for this audio type -> resolve VidTube embed ->
-        // extract its numeric media id. Shared with /api/anime-neko-download (see
-        // resolveNekoMediaId) so both playback and download go through the identical chain
-        // instead of two copies that could quietly drift apart.
+        // 2-4. anikotoapi.site (primary) -> falls back to server list -> pick the link for this
+        // audio type -> resolve VidTube embed -> extract its numeric media id, if the primary
+        // path fails. Shared with /api/anime-neko-download (see resolveNekoStreamSources) so
+        // both playback and download go through the identical chain instead of two copies that
+        // could quietly drift apart.
         let streamUrl = null;
         // /api/m3u8-proxy defaults its Referer/Origin to vidtube.site when no `ref` is given
-        // (correct for the normal path below) - MegaPlay's CDN needs megaplay.buzz's instead,
-        // or its hotlink protection blocks the request. null here means "use the proxy's
-        // default", set explicitly only when the MegaPlay fallback actually runs.
+        // (correct for the VidTube fallback path below) - MegaPlay's CDN (both the anikotoapi.site
+        // primary path and the old malId-based fallback) needs megaplay.buzz's instead, or its
+        // hotlink protection blocks the request.
         let streamProxyRef = null;
         let megaplayTracks = [];
         try {
-            const { mediaId, embedUrl } = await resolveNekoMediaId(serverToken, audio, baseHeaders);
-            logNekoDebug('[Neko] Extracted media id', mediaId);
-
-            const sourcesRes = await axios.get(`https://vidtube.site/stream/getSourcesNew?id=${mediaId}&type=${audio}`, {
-                headers: { ...baseHeaders, 'Referer': embedUrl }
+            const sources = await resolveNekoStreamSources({
+                internalAnimeId, episodeNumber: parseInt(episode, 10) || 1, serverToken, audio, baseHeaders
             });
-
-            streamUrl = sourcesRes.data?.sources?.file || sourcesRes.data?.file;
-            if (!streamUrl) throw new Error('Could not resolve VidTube stream file.');
+            streamUrl = sources.stream;
+            streamProxyRef = sources.proxyRef || null;
+            megaplayTracks = Array.isArray(sources.tracks) ? sources.tracks : [];
+            logNekoDebug('[Neko] Resolved stream', { streamUrl, viaProxyRef: streamProxyRef });
         } catch (vidtubeErr) {
             // Anikoto's OWN server list frequently only has VidTube (VidPlay-1) under ONE of
             // sub/dub, not both (verified live: Tower of God ep1 has it under dub but not
@@ -15678,19 +15786,19 @@ app.get('/api/anime-neko-download', async (req, res) => {
     if (!rawTitle) return res.status(400).json({ ok: false, error: 'title is required' });
 
     try {
-        const { serverToken, baseHeaders } = await resolveAnikotoEpisodeCached(rawTitle, season, parseInt(episode, 10) || 1);
-        const { mediaId, embedUrl } = await resolveNekoMediaId(serverToken, audio, baseHeaders);
-
-        const sourcesRes = await axios.get(
-            `https://vidtube.site/stream/getSourcesNew?id=${mediaId}&type=${audio}`,
-            { headers: { ...baseHeaders, 'Referer': embedUrl }, timeout: 15000 }
-        );
-        const masterUrl = sourcesRes.data?.sources?.file;
+        const { internalAnimeId, serverToken, baseHeaders } = await resolveAnikotoEpisodeCached(rawTitle, season, parseInt(episode, 10) || 1);
+        const sources = await resolveNekoStreamSources({
+            internalAnimeId, episodeNumber: parseInt(episode, 10) || 1, serverToken, audio, baseHeaders
+        });
+        const masterUrl = sources.stream;
         if (!masterUrl) throw new Error(`This title has no ${audio.toUpperCase()} stream to download`);
 
+        // Referer depends on which path actually resolved this - anikotoapi.site's megaplay.buzz
+        // CDN needs megaplay's own Referer, the old VidTube fallback (proxyRef stays null) needs
+        // vidtube's - same distinction resolveNekoStreamSources' callers make elsewhere.
         await streamHlsAsDownload(res, {
             masterUrl,
-            headers: { 'User-Agent': baseHeaders['User-Agent'] || KINO_UA, 'Referer': 'https://vidtube.site/' },
+            headers: { 'User-Agent': baseHeaders['User-Agent'] || KINO_UA, 'Referer': sources.proxyRef || 'https://vidtube.site/' },
             filename: `anime_ep${episode}_${audio}.ts`
         });
     } catch (err) {
@@ -18054,14 +18162,13 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
         if (!title) throw new Error('could not resolve a title for Neko');
         const epInfo = await resolveAnikotoEpisodeCached(title, season, episode);
         try {
-            const { mediaId, embedUrl } = await resolveNekoMediaId(epInfo.serverToken, audio, epInfo.baseHeaders);
-            const sourcesRes = await axios.get(`https://vidtube.site/stream/getSourcesNew?id=${mediaId}&type=${audio}`, {
-                headers: { ...epInfo.baseHeaders, Referer: embedUrl }, timeout: 15000
+            const sources = await resolveNekoStreamSources({
+                internalAnimeId: epInfo.internalAnimeId, episodeNumber: episode,
+                serverToken: epInfo.serverToken, audio, baseHeaders: epInfo.baseHeaders
             });
-            const streamUrl = sourcesRes.data?.sources?.file || sourcesRes.data?.file;
-            if (!streamUrl) throw new Error('Neko/VidTube returned no stream file');
-            const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: [] });
-            return { streamUrl: buildM3u8ProxyUrl(streamUrl, null, sessionId), tracks };
+            if (!sources.stream) throw new Error('Neko returned no stream file');
+            const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: sources.tracks || [] });
+            return { streamUrl: buildM3u8ProxyUrl(sources.stream, sources.proxyRef || null, sessionId), tracks };
         } catch (err) {
             // VidTube genuinely has no server for this audio type (not a transient failure) -
             // same fallback fetchKaaSubtitlesForEpisode's caller uses internally.
