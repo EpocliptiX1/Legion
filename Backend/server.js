@@ -1616,7 +1616,20 @@ function mapTmdbMovieWithCredits(item, credits) {
 // worse-informed origin check here added no real protection - just broke anything that wasn't
 // literally localhost:3000 (this ngrok pentest tunnel included). Still sets proper CORS
 // response headers via cors(), just no longer rejects based on origin.
-app.use(cors({ origin: true, credentials: true }));
+//
+// credentials: false (was true) - caught in a pentest of the public embed API: origin:true
+// reflects Access-Control-Allow-Origin back to WHATEVER Origin a request sends, and pairing
+// that with credentials:true means any cross-origin page's script could in principle read a
+// cookie-bearing response via fetch(..., {credentials:'include'}). It only stayed harmless
+// because aniko_sid is SameSite=Lax (browsers already withhold Lax cookies from cross-site
+// fetch/XHR) - safety that shouldn't depend on a cookie attribute nobody was consciously
+// defending here. No legitimate request in this app actually needs cross-origin credentials:
+// same-origin calls (the normal site, and the embed iframe's own same-origin calls back to
+// /api/m3u8-proxy - it's served from OUR origin regardless of who iframes it) never trigger
+// CORS at all, and requireSameOrigin above already gates every real cross-origin case except
+// /embed/* itself, which is meant to be publicly loadable but carries no session cookie of its
+// own to steal.
+app.use(cors({ origin: true, credentials: false }));
 app.use(express.json({ limit: '8mb' })); // raised from 5mb for base64 profile picture uploads
 
 // Secret-header guard — backend refuses any request that didn't come through the middleware.
