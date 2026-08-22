@@ -39,12 +39,13 @@
     color: var(--text-primary);
 }
 .docs-brand img { height: 30px; width: auto; }
-/* Trademark-style badge: small, centered above the logo's top edge, like a "TM" mark. */
+/* Trademark-style badge: small, tucked at the top-right corner of the logo, like a "TM" mark
+   next to the last letter - not centered over the whole wordmark. */
 .docs-brand .api-text {
     position: absolute;
-    top: -2px;
-    left: 50%;
-    transform: translate(-50%, -50%);
+    top: -4px;
+    right: -2px;
+    transform: translateY(-50%);
     font-weight: 800;
     font-size: 0.6rem;
     letter-spacing: 0.06em;
