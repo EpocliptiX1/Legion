@@ -17508,40 +17508,88 @@ async function fetchAniListMediaForSeasonCards(anilistId) {
     throw new Error('AniList request failed');
 }
 
+// Jikan/MAL fallback for when AniList's own BFS above comes back incomplete - same relations-
+// walk buildSeasonGroupsFromJikan already does for resolveAnimeSeasonGroups (AniList-then-Jikan
+// is an established pattern in this file, not a new one), but this copy also keeps each
+// season's own cover image (jikanGet already retries internally, see its own definition).
+async function fetchJikanSeasonCardsChain(malId) {
+    const visited = new Set();
+    const queue = [Number(malId)];
+    const found = [];
+    while (queue.length && found.length < 8) {
+        const id = Number(queue.shift());
+        if (!id || visited.has(id)) continue;
+        visited.add(id);
+
+        let full;
+        try {
+            full = await jikanGet(`/anime/${id}/full`);
+        } catch (err) {
+            continue; // one unreachable MAL entry shouldn't drop the rest of this fallback chain
+        }
+        const info = full?.data;
+        if (!info) continue;
+
+        if (String(info.type || '').toUpperCase() === 'TV') {
+            found.push({
+                idMal: info.mal_id || id,
+                title: info.title_english || info.title || null,
+                coverImage: info.images?.jpg?.large_image_url || info.images?.webp?.large_image_url || null,
+                airDate: info?.aired?.from ? String(info.aired.from).slice(0, 10) : null,
+                status: String(info.status || '').toLowerCase().includes('airing') ? 'RELEASING'
+                    : String(info.status || '').toLowerCase().includes('not yet') ? 'NOT_YET_RELEASED' : 'FINISHED'
+            });
+        }
+
+        const rels = Array.isArray(info.relations) ? info.relations : [];
+        rels.forEach(rel => {
+            const rType = String(rel?.relation || '').toLowerCase();
+            if (rType !== 'sequel' && rType !== 'prequel') return;
+            (rel.entry || []).forEach(ent => {
+                if (String(ent?.type || '').toLowerCase() !== 'anime') return;
+                const relId = Number(ent?.mal_id || 0);
+                if (relId > 0 && !visited.has(relId)) queue.push(relId);
+            });
+        });
+    }
+    return found;
+}
+
 const animeSeasonCardsCache = new Map(); // tmdbId -> { seasons, cachedAt, incomplete }
-const ANIME_SEASON_CARDS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-// A result where any BFS hop failed even after retries might be missing a real season - cache
-// it much more briefly than a clean result so it self-heals on the next real request instead of
-// staying wrong for a full day.
-const ANIME_SEASON_CARDS_INCOMPLETE_CACHE_TTL_MS = 10 * 60 * 1000;
+// Same "frequent vs rare" split the episode/dub-count caches already use (is_finished driving
+// a long TTL vs a short one) - a franchise whose latest known season is FINISHED with no
+// upcoming sequel in sight essentially never changes, so it earns the long tier; one that's
+// still RELEASING/NOT_YET_RELEASED, or has a real SEQUEL relation already sitting at one of
+// those statuses, gets the short "check again soon" tier instead.
+const ANIME_SEASON_CARDS_TTL_RARE_MS = 7 * 24 * 60 * 60 * 1000;
+const ANIME_SEASON_CARDS_TTL_FREQUENT_MS = 24 * 60 * 60 * 1000;
 
 async function resolveAnimeSeasonCards(tmdbId) {
     const cached = animeSeasonCardsCache.get(tmdbId);
-    if (cached) {
-        const effectiveTtl = cached.incomplete ? ANIME_SEASON_CARDS_INCOMPLETE_CACHE_TTL_MS : ANIME_SEASON_CARDS_CACHE_TTL_MS;
-        if ((Date.now() - cached.cachedAt) < effectiveTtl) return cached.seasons;
-    }
+    if (cached && (Date.now() - cached.cachedAt) < cached.ttl) return cached.seasons;
 
     // anime_tmdb_mapping is keyed by tmdb_id already (see its own CREATE TABLE) - a direct
     // reverse lookup, no title search needed for the common case where this show has already
     // been resolved once via any of the other anime features that populate this table.
     const mapping = await new Promise((resolve, reject) => {
-        animeCacheDb.get(`SELECT anilist_id FROM anime_tmdb_mapping WHERE tmdb_id = ?`, [tmdbId],
+        animeCacheDb.get(`SELECT anilist_id, mal_id FROM anime_tmdb_mapping WHERE tmdb_id = ?`, [tmdbId],
             (err, row) => err ? reject(err) : resolve(row));
     });
     let anilistId = mapping?.anilist_id || null;
+    let mappedMalId = mapping?.mal_id || null;
     if (!anilistId) {
         // Fallback: anime_cache's own tmdb_id column (PK is anilist_id there) - a title might
         // have been cached via the homepage rows/library browsing without ever going through
         // anime_tmdb_mapping specifically.
         const cacheRow = await new Promise((resolve, reject) => {
-            animeCacheDb.get(`SELECT anilist_id FROM anime_cache WHERE tmdb_id = ?`, [tmdbId],
+            animeCacheDb.get(`SELECT anilist_id, mal_id FROM anime_cache WHERE tmdb_id = ?`, [tmdbId],
                 (err, row) => err ? reject(err) : resolve(row));
         });
         anilistId = cacheRow?.anilist_id || null;
+        mappedMalId = mappedMalId || cacheRow?.mal_id || null;
     }
     if (!anilistId) {
-        animeSeasonCardsCache.set(tmdbId, { seasons: [], cachedAt: Date.now() });
+        animeSeasonCardsCache.set(tmdbId, { seasons: [], cachedAt: Date.now(), ttl: ANIME_SEASON_CARDS_TTL_FREQUENT_MS });
         return [];
     }
 
@@ -17549,8 +17597,9 @@ async function resolveAnimeSeasonCards(tmdbId) {
     // still walk through movies/OVAs in case a real season is only reachable through one.
     const visited = new Set();
     const queue = [anilistId];
-    const found = []; // { id, idMal, title, coverImage, airDate }
+    const found = []; // { anilistId, idMal, title, coverImage, airDate, status }
     let hadFailure = false;
+    let hasUpcomingSequel = false;
     while (queue.length && found.length < 8) {
         const id = Number(queue.shift());
         if (!id || visited.has(id)) continue;
@@ -17562,8 +17611,9 @@ async function resolveAnimeSeasonCards(tmdbId) {
         } catch (err) {
             // One unreachable node (even after fetchAniListMediaForSeasonCards' own retries)
             // shouldn't drop the rest of the chain - but it DOES mean this result might be
-            // missing a real season reachable only through this node, so cache it short-lived
-            // instead of the normal 24h (see ANIME_SEASON_CARDS_INCOMPLETE_CACHE_TTL_MS above).
+            // missing a real season reachable only through this node. fetchJikanSeasonCardsChain
+            // below gets a chance to fill that gap; only if it can't either does this stay
+            // reflected in a short cache TTL.
             hadFailure = true;
             continue;
         }
@@ -17576,7 +17626,8 @@ async function resolveAnimeSeasonCards(tmdbId) {
                 idMal: media.idMal || null,
                 title: media.title?.english || media.title?.romaji || media.title?.native || null,
                 coverImage: media.coverImage?.extraLarge || null,
-                airDate: aniListDateToIso(media.startDate)
+                airDate: aniListDateToIso(media.startDate),
+                status: String(media.status || '').toUpperCase()
             });
         }
 
@@ -17586,9 +17637,43 @@ async function resolveAnimeSeasonCards(tmdbId) {
             if (rType !== 'SEQUEL' && rType !== 'PREQUEL') continue;
             const node = edge?.node;
             if (!node || String(node.type || '').toUpperCase() !== 'ANIME') continue;
+            // Real evidence more content is coming, regardless of whether this node itself
+            // gets walked into as a "season" below - same signal buildSeasonGroupsFromAniList's
+            // own hasUpcomingSequel tracks.
+            if (rType === 'SEQUEL') {
+                const nodeStatus = String(node.status || '').toUpperCase();
+                if (nodeStatus === 'NOT_YET_RELEASED' || nodeStatus === 'RELEASING') hasUpcomingSequel = true;
+            }
             if (!['TV', 'TV_SHORT'].includes(String(node.format || '').toUpperCase())) continue;
             const relId = Number(node.id || 0);
             if (relId > 0 && !visited.has(relId)) queue.push(relId);
+        }
+    }
+
+    // AniList had trouble somewhere in the chain - try to fill the gap via Jikan/MAL before
+    // giving up on completeness. Started from whichever malId we already have (a season AniList
+    // DID resolve, or the tmdb_id->mal_id mapping) since that's a real, known-good entry point.
+    if (hadFailure) {
+        const startMalId = found.find(f => f.idMal)?.idMal || mappedMalId || null;
+        if (startMalId) {
+            try {
+                const jikanFound = await fetchJikanSeasonCardsChain(startMalId);
+                const existingMalIds = new Set(found.map(f => f.idMal).filter(Boolean));
+                let addedAny = false;
+                for (const jf of jikanFound) {
+                    if (existingMalIds.has(jf.idMal)) continue;
+                    found.push({ anilistId: null, idMal: jf.idMal, title: jf.title, coverImage: jf.coverImage, airDate: jf.airDate, status: jf.status });
+                    existingMalIds.add(jf.idMal);
+                    addedAny = true;
+                    if (jf.status === 'RELEASING' || jf.status === 'NOT_YET_RELEASED') hasUpcomingSequel = true;
+                }
+                // Jikan successfully covered the gap (found something AniList's incomplete walk
+                // didn't already have) - trust this result at the normal TTL tier instead of the
+                // short "retry soon" one below.
+                if (addedAny) hadFailure = false;
+            } catch (err) {
+                // Jikan fallback also failed - hadFailure stays true, short TTL below still applies.
+            }
         }
     }
 
@@ -17615,7 +17700,23 @@ async function resolveAnimeSeasonCards(tmdbId) {
         });
     }
 
-    animeSeasonCardsCache.set(tmdbId, { seasons, cachedAt: Date.now(), incomplete: hadFailure });
+    const latestStatus = found.length ? found[found.length - 1].status : null;
+    const isFrequentTier = hasUpcomingSequel || latestStatus === 'RELEASING' || latestStatus === 'NOT_YET_RELEASED';
+    const ttl = isFrequentTier ? ANIME_SEASON_CARDS_TTL_FREQUENT_MS : ANIME_SEASON_CARDS_TTL_RARE_MS;
+
+    // Still incomplete even after the Jikan fallback attempt: if a previously-good (non-
+    // incomplete) result already exists, don't overwrite it with a possibly-worse one - just
+    // hand this attempt's result to THIS caller and let the old cache entry keep serving
+    // everyone else until it naturally expires. Only cache the incomplete result at all when
+    // there's nothing better already sitting there, and even then at a short retry-soon TTL.
+    if (hadFailure) {
+        if (!cached || cached.incomplete) {
+            animeSeasonCardsCache.set(tmdbId, { seasons, cachedAt: Date.now(), ttl: 10 * 60 * 1000, incomplete: true });
+        }
+        return seasons;
+    }
+
+    animeSeasonCardsCache.set(tmdbId, { seasons, cachedAt: Date.now(), ttl, incomplete: false });
     return seasons;
 }
 
