@@ -14526,6 +14526,32 @@ function runKinogoCommentImportJob(movieId, rawTitle, releaseYear) {
     return job;
 }
 
+// A track's "file" field out of decodeCinemarFile is ALWAYS the literal placeholder "#" - it is
+// NOT the stream URL (a stale assumption the old code made, root-caused live by reverse-
+// engineering cinemar.cc's own player.js: loadMedia() calls
+// `api.post("playlist/load", currentItem.data, cb)` - i.e. the *encoded* per-track `data` blob
+// gets POSTed AS-IS to cinemar's own server, which resolves it server-side and returns the real
+// `{file, duration, thumbnails, download, subtitle}` payload. Building "https:" + "#" from the
+// placeholder instead of doing this POST is exactly what produced the "Proxy failed" /
+// "Invalid URL: https:#" errors - confirmed live this was happening for EVERY title, not just
+// specific ones (initially looked title-specific because a couple of titles' resolutions were
+// still serving out of a pre-existing stale cache row when first checked).
+async function resolveCinemarTrackStream(track, embedUrl) {
+    if (!track?.data) throw new Error('Cinemar track has no data payload to resolve');
+    const res = await axios.post('https://cinemar.cc/api/playlist/load', JSON.stringify(track.data), {
+        headers: { 'Content-Type': 'application/json', 'User-Agent': KINOGO_UA, 'Referer': embedUrl },
+        timeout: 15000
+    });
+    const streamUrl = res.data?.file;
+    if (!streamUrl) throw new Error('Cinemar playlist/load returned no file URL');
+    // The real per-track download token also only exists in THIS response (under `download`) -
+    // track.dlink (what the old code read) was never a real field on the track object at all,
+    // so downloads have been silently broken the same way playback was. Confirmed live this
+    // token is one-time-use/short-lived (a stale one 404s with "Адрес устарел" - "link expired,
+    // refresh the page"), so it has to be re-fetched fresh each time, same as the stream URL.
+    return { streamUrl, dlink: res.data?.download || null };
+}
+
 async function fetchCinemarStream(embedUrl, moviePageUrl) {
     const embedRes = await axios.get(embedUrl, {
         headers: { 'User-Agent': KINOGO_UA, 'Referer': moviePageUrl },
@@ -14538,16 +14564,21 @@ async function fetchCinemarStream(embedUrl, moviePageUrl) {
     // First track is consistently the default Russian dub in practice (site's own
     // default selection) -- other entries are alt dubs/subs (Ukrainian, English, etc).
     const track = tracks[0];
-    if (!track.file) throw new Error('Cinemar track has no file URL');
-    const streamUrl = track.file.startsWith('http') ? track.file : `https:${track.file}`;
+    const { streamUrl, dlink } = await resolveCinemarTrackStream(track, embedUrl);
     const translationTitle = String(track.title || '').replace(/<[^>]+>/g, '').trim();
-    return { streamUrl, translationTitle, dlink: track.dlink || null };
+    return { streamUrl, translationTitle, dlink };
 }
 
 // Mirrors the player's own download button: window.download() calls
 // download.open(playlist.getCurrentItem().dlink), which POSTs that dlink blob
 // to cinemar.cc's own downPage endpoint and gets back a plain array of direct,
 // per-quality progressive MP4 URLs -- no need to decode dlink ourselves.
+// KNOWN ISSUE (unresolved): even a dlink obtained fresh from playlist/load's own `download`
+// field (see resolveCinemarTrackStream) gets "Адрес устарел" ("link expired") back from this
+// endpoint immediately - confirmed live, not a caching artifact. Streaming itself (the actual
+// reported bug) is fully fixed and verified; this download-specific path needs further
+// reverse-engineering (possibly a different Referer, or an extra step before downPage accepts
+// the token) that wasn't chased down further since it's a separate, lower-priority feature.
 async function fetchCinemarDownloadLinks(dlink) {
     const res = await axios.post('https://cinemar.cc/api/player/downPage',
         { link: dlink, fhq: true },
@@ -14576,6 +14607,7 @@ async function resolveMovieRuData(rawTitle, tmdbId) {
     }
 
     const { moviePageUrl, embedUrl } = await resolveKinogoMovieCached(rawTitle);
+    console.error('[Cinemar TEST] embedUrl:', embedUrl);
     const result = await fetchCinemarStream(embedUrl, moviePageUrl);
 
     if (tmdbId) {
@@ -14667,7 +14699,7 @@ function resolveKinogoSeriesTreeCached(rawTitle) {
     return p;
 }
 
-function getKinogoEpisodeTrack(tree, season, episode) {
+async function getKinogoEpisodeTrack(tree, season, episode, embedUrl) {
     const seasonNode = tree[season - 1];
     if (!seasonNode || !Array.isArray(seasonNode.folder)) {
         throw new Error(`Season ${season} not found (title only has ${tree.length} season(s) on kinogo.mu)`);
@@ -14678,10 +14710,10 @@ function getKinogoEpisodeTrack(tree, season, episode) {
     }
     // Same "first entry is the default Russian track" assumption as movies.
     const track = episodeNode.folder[0];
-    if (!track.file) throw new Error('Cinemar episode track has no file URL');
-    const streamUrl = track.file.startsWith('http') ? track.file : `https:${track.file}`;
+    // See resolveCinemarTrackStream's comment - track.file is always the placeholder "#" here too.
+    const { streamUrl, dlink } = await resolveCinemarTrackStream(track, embedUrl);
     const translationTitle = String(track.title || '').replace(/<[^>]+>/g, '').trim();
-    return { streamUrl, translationTitle, dlink: track.dlink || null };
+    return { streamUrl, translationTitle, dlink };
 }
 
 async function resolveTvRuData(rawTitle, tmdbId, season, episode) {
@@ -14693,8 +14725,14 @@ async function resolveTvRuData(rawTitle, tmdbId, season, episode) {
         }
     }
 
-    const tree = await resolveKinogoSeriesTreeCached(rawTitle);
-    const result = getKinogoEpisodeTrack(tree, season, episode);
+    // resolveKinogoMovieCached is cheap here even though resolveKinogoSeriesTreeCached already
+    // calls it internally - it's its own cache (kinogoResolveCache), so this is just a cache hit,
+    // not a second real request. Needed for embedUrl as the Referer on the playlist/load POST.
+    const [tree, { embedUrl }] = await Promise.all([
+        resolveKinogoSeriesTreeCached(rawTitle),
+        resolveKinogoMovieCached(rawTitle)
+    ]);
+    const result = await getKinogoEpisodeTrack(tree, season, episode, embedUrl);
 
     if (tmdbId) {
         episodeLoadCacheSet(tmdbId, null, season, episode, 'ru', 'kinogotv',
