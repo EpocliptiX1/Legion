@@ -1094,9 +1094,21 @@ animeCacheDb.serialize(() => {
             season_count INTEGER NOT NULL,
             cached_at INTEGER NOT NULL,
             is_finished INTEGER,
-            tmdb_season_count INTEGER
+            tmdb_season_count INTEGER,
+            title TEXT
         );
     `);
+    // title: the show's own title, purely so a human skimming this table in a DB browser isn't
+    // stuck reading bare tmdb_id numbers - not read by any lookup logic.
+    animeCacheDb.all(`PRAGMA table_info(anime_season_cards_cache)`, [], (err, columns) => {
+        if (err) return;
+        const names = new Set((columns || []).map(c => c.name));
+        if (!names.has('title')) {
+            animeCacheDb.run(`ALTER TABLE anime_season_cards_cache ADD COLUMN title TEXT`, (alterErr) => {
+                if (alterErr) console.error('[SeasonCardsCache] Failed to add title column', alterErr.message);
+            });
+        }
+    });
     // Same TTL reasoning as native_episode_counts/anikoto_episode_counts (ANIKOTO_FINISHED_CACHE_TTL_MS
     // etc., defined near getAnyCachedNativeRow) - reused directly rather than duplicated, since the
     // freshness tradeoffs (a finished show's structure barely ever changes, an ongoing one's does
@@ -17500,9 +17512,14 @@ const ANIME_SEASON_CARDS_QUERY = `
 // cause of a real, reported "shows 2 seasons instead of 3" bug: no retry meant a single 429 on
 // any hop silently dropped that season for good (the catch below just skipped it), and the
 // resulting INCOMPLETE list then got cached as if it were the full, correct answer.
+// Retries on 429 (rate limit) AND 403/5xx - AniList has had whole-site outages ("temporarily
+// disabled due to severe stability issues", a real 403 seen live) that look nothing like a
+// per-request rate limit but are just as transient. Worth a few patient retries before ever
+// falling to the Jikan/MAL last resort below, since AniList is the primary source and Jikan's
+// own scrape is the weaker of the two.
 async function fetchAniListMediaForSeasonCards(anilistId) {
-    const maxAttempts = 3;
-    let delay = 500;
+    const maxAttempts = 4;
+    let delay = 600;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
             const response = await axios.post(
@@ -17514,7 +17531,8 @@ async function fetchAniListMediaForSeasonCards(anilistId) {
             return response.data?.data?.Media || null;
         } catch (err) {
             const status = err.response?.status;
-            if (status === 429 && attempt < maxAttempts) {
+            const retryable = status === 429 || status === 403 || (status >= 500 && status < 600);
+            if (retryable && attempt < maxAttempts) {
                 await sleep(delay);
                 delay *= 2;
                 continue;
@@ -17608,21 +17626,22 @@ function animeSeasonCardsCacheGet(tmdbId, currentTmdbSeasonCount) {
     });
 }
 
-function animeSeasonCardsCacheSet(tmdbId, malId, seasons, isFinished, tmdbSeasonCount) {
+function animeSeasonCardsCacheSet(tmdbId, malId, seasons, isFinished, tmdbSeasonCount, title) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
         animeCacheDb.run(
-            `INSERT INTO anime_season_cards_cache (tmdb_id, mal_id, seasons_json, season_count, cached_at, is_finished, tmdb_season_count)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO anime_season_cards_cache (tmdb_id, mal_id, seasons_json, season_count, cached_at, is_finished, tmdb_season_count, title)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(tmdb_id) DO UPDATE SET
                  mal_id = excluded.mal_id,
                  seasons_json = excluded.seasons_json,
                  season_count = excluded.season_count,
                  cached_at = excluded.cached_at,
                  is_finished = excluded.is_finished,
-                 tmdb_season_count = excluded.tmdb_season_count`,
+                 tmdb_season_count = excluded.tmdb_season_count,
+                 title = COALESCE(excluded.title, anime_season_cards_cache.title)`,
             [tmdbId, malId || null, JSON.stringify(seasons), seasons.length, now,
-                isFinished ? 1 : 0, Number.isFinite(tmdbSeasonCount) ? tmdbSeasonCount : null],
+                isFinished ? 1 : 0, Number.isFinite(tmdbSeasonCount) ? tmdbSeasonCount : null, title || null],
             function (err) {
                 if (err) return reject(err);
                 resolve(this.changes || 0);
@@ -17739,10 +17758,22 @@ async function resolveAnimeSeasonCards(tmdbId) {
         }
     }
 
-    // AniList had trouble somewhere in the chain - try to fill the gap via Jikan/MAL before
-    // giving up on completeness. Started from whichever malId we already have (a season AniList
-    // DID resolve, or the tmdb_id->mal_id mapping) since that's a real, known-good entry point.
-    if (hadFailure) {
+    // AniList can come back "successful" yet still incomplete - no thrown error anywhere in the
+    // BFS, just a relations graph that silently doesn't lead to every real season (confirmed
+    // live: Attack on Titan, tmdb 1429, AniList found only 1 of its 4 real seasons with zero
+    // fetch errors along the way). hadFailure alone can't catch that, so TMDB's own
+    // number_of_seasons - already fetched above for the disk-cache bust check - doubles as an
+    // independent completeness check: fewer TV entries than TMDB knows about means AniList's
+    // walk came up short, trustworthy failure or not.
+    const aniListLooksIncomplete = Number.isFinite(tmdbSeasonCount) && tmdbSeasonCount > 0 && found.length < tmdbSeasonCount;
+
+    // MAL/Jikan is a last resort, not a co-equal source - AniList's own retries above (now also
+    // covering the whole-site 403 outages AniList has been having, not just 429) already get a
+    // fair shot first. Only reached when AniList either threw after every retry, or came back
+    // clean but demonstrably short per the TMDB count above. Started from whichever malId we
+    // already have (a season AniList DID resolve, or the tmdb_id->mal_id mapping) since that's a
+    // real, known-good entry point.
+    if (hadFailure || aniListLooksIncomplete) {
         const startMalId = found.find(f => f.idMal)?.idMal || mappedMalId || null;
         if (startMalId) {
             try {
@@ -17756,12 +17787,14 @@ async function resolveAnimeSeasonCards(tmdbId) {
                     addedAny = true;
                     if (jf.status === 'RELEASING' || jf.status === 'NOT_YET_RELEASED') hasUpcomingSequel = true;
                 }
-                // Jikan successfully covered the gap (found something AniList's incomplete walk
-                // didn't already have) - trust this result at the normal TTL tier instead of the
-                // short "retry soon" one below.
+                // Jikan successfully covered the gap (found something AniList's walk didn't
+                // already have) - trust this result at the normal TTL tier instead of the short
+                // "retry soon" one below. hadFailure only meant "AniList threw"; it says nothing
+                // about whether the combined result is now actually complete, so that's
+                // re-checked against tmdbSeasonCount below rather than just clearing the flag here.
                 if (addedAny) hadFailure = false;
             } catch (err) {
-                // Jikan fallback also failed - hadFailure stays true, short TTL below still applies.
+                // Jikan fallback also failed - hadFailure/incompleteness stands, short TTL below still applies.
             }
         }
     }
@@ -17795,18 +17828,27 @@ async function resolveAnimeSeasonCards(tmdbId) {
     // tmdb_season_count signal is on record); still airing/announced -> not finished (short TTL).
     const isFinished = !(hasUpcomingSequel || latestStatus === 'RELEASING' || latestStatus === 'NOT_YET_RELEASED');
     const malIdForWrite = found.find(f => f.idMal)?.idMal || mappedMalId || null;
+    // Purely a DB-browser convenience column - the earliest-airing found season's own title
+    // stands in for "the franchise's title" well enough for that purpose.
+    const titleForWrite = found[0]?.title || null;
 
-    // Still incomplete even after the Jikan fallback attempt: if a previously-good result already
-    // exists with at least as many seasons, don't overwrite it with a possibly-worse one - just
-    // hand this attempt's result to THIS caller and let the old cache row keep serving everyone
-    // else until it naturally expires. An incomplete write only happens when there's nothing
-    // better already sitting there, and lands with is_finished=0/no season-count signal, i.e. the
-    // shortest ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS tier - "check again soon" without a magic number.
-    if (hadFailure) {
+    // Re-checked AFTER the Jikan attempt (not the pre-fallback aniListLooksIncomplete) - Jikan may
+    // have closed the gap entirely, in which case this is a real, trustworthy result and deserves
+    // the normal TTL below even though AniList alone needed help getting there.
+    const stillIncomplete = hadFailure || (Number.isFinite(tmdbSeasonCount) && tmdbSeasonCount > 0 && found.length < tmdbSeasonCount);
+
+    // Still incomplete even after the Jikan fallback attempt: never cache a result whose season
+    // count doesn't match TMDB's - if a previously-good result already exists with at least as
+    // many seasons, don't overwrite it with a possibly-worse one either, just hand this attempt's
+    // result to THIS caller and let the old cache row keep serving everyone else until it
+    // naturally expires. An incomplete write only happens when there's nothing better already
+    // sitting there, and lands with is_finished=0/no season-count signal, i.e. the shortest
+    // ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS tier - "check again soon" without a magic number.
+    if (stillIncomplete) {
         const existingIsBetterOrEqual = diskCache && diskCache.seasons.length > 0 && diskCache.seasons.length >= seasons.length;
         if (!existingIsBetterOrEqual) {
             try {
-                await animeSeasonCardsCacheSet(tmdbId, malIdForWrite, seasons, false, undefined);
+                await animeSeasonCardsCacheSet(tmdbId, malIdForWrite, seasons, false, undefined, titleForWrite);
             } catch (err) {
                 console.error('[anime-season-cards] disk cache write failed:', err.message);
             }
@@ -17815,7 +17857,7 @@ async function resolveAnimeSeasonCards(tmdbId) {
     }
 
     try {
-        await animeSeasonCardsCacheSet(tmdbId, malIdForWrite, seasons, isFinished, tmdbSeasonCount);
+        await animeSeasonCardsCacheSet(tmdbId, malIdForWrite, seasons, isFinished, tmdbSeasonCount, titleForWrite);
     } catch (err) {
         console.error('[anime-season-cards] disk cache write failed:', err.message);
     }
