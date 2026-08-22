@@ -17831,6 +17831,50 @@ async function resolvePublicEmbedTmdbId(rawId, mediaType = 'tv') {
     return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
+// Anime embed only: accepts a MAL id (`mal-1234`) or AniList id (`anilist-1234` / `al-1234`) in
+// addition to the plain TMDB/IMDB forms resolvePublicEmbedTmdbId already handles above - most
+// other sites' anime catalogs are keyed by MAL or AniList (we're the outlier building around
+// TMDB), so requiring callers to already know our TMDB id would defeat the point of a public
+// embed API for them. TMDB/MAL/AniList ids are all bare integers with overlapping ranges, so a
+// prefix is required to disambiguate - an unprefixed numeric {id} keeps meaning "TMDB id"
+// (existing behavior, unchanged) rather than guessing.
+//
+// Resolution: try our own anime_tmdb_mapping cache first (populated by every anime page load on
+// the main site, see animeTmdbMappingUpsert), and only hit AniList's GraphQL API (which accepts
+// either an AniList id OR a MAL id directly - see aniListGetMediaBasic) on a cache miss, reusing
+// getTmdbIdForAniList's existing title-search resolution rather than duplicating it.
+async function resolvePublicEmbedAnimeMalOrAniListId(malId, anilistId) {
+    if (malId) {
+        const cached = await animeTmdbMappingGetByMalId(malId);
+        if (cached?.tmdb_id) return cached.tmdb_id;
+    }
+    if (anilistId) {
+        const cached = await animeTmdbMappingGetByAniListId(anilistId);
+        if (cached?.tmdb_id) return cached.tmdb_id;
+    }
+    const media = await aniListGetMediaBasic({ anilistId, malId });
+    if (!media) return null;
+    return await getTmdbIdForAniList(
+        media.id,
+        media.title?.english || media.title?.romaji || media.title?.native,
+        media.idMal || malId || null,
+        media.title?.english,
+        media.title?.romaji,
+        media.title?.native
+    );
+}
+
+async function resolvePublicEmbedAnimeId(rawId) {
+    const idStr = String(rawId || '').trim();
+    const malMatch = idStr.match(/^mal-(\d+)$/i);
+    if (malMatch) return resolvePublicEmbedAnimeMalOrAniListId(parseInt(malMatch[1], 10), null);
+
+    const aniListMatch = idStr.match(/^(?:anilist|al)-(\d+)$/i);
+    if (aniListMatch) return resolvePublicEmbedAnimeMalOrAniListId(null, parseInt(aniListMatch[1], 10));
+
+    return resolvePublicEmbedTmdbId(rawId, 'tv');
+}
+
 // Real AniKino player: a native <video> element (custom-skinned controls, not the bare browser
 // default) + hls.js playing the session-bound PROXIED stream URL (never the raw CDN URL). Values
 // are pre-validated by the route below (a proxy token string built server-side, subtitle tracks
@@ -18251,7 +18295,7 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
         ? `/embed/anime/${encodeURIComponent(req.params.id)}/${episode + 1}?season=${season}&audio=${audio}&server=${server}&autoplay=1&autonext=1`
         : null;
 
-    const tmdbId = await resolvePublicEmbedTmdbId(req.params.id, 'tv');
+    const tmdbId = await resolvePublicEmbedAnimeId(req.params.id);
     if (!tmdbId) {
         return res.status(404).send(renderPublicEmbedErrorHtml('Could not resolve this id to a known title.'));
     }

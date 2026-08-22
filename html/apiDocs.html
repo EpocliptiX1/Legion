@@ -223,7 +223,7 @@
                 <table class="param-table">
                     <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
                     <tbody>
-                        <tr><td><code>{id}</code></td><td>Yes</td><td>TMDB TV id or IMDB id (<code>tt...</code>) - anime is always the TV namespace, even for movies</td></tr>
+                        <tr><td><code>{id}</code></td><td>Yes</td><td>TMDB TV id, IMDB id (<code>tt...</code>), MAL id (<code>mal-...</code>), or AniList id (<code>anilist-...</code> / <code>al-...</code>) - see the callout below. Anime is always the TMDB TV namespace, even for movies</td></tr>
                         <tr><td><code>{episode}</code></td><td>Yes</td><td>Episode number within <code>season</code></td></tr>
                         <tr><td><code>season</code></td><td>Optional</td><td>Defaults to <code>1</code></td></tr>
                         <tr><td><code>audio</code></td><td>Optional</td><td><code>sub</code> (default) or <code>dub</code></td></tr>
@@ -245,7 +245,26 @@
 ><span class="url-example"><span class="url-example-note"># Dub, Neko (falls back to Mega automatically if unavailable)</span><a href="/embed/anime/1429/1?audio=dub&amp;server=neko" target="_blank" rel="noopener">/embed/anime/1429/1?audio=dub&amp;server=neko</a></span
 ><span class="url-example"><span class="url-example-note"># RU MV - only succeeds when we have a confident title match</span><a href="/embed/anime/1429/1?server=ru" target="_blank" rel="noopener">/embed/anime/1429/1?server=ru</a></span
 ><span class="url-example"><span class="url-example-note"># binge mode - autoplay + auto-advance to episode 2, 3... on end</span><a href="/embed/anime/1429/1?audio=dub&amp;autoplay=1&amp;autonext=1" target="_blank" rel="noopener">/embed/anime/1429/1?audio=dub&amp;autoplay=1&amp;autonext=1</a></span
+><span class="url-example"><span class="url-example-note"># same show, by MAL id instead of TMDB id</span><a href="/embed/anime/mal-16498/1?audio=dub" target="_blank" rel="noopener">/embed/anime/mal-16498/1?audio=dub</a></span
+><span class="url-example"><span class="url-example-note"># same show, by AniList id (anilist- and al- both work)</span><a href="/embed/anime/anilist-16498/1?audio=dub" target="_blank" rel="noopener">/embed/anime/anilist-16498/1?audio=dub</a></span
 ></pre>
+                </div>
+                <div class="callout">
+                    <span class="icon">🆔</span>
+                    <div>
+                        Most other anime embed APIs are built around MAL or AniList ids - we're
+                        the outlier keying everything off TMDB, so a plain numeric <code>{id}</code>
+                        always means <strong>TMDB</strong> (unchanged, existing behavior). To pass
+                        a MAL or AniList id instead, prefix it: <code>mal-16498</code> or
+                        <code>anilist-16498</code> (<code>al-16498</code> also works, same thing).
+                        TMDB/MAL/AniList ids are all bare integers with overlapping ranges, so the
+                        prefix is what disambiguates them - an unprefixed number is never treated
+                        as a MAL/AniList id, even if the numbers happen to collide. This only
+                        applies to the anime endpoint; Movie/TV Show Embed stay TMDB/IMDB-only
+                        since MAL and AniList don't catalog live-action titles. First use of a
+                        given MAL/AniList id costs one extra lookup (cached in our own DB after
+                        that) to translate it to the TMDB id we actually resolve playback from.
+                    </div>
                 </div>
                 <div class="callout">
                     <span class="icon">💬</span>
