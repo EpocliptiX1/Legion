@@ -76,12 +76,22 @@
                 </p>
                 <div class="code-block">
                     <div class="code-block-tabs">
-                        <span class="code-block-tab active">Movie</span>
-                        <span class="code-block-tab">TV Show</span>
-                        <span class="code-block-tab">Anime</span>
+                        <span class="code-block-tab active" data-tab="movie">Movie</span>
+                        <span class="code-block-tab" data-tab="tv">TV Show</span>
+                        <span class="code-block-tab" data-tab="anime">Anime</span>
                     </div>
-                    <pre>&lt;iframe
+                    <pre data-tab-panel="movie">&lt;iframe
   src="https://your-domain.example/embed/movie/{id}"
+  width="100%" height="560"
+  frameborder="0" allowfullscreen
+&gt;&lt;/iframe&gt;</pre>
+                    <pre data-tab-panel="tv" style="display:none;">&lt;iframe
+  src="https://your-domain.example/embed/tv/{id}/{season}/{episode}"
+  width="100%" height="560"
+  frameborder="0" allowfullscreen
+&gt;&lt;/iframe&gt;</pre>
+                    <pre data-tab-panel="anime" style="display:none;">&lt;iframe
+  src="https://your-domain.example/embed/anime/{id}/{episode}?season=1&amp;audio=dub"
   width="100%" height="560"
   frameborder="0" allowfullscreen
 &gt;&lt;/iframe&gt;</pre>
@@ -406,9 +416,30 @@ iframe.src = '/embed/movie/293660?startAt=' + resumeAt;</pre>
 
             function onScroll() {
                 var triggerLine = 84; // matches .docs-section's scroll-margin-top in apiDocs.css
-                var current = sections[0];
-                for (var i = 0; i < sections.length; i++) {
-                    if (sections[i].getBoundingClientRect().top - triggerLine <= 0) current = sections[i];
+                // Clicking a nav link lands its section via scroll-margin-top, but the browser's
+                // landing position is consistently a fraction of a pixel PAST 84 (confirmed live:
+                // 84.4px, 84.08px, never exactly 84.0) - an exact "<= 0" comparison against that
+                // then keeps the PREVIOUS link highlighted until the user scrolls further, i.e.
+                // every nav click looked "one behind" until manually nudged. A few px of slack
+                // absorbs that rounding without noticeably changing when highlighting switches
+                // during normal scrolling.
+                // The last section(s) on the page can be too short to ever scroll their own top
+                // up to the trigger line - once scrolled as far down as the page goes, there's no
+                // content left below them to push further. Confirmed live: at max scroll, a
+                // trailing section's top can still sit ~150-700px down with nowhere left to go, so
+                // a strict trigger-line check never selects it, no matter how much slack is added
+                // (a later trailing section can sit even further down than an earlier one, so
+                // widening the slack just trades which trailing section wins, never fixes it for
+                // all of them at once). Simplest fix that's still correct: at genuine max scroll,
+                // there's nowhere left to read but the last section - light up the last nav item,
+                // full stop, matching how most docs sites behave at the bottom of the page.
+                var atBottom = (window.scrollY + window.innerHeight) >= (document.documentElement.scrollHeight - 2);
+                var triggerSlackPx = 6; // absorbs scroll-margin-top's sub-pixel landing (e.g. 84.08px/84.4px, never exactly 84.0)
+                var current = atBottom ? sections[sections.length - 1] : sections[0];
+                if (!atBottom) {
+                    for (var i = 0; i < sections.length; i++) {
+                        if (sections[i].getBoundingClientRect().top - triggerLine <= triggerSlackPx) current = sections[i];
+                    }
                 }
                 navLinks.forEach(function (link) {
                     link.classList.toggle('active', link.getAttribute('href') === '#' + current.id);
