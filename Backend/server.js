@@ -14729,7 +14729,6 @@ async function resolveMovieRuData(rawTitle, tmdbId) {
     }
 
     const { moviePageUrl, embedUrl } = await resolveKinogoMovieCached(rawTitle);
-    console.error('[Cinemar TEST] embedUrl:', embedUrl);
     const result = await fetchCinemarStream(embedUrl, moviePageUrl);
 
     if (tmdbId) {
@@ -15280,7 +15279,13 @@ async function runKinoHealthCheck() {
 // resolvable on kinogo.mu.
 const KINOGO_HEALTH_CHECK_MOVIE_TITLE = 'Deadpool 2';
 const KINOGO_HEALTH_CHECK_TV_TITLE = 'Breaking Bad';
-const KINOGO_HEALTH_CHECK_INTERVAL_MS = 15 * 60 * 1000; // between Kino's 10min and MAL's 30min - also scrape-based, same failure class as Kino
+// 60min (was 15min) - unlike Kino/MAL, a Kinogo health check run isn't just a read: the real
+// fix for the "Proxy failed" bug means it now POSTs to cinemar.cc/api/playlist/load too, real
+// extra load on a site that's already shown itself willing to Cloudflare-block/rate-limit us
+// (confirmed live the same day this health check and that fix both shipped). Checking hourly
+// instead of every 15min cuts our own contribution to that risk by 4x while still catching a
+// real multi-hour outage well before anyone would think to report it.
+const KINOGO_HEALTH_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 let kinogoHealthCheckRunning = false;
 
 function looksLikeRealCinemarStream(streamUrl) {
@@ -18659,21 +18664,32 @@ const server = app.listen(PORT, 'localhost', () => {
         console.log('   Secret header enforcement: disabled (set MIDDLEWARE_SECRET env var to enable)');
     }
 
+    // The four "also run once right away" calls below used to all fire in the same tick at
+    // startup - confirmed live this can produce a real false-positive health failure: Kino's
+    // browser-fallback path alone can launch a real Puppeteer/Chromium instance, and having
+    // that plus the Kinogo health check's own kinogo.mu+cinemar.cc round trips plus the
+    // FinishedShowAudit's few hundred DB/TMDB operations all start within milliseconds of each
+    // other creates both local resource contention AND a burst-request pattern against the
+    // same handful of scraping targets that can look bot-like on their end - neither of which
+    // has anything to do with whether the actual extraction logic works (retested individually
+    // seconds after a reported "IS DOWN" boot log and both Kino and Kinogo resolved fine).
+    // Staggering the FIRST run only (setInterval's own recurring cadence is untouched) costs
+    // nothing real - these are background checks, not something a request is waiting on.
     console.log(`   Kino health check: every ${KINO_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
     setInterval(runKinoHealthCheck, KINO_HEALTH_CHECK_INTERVAL_MS);
-    runKinoHealthCheck(); // also check once right away instead of waiting 10min for the first read
+    runKinoHealthCheck(); // right away - first, since it's the most likely to need the slow Puppeteer fallback
 
     console.log(`   MAL health check: every ${MAL_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
     setInterval(runMalHealthCheck, MAL_HEALTH_CHECK_INTERVAL_MS);
-    runMalHealthCheck(); // also check once right away instead of waiting 30min for the first read
+    setTimeout(runMalHealthCheck, 4000);
 
     console.log(`   Kinogo (RU-MV) health check: every ${KINOGO_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
     setInterval(runKinogoHealthCheck, KINOGO_HEALTH_CHECK_INTERVAL_MS);
-    runKinogoHealthCheck(); // also check once right away instead of waiting 15min for the first read
+    setTimeout(runKinogoHealthCheck, 8000);
 
     console.log(`   Finished-show schedule audit: every ${FINISHED_SHOW_AUDIT_INTERVAL_MS / 3600000}h`);
     setInterval(runFinishedShowScheduleAudit, FINISHED_SHOW_AUDIT_INTERVAL_MS);
-    runFinishedShowScheduleAudit(); // also run once right away instead of waiting 24h for the first sweep
+    setTimeout(runFinishedShowScheduleAudit, 12000);
 
     // Safety net for the animego RU-dub retry queue - drainAnimegoPendingRetries() also fires the
     // moment a live search succeeds after a failure, but that only happens if something actually
