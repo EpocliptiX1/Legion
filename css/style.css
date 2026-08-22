@@ -10624,11 +10624,15 @@ body.personal-list-page .grid-card {
 .season-card {
     position:relative; flex:0 0 auto; width:32%; height:92px;
     border-radius:14px; overflow:hidden; cursor:pointer; background:#111;
-    box-shadow:0 2px 12px #0007; transition:transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    /* Outer elevation shadow + an inset vignette that darkens the rounded corners relative to
+       the center - inset shadows clip to border-radius automatically, so the corners read
+       darker without needing a separate masked layer. */
+    box-shadow:0 2px 12px #0007, inset 0 0 18px 6px rgba(0,0,0,0.75);
+    transition:transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
     border:2px solid transparent; display:flex; align-items:center; justify-content:center;
 }
-.season-card:hover { transform:translateY(-3px) scale(1.02); box-shadow:0 8px 24px #000a; }
-.season-card.active { border-color:#ffc233; box-shadow:0 0 0 1px rgba(255,194,51,0.35), 0 8px 20px #0009; }
+.season-card:hover { transform:translateY(-3px) scale(1.02); box-shadow:0 8px 24px #000a, inset 0 0 18px 6px rgba(0,0,0,0.75); }
+.season-card.active { border-color:#ffc233; box-shadow:0 0 0 1px rgba(255,194,51,0.35), 0 8px 20px #0009, inset 0 0 18px 6px rgba(0,0,0,0.75); }
 .season-card-cover {
     position:absolute; inset:-12%; width:124%; height:124%; object-fit:cover; display:block;
     filter:blur(10px) brightness(0.42) saturate(1.15); z-index:1;
