@@ -58,11 +58,10 @@
             <div class="callout">
                 <span class="icon">✅</span>
                 <div>
-                    <strong>The core embed endpoints below are live and working</strong> - every
-                    example on this page is a real, tested URL, and so are player
-                    <code>postMessage</code> events, <code>startAt</code>, and resume-playback (see
-                    their own sections further down). What's still not built:
-                    <code>autoplay</code>/<code>autonext</code> query params - those stay marked TBD.
+                    <strong>Everything on this page is live and working</strong> - every example
+                    is a real, tested URL, and so are player <code>postMessage</code> events,
+                    <code>startAt</code>/resume-playback, and <code>autoplay</code>/<code>autonext</code>
+                    (see their own sections further down). Nothing left marked TBD.
                 </div>
             </div>
 
@@ -163,6 +162,7 @@
                         <tr><td><code>{id}</code></td><td>Yes</td><td>TMDB movie id or IMDB id (<code>tt...</code>)</td></tr>
                         <tr><td><code>server</code></td><td>Optional</td><td><code>kino</code> (default) or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
                         <tr><td><code>startAt</code></td><td>Optional</td><td>Seconds into the video to start playback at - see <a href="#resume-playback">Resume Playback</a></td></tr>
+                        <tr><td><code>autoplay</code></td><td>Optional</td><td><code>1</code> to start playback automatically once the stream loads</td></tr>
                     </tbody>
                 </table>
                 <div class="code-block">
@@ -175,6 +175,7 @@
 ><span class="url-example"><span class="url-example-note"># Deadpool 2, default (Kino)</span><a href="/embed/movie/293660" target="_blank" rel="noopener">/embed/movie/293660</a></span
 ><span class="url-example"><span class="url-example-note"># same movie, by IMDB id</span><a href="/embed/movie/tt4425200" target="_blank" rel="noopener">/embed/movie/tt4425200</a></span
 ><span class="url-example"><span class="url-example-note"># forced RU MV</span><a href="/embed/movie/293660?server=ru" target="_blank" rel="noopener">/embed/movie/293660?server=ru</a></span
+><span class="url-example"><span class="url-example-note"># autoplay on load, resume from 2 minutes in</span><a href="/embed/movie/293660?autoplay=1&amp;startAt=120" target="_blank" rel="noopener">/embed/movie/293660?autoplay=1&amp;startAt=120</a></span
 ></pre>
                 </div>
             </section>
@@ -194,6 +195,8 @@
                         <tr><td><code>{episode}</code></td><td>Yes</td><td>Episode number within that season</td></tr>
                         <tr><td><code>server</code></td><td>Optional</td><td><code>kino</code> (default) or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
                         <tr><td><code>startAt</code></td><td>Optional</td><td>Seconds into the video to start playback at - see <a href="#resume-playback">Resume Playback</a></td></tr>
+                        <tr><td><code>autoplay</code></td><td>Optional</td><td><code>1</code> to start playback automatically once the stream loads</td></tr>
+                        <tr><td><code>autonext</code></td><td>Optional</td><td><code>1</code> to load episode + 1 (same season) automatically when this one ends</td></tr>
                     </tbody>
                 </table>
                 <div class="code-block">
@@ -205,6 +208,7 @@
                     <pre data-tab-panel="url" style="display:none;"
 ><span class="url-example"><span class="url-example-note"># Breaking Bad S1E1, default (Kino)</span><a href="/embed/tv/1396/1/1" target="_blank" rel="noopener">/embed/tv/1396/1/1</a></span
 ><span class="url-example"><span class="url-example-note"># forced RU MV</span><a href="/embed/tv/1396/1/1?server=ru" target="_blank" rel="noopener">/embed/tv/1396/1/1?server=ru</a></span
+><span class="url-example"><span class="url-example-note"># binge mode - autoplay + auto-advance to S1E2, S1E3... on end</span><a href="/embed/tv/1396/1/1?autoplay=1&amp;autonext=1" target="_blank" rel="noopener">/embed/tv/1396/1/1?autoplay=1&amp;autonext=1</a></span
 ></pre>
                 </div>
             </section>
@@ -225,6 +229,8 @@
                         <tr><td><code>audio</code></td><td>Optional</td><td><code>sub</code> (default) or <code>dub</code></td></tr>
                         <tr><td><code>server</code></td><td>Optional</td><td><code>mega</code> (default), <code>kaa</code>, <code>neko</code>, or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
                         <tr><td><code>startAt</code></td><td>Optional</td><td>Seconds into the video to start playback at - see <a href="#resume-playback">Resume Playback</a></td></tr>
+                        <tr><td><code>autoplay</code></td><td>Optional</td><td><code>1</code> to start playback automatically once the stream loads</td></tr>
+                        <tr><td><code>autonext</code></td><td>Optional</td><td><code>1</code> to load episode + 1 (same season/audio/server) automatically when this one ends</td></tr>
                     </tbody>
                 </table>
                 <div class="code-block">
@@ -238,6 +244,7 @@
 ><span class="url-example"><span class="url-example-note"># Sub, season 2, forced Prime</span><a href="/embed/anime/1429/1?season=2&amp;server=kaa" target="_blank" rel="noopener">/embed/anime/1429/1?season=2&amp;server=kaa</a></span
 ><span class="url-example"><span class="url-example-note"># Dub, Neko (falls back to Mega automatically if unavailable)</span><a href="/embed/anime/1429/1?audio=dub&amp;server=neko" target="_blank" rel="noopener">/embed/anime/1429/1?audio=dub&amp;server=neko</a></span
 ><span class="url-example"><span class="url-example-note"># RU MV - only succeeds when we have a confident title match</span><a href="/embed/anime/1429/1?server=ru" target="_blank" rel="noopener">/embed/anime/1429/1?server=ru</a></span
+><span class="url-example"><span class="url-example-note"># binge mode - autoplay + auto-advance to episode 2, 3... on end</span><a href="/embed/anime/1429/1?audio=dub&amp;autoplay=1&amp;autonext=1" target="_blank" rel="noopener">/embed/anime/1429/1?audio=dub&amp;autoplay=1&amp;autonext=1</a></span
 ></pre>
                 </div>
                 <div class="callout">
@@ -261,8 +268,8 @@
                         <tr><td><code>season</code></td><td>Integer</td><td>✅ Live</td><td>Anime embed only - defaults to <code>1</code></td></tr>
                         <tr><td><code>audio</code></td><td>sub / dub</td><td>✅ Live</td><td>Anime embed only - defaults to <code>sub</code></td></tr>
                         <tr><td><code>startAt</code></td><td>Float</td><td>✅ Live</td><td>Seconds into the video to start playback at - see <a href="#resume-playback">Resume Playback</a></td></tr>
-                        <tr><td><code>autoplay</code></td><td>0 / 1</td><td class="tbd">Planned</td><td class="tbd">Not implemented yet</td></tr>
-                        <tr><td><code>autonext</code></td><td>0 / 1</td><td class="tbd">Planned</td><td class="tbd">TV/anime only - not implemented yet</td></tr>
+                        <tr><td><code>autoplay</code></td><td>0 / 1</td><td>✅ Live</td><td>Starts playback automatically once the stream loads - muted-retry fallback if the browser blocks unmuted autoplay</td></tr>
+                        <tr><td><code>autonext</code></td><td>0 / 1</td><td>✅ Live</td><td>TV/anime only - loads episode + 1 (same season, same <code>server</code>/<code>audio</code>) when the current one ends. Doesn't roll over to the next season</td></tr>
                     </tbody>
                 </table>
             </section>
@@ -295,8 +302,10 @@
                     <div class="code-block-tabs"><span class="code-block-tab active">JS</span></div>
                     <pre>window.addEventListener('message', function (e) {
   if (!e.data || e.data.source !== 'anikino-embed') return;
-  // e.data.event: 'ready' | 'play' | 'pause' | 'timeupdate' | 'ended'
+  // e.data.event: 'ready' | 'play' | 'pause' | 'timeupdate' | 'ended' | 'autonext'
   // e.data.currentTime / e.data.duration: seconds (floats)
+  // 'autonext' also carries e.data.nextEpisodeUrl - fired right before the iframe
+  // navigates itself there (only when ?autonext=1 was set - see Query Parameters)
   console.log(e.data.event, e.data.currentTime, e.data.duration);
 });</pre>
                 </div>

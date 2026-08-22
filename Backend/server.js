@@ -17846,7 +17846,7 @@ async function resolvePublicEmbedTmdbId(rawId, mediaType = 'tv') {
 // removed, so a one-time strip script loses that race almost immediately. Client-side JS below
 // avoids template-literal ${...} syntax entirely (string concatenation instead) so it can't
 // collide with this function's own server-side interpolation.
-function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt }) {
+function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, autoplay, nextEpisodeUrl }) {
     const trackTags = (Array.isArray(tracks) ? tracks : [])
         .map(t => `<track kind="subtitles" src="${t.url}" srclang="${escapeHtmlAttr(t.lang)}" label="${escapeHtmlAttr(t.lang)}" ${t.default ? 'default' : ''}>`)
         .join('\n  ');
@@ -17896,8 +17896,8 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt })
   .plyr__volume { position: relative; }
   .plyr__volume input[type="range"] {
     position: absolute;
-    bottom: calc(100% + 22px);
-    left: calc(50% + 2px);
+    bottom: calc(100% + 30px);
+    left: calc(50% + 0px);
     /* rotated range inputs measure their OWN width along the now-vertical track, so "width" here
        is the slider's vertical length once turned upright, not its (invisible) horizontal footprint */
     width: 70px;
@@ -17942,6 +17942,8 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt })
       var wrap = document.getElementById('wrap');
       var src = ${JSON.stringify(streamUrl)};
       var startAt = ${JSON.stringify(Number(startAt) > 0 ? Number(startAt) : 0)};
+      var autoplay = ${JSON.stringify(!!autoplay)};
+      var nextEpisodeUrl = ${JSON.stringify(nextEpisodeUrl || null)};
 
       // --- Resume playback / player events -------------------------------------------------
       // postMessage's target origin has to be '*' here since we genuinely don't know what
@@ -17964,10 +17966,28 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt })
           try { video.currentTime = Math.min(startAt, video.duration || startAt); } catch (e) {}
         }
         postEvent('ready');
+        if (autoplay) {
+          var playPromise = video.play();
+          // Most browsers block autoplay-with-sound outright (no error, the promise just
+          // rejects) - muting and retrying once is the same fallback YouTube/Vimeo embeds use,
+          // and still beats not autoplaying at all.
+          if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch(function () {
+              video.muted = true;
+              video.play().catch(function () {});
+            });
+          }
+        }
       });
       video.addEventListener('play', function () { postEvent('play'); });
       video.addEventListener('pause', function () { postEvent('pause'); });
-      video.addEventListener('ended', function () { postEvent('ended'); });
+      video.addEventListener('ended', function () {
+        postEvent('ended');
+        if (nextEpisodeUrl) {
+          postEvent('autonext', { nextEpisodeUrl: nextEpisodeUrl });
+          location.href = nextEpisodeUrl;
+        }
+      });
       var lastTimeUpdatePost = 0;
       video.addEventListener('timeupdate', function () {
         var now = Date.now();
@@ -18223,6 +18243,13 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
     const server = ['kaa', 'neko', 'ru'].includes(req.query.server) ? req.query.server : 'mega';
     const startAtParam = parseFloat(req.query.startAt);
     const startAt = Number.isFinite(startAtParam) && startAtParam > 0 ? startAtParam : 0;
+    const autoplay = req.query.autoplay === '1';
+    // Next episode within the same season, carrying server/audio forward - a season rollover
+    // (last episode of a season) isn't handled here, it just 404s like any other out-of-range
+    // episode number would, same as every other route in this file already does.
+    const nextEpisodeUrl = req.query.autonext === '1'
+        ? `/embed/anime/${encodeURIComponent(req.params.id)}/${episode + 1}?season=${season}&audio=${audio}&server=${server}&autoplay=1&autonext=1`
+        : null;
 
     const tmdbId = await resolvePublicEmbedTmdbId(req.params.id, 'tv');
     if (!tmdbId) {
@@ -18242,7 +18269,7 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
 
     try {
         const { streamUrl, tracks } = await resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId: req.sessionId });
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `Episode ${episode}`, startAt }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `Episode ${episode}`, startAt, autoplay, nextEpisodeUrl }));
     } catch (err) {
         console.warn(`[Public Embed] anime/${server} resolution failed:`, err.message || err);
         if (server === 'mega') {
@@ -18281,6 +18308,7 @@ app.get('/embed/movie/:id', async (req, res) => {
     const server = req.query.server === 'ru' ? 'ru' : 'kino';
     const startAtParam = parseFloat(req.query.startAt);
     const startAt = Number.isFinite(startAtParam) && startAtParam > 0 ? startAtParam : 0;
+    const autoplay = req.query.autoplay === '1';
 
     const tmdbId = await resolvePublicEmbedTmdbId(req.params.id, 'movie');
     if (!tmdbId) {
@@ -18301,7 +18329,7 @@ app.get('/embed/movie/:id', async (req, res) => {
             streamUrl = buildM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
             tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'movie' });
         }
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie', startAt }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie', startAt, autoplay }));
     } catch (err) {
         console.warn(`[Public Embed] movie/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
@@ -18321,6 +18349,11 @@ app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
     const server = req.query.server === 'ru' ? 'ru' : 'kino';
     const startAtParam = parseFloat(req.query.startAt);
     const startAt = Number.isFinite(startAtParam) && startAtParam > 0 ? startAtParam : 0;
+    const autoplay = req.query.autoplay === '1';
+    // Next episode within the same season, same season-rollover caveat as the anime route above.
+    const nextEpisodeUrl = req.query.autonext === '1'
+        ? `/embed/tv/${encodeURIComponent(req.params.id)}/${season}/${episode + 1}?server=${server}&autoplay=1&autonext=1`
+        : null;
 
     const tmdbId = await resolvePublicEmbedTmdbId(req.params.id, 'tv');
     if (!tmdbId) {
@@ -18341,7 +18374,7 @@ app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
             streamUrl = buildM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
             tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'tv', season, episode });
         }
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}`, startAt }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}`, startAt, autoplay, nextEpisodeUrl }));
     } catch (err) {
         console.warn(`[Public Embed] tv/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
