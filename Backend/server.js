@@ -17738,7 +17738,7 @@ async function resolvePublicEmbedTmdbId(rawId, mediaType = 'tv') {
 // removed, so a one-time strip script loses that race almost immediately. Client-side JS below
 // avoids template-literal ${...} syntax entirely (string concatenation instead) so it can't
 // collide with this function's own server-side interpolation.
-function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title }) {
+function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt }) {
     const trackTags = (Array.isArray(tracks) ? tracks : [])
         .map(t => `<track kind="subtitles" src="${t.url}" srclang="${escapeHtmlAttr(t.lang)}" label="${escapeHtmlAttr(t.lang)}" ${t.default ? 'default' : ''}>`)
         .join('\n  ');
@@ -17833,6 +17833,40 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title }) {
       var video = document.getElementById('player');
       var wrap = document.getElementById('wrap');
       var src = ${JSON.stringify(streamUrl)};
+      var startAt = ${JSON.stringify(Number(startAt) > 0 ? Number(startAt) : 0)};
+
+      // --- Resume playback / player events -------------------------------------------------
+      // postMessage's target origin has to be '*' here since we genuinely don't know what
+      // domain embeds this page - the payload itself carries nothing sensitive (just playback
+      // position), same tradeoff YouTube/Vimeo embeds make for their own player events.
+      function postEvent(name, extra) {
+        try {
+          window.parent.postMessage(Object.assign({
+            source: 'anikino-embed',
+            event: name,
+            currentTime: video.currentTime || 0,
+            duration: video.duration || 0
+          }, extra || {}), '*');
+        } catch (e) {}
+      }
+      var seekedToStart = false;
+      video.addEventListener('loadedmetadata', function () {
+        if (startAt > 0 && !seekedToStart) {
+          seekedToStart = true;
+          try { video.currentTime = Math.min(startAt, video.duration || startAt); } catch (e) {}
+        }
+        postEvent('ready');
+      });
+      video.addEventListener('play', function () { postEvent('play'); });
+      video.addEventListener('pause', function () { postEvent('pause'); });
+      video.addEventListener('ended', function () { postEvent('ended'); });
+      var lastTimeUpdatePost = 0;
+      video.addEventListener('timeupdate', function () {
+        var now = Date.now();
+        if (now - lastTimeUpdatePost < 5000) return;
+        lastTimeUpdatePost = now;
+        postEvent('timeupdate');
+      });
 
       // Same buildPlyrPlayer-after-MANIFEST_PARSED pattern the internal site player uses
       // (moviePlayer.js) - quality options come from the manifest's real levels instead of a
@@ -18080,6 +18114,8 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
     const season = Number.isFinite(seasonParam) && seasonParam > 0 ? seasonParam : 1;
     const audio = req.query.audio === 'dub' ? 'dub' : 'sub';
     const server = ['kaa', 'neko', 'ru'].includes(req.query.server) ? req.query.server : 'mega';
+    const startAtParam = parseFloat(req.query.startAt);
+    const startAt = Number.isFinite(startAtParam) && startAtParam > 0 ? startAtParam : 0;
 
     const tmdbId = await resolvePublicEmbedTmdbId(req.params.id, 'tv');
     if (!tmdbId) {
@@ -18099,7 +18135,7 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
 
     try {
         const { streamUrl, tracks } = await resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId: req.sessionId });
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `Episode ${episode}` }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `Episode ${episode}`, startAt }));
     } catch (err) {
         console.warn(`[Public Embed] anime/${server} resolution failed:`, err.message || err);
         if (server === 'mega') {
@@ -18136,6 +18172,8 @@ async function resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType, season, epis
 app.get('/embed/movie/:id', async (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     const server = req.query.server === 'ru' ? 'ru' : 'kino';
+    const startAtParam = parseFloat(req.query.startAt);
+    const startAt = Number.isFinite(startAtParam) && startAtParam > 0 ? startAtParam : 0;
 
     const tmdbId = await resolvePublicEmbedTmdbId(req.params.id, 'movie');
     if (!tmdbId) {
@@ -18156,7 +18194,7 @@ app.get('/embed/movie/:id', async (req, res) => {
             streamUrl = buildM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
             tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'movie' });
         }
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie' }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie', startAt }));
     } catch (err) {
         console.warn(`[Public Embed] movie/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
@@ -18174,6 +18212,8 @@ app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
         return res.status(400).send(renderPublicEmbedErrorHtml('Invalid season/episode number.'));
     }
     const server = req.query.server === 'ru' ? 'ru' : 'kino';
+    const startAtParam = parseFloat(req.query.startAt);
+    const startAt = Number.isFinite(startAtParam) && startAtParam > 0 ? startAtParam : 0;
 
     const tmdbId = await resolvePublicEmbedTmdbId(req.params.id, 'tv');
     if (!tmdbId) {
@@ -18194,7 +18234,7 @@ app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
             streamUrl = buildM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
             tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'tv', season, episode });
         }
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}` }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}`, startAt }));
     } catch (err) {
         console.warn(`[Public Embed] tv/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));

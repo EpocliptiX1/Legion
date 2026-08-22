@@ -84,9 +84,20 @@
 }
 .docs-nav-group a:hover { color: var(--text-primary); background: var(--bg-hover); }
 .docs-nav-group a.active { color: var(--accent-primary); background: var(--bg-hover); font-weight: 600; }
+/* Every #anchor link here becomes :visited after one click - without this the browser's default
+   visited-link purple wins over the theme colors above for that link from then on. */
+.docs-nav-group a:visited { color: var(--text-secondary); }
+.docs-nav-group a:visited:hover { color: var(--text-primary); }
+.docs-nav-group a.active:visited { color: var(--accent-primary); }
 
 .docs-main h1 { font-size: 2rem; margin: 0 0 12px; }
 .docs-main > p.lead { color: var(--text-secondary); font-size: 1rem; line-height: 1.6; margin-bottom: 24px; }
+
+/* Inline cross-reference links (e.g. "see Providers" inside a param table) - otherwise just
+   the browser's default blue/purple link colors against this dark theme. */
+.docs-main a { color: var(--accent-primary); }
+.docs-main a:visited { color: var(--accent-primary); }
+.docs-main a:hover { color: var(--text-primary); }
 
 section.docs-section { margin-bottom: 56px; scroll-margin-top: 84px; }
 section.docs-section h2 { font-size: 1.4rem; margin: 0 0 8px; border-top: 1px solid var(--border-color); padding-top: 40px; }
@@ -151,6 +162,16 @@ section.docs-section > p { color: var(--text-secondary); line-height: 1.6; margi
     letter-spacing: 0.04em;
 }
 .code-block-tab.active { color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 15%, var(--bg-hover)); }
+.code-block-tab[data-tab] { cursor: pointer; border: none; font-family: inherit; }
+.code-block-tab[data-tab]:hover:not(.active) { color: var(--text-secondary); }
+
+/* URL tab: each example is a real, clickable link that opens the live embed in a new tab. */
+.url-example { display: block; margin-bottom: 14px; }
+.url-example:last-child { margin-bottom: 0; }
+.url-example-note { display: block; color: var(--text-muted); font-style: italic; margin-bottom: 2px; }
+.url-example a { color: var(--accent-primary); text-decoration: none; }
+.url-example a:visited { color: var(--accent-primary); }
+.url-example a:hover { text-decoration: underline; }
 .code-block pre {
     margin: 0;
     padding: 16px;
@@ -159,7 +180,13 @@ section.docs-section > p { color: var(--text-secondary); line-height: 1.6; margi
     line-height: 1.6;
     overflow-x: auto;
     color: var(--text-secondary);
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent-primary) var(--bg-hover);
 }
+.code-block pre::-webkit-scrollbar { height: 8px; }
+.code-block pre::-webkit-scrollbar-track { background: var(--bg-hover); }
+.code-block pre::-webkit-scrollbar-thumb { background: var(--accent-primary); border-radius: 4px; }
+.code-block pre::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--accent-primary) 80%, white); }
 .code-block pre.placeholder {
     color: var(--text-muted);
     font-style: italic;

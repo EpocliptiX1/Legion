@@ -42,8 +42,8 @@
                 <a href="#resume-playback">Resume Playback</a>
             </div>
             <div class="docs-nav-group">
-                <h4>Roadmap</h4>
-                <a href="#ads-and-domains">Ads &amp; Custom Domains</a>
+                <h4>Info</h4>
+                <a href="#last-updated">Last Updated</a>
             </div>
         </nav>
 
@@ -51,7 +51,7 @@
             <h1>API Documentation</h1>
             <p class="lead">
                 Embed movies, TV shows, and anime on your own site through AniKino - one iframe,
-                one URL, pulling from our Mega, KAA, Neko, RU MV, and Kino sources under the hood
+                one URL, pulling from our Mega, Prime, Neko, RU MV, and Kino sources under the hood
                 so you don't have to juggle providers yourself.
             </p>
 
@@ -59,10 +59,10 @@
                 <span class="icon">✅</span>
                 <div>
                     <strong>The core embed endpoints below are live and working</strong> - every
-                    example on this page is a real, tested URL. What's still not built:
-                    <code>autoplay</code>/<code>startAt</code>/<code>autonext</code> query params,
-                    player <code>postMessage</code> events, and resume-playback (see their own
-                    sections further down) - those stay marked TBD.
+                    example on this page is a real, tested URL, and so are player
+                    <code>postMessage</code> events, <code>startAt</code>, and resume-playback (see
+                    their own sections further down). What's still not built:
+                    <code>autoplay</code>/<code>autonext</code> query params - those stay marked TBD.
                 </div>
             </div>
 
@@ -82,7 +82,7 @@
                         <span class="code-block-tab">Anime</span>
                     </div>
                     <pre>&lt;iframe
-  src="https://your-domain.example/embed/movie/293660"
+  src="https://your-domain.example/embed/movie/{id}"
   width="100%" height="560"
   frameborder="0" allowfullscreen
 &gt;&lt;/iframe&gt;</pre>
@@ -119,32 +119,32 @@
                 <div class="provider-grid">
                     <div class="provider-card">
                         <h4>Mega <span class="server-value" style="margin-left:6px;">anime, default</span></h4>
-                        <p>MegaPlay - broad anime coverage, usually the fastest to resolve.</p>
+                        <p>Broad anime coverage, usually the fastest to resolve.</p>
                         <span class="server-value">server=mega</span>
                     </div>
                     <div class="provider-card">
-                        <h4>KAA <span class="server-value" style="margin-left:6px;">anime</span></h4>
-                        <p>KickAssAnime - our most stable anime source, slower to load initially.</p>
+                        <h4>Prime <span class="server-value" style="margin-left:6px;">anime</span></h4>
+                        <p>Broad anime coverage, but often the slowest of the four to resolve - and doesn't always have a dub (or the title at all).</p>
                         <span class="server-value">server=kaa</span>
                     </div>
                     <div class="provider-card">
                         <h4>Neko <span class="server-value" style="margin-left:6px;">anime</span></h4>
-                        <p>NekoStream/VidTube - faster than KAA, can go unavailable on some titles (falls back to Mega automatically when that happens).</p>
+                        <p>Lightweight, quick-resolving anime source - falls back to Mega automatically on titles it doesn't have.</p>
                         <span class="server-value">server=neko</span>
                     </div>
                     <div class="provider-card">
                         <h4>RU MV <span class="server-value" style="margin-left:6px;">anime</span></h4>
-                        <p>animego.me → aniboom.one - Russian dub. Only available when animego's own title match is confident; falls through to an error otherwise rather than guessing wrong.</p>
+                        <p>Russian-dub anime source. Only serves a title when we're confident in the match - fails clearly rather than guessing wrong.</p>
                         <span class="server-value">server=ru</span>
                     </div>
                     <div class="provider-card">
                         <h4>Kino <span class="server-value" style="margin-left:6px;">movie/TV, default</span></h4>
-                        <p>vidsrcme.ru-backed extraction - our primary movie/TV source, broad English-language coverage.</p>
+                        <p>Our primary movie/TV source - broad English-language coverage.</p>
                         <span class="server-value">server=kino</span>
                     </div>
                     <div class="provider-card">
                         <h4>RU MV <span class="server-value" style="margin-left:6px;">movie/TV</span></h4>
-                        <p>kinogo.mu → cinemar.cc - Russian dub, single track, no subtitles of its own.</p>
+                        <p>Russian-dub movie/TV source - single audio track, no subtitles of its own.</p>
                         <span class="server-value">server=ru</span>
                     </div>
                 </div>
@@ -156,26 +156,26 @@
                     <span class="endpoint-path">/embed/movie/{id}</span>
                 </div>
                 <h2 style="border:none;padding-top:0;font-size:1.1rem;">Movie Embed</h2>
-                <p>Embed a movie player. Resolves through Kino (default) or RU MV/kinogo.</p>
+                <p>Embed a movie player. Resolves through Kino (default) or RU MV.</p>
                 <table class="param-table">
                     <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
                     <tbody>
                         <tr><td><code>{id}</code></td><td>Yes</td><td>TMDB movie id or IMDB id (<code>tt...</code>)</td></tr>
                         <tr><td><code>server</code></td><td>Optional</td><td><code>kino</code> (default) or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
+                        <tr><td><code>startAt</code></td><td>Optional</td><td>Seconds into the video to start playback at - see <a href="#resume-playback">Resume Playback</a></td></tr>
                     </tbody>
                 </table>
                 <div class="code-block">
                     <div class="code-block-tabs">
-                        <span class="code-block-tab active">HTML</span>
-                        <span class="code-block-tab">URL</span>
+                        <span class="code-block-tab active" data-tab="html">HTML</span>
+                        <span class="code-block-tab" data-tab="url">URL</span>
                     </div>
-                    <pre>&lt;iframe src="https://your-domain.example/embed/movie/293660" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;
-
-# By IMDB id
-/embed/movie/tt4425200
-
-# Force the RU MV (kinogo) source
-/embed/movie/293660?server=ru</pre>
+                    <pre data-tab-panel="html">&lt;iframe src="https://your-domain.example/embed/movie/{id}" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;</pre>
+                    <pre data-tab-panel="url" style="display:none;"
+><span class="url-example"><span class="url-example-note"># Deadpool 2, default (Kino)</span><a href="/embed/movie/293660" target="_blank" rel="noopener">/embed/movie/293660</a></span
+><span class="url-example"><span class="url-example-note"># same movie, by IMDB id</span><a href="/embed/movie/tt4425200" target="_blank" rel="noopener">/embed/movie/tt4425200</a></span
+><span class="url-example"><span class="url-example-note"># forced RU MV</span><a href="/embed/movie/293660?server=ru" target="_blank" rel="noopener">/embed/movie/293660?server=ru</a></span
+></pre>
                 </div>
             </section>
 
@@ -185,7 +185,7 @@
                     <span class="endpoint-path">/embed/tv/{id}/{season}/{episode}</span>
                 </div>
                 <h2 style="border:none;padding-top:0;font-size:1.1rem;">TV Show Embed</h2>
-                <p>Embed a specific episode. Resolves through Kino (default) or RU MV/kinogo.</p>
+                <p>Embed a specific episode. Resolves through Kino (default) or RU MV.</p>
                 <table class="param-table">
                     <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
                     <tbody>
@@ -193,17 +193,19 @@
                         <tr><td><code>{season}</code></td><td>Yes</td><td>Season number</td></tr>
                         <tr><td><code>{episode}</code></td><td>Yes</td><td>Episode number within that season</td></tr>
                         <tr><td><code>server</code></td><td>Optional</td><td><code>kino</code> (default) or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
+                        <tr><td><code>startAt</code></td><td>Optional</td><td>Seconds into the video to start playback at - see <a href="#resume-playback">Resume Playback</a></td></tr>
                     </tbody>
                 </table>
                 <div class="code-block">
                     <div class="code-block-tabs">
-                        <span class="code-block-tab active">HTML</span>
-                        <span class="code-block-tab">URL</span>
+                        <span class="code-block-tab active" data-tab="html">HTML</span>
+                        <span class="code-block-tab" data-tab="url">URL</span>
                     </div>
-                    <pre>&lt;iframe src="https://your-domain.example/embed/tv/1396/1/1" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;
-
-# Force the RU MV (kinogo) source
-/embed/tv/1396/1/1?server=ru</pre>
+                    <pre data-tab-panel="html">&lt;iframe src="https://your-domain.example/embed/tv/{id}/{season}/{episode}" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;</pre>
+                    <pre data-tab-panel="url" style="display:none;"
+><span class="url-example"><span class="url-example-note"># Breaking Bad S1E1, default (Kino)</span><a href="/embed/tv/1396/1/1" target="_blank" rel="noopener">/embed/tv/1396/1/1</a></span
+><span class="url-example"><span class="url-example-note"># forced RU MV</span><a href="/embed/tv/1396/1/1?server=ru" target="_blank" rel="noopener">/embed/tv/1396/1/1?server=ru</a></span
+></pre>
                 </div>
             </section>
 
@@ -213,7 +215,7 @@
                     <span class="endpoint-path">/embed/anime/{id}/{episode}</span>
                 </div>
                 <h2 style="border:none;padding-top:0;font-size:1.1rem;">Anime Embed</h2>
-                <p>Embed an anime episode with sub/dub selection, resolved through Mega (default), KAA, Neko, or RU MV/animego.</p>
+                <p>Embed an anime episode with sub/dub selection, resolved through Mega (default), Prime, Neko, or RU MV.</p>
                 <table class="param-table">
                     <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
                     <tbody>
@@ -222,28 +224,26 @@
                         <tr><td><code>season</code></td><td>Optional</td><td>Defaults to <code>1</code></td></tr>
                         <tr><td><code>audio</code></td><td>Optional</td><td><code>sub</code> (default) or <code>dub</code></td></tr>
                         <tr><td><code>server</code></td><td>Optional</td><td><code>mega</code> (default), <code>kaa</code>, <code>neko</code>, or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
+                        <tr><td><code>startAt</code></td><td>Optional</td><td>Seconds into the video to start playback at - see <a href="#resume-playback">Resume Playback</a></td></tr>
                     </tbody>
                 </table>
                 <div class="code-block">
                     <div class="code-block-tabs">
-                        <span class="code-block-tab active">HTML</span>
-                        <span class="code-block-tab">URL</span>
+                        <span class="code-block-tab active" data-tab="html">HTML</span>
+                        <span class="code-block-tab" data-tab="url">URL</span>
                     </div>
-                    <pre>&lt;iframe src="https://your-domain.example/embed/anime/1429/1?season=1&amp;audio=dub" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;
-
-# Sub, season 2, forced KickAssAnime
-/embed/anime/1429/1?season=2&server=kaa
-
-# Dub, NekoStream (falls back to Mega automatically if unavailable)
-/embed/anime/1429/1?audio=dub&server=neko
-
-# RU MV (animego) - only succeeds when animego has a confident title match
-/embed/anime/1429/1?server=ru</pre>
+                    <pre data-tab-panel="html">&lt;iframe src="https://your-domain.example/embed/anime/{id}/{episode}?season=1&amp;audio=dub" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;</pre>
+                    <pre data-tab-panel="url" style="display:none;"
+><span class="url-example"><span class="url-example-note"># Attack on Titan S1E1, dub, default (Mega)</span><a href="/embed/anime/1429/1?season=1&amp;audio=dub" target="_blank" rel="noopener">/embed/anime/1429/1?season=1&amp;audio=dub</a></span
+><span class="url-example"><span class="url-example-note"># Sub, season 2, forced Prime</span><a href="/embed/anime/1429/1?season=2&amp;server=kaa" target="_blank" rel="noopener">/embed/anime/1429/1?season=2&amp;server=kaa</a></span
+><span class="url-example"><span class="url-example-note"># Dub, Neko (falls back to Mega automatically if unavailable)</span><a href="/embed/anime/1429/1?audio=dub&amp;server=neko" target="_blank" rel="noopener">/embed/anime/1429/1?audio=dub&amp;server=neko</a></span
+><span class="url-example"><span class="url-example-note"># RU MV - only succeeds when we have a confident title match</span><a href="/embed/anime/1429/1?server=ru" target="_blank" rel="noopener">/embed/anime/1429/1?server=ru</a></span
+></pre>
                 </div>
                 <div class="callout">
                     <span class="icon">💬</span>
                     <div>
-                        Captions are borrowed from KAA's own (usually multi-language) subtitle set
+                        Captions are borrowed from Prime's own (usually multi-language) subtitle set
                         regardless of which <code>server</code> you pick, since Mega/Neko/RU MV
                         don't carry a useful subtitle track of their own. Kino (movie/TV) instead
                         pulls real OpenSubtitles-backed captions directly.
@@ -260,9 +260,9 @@
                         <tr><td><code>server</code></td><td>String</td><td>✅ Live</td><td>Force a specific provider - see <a href="#providers">Providers</a> for values per endpoint</td></tr>
                         <tr><td><code>season</code></td><td>Integer</td><td>✅ Live</td><td>Anime embed only - defaults to <code>1</code></td></tr>
                         <tr><td><code>audio</code></td><td>sub / dub</td><td>✅ Live</td><td>Anime embed only - defaults to <code>sub</code></td></tr>
+                        <tr><td><code>startAt</code></td><td>Float</td><td>✅ Live</td><td>Seconds into the video to start playback at - see <a href="#resume-playback">Resume Playback</a></td></tr>
                         <tr><td><code>autoplay</code></td><td>0 / 1</td><td class="tbd">Planned</td><td class="tbd">Not implemented yet</td></tr>
                         <tr><td><code>autonext</code></td><td>0 / 1</td><td class="tbd">Planned</td><td class="tbd">TV/anime only - not implemented yet</td></tr>
-                        <tr><td><code>startAt</code></td><td>Float</td><td class="tbd">Planned</td><td class="tbd">Not implemented yet</td></tr>
                     </tbody>
                 </table>
             </section>
@@ -279,44 +279,117 @@
                     it in a different browser/session returns <code>403 This link does not belong
                     to your session</code> - verified live.
                 </p>
-                <p>
-                    The player itself carries a self-healing "AniKino" watermark (re-inserts itself
-                    if removed via a <code>MutationObserver</code> + interval respawn) - this
-                    defends against someone scraping the embed page's HTML and re-serving a
-                    modified copy with the branding stripped while keeping the player logic intact.
-                    A true cross-origin <code>&lt;iframe&gt;</code> can't be reached by whatever page
-                    embeds it at all, by normal browser same-origin policy - that protection needs
-                    nothing from us.
-                </p>
+
             </section>
 
             <section class="docs-section" id="player-events">
                 <h2>Player Events</h2>
-                <p>Planned: the player will post <code>postMessage</code> events to the parent window so your page can track playback state. Payload shape not finalized.</p>
+                <p>
+                    The embedded player posts <code>postMessage</code> events to the parent window
+                    at every play, pause, seek-ready, and end, plus a throttled position update
+                    (at most once every 5 seconds) while playing - so your page can track playback
+                    state without ever reaching into the iframe (which same-origin policy blocks
+                    anyway).
+                </p>
                 <div class="code-block">
-                    <div class="code-block-tabs"><span class="code-block-tab active">JSON</span></div>
-                    <pre class="placeholder">(event payload format not available yet)</pre>
+                    <div class="code-block-tabs"><span class="code-block-tab active">JS</span></div>
+                    <pre>window.addEventListener('message', function (e) {
+  if (!e.data || e.data.source !== 'anikino-embed') return;
+  // e.data.event: 'ready' | 'play' | 'pause' | 'timeupdate' | 'ended'
+  // e.data.currentTime / e.data.duration: seconds (floats)
+  console.log(e.data.event, e.data.currentTime, e.data.duration);
+});</pre>
+                </div>
+                <div class="callout">
+                    <span class="icon">📡</span>
+                    <div>
+                        Sent with target origin <code>*</code> since the embed genuinely doesn't
+                        know what domain is hosting it - same tradeoff YouTube/Vimeo embeds make.
+                        The payload only ever carries playback position, nothing sensitive.
+                    </div>
                 </div>
             </section>
 
             <section class="docs-section" id="resume-playback">
                 <h2>Resume Playback</h2>
-                <p>Planned: save and restore a viewer's watch position using player events and a <code>startAt</code> parameter, same idea as VidSrc's resume flow. Not implemented yet.</p>
+                <p>
+                    Save and restore a viewer's watch position using the <code>timeupdate</code>
+                    event above and the <code>startAt</code> query parameter - same idea as
+                    VidSrc's resume flow. Listen for <code>timeupdate</code>, store
+                    <code>currentTime</code> against that title/episode in your own backend or
+                    <code>localStorage</code>, then next time build the iframe <code>src</code>
+                    with <code>?startAt=&lt;seconds&gt;</code> and the player seeks there as soon
+                    as its metadata loads - no extra round trip needed.
+                </p>
+                <div class="code-block">
+                    <div class="code-block-tabs"><span class="code-block-tab active">JS</span></div>
+                    <pre>var lastKnownPosition = 0;
+window.addEventListener('message', function (e) {
+  if (!e.data || e.data.source !== 'anikino-embed') return;
+  if (e.data.event === 'timeupdate' || e.data.event === 'pause') {
+    lastKnownPosition = e.data.currentTime;
+    localStorage.setItem('resume:293660', lastKnownPosition);
+  }
+});
+
+// next visit - resume where they left off
+var resumeAt = localStorage.getItem('resume:293660') || 0;
+iframe.src = '/embed/movie/293660?startAt=' + resumeAt;</pre>
+                </div>
             </section>
 
-            <section class="docs-section" id="ads-and-domains">
-                <h2>Ads &amp; Custom Domains</h2>
-                <div class="callout planned">
-                    <span class="icon">📌</span>
-                    <div>
-                        <strong>Planned, not live yet.</strong> Once the embed API ships, we plan
-                        to introduce ad support on embedded players (similar to how VidSrc runs
-                        ads on their embeds) and, later, custom-domain embedding for reduced ads /
-                        no branding. Details will be published here once built.
-                    </div>
-                </div>
+            <section class="docs-section" id="last-updated">
+                <h2>Last Updated</h2>
+                <p>This page and the embed API were last updated <strong>August 22, 2026</strong>.</p>
             </section>
         </main>
     </div>
+
+    <script>
+        // HTML/URL code-block tabs: click a tab, show its matching [data-tab-panel], hide the
+        // rest. Only wires up blocks that actually have data-tab buttons - the plain single-pre
+        // blocks elsewhere on the page (placeholders, JSON example) are untouched.
+        (function () {
+            document.querySelectorAll('.code-block').forEach(function (block) {
+                var tabs = block.querySelectorAll('.code-block-tab[data-tab]');
+                if (!tabs.length) return;
+                tabs.forEach(function (tab) {
+                    tab.addEventListener('click', function () {
+                        tabs.forEach(function (t) { t.classList.remove('active'); });
+                        tab.classList.add('active');
+                        block.querySelectorAll('[data-tab-panel]').forEach(function (panel) {
+                            panel.style.display = panel.getAttribute('data-tab-panel') === tab.getAttribute('data-tab') ? '' : 'none';
+                        });
+                    });
+                });
+            });
+        })();
+
+        // Scroll-spy: highlights whichever nav link matches the section currently in view.
+        // Sections are much taller than the viewport here, so "in view" is defined as the
+        // section whose top has most recently scrolled past a fixed line near the top of the
+        // viewport (matching scroll-margin-top on .docs-section) - simpler and less jumpy than
+        // reacting to intersection ratio, which flickers between neighbors on a tall section.
+        (function () {
+            var navLinks = Array.from(document.querySelectorAll('.docs-nav-group a'));
+            var sections = navLinks
+                .map(function (link) { return document.getElementById(link.getAttribute('href').slice(1)); })
+                .filter(Boolean);
+
+            function onScroll() {
+                var triggerLine = 84; // matches .docs-section's scroll-margin-top in apiDocs.css
+                var current = sections[0];
+                for (var i = 0; i < sections.length; i++) {
+                    if (sections[i].getBoundingClientRect().top - triggerLine <= 0) current = sections[i];
+                }
+                navLinks.forEach(function (link) {
+                    link.classList.toggle('active', link.getAttribute('href') === '#' + current.id);
+                });
+            }
+
+            window.addEventListener('scroll', onScroll, { passive: true });
+            onScroll();
+        })();
+    </script>
 </body>
 </html>
