@@ -1088,34 +1088,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 .player-layout { width:100%; display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:14px; margin-top:10px; align-items:start; }
                 .player-layout.is-plain-movie { display:block; }
                 .player-main-pane { min-width:0; }
-                .season-cards-row { width:100%; margin-top:18px; }
-                .season-cards-title { color:#ff8000; font-size:1.05rem; font-weight:700; margin:0 0 10px 0; }
-                .season-cards-list { display:flex; flex-wrap:wrap; gap:14px; overflow-x:auto; padding-bottom:6px; }
-                .season-card {
-                    position:relative; flex:0 0 auto; width:210px; height:92px;
-                    border-radius:14px; overflow:hidden; cursor:pointer; background:#111;
-                    box-shadow:0 2px 12px #0007; transition:transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-                    border:2px solid transparent; display:flex; align-items:center; justify-content:center;
-                }
-                .season-card:hover { transform:translateY(-3px) scale(1.02); box-shadow:0 8px 24px #000a; }
-                .season-card.active { border-color:#ffc233; box-shadow:0 0 0 1px rgba(255,194,51,0.35), 0 8px 20px #0009; }
-                .season-card-cover {
-                    position:absolute; inset:-12%; width:124%; height:124%; object-fit:cover; display:block;
-                    filter:blur(10px) brightness(0.42) saturate(1.15); z-index:1;
-                }
-                /* Small dotted grid overlay - the "frit matrix" texture, like a windshield's dot-fade band */
-                .season-card::after {
-                    content:''; position:absolute; inset:0; z-index:2; pointer-events:none;
-                    background-image:radial-gradient(rgba(255,255,255,0.22) 1px, transparent 1.5px);
-                    background-size:7px 7px; opacity:0.55;
-                }
-                .season-card-shadow {
-                    position:relative; z-index:3; width:100%; padding:6px 12px; text-align:center;
-                    background:none; pointer-events:none;
-                }
-                .season-card-label { color:#fff; font-size:0.95rem; font-weight:700; line-height:1.25; text-shadow:0 1px 5px #000d; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-                .season-card.active .season-card-label { color:#ffc233; }
-                .season-card-sub { color:#cfcfcf; font-size:0.7rem; font-weight:600; margin-top:3px; opacity:0.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-shadow:0 1px 4px #000d; }
                 .episode-list-section { width:100%; background:#0c0c0c; border-radius:12px; box-shadow:0 2px 16px #0004; padding:12px 0; display:none; border:1px solid #202020; box-sizing:border-box; flex-direction:column; position:relative; z-index:25; pointer-events:auto; }
                 .episode-list-title { color:#ff8000; font-size:1.05rem; font-weight:700; margin:0 14px 8px 14px; }
                 .episode-status-line { margin:0 14px 8px 14px; color:#b9b9b9; font-size:0.82rem; }
