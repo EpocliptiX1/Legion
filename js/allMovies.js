@@ -357,6 +357,10 @@ async function loadMovies() {
             card.innerHTML = `
                 ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: title, tmdbId: id }) : ''}
                 <img src="${posterUrl}" loading="lazy" decoding="async" onclick="window.location.href='movieInfo.html?id=${id}&type=${type}'" alt="${safeName}">
+                <div class="card-title-label">
+                    <div class="card-title-name">${safeName}</div>
+                    <div class="card-title-tag">${typeLabel}</div>
+                </div>
                 <div class="card-hover-info">
                     <div class="hover-btns">
                         <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${id}&type=${type}'">▶</button>
@@ -514,6 +518,10 @@ async function loadAnimeLibraryFromAniList(grid, filters, isFreshLoad) {
             card.innerHTML = `
                 ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: title, tmdbId: tmdbId }) : ''}
                 <img src="${posterUrl}" loading="lazy" decoding="async" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'" alt="${safeName}">
+                <div class="card-title-label">
+                    <div class="card-title-name">${safeName}</div>
+                    <div class="card-title-tag">${typeLabel}</div>
+                </div>
                 <div class="card-hover-info">
                     <div class="hover-btns">
                         <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'">▶</button>
@@ -609,6 +617,10 @@ async function loadAnimeLibraryDefault(grid) {
             card.innerHTML = `
                 ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: title, tmdbId: tmdbId }) : ''}
                 <img src="${posterUrl}" loading="lazy" decoding="async" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'" alt="${safeName}">
+                <div class="card-title-label">
+                    <div class="card-title-name">${safeName}</div>
+                    <div class="card-title-tag">${typeLabel}</div>
+                </div>
                 <div class="card-hover-info">
                     <div class="hover-btns">
                         <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'">▶</button>
