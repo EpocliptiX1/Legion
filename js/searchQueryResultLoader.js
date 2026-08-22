@@ -30,7 +30,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 const card = document.createElement('div');
                 card.className = 'grid-card';
                 card.setAttribute('data-type', item.type);
+                const badgeType = item.type === 'tv' ? 'tv' : 'movie';
                 card.innerHTML = `
+                    ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: item.title, tmdbId: item.id }) : ''}
                     <img src="${item.poster || '/img/default_poster.png'}" alt="${escapeHtml(item.title)}">
                     <div class="card-hover-info">
                         <div class="info-text">
@@ -44,6 +46,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 };
                 resultsGrid.appendChild(card);
             });
+            window.mountEpisodeCountBadges?.(resultsGrid);
         } catch (err) {
             resultsGrid.innerHTML = '<div class="loading-text">Error loading results.</div>';
             console.error('[searchQueryResultLoader] Error:', err);

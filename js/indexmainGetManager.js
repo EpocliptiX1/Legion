@@ -111,13 +111,19 @@
             item.title?.romaji,
             item.title?.native
         ].filter(t => t && t !== title);
-        const badgePlaceholder = window.buildEpisodeCountBadgesPlaceholder
+        // Omitted entirely when tmdbId isn't resolved yet - see renderAniListRow's identical
+        // fix in animePage.js for why: rendering a placeholder anyway fires an immediate,
+        // badly-scoped badge fetch (no tmdbId/malId/tmdbTotal) that can win the race against
+        // the properly-resolved one and poison the shared server-side cache row for every other
+        // view of that show. Added back in once the background tmdbId resolution below patches
+        // this card in place with the real id.
+        const badgePlaceholder = tmdbId && window.buildEpisodeCountBadgesPlaceholder
             ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title, altTitles: badgeAltTitles, tmdbId, inline: true })
             : '';
 
         if (tmdbId) {
             const href = `/html/movieInfo.html?id=${tmdbId}&type=tv`;
-            return `<a class="disc-card ${rankClass}" href="${href}">
+            return `<a class="disc-card ${rankClass}" data-trending-index="${index}" href="${href}">
                 <img class="disc-card-img" src="${poster}" alt="" loading="lazy">
                 <span class="disc-card-num">${num}</span>
                 <div class="disc-card-info">
@@ -127,7 +133,7 @@
             </a>`;
         }
 
-        return `<a class="disc-card ${rankClass}" href="#" onclick="window.navigateToAnimeByTitle('${safeTitleJs}'); return false;">
+        return `<a class="disc-card ${rankClass}" data-trending-index="${index}" href="#" onclick="window.navigateToAnimeByTitle('${safeTitleJs}'); return false;">
             <img class="disc-card-img" src="${poster}" alt="" loading="lazy">
             <span class="disc-card-num">${num}</span>
             <div class="disc-card-info">
@@ -161,9 +167,27 @@
                 </div>`).join('');
         }
 
-        const tmdbIds = await Promise.all(items.map(item => resolveAniListItemTmdbId(item)));
-        list.innerHTML = items.map((item, i) => renderAnimeTrendingCard(item, tmdbIds[i], i)).join('');
+        // Cards render IMMEDIATELY with tmdbId unresolved (renderAnimeTrendingCard already
+        // has a real fallback for that - a lazy navigateToAnimeByTitle click handler, same as
+        // "Because You Watched" cards elsewhere use). This used to await EVERY item's tmdbId
+        // resolution (a live /api/anime-tmdb-id round trip apiece) before rendering ANY card at
+        // all, so a page load visibly sat on a blank panel until the slowest of ~18 lookups
+        // finished - confirmed live as exactly the "waits for the episode stuff before the cards
+        // even spawn" symptom. Each item's own resolution now runs independently in the
+        // background and patches ONLY its own card in place once it resolves, instead of
+        // blocking the other 17 on whichever one is slow.
+        list.innerHTML = items.map((item, i) => renderAnimeTrendingCard(item, null, i)).join('');
         window.mountEpisodeCountBadges?.(list);
+
+        items.forEach((item, i) => {
+            resolveAniListItemTmdbId(item).then(tmdbId => {
+                if (!tmdbId) return; // no better card to swap in - the title-based fallback stays
+                const card = list.querySelector(`[data-trending-index="${i}"]`);
+                if (!card) return; // list re-rendered/left the page before this resolved
+                card.outerHTML = renderAnimeTrendingCard(item, tmdbId, i);
+                window.mountEpisodeCountBadges?.(list);
+            }).catch(() => {});
+        });
     }
 
     /* ── Trending Now: TMDB weekly trending (anime-mode aware) ── */
@@ -554,19 +578,19 @@
         }
     }
 
-    document.addEventListener('DOMContentLoaded', async function () {
-        // Safety: always dismiss after 12s even if something hangs
-        const safetyTimer = setTimeout(dismissPageOverlay, 12000);
-
+    document.addEventListener('DOMContentLoaded', function () {
         buildDayTabs();
-        await Promise.all([
-            loadTrendingRanked(),
-            loadScheduleDay(window.__animeMode ? getTodayIndex() : 0)
-        ]);
-
-        clearTimeout(safetyTimer);
-        // Brief pause so the rendered cards have a moment to paint
-        setTimeout(dismissPageOverlay, 120);
+        // Not awaited on purpose - these two rows resolve a bunch of per-item tmdbId lookups
+        // (up to 14 for the schedule row, 18 for trending) before they're fully filled in, and
+        // the overlay used to sit there the WHOLE time waiting for both to completely finish
+        // (confirmed live: exactly the "page stays loading until the episode/schedule stuff
+        // spawns in" symptom). Neither row needs to block anything - they render their own
+        // placeholders immediately and fill in on their own time now (see their own fixes for
+        // the "cards spawn before their tmdbId/badges resolve" pattern), so the page itself can
+        // become visible right away instead of waiting on them specifically.
+        loadTrendingRanked().catch(() => {});
+        loadScheduleDay(window.__animeMode ? getTodayIndex() : 0).catch(() => {});
+        dismissPageOverlay();
     });
 })();
 

@@ -47,6 +47,10 @@ let currentSlide = 0;
 let _heroInitStarted = false;
 
 const HERO_TRAILER_CUTOFF_RATIO = 0.9;
+// Skips the trailer's own cold-open/studio-logo/title-card stretch so playback starts already
+// into the actual footage - same ratio-based approach as the cutoff above (a fixed seconds value
+// would be way too much for a 30s teaser and barely anything for a 3min trailer).
+const HERO_TRAILER_START_RATIO = 0.3;
 const HERO_AUDIO_FADE_MS = 3000;
 const HERO_AUDIO_TARGET_VOLUME = 100;
 let heroYouTubeApiPromise = null;
@@ -72,6 +76,7 @@ const heroTrailerMonitor = {
     reached90Logged: false,
     reached100Logged: false,
     cutoffReached: false,
+    startSeeked: false,
     onCutoff: null,
     onUnavailable: null
 };
@@ -302,6 +307,7 @@ function clearHeroTrailerMonitor() {
     heroTrailerMonitor.reached100Logged = false;
     heroTrailerMonitor.initAttempts = 0;
     heroTrailerMonitor.cutoffReached = false;
+    heroTrailerMonitor.startSeeked = false;
     heroTrailerMonitor.onCutoff = null;
     heroTrailerMonitor.onUnavailable = null;
     heroTrailerMonitor.frameWindow = null;
@@ -533,6 +539,20 @@ function setHeroTrailerSource(iframe, trailerKey, onCutoff, onUnavailable = null
                 } else {
                     fadeInHeroTrailerAudio();
                 }
+                // Playback just actually started, so getDuration() is reliable now (it can still
+                // read 0 right at onReady, before the player has buffered anything). Only ever
+                // seeks once per trailer - a native loop restarting playback (loop=1) would
+                // otherwise re-trigger this and skip the intro on every repeat, which is a much
+                // more jarring jump than the cutoff logic ever lets a loop actually reach anyway.
+                if (!heroTrailerMonitor.startSeeked) {
+                    try {
+                        const d = Number(e.target?.getDuration?.()) || 0;
+                        if (d > 0) {
+                            heroTrailerMonitor.startSeeked = true;
+                            e.target.seekTo(d * HERO_TRAILER_START_RATIO, true);
+                        }
+                    } catch (_) { }
+                }
             }
             if (e?.data === 0 && !heroTrailerMonitor.reached100Logged) {
                 heroTrailerMonitor.reached100Logged = true;
@@ -695,6 +715,13 @@ if (!window.__heroTrailerMessageBound) {
             heroTrailerMonitor.duration = info.duration;
             if (wasUnknown && info.duration > 0) {
                 console.log(`[HeroTrailer] duration detected: ${Math.round(info.duration * 10) / 10}s for ${heroTrailerMonitor.trailerKey || 'unknown'}`);
+                // Same intro-skip as the YT.Player API path above, for when that path didn't take
+                // over (postMessage-only fallback) - duration just became known for the first
+                // time, so this is the earliest point a real seek target exists.
+                if (!heroTrailerMonitor.startSeeked) {
+                    heroTrailerMonitor.startSeeked = true;
+                    postHeroTrailerCommand('seekTo', [info.duration * HERO_TRAILER_START_RATIO, true]);
+                }
             }
         }
         maybeStartHeroCutoffTimer();
@@ -2203,7 +2230,7 @@ function createCard(movie) {
     return `
         <div class="grid-card" data-id="${hasRealId ? movie.ID : ''}" data-title="${movie['Movie Name'] || ''}" data-year="${year}" data-runtime="${runtime}" data-rating="${rating}" data-plot="${plot}" data-genre="${genre}" data-type="${cardType}" onmouseenter="handleCardHover(this)" onmouseleave="handleCardLeave(this)">
             ${rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${rating}</span>` : ''}
-            ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: movie['Movie Name'] || '', tmdbId: hasRealId ? movie.ID : null }) : ''}
+            ${hasRealId && window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: movie['Movie Name'] || '', tmdbId: movie.ID }) : ''}
             <img src="${movie.poster_full_url || '/img/LOGO_Short.png'}" loading="lazy" onclick="${clickHandler}" onerror="this.src='/img/LOGO_Short.png'">
             <div class="card-title-label">
                 <div class="card-title-name">${movie['Movie Name'] || 'Unknown'}</div>

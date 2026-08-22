@@ -340,7 +340,8 @@ async function loadRecommendations() {
         const genre = movie.Genre || '';
         
         return `
-            <div class="movie-card" onclick="goToMovieInfo('${movie.ID}', '${escapeForAttribute(title)}', '${genre}', '${movie.release_date}', '${rating}')">
+            <div class="movie-card" onclick="goToMovieInfo('${movie.ID}', '${escapeForAttribute(title)}', '${genre}', '${movie.release_date}', '${rating}')" style="position:relative;">
+                ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: 'movie' }) : ''}
                 <img src="${poster}" alt="${escapeForAttribute(title)}" loading="lazy">
                 <div class="movie-overlay">
                     <h4>${escapeHtml(title)}</h4>
@@ -349,6 +350,7 @@ async function loadRecommendations() {
             </div>
         `;
     }).join('');
+    window.mountEpisodeCountBadges?.(container);
 }
 
 // Navigate to movie info and track click

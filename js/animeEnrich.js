@@ -47,6 +47,27 @@
         return;
     }
 
+    // This used to skip straight to a live AniList fetch + re-cache on every
+    // single page load, no matter what -- so "caching" was really just
+    // logging every visit, not actually caching anything. Worse for titles
+    // AniList has no MAL mapping for (idMal: null, e.g. Western shows like
+    // Rick and Morty): the live table's real PK turned out to be
+    // `mal_id INTEGER PRIMARY KEY` (not `anilist_id`, despite what the
+    // current CREATE TABLE says -- schema drift from before that line
+    // existed), so every NULL malId insert got SQLite's auto-assigned rowid
+    // instead of overwriting anything, piling up a fresh duplicate row every
+    // reload forever. Check the existing cache first and only do the live
+    // fetch on an actual miss.
+    try {
+        const cacheCheck = await fetch(`/api/anime-recommendations?tmdbId=${tmdbId}`).then(r => r.json()).catch(() => null);
+        if (cacheCheck?.status === 'ready') {
+            console.log('[animeEnrich] Recommendations already cached for tmdbId', tmdbId, '-- skipping live AniList fetch');
+            return;
+        }
+    } catch (e) {
+        console.warn('[animeEnrich] Cache check failed, proceeding to live fetch:', e.message);
+    }
+
     try {
         console.log('Before AniList recommendations fetch for ID', anilistId);
 
@@ -73,6 +94,10 @@
                                 episodes
                                 averageScore
                                 format
+                                seasonYear
+                                startDate {
+                                    year
+                                }
                             }
                         }
                     }

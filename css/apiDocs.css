@@ -43,8 +43,8 @@
    next to the last letter - not centered over the whole wordmark. */
 .docs-brand .api-text {
     position: absolute;
-    top: -4px;
-    right: -2px;
+    top: 5px;
+    right: -17px;
     transform: translateY(-50%);
     font-weight: 800;
     font-size: 0.6rem;
