@@ -6982,6 +6982,64 @@ function animeCacheGetByAniListIds(ids) {
     });
 }
 
+// One-time backfill for rows written before genres/tags/season/seasonYear/duration/studios/
+// source/synonyms existed as columns (see anime_cache's migration comment) - every row from
+// before today has NULL genres and nothing else will ever fill that in on its own, since a
+// cache HIT never re-touches AniList at all. Batches via AniList's id_in filter (up to 50 ids
+// per request) instead of one request per row - confirmed live this clears ~390 rows in ~8
+// requests. Deliberately doesn't ask for tmdb_id/mal_id/title/etc - those already exist on
+// these rows and animeCacheUpsertFromAniListItem's COALESCE-based upsert leaves any field not
+// present on the passed item untouched, so this only ever fills in the new columns.
+const ANIME_CACHE_ENRICHMENT_BATCH_SIZE = 50;
+const ANIME_CACHE_ENRICHMENT_QUERY = `
+query ($ids: [Int]) {
+    Page(page: 1, perPage: ${ANIME_CACHE_ENRICHMENT_BATCH_SIZE}) {
+        media(id_in: $ids, type: ANIME) {
+            id
+            genres
+            tags { name rank }
+            season
+            seasonYear
+            duration
+            source
+            studios(isMain: true) { nodes { name } }
+        }
+    }
+}`;
+
+async function backfillAnimeCacheEnrichment() {
+    const rows = await new Promise((resolve, reject) => {
+        animeCacheDb.all(
+            `SELECT anilist_id FROM anime_cache WHERE genres IS NULL LIMIT ?`,
+            [ANIME_CACHE_ENRICHMENT_BATCH_SIZE],
+            (err, r) => err ? reject(err) : resolve(r || [])
+        );
+    });
+    if (!rows.length) return;
+
+    const ids = rows.map(r => r.anilist_id);
+    try {
+        const response = await axios.post(
+            'https://graphql.anilist.co',
+            { query: ANIME_CACHE_ENRICHMENT_QUERY, variables: { ids } },
+            { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 20000 }
+        );
+        const items = response.data?.data?.Page?.media || [];
+        for (const item of items) {
+            await animeCacheUpsertFromAniListItem(item);
+        }
+        logHealthStatus(`[AnimeCacheBackfill] Enriched ${items.length}/${ids.length} row(s), ${rows.length === ANIME_CACHE_ENRICHMENT_BATCH_SIZE ? 'more remain' : 'done'}`);
+    } catch (err) {
+        logHealthStatus(`[AnimeCacheBackfill] Batch failed: ${err.message || err}`);
+    }
+
+    // More than one batch's worth left - keep going, spaced out rather than looping tight.
+    if (rows.length === ANIME_CACHE_ENRICHMENT_BATCH_SIZE) {
+        await sleep(2000);
+        return backfillAnimeCacheEnrichment();
+    }
+}
+
 function getCurrentAniListSeason() {
     const now = new Date();
     const month = now.getMonth() + 1;
@@ -18690,6 +18748,12 @@ const server = app.listen(PORT, 'localhost', () => {
     console.log(`   Finished-show schedule audit: every ${FINISHED_SHOW_AUDIT_INTERVAL_MS / 3600000}h`);
     setInterval(runFinishedShowScheduleAudit, FINISHED_SHOW_AUDIT_INTERVAL_MS);
     setTimeout(runFinishedShowScheduleAudit, 12000);
+
+    // One-time backfill for anime_cache rows written before genres/tags/season/etc existed as
+    // columns - self-limiting (a no-op query once every row has genres filled in), so this is
+    // safe to leave running on every boot rather than needing to be remembered and removed
+    // later. Staggered last, after everything else above.
+    setTimeout(() => backfillAnimeCacheEnrichment().catch(err => logHealthStatus(`[AnimeCacheBackfill] Failed: ${err.message || err}`)), 16000);
 
     // Safety net for the animego RU-dub retry queue - drainAnimegoPendingRetries() also fires the
     // moment a live search succeeds after a failure, but that only happens if something actually
