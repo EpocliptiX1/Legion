@@ -1014,9 +1014,26 @@ animeCacheDb.serialize(() => {
             per_page INTEGER NOT NULL,
             json TEXT NOT NULL,
             cached_at INTEGER NOT NULL,
+            has_active INTEGER,
             PRIMARY KEY(row_key, page, per_page)
         );
     `);
+    // has_active: 1 when this page's own items include an anime_cache.status of RELEASING or
+    // NOT_YET_RELEASED at write time - those specific titles' episode counts/airing state
+    // genuinely change on a short timescale, the same reasoning ANIME_SEASON_GROUPS_ONGOING_TTL
+    // already uses for a single show's season structure, just applied per cached PAGE now that
+    // status is available on anime_cache too. A page with even one such title gets read back
+    // with the shorter ANIME_ROW_CACHE_ACTIVE_TTL_MS regardless of its own sort/filter TTL tier -
+    // a page made entirely of finished/cancelled shows keeps its normal (longer) TTL untouched.
+    animeCacheDb.all(`PRAGMA table_info(anime_row_cache)`, [], (err, columns) => {
+        if (err) return;
+        const names = new Set((columns || []).map(c => c.name));
+        if (!names.has('has_active')) {
+            animeCacheDb.run(`ALTER TABLE anime_row_cache ADD COLUMN has_active INTEGER`, (alterErr) => {
+                if (alterErr) console.error('[AnimeRowCache] Failed to add has_active column', alterErr.message);
+            });
+        }
+    });
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS anime_season_groups_cache (
             tmdb_id INTEGER PRIMARY KEY,
@@ -6693,16 +6710,23 @@ async function searchAniListByTitle(title, year) {
 }
 
 const ANIME_ROW_CACHE_TTL = 2 * 24 * 60 * 60 * 1000; // 48 hours
+// Same reasoning as ANIME_SEASON_GROUPS_ONGOING_TTL, applied per cached PAGE instead of per
+// show: a page containing even one RELEASING/NOT_YET_RELEASED anime (see has_active below) has
+// episode counts/airing state that can genuinely change day to day, so it can't sit on the
+// same long TTL a page of all-finished shows safely can - regardless of which sort/filter TTL
+// tier that page would otherwise get.
+const ANIME_ROW_CACHE_ACTIVE_TTL_MS = 24 * 60 * 60 * 1000;
 
-function animeRowCacheGet(rowKey, page = 1, perPage = 18, maxAgeMs = ANIME_ROW_CACHE_TTL) {
+function animeRowCacheGet(rowKey, page = 1, perPage = 18, maxAgeMs = ANIME_ROW_CACHE_TTL, activeTtlMs = ANIME_ROW_CACHE_ACTIVE_TTL_MS) {
     return new Promise((resolve, reject) => {
         animeCacheDb.get(
-            `SELECT json, cached_at FROM anime_row_cache WHERE row_key = ? AND page = ? AND per_page = ?`,
+            `SELECT json, cached_at, has_active FROM anime_row_cache WHERE row_key = ? AND page = ? AND per_page = ?`,
             [rowKey, page, perPage],
             (err, row) => {
                 if (err) return reject(err);
                 if (!row) return resolve(null);
-                if (Date.now() - row.cached_at > maxAgeMs) return resolve(null);
+                const effectiveMaxAge = row.has_active ? Math.min(maxAgeMs, activeTtlMs) : maxAgeMs;
+                if (Date.now() - row.cached_at > effectiveMaxAge) return resolve(null);
 
                 try {
                     const ids = JSON.parse(row.json);
@@ -6716,22 +6740,30 @@ function animeRowCacheGet(rowKey, page = 1, perPage = 18, maxAgeMs = ANIME_ROW_C
     });
 }
 
-function animeRowCacheUpsert(rowKey, page = 1, perPage = 18, ids = []) {
+function animeRowCacheUpsert(rowKey, page = 1, perPage = 18, ids = [], hasActive = false) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
         animeCacheDb.run(
-            `INSERT INTO anime_row_cache (row_key, page, per_page, json, cached_at)
-             VALUES (?, ?, ?, ?, ?)
+            `INSERT INTO anime_row_cache (row_key, page, per_page, json, cached_at, has_active)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(row_key, page, per_page) DO UPDATE SET
                  json = excluded.json,
-                 cached_at = excluded.cached_at`,
-            [rowKey, page, perPage, JSON.stringify(ids), now],
+                 cached_at = excluded.cached_at,
+                 has_active = excluded.has_active`,
+            [rowKey, page, perPage, JSON.stringify(ids), now, hasActive ? 1 : 0],
             function (err) {
                 if (err) return reject(err);
                 resolve(this.changes || 0);
             }
         );
     });
+}
+
+// AniList's own authoritative per-title status - RELEASING/NOT_YET_RELEASED titles are the ones
+// whose cached data can go stale on a short timescale (new episode airing, air date confirmed,
+// etc); FINISHED/CANCELLED/HIATUS are safe to treat like the rest of that page's normal TTL.
+function anyItemIsActive(items) {
+    return (items || []).some(item => item?.status === 'RELEASING' || item?.status === 'NOT_YET_RELEASED');
 }
 
 function episodeLoadCacheGet(tmdbId, season, episode, audioType, provider) {
@@ -7305,7 +7337,7 @@ app.get('/api/anime-row', async (req, res) => {
             await animeCacheUpsertFromAniListItem(item);
         }
 
-        await animeRowCacheUpsert(rowKey, page, perPage, idsToCache);
+        await animeRowCacheUpsert(rowKey, page, perPage, idsToCache, anyItemIsActive(items));
         console.log(`[Anime Row Cache] cached ${idsToCache.length} IDs for ${rowKey}`);
         res.json(items);
     } catch (err) {
@@ -7504,7 +7536,7 @@ app.get('/api/anime-library', async (req, res) => {
             }
             await animeCacheUpsertFromAniListItem(item);
         });
-        await animeRowCacheUpsert(cacheKey, page, perPage, idsToCache);
+        await animeRowCacheUpsert(cacheKey, page, perPage, idsToCache, anyItemIsActive(items));
         res.json(items);
     } catch (err) {
         console.error('[Anime Library] Error:', err.message || err, { cacheKey, page, perPage });
