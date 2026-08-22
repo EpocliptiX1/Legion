@@ -32,18 +32,24 @@
     padding: 14px 24px;
 }
 .docs-brand {
-    display: flex;
+    position: relative;
+    display: inline-flex;
     align-items: center;
-    gap: 10px;
     text-decoration: none;
     color: var(--text-primary);
 }
 .docs-brand img { height: 30px; width: auto; }
+/* Trademark-style badge: small, centered above the logo's top edge, like a "TM" mark. */
 .docs-brand .api-text {
+    position: absolute;
+    top: -2px;
+    left: 50%;
+    transform: translate(-50%, -50%);
     font-weight: 800;
-    font-size: 1.1rem;
-    letter-spacing: 0.02em;
-    color: var(--text-primary);
+    font-size: 0.6rem;
+    letter-spacing: 0.06em;
+    color: var(--accent-primary);
+    white-space: nowrap;
 }
 .docs-topbar-links { display: flex; gap: 18px; align-items: center; }
 .docs-topbar-links a {
