@@ -5,6 +5,46 @@ document.addEventListener('DOMContentLoaded', function() {
         return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
     }
 
+    // Test feature: fetches the AniList-sourced season chain for this show and renders it as a
+    // row of cover-art cards under the player. Silently no-ops (row stays hidden) on a fetch
+    // failure or a title AniList has no mapping for - this is a nice-to-have, not something
+    // that should ever visibly break the player itself.
+    async function renderSeasonCardsRow(tmdbId) {
+        const row = document.getElementById('seasonCardsRow');
+        const list = document.getElementById('seasonCardsList');
+        if (!row || !list) return;
+        try {
+            const res = await fetch(`/api/anime-season-cards?tmdbId=${encodeURIComponent(tmdbId)}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const seasons = Array.isArray(data.seasons) ? data.seasons : [];
+            if (!seasons.length) return;
+
+            // Many shows bundle every AniList season under ONE TMDB entry (TMDB's own season
+            // list, not AniList's) - marking every card "active" in that case is misleading,
+            // not informative, since there's no reliable way to tell which AniList season the
+            // currently-loaded episode selection corresponds to. Only highlight when exactly
+            // one card's tmdbId is unambiguously the one we're already on.
+            const currentTmdbMatches = seasons.filter(s => String(s.tmdbId) === String(tmdbId)).length;
+            list.innerHTML = seasons.map(s => {
+                const isCurrent = currentTmdbMatches === 1 && String(s.tmdbId) === String(tmdbId);
+                const href = s.tmdbId ? `movieInfo.html?id=${s.tmdbId}&type=tv` : null;
+                return `
+                    <div class="season-card${isCurrent ? ' active' : ''}" ${href ? `onclick="window.location.href='${href}'"` : ''} title="${escapeHtml(s.title || '')}">
+                        <img class="season-card-cover" src="${s.coverImage || '/img/default_poster.png'}" alt="${escapeHtml(s.title || '')}" loading="lazy" onerror="this.src='/img/default_poster.png'">
+                        <div class="season-card-shadow">
+                            <div class="season-card-label">Season ${s.seasonNumber}</div>
+                            <div class="season-card-sub">${escapeHtml(s.title || '')}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            row.style.display = 'block';
+        } catch (err) {
+            console.warn('[SeasonCardsRow] failed to load:', err.message || err);
+        }
+    }
+
     const watchNowBtn = document.getElementById('watchNowBtn');
     if (!watchNowBtn) return;
 
@@ -1048,6 +1088,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 .player-layout { width:100%; display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:14px; margin-top:10px; align-items:start; }
                 .player-layout.is-plain-movie { display:block; }
                 .player-main-pane { min-width:0; }
+                .season-cards-row { width:100%; margin-top:18px; }
+                .season-cards-title { color:#ff8000; font-size:1.05rem; font-weight:700; margin:0 0 10px 0; }
+                .season-cards-list { display:flex; gap:14px; overflow-x:auto; padding-bottom:6px; }
+                .season-card { position:relative; flex:0 0 auto; width:150px; aspect-ratio:2/3; border-radius:10px; overflow:hidden; cursor:pointer; background:#111; box-shadow:0 2px 12px #0007; transition:transform 0.2s ease, box-shadow 0.2s ease; }
+                .season-card:hover { transform:translateY(-4px) scale(1.03); box-shadow:0 8px 24px #000a; }
+                .season-card.active { outline:2px solid #ff8000; outline-offset:-2px; }
+                .season-card-cover { width:100%; height:100%; object-fit:cover; display:block; }
+                .season-card-shadow { position:absolute; left:0; right:0; bottom:0; padding:28px 10px 8px; background:linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.92) 65%); pointer-events:none; }
+                .season-card-label { color:#fff; font-size:0.86rem; font-weight:700; line-height:1.2; }
+                .season-card-sub { color:#ff8000; font-size:0.72rem; font-weight:600; margin-top:2px; }
                 .episode-list-section { width:100%; background:#0c0c0c; border-radius:12px; box-shadow:0 2px 16px #0004; padding:12px 0; display:none; border:1px solid #202020; box-sizing:border-box; flex-direction:column; position:relative; z-index:25; pointer-events:auto; }
                 .episode-list-title { color:#ff8000; font-size:1.05rem; font-weight:700; margin:0 14px 8px 14px; }
                 .episode-status-line { margin:0 14px 8px 14px; color:#b9b9b9; font-size:0.82rem; }
@@ -1303,6 +1353,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     </div>
                 </div>
 
+                <div id="seasonCardsRow" class="season-cards-row" style="display:none;">
+                    <div class="season-cards-title">Seasons</div>
+                    <div id="seasonCardsList" class="season-cards-list"></div>
+                </div>
+
                 <button id="closeMoviePlayer" style=" display:none ;margin-top:16px;background:#222;color:#fff;padding:10px 24px;border:none;border-radius:8px;cursor:pointer;font-size:1rem;">Close Player</button>
             </div>
 
@@ -1310,6 +1365,17 @@ document.addEventListener('DOMContentLoaded', function() {
 
         attachKaaDownloadDebugButtons();
         playerSection.scrollIntoView({behavior: 'smooth'});
+
+        // Test feature: a row of season cards (cover art + shadow gradient, same visual
+        // treatment as .card-title-label elsewhere on the site) under the player, sourced from
+        // AniList's own relations graph (SEQUEL/PREQUEL chain) rather than TMDB's season list.
+        // Deliberately NOT gated behind the `isAnime` heuristic above (genreText.includes
+        // ('anime')) - confirmed live that heuristic reads e.g. "LIGHT_NOVEL" (the source
+        // material field, not a genre) for a real anime and calls it non-anime. The endpoint
+        // itself already no-ops safely (empty seasons list, row stays hidden) when AniList has
+        // no mapping for this tmdbId at all, which is a much more accurate signal than reusing
+        // a heuristic built for a different purpose.
+        renderSeasonCardsRow(tmdbId);
 
         document.getElementById('btnSub').style.display = 'inline-block';
         document.getElementById('btnDub').style.display = 'inline-block';

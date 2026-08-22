@@ -17442,6 +17442,162 @@ async function runFinishedShowScheduleAudit() {
 }
 const FINISHED_SHOW_AUDIT_INTERVAL_MS = 24 * 60 * 60 * 1000; // once a day, per the user's spec
 
+// --- Season cards row (test feature) -------------------------------------------------------
+// Separate from resolveAnimeSeasonGroups above on purpose - that one builds this SAME show's
+// own episode list per TMDB season (no cover art, since it's all one TMDB entry). This walks
+// AniList's own relations graph instead, the same SEQUEL/PREQUEL BFS shape
+// buildSeasonGroupsFromAniList already uses, but keeps each season's own coverImage (which that
+// function deliberately doesn't fetch - metaListToGroups never needed it) and resolves each
+// season's own tmdbId so a card can link straight to that season's movieInfo.html page.
+const ANIME_SEASON_CARDS_QUERY = `
+    query ($id: Int) {
+        Media(id: $id, type: ANIME) {
+            id
+            idMal
+            format
+            status
+            title { romaji english native }
+            startDate { year month day }
+            coverImage { extraLarge }
+            relations {
+                edges {
+                    relationType(version: 2)
+                    node {
+                        id
+                        type
+                        format
+                        status
+                        title { romaji english native }
+                        startDate { year month day }
+                        coverImage { extraLarge }
+                    }
+                }
+            }
+        }
+    }
+`;
+
+async function fetchAniListMediaForSeasonCards(anilistId) {
+    const response = await axios.post(
+        'https://graphql.anilist.co',
+        { query: ANIME_SEASON_CARDS_QUERY, variables: { id: anilistId } },
+        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
+    );
+    if (response.data?.errors) throw new Error(`AniList error: ${JSON.stringify(response.data.errors)}`);
+    return response.data?.data?.Media || null;
+}
+
+const animeSeasonCardsCache = new Map(); // tmdbId -> { seasons, cachedAt }
+const ANIME_SEASON_CARDS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function resolveAnimeSeasonCards(tmdbId) {
+    const cached = animeSeasonCardsCache.get(tmdbId);
+    if (cached && (Date.now() - cached.cachedAt) < ANIME_SEASON_CARDS_CACHE_TTL_MS) {
+        return cached.seasons;
+    }
+
+    // anime_tmdb_mapping is keyed by tmdb_id already (see its own CREATE TABLE) - a direct
+    // reverse lookup, no title search needed for the common case where this show has already
+    // been resolved once via any of the other anime features that populate this table.
+    const mapping = await new Promise((resolve, reject) => {
+        animeCacheDb.get(`SELECT anilist_id FROM anime_tmdb_mapping WHERE tmdb_id = ?`, [tmdbId],
+            (err, row) => err ? reject(err) : resolve(row));
+    });
+    let anilistId = mapping?.anilist_id || null;
+    if (!anilistId) {
+        // Fallback: anime_cache's own tmdb_id column (PK is anilist_id there) - a title might
+        // have been cached via the homepage rows/library browsing without ever going through
+        // anime_tmdb_mapping specifically.
+        const cacheRow = await new Promise((resolve, reject) => {
+            animeCacheDb.get(`SELECT anilist_id FROM anime_cache WHERE tmdb_id = ?`, [tmdbId],
+                (err, row) => err ? reject(err) : resolve(row));
+        });
+        anilistId = cacheRow?.anilist_id || null;
+    }
+    if (!anilistId) {
+        animeSeasonCardsCache.set(tmdbId, { seasons: [], cachedAt: Date.now() });
+        return [];
+    }
+
+    // Same BFS shape as buildSeasonGroupsFromAniList: only TV entries are real "seasons", but
+    // still walk through movies/OVAs in case a real season is only reachable through one.
+    const visited = new Set();
+    const queue = [anilistId];
+    const found = []; // { id, idMal, title, coverImage, airDate }
+    while (queue.length && found.length < 8) {
+        const id = Number(queue.shift());
+        if (!id || visited.has(id)) continue;
+        visited.add(id);
+
+        let media;
+        try {
+            media = await fetchAniListMediaForSeasonCards(id);
+        } catch (err) {
+            continue; // one unreachable node shouldn't drop the rest of the chain
+        }
+        if (!media) continue;
+
+        const isTvFormat = ['TV', 'TV_SHORT'].includes(String(media.format || '').toUpperCase());
+        if (isTvFormat) {
+            found.push({
+                anilistId: media.id,
+                idMal: media.idMal || null,
+                title: media.title?.english || media.title?.romaji || media.title?.native || null,
+                coverImage: media.coverImage?.extraLarge || null,
+                airDate: aniListDateToIso(media.startDate)
+            });
+        }
+
+        const edges = Array.isArray(media.relations?.edges) ? media.relations.edges : [];
+        for (const edge of edges) {
+            const rType = String(edge?.relationType || '').toUpperCase();
+            if (rType !== 'SEQUEL' && rType !== 'PREQUEL') continue;
+            const node = edge?.node;
+            if (!node || String(node.type || '').toUpperCase() !== 'ANIME') continue;
+            if (!['TV', 'TV_SHORT'].includes(String(node.format || '').toUpperCase())) continue;
+            const relId = Number(node.id || 0);
+            if (relId > 0 && !visited.has(relId)) queue.push(relId);
+        }
+    }
+
+    found.sort((a, b) => {
+        const ta = Date.parse(a.airDate || ''); const tb = Date.parse(b.airDate || '');
+        return (Number.isNaN(ta) ? Infinity : ta) - (Number.isNaN(tb) ? Infinity : tb);
+    });
+
+    const seasons = [];
+    for (let i = 0; i < found.length; i++) {
+        const f = found[i];
+        let seasonTmdbId = null;
+        try {
+            seasonTmdbId = await getTmdbIdForAniList(f.anilistId, f.title, f.idMal);
+        } catch (err) {
+            // No TMDB match - card still renders, just isn't clickable.
+        }
+        seasons.push({
+            seasonNumber: i + 1,
+            title: f.title,
+            coverImage: f.coverImage,
+            anilistId: f.anilistId,
+            tmdbId: seasonTmdbId
+        });
+    }
+
+    animeSeasonCardsCache.set(tmdbId, { seasons, cachedAt: Date.now() });
+    return seasons;
+}
+
+app.get('/api/anime-season-cards', async (req, res) => {
+    const tmdbId = parseInt(req.query.tmdbId, 10);
+    if (!tmdbId) return res.status(400).json({ error: 'Missing tmdbId' });
+    try {
+        const seasons = await resolveAnimeSeasonCards(tmdbId);
+        res.json({ seasons });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to build anime season cards', detail: err.message });
+    }
+});
+
 app.get('/api/anime-season-groups', async (req, res) => {
     const tmdbId = parseInt(req.query.tmdbId, 10);
     if (!tmdbId) return res.status(400).json({ error: 'Missing tmdbId' });
