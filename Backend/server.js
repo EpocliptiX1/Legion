@@ -1087,6 +1087,23 @@ animeCacheDb.serialize(() => {
         }
     });
     animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS anime_season_cards_cache (
+            tmdb_id INTEGER PRIMARY KEY,
+            mal_id INTEGER,
+            seasons_json TEXT NOT NULL,
+            season_count INTEGER NOT NULL,
+            cached_at INTEGER NOT NULL,
+            is_finished INTEGER,
+            tmdb_season_count INTEGER
+        );
+    `);
+    // Same TTL reasoning as native_episode_counts/anikoto_episode_counts (ANIKOTO_FINISHED_CACHE_TTL_MS
+    // etc., defined near getAnyCachedNativeRow) - reused directly rather than duplicated, since the
+    // freshness tradeoffs (a finished show's structure barely ever changes, an ongoing one's does
+    // often) are identical here. tmdb_season_count is the early-bust signal: if TMDB's CURRENT season
+    // count is ever higher than what was true when this was cached as finished, that's concrete
+    // evidence a new season exists, worth an immediate fresh lookup regardless of TTL.
+    animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS episode_load_cache (
             cache_id INTEGER PRIMARY KEY AUTOINCREMENT,
             tmdb_id INTEGER NOT NULL,
@@ -17555,18 +17572,84 @@ async function fetchJikanSeasonCardsChain(malId) {
     return found;
 }
 
-const animeSeasonCardsCache = new Map(); // tmdbId -> { seasons, cachedAt, incomplete }
-// Same "frequent vs rare" split the episode/dub-count caches already use (is_finished driving
-// a long TTL vs a short one) - a franchise whose latest known season is FINISHED with no
-// upcoming sequel in sight essentially never changes, so it earns the long tier; one that's
-// still RELEASING/NOT_YET_RELEASED, or has a real SEQUEL relation already sitting at one of
-// those statuses, gets the short "check again soon" tier instead.
-const ANIME_SEASON_CARDS_TTL_RARE_MS = 7 * 24 * 60 * 60 * 1000;
-const ANIME_SEASON_CARDS_TTL_FREQUENT_MS = 24 * 60 * 60 * 1000;
+// Persisted in anime_season_cards_cache (see its CREATE TABLE / migration comment above) instead
+// of an in-memory Map, so a good result survives a server restart the same way every other
+// AniList/Jikan-backed cache in this file already does.
+//
+// Freshness reuses the EXACT native_episode_counts/anikoto_episode_counts TTL tiers
+// (ANIKOTO_FINISHED_CACHE_TTL_MS etc., defined near getAnyCachedNativeRow) rather than inventing
+// new constants - "is this franchise still getting updates" is the same question either cache is
+// answering, just about a different piece of data. is_finished here is computed the same way
+// resolveAnimeSeasonGroups computes hasUpcomingSequel: the latest known season is FINISHED with no
+// upcoming sequel in sight -> long TTL; still RELEASING/NOT_YET_RELEASED, or a real SEQUEL relation
+// already sitting at one of those statuses -> short "check again soon" TTL.
+function animeSeasonCardsCacheGet(tmdbId, currentTmdbSeasonCount) {
+    return new Promise((resolve, reject) => {
+        animeCacheDb.get(`SELECT * FROM anime_season_cards_cache WHERE tmdb_id = ?`, [tmdbId], (err, row) => {
+            if (err) return reject(err);
+            if (!row) return resolve(null);
+            let seasons;
+            try {
+                seasons = JSON.parse(row.seasons_json);
+            } catch {
+                return resolve(null);
+            }
+            const seasonCountBust = row.is_finished === 1 && Number.isFinite(currentTmdbSeasonCount) &&
+                Number.isFinite(row.tmdb_season_count) && currentTmdbSeasonCount > row.tmdb_season_count;
+            const isNegative = !seasons.length;
+            const finishedTtl = Number.isFinite(row.tmdb_season_count)
+                ? ANIKOTO_FINISHED_CACHE_TTL_MS
+                : ANIKOTO_FINISHED_NO_SIGNAL_CACHE_TTL_MS;
+            const ttl = row.is_finished === 1 ? finishedTtl
+                : (isNegative ? ANIKOTO_NEGATIVE_CACHE_TTL_MS : ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS);
+            const age = Date.now() - Number(row.cached_at || 0);
+            resolve({ seasons, malId: row.mal_id, incomplete: false, stale: seasonCountBust || age > ttl });
+        });
+    });
+}
+
+function animeSeasonCardsCacheSet(tmdbId, malId, seasons, isFinished, tmdbSeasonCount) {
+    return new Promise((resolve, reject) => {
+        const now = Date.now();
+        animeCacheDb.run(
+            `INSERT INTO anime_season_cards_cache (tmdb_id, mal_id, seasons_json, season_count, cached_at, is_finished, tmdb_season_count)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(tmdb_id) DO UPDATE SET
+                 mal_id = excluded.mal_id,
+                 seasons_json = excluded.seasons_json,
+                 season_count = excluded.season_count,
+                 cached_at = excluded.cached_at,
+                 is_finished = excluded.is_finished,
+                 tmdb_season_count = excluded.tmdb_season_count`,
+            [tmdbId, malId || null, JSON.stringify(seasons), seasons.length, now,
+                isFinished ? 1 : 0, Number.isFinite(tmdbSeasonCount) ? tmdbSeasonCount : null],
+            function (err) {
+                if (err) return reject(err);
+                resolve(this.changes || 0);
+            }
+        );
+    });
+}
 
 async function resolveAnimeSeasonCards(tmdbId) {
-    const cached = animeSeasonCardsCache.get(tmdbId);
-    if (cached && (Date.now() - cached.cachedAt) < cached.ttl) return cached.seasons;
+    // Fetched once, up front - used both to decide whether an existing cache row is stale (the
+    // tmdb_season_count early-bust check) and, later, to record a fresh is_finished/season-count
+    // alongside a newly-computed result. Same pattern as resolveAnimeSeasonGroups.
+    let tmdbSeasonCount;
+    try {
+        const tmdbStatus = await fetchTmdbShowStatus(tmdbId);
+        tmdbSeasonCount = tmdbStatus.numberOfSeasons;
+    } catch (err) {
+        console.warn(`[anime-season-cards] TMDB status fetch failed for tmdb ${tmdbId}:`, err.message);
+    }
+
+    let diskCache = null;
+    try {
+        diskCache = await animeSeasonCardsCacheGet(tmdbId, tmdbSeasonCount);
+        if (diskCache && !diskCache.stale) return diskCache.seasons;
+    } catch (err) {
+        console.error('[anime-season-cards] disk cache read failed:', err.message);
+    }
 
     // anime_tmdb_mapping is keyed by tmdb_id already (see its own CREATE TABLE) - a direct
     // reverse lookup, no title search needed for the common case where this show has already
@@ -17589,7 +17672,13 @@ async function resolveAnimeSeasonCards(tmdbId) {
         mappedMalId = mappedMalId || cacheRow?.mal_id || null;
     }
     if (!anilistId) {
-        animeSeasonCardsCache.set(tmdbId, { seasons: [], cachedAt: Date.now(), ttl: ANIME_SEASON_CARDS_TTL_FREQUENT_MS });
+        // No mapping at all - negative cache, same tier a genuine "no match" gets in
+        // native_episode_counts (ANIKOTO_NEGATIVE_CACHE_TTL_MS via isNegative above).
+        try {
+            await animeSeasonCardsCacheSet(tmdbId, mappedMalId, [], 0, tmdbSeasonCount);
+        } catch (err) {
+            console.error('[anime-season-cards] disk cache write failed:', err.message);
+        }
         return [];
     }
 
@@ -17701,22 +17790,35 @@ async function resolveAnimeSeasonCards(tmdbId) {
     }
 
     const latestStatus = found.length ? found[found.length - 1].status : null;
-    const isFrequentTier = hasUpcomingSequel || latestStatus === 'RELEASING' || latestStatus === 'NOT_YET_RELEASED';
-    const ttl = isFrequentTier ? ANIME_SEASON_CARDS_TTL_FREQUENT_MS : ANIME_SEASON_CARDS_TTL_RARE_MS;
+    // Same is_finished meaning getAnyCachedNativeRow/animeSeasonGroupsCacheGet use: no evidence
+    // of more content coming -> finished (long TTL, tiered further by whether a real
+    // tmdb_season_count signal is on record); still airing/announced -> not finished (short TTL).
+    const isFinished = !(hasUpcomingSequel || latestStatus === 'RELEASING' || latestStatus === 'NOT_YET_RELEASED');
+    const malIdForWrite = found.find(f => f.idMal)?.idMal || mappedMalId || null;
 
-    // Still incomplete even after the Jikan fallback attempt: if a previously-good (non-
-    // incomplete) result already exists, don't overwrite it with a possibly-worse one - just
-    // hand this attempt's result to THIS caller and let the old cache entry keep serving
-    // everyone else until it naturally expires. Only cache the incomplete result at all when
-    // there's nothing better already sitting there, and even then at a short retry-soon TTL.
+    // Still incomplete even after the Jikan fallback attempt: if a previously-good result already
+    // exists with at least as many seasons, don't overwrite it with a possibly-worse one - just
+    // hand this attempt's result to THIS caller and let the old cache row keep serving everyone
+    // else until it naturally expires. An incomplete write only happens when there's nothing
+    // better already sitting there, and lands with is_finished=0/no season-count signal, i.e. the
+    // shortest ANIKOTO_EPISODE_COUNTS_CACHE_TTL_MS tier - "check again soon" without a magic number.
     if (hadFailure) {
-        if (!cached || cached.incomplete) {
-            animeSeasonCardsCache.set(tmdbId, { seasons, cachedAt: Date.now(), ttl: 10 * 60 * 1000, incomplete: true });
+        const existingIsBetterOrEqual = diskCache && diskCache.seasons.length > 0 && diskCache.seasons.length >= seasons.length;
+        if (!existingIsBetterOrEqual) {
+            try {
+                await animeSeasonCardsCacheSet(tmdbId, malIdForWrite, seasons, false, undefined);
+            } catch (err) {
+                console.error('[anime-season-cards] disk cache write failed:', err.message);
+            }
         }
         return seasons;
     }
 
-    animeSeasonCardsCache.set(tmdbId, { seasons, cachedAt: Date.now(), ttl, incomplete: false });
+    try {
+        await animeSeasonCardsCacheSet(tmdbId, malIdForWrite, seasons, isFinished, tmdbSeasonCount);
+    } catch (err) {
+        console.error('[anime-season-cards] disk cache write failed:', err.message);
+    }
     return seasons;
 }
 
