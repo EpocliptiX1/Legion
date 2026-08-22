@@ -29,8 +29,9 @@ document.addEventListener('DOMContentLoaded', function() {
             list.innerHTML = seasons.map(s => {
                 const isCurrent = currentTmdbMatches === 1 && String(s.tmdbId) === String(tmdbId);
                 const href = s.tmdbId ? `movieInfo.html?id=${s.tmdbId}&type=tv` : null;
+                const clickAttr = href ? `onclick="window.__handleSeasonCardClick(${s.seasonNumber}, '${String(s.tmdbId).replace(/'/g, "\\'")}')"` : '';
                 return `
-                    <div class="season-card${isCurrent ? ' active' : ''}" ${href ? `onclick="window.location.href='${href}'"` : ''} title="${escapeHtml(s.title || '')}">
+                    <div class="season-card${isCurrent ? ' active' : ''}" ${clickAttr} title="${escapeHtml(s.title || '')}">
                         <img class="season-card-cover" src="${s.coverImage || '/img/default_poster.png'}" alt="${escapeHtml(s.title || '')}" loading="lazy" onerror="this.src='/img/default_poster.png'">
                         <div class="season-card-shadow">
                             <div class="season-card-label">Season ${s.seasonNumber}</div>
@@ -1336,7 +1337,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             <span class="filler-legend-item"><span class="filler-legend-swatch" data-filler-type="Filler"></span>Filler</span>
                             <span class="filler-legend-item"><span class="filler-legend-swatch" data-filler-type="Mixed Canon/Filler"></span>Mixed Canon/Filler</span>
                             <span class="filler-legend-item"><span class="filler-legend-swatch" data-filler-type="Anime Canon"></span>Anime Canon</span>
-                            <span class="filler-legend-item"><span class="filler-legend-swatch" data-filler-type="Unknown"></span>Unknown</span>
+                            <span class="filler-legend-item"><span class="filler-legend-swatch" data-filler-type="Unknown"></span>Mix (Manga, Novel, Unknown)</span>
                         </div>
                         <ul id="episodeListContainer" class="episode-list">
                         </ul>
@@ -1392,6 +1393,23 @@ document.addEventListener('DOMContentLoaded', function() {
             btnHsubEl?.classList.toggle('active', mode === 'hsub');
         };
         applyAudioButtonState(currentAudioMode);
+
+        // Season-cards row click: if this season's tmdbId is the show we're already on (TMDB
+        // very often bundles every AniList season under one tv entry - see the isCurrent
+        // ambiguity comment above), just point the existing Season dropdown at it instead of
+        // reloading the whole page for a season that's already sitting right here.
+        window.__handleSeasonCardClick = (seasonNumber, cardTmdbId) => {
+            const seasonSelectEl = document.getElementById('seasonSelect');
+            const sameShow = String(cardTmdbId) === String(tmdbId) && seasonSelectEl &&
+                Array.from(seasonSelectEl.options).some(o => o.value === String(seasonNumber));
+            if (sameShow) {
+                seasonSelectEl.value = String(seasonNumber);
+                seasonSelectEl.dispatchEvent(new Event('change'));
+                document.getElementById('episodeListContainer')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                return;
+            }
+            if (cardTmdbId) window.location.href = `movieInfo.html?id=${cardTmdbId}&type=tv`;
+        };
 
         window.__handleEpisodeItemClick = (item) => {
             if (!item) return;
@@ -4231,10 +4249,16 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Initial load
                     await populateEpisodes(seasonSelect.value || (useAnimeSeasonUX ? 'all' : 1));
                     
-                    // When season changes, fetch new episodes, then update video source
-                    seasonSelect.onchange = async () => { 
-                        await populateEpisodes(seasonSelect.value); 
-                        updateSource(currentServer);
+                    // Switching the Season dropdown should only filter the episode LIST -
+                    // populateEpisodes resets episodeSelect to that season's first episode
+                    // (or a saved continue_from) purely as internal bookkeeping for "which
+                    // episode plays if you click Play without picking one," not as a signal the
+                    // user wants playback to jump there. Calling updateSource here reloaded the
+                    // player on every season switch even though the user hadn't clicked any
+                    // episode - only an actual episode click (__handleEpisodeItemClick above)
+                    // should ever trigger a reload.
+                    seasonSelect.onchange = async () => {
+                        await populateEpisodes(seasonSelect.value);
                         requestAnimationFrame(syncEpisodePanelHeight);
                     };
                     
