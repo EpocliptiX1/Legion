@@ -1298,6 +1298,10 @@ document.addEventListener('DOMContentLoaded', function() {
                                 controls
                                 style="display:none;width:100%;height:100%;"
                             ></video>
+                            <div id="playerLoadingOverlay" class="player-loading-overlay" style="display:none;">
+                                <div class="player-loading-spinner"></div>
+                                <div class="player-loading-text">Fetching stream...</div>
+                            </div>
                             <button id="btnBack10" title="Back 10s">
                                 <svg viewBox="0 0 24 24" width="20" height="20">
                                     <path fill="currentColor"
@@ -1655,6 +1659,27 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
+        // Shown while a stream is being resolved - the iframe/video area can go small or briefly
+        // blank mid-load depending on server, which reads as "broken" rather than "loading" and
+        // was prompting people to spam other servers thinking this one failed. Every server type
+        // converges on either showVideoPlayer (HLS/<video>) or showIframePlayer (embed servers),
+        // so hiding it there covers all of them without touching each load*Video function
+        // individually; a safety-net timeout guarantees it never gets stuck if a loader fails
+        // through neither path (falls back to an error message instead of ever calling either).
+        let playerLoadingHideTimeout = null;
+        function showPlayerLoadingOverlay() {
+            const overlay = document.getElementById('playerLoadingOverlay');
+            if (!overlay) return;
+            overlay.style.display = 'flex';
+            clearTimeout(playerLoadingHideTimeout);
+            playerLoadingHideTimeout = setTimeout(hidePlayerLoadingOverlay, 20000);
+        }
+        function hidePlayerLoadingOverlay() {
+            clearTimeout(playerLoadingHideTimeout);
+            const overlay = document.getElementById('playerLoadingOverlay');
+            if (overlay) overlay.style.display = 'none';
+        }
+
         function showIframePlayer(url) {
             resetSharedVideoPlayer();
             stopKaaContinueWatching();
@@ -1667,11 +1692,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 frame.style.display = 'block';
                 frame.src = url || 'about:blank';
             }
+            hidePlayerLoadingOverlay();
         }
 
         function showVideoPlayer(streamUrl, subtitles = [], metadata = {}) {
             console.log('SHOWVIDEOPLAYER CALLED');
 
+            hidePlayerLoadingOverlay();
             resetSharedVideoPlayer();
 
             const frame = document.getElementById('moviePlayerFrame');
@@ -3070,6 +3097,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // 4. Update Source Logic
         function updateSource(server) {
             playbackRequestGen++;
+            showPlayerLoadingOverlay();
             currentServer = server;
             window.currentServer = server;
             // hsub exists on NekoStream only - switching to any other server while it's the
