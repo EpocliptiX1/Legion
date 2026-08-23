@@ -1849,6 +1849,138 @@ async function initPersonalRows() {
     ]);
 }
 
+// ── WATCHING / WATCHED / WANT TO WATCH / ABANDONED ROWS (indexMain.html) ──
+// /activity/watch-buckets already sorted every touched title into abandoned/wantToWatch/active
+// using pure date+list-membership rules (see its own comment in server.js) - the one thing it
+// can't resolve server-side is "watched vs still watching" for an active title, since that needs
+// the title's REAL episode count, which only TMDB has. This does that TMDB fetch per active
+// title (same enrichment loadContinueWatching already does for its own cards) and finishes the
+// split: TV counts as watched once finishedCount covers all-but-one episode OR the user's last
+// known position is already the show's final episode; movies count as watched past 90% of
+// runtime. Falls back to "watching" on missing/ambiguous data rather than guessing wrong in
+// either the "abandoned" or "watched" direction.
+const WATCH_STATUS_MOVIE_WATCHED_RATIO = 0.9;
+
+function isOnFinalEpisode(continueFrom, seasons) {
+    if (!continueFrom || !Array.isArray(seasons) || !seasons.length) return false;
+    const m = /^S(\d+)E(\d+)$/i.exec(String(continueFrom).trim());
+    if (!m) return false;
+    const season = Number(m[1]);
+    const episode = Number(m[2]);
+    const realSeasons = seasons.filter(s => Number(s.season_number) > 0);
+    if (!realSeasons.length) return false;
+    const lastSeason = realSeasons.reduce((a, b) => Number(b.season_number) > Number(a.season_number) ? b : a);
+    return season === Number(lastSeason.season_number) && episode >= Number(lastSeason.episode_count || 0) && Number(lastSeason.episode_count) > 0;
+}
+
+function parseContinueSeconds(raw) {
+    if (!raw) return 0;
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+            const vals = Object.values(parsed).map(Number).filter(Number.isFinite);
+            return vals.length ? Math.max(...vals) : 0;
+        }
+    } catch (e) { /* ignore */ }
+    return 0;
+}
+
+async function classifyActiveEntry(entry) {
+    const id = encodeURIComponent(entry.id);
+    const endpoint = entry.type === 'tv' ? `/api/tmdb-proxy/tv/${id}` : `/api/tmdb-proxy/movie/${id}`;
+    try {
+        const res = await fetch(endpoint);
+        if (!res.ok) throw new Error('TMDB request failed');
+        const tmdb = await res.json();
+
+        let watched = false;
+        if (entry.type === 'tv') {
+            const totalEps = Number(tmdb.number_of_episodes);
+            if (Number.isFinite(totalEps) && totalEps > 0) {
+                watched = entry.finishedCount >= totalEps - 1 || isOnFinalEpisode(entry.continueFrom, tmdb.seasons);
+            }
+        } else {
+            const runtimeSec = Number(tmdb.runtime) * 60;
+            const positionSec = parseContinueSeconds(entry.timeStampContinue);
+            if (Number.isFinite(runtimeSec) && runtimeSec > 0 && positionSec > 0) {
+                watched = (positionSec / runtimeSec) >= WATCH_STATUS_MOVIE_WATCHED_RATIO;
+            }
+        }
+
+        return { entry, tmdb, status: watched ? 'watched' : 'watching' };
+    } catch (err) {
+        return null;
+    }
+}
+
+async function enrichWithTmdb(entry) {
+    const id = encodeURIComponent(entry.id);
+    const endpoint = entry.type === 'tv' ? `/api/tmdb-proxy/tv/${id}` : `/api/tmdb-proxy/movie/${id}`;
+    try {
+        const res = await fetch(endpoint);
+        if (!res.ok) throw new Error('TMDB request failed');
+        const tmdb = await res.json();
+        return { entry, tmdb };
+    } catch (err) {
+        return null;
+    }
+}
+
+function renderWatchStatusSection(sectionId, listId, cards) {
+    const section = document.getElementById(sectionId);
+    const list = document.getElementById(listId);
+    if (!section || !list) return;
+    if (!cards.length) { section.style.display = 'none'; list.innerHTML = ''; return; }
+    list.innerHTML = cards.join('');
+    section.style.display = 'block';
+}
+
+async function loadWatchStatusRows() {
+    if (!document.getElementById('watchingSection')) return; // indexMain.html only
+
+    const userUID = window.recommendationsSystem?.getActivityUID ? window.recommendationsSystem.getActivityUID() : localStorage.getItem('userUID');
+    if (!userUID) return;
+
+    try {
+        const res = await fetch(`/activity/watch-buckets?userUID=${encodeURIComponent(userUID)}`);
+        if (!res.ok) throw new Error('watch-buckets request failed');
+        const buckets = await res.json();
+
+        const [activeSettled, abandonedSettled, wantSettled] = await Promise.all([
+            Promise.allSettled((buckets.active || []).map(classifyActiveEntry)),
+            Promise.allSettled((buckets.abandoned || []).map(enrichWithTmdb)),
+            Promise.allSettled((buckets.wantToWatch || []).map(enrichWithTmdb))
+        ]);
+
+        const watchingCards = [];
+        const watchedCards = [];
+        activeSettled.forEach(r => {
+            if (r.status !== 'fulfilled' || !r.value) return;
+            const card = buildContinueWatchingCard({ movie_id: r.value.entry.id, type: r.value.entry.type }, r.value.tmdb);
+            (r.value.status === 'watched' ? watchedCards : watchingCards).push(card);
+        });
+
+        const abandonedCards = abandonedSettled
+            .filter(r => r.status === 'fulfilled' && r.value)
+            .map(r => buildContinueWatchingCard({ movie_id: r.value.entry.id, type: r.value.entry.type }, r.value.tmdb));
+
+        const wantToWatchCards = wantSettled
+            .filter(r => r.status === 'fulfilled' && r.value)
+            .map(r => buildContinueWatchingCard({ movie_id: r.value.entry.id, type: r.value.entry.type }, r.value.tmdb));
+
+        renderWatchStatusSection('watchingSection', 'watchingList', watchingCards);
+        renderWatchStatusSection('watchedSection', 'watchedList', watchedCards);
+        renderWatchStatusSection('wantToWatchSection', 'wantToWatchList', wantToWatchCards);
+        renderWatchStatusSection('abandonedSection', 'abandonedList', abandonedCards);
+    } catch (err) {
+        console.warn('[WatchStatus] failed to load:', err.message);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadWatchStatusRows();
+});
+
 // Sets the blurred poster backdrop on browse personal rows
 function applyBrowseRowBg(sectionId) {
     const section = document.getElementById(sectionId);

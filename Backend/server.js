@@ -3383,6 +3383,89 @@ app.post('/activity/list/remove', (req, res) => {
     );
 });
 
+const WATCH_BUCKET_ABANDONED_DAYS = 10;
+const WATCH_BUCKET_LISTED_STALE_DAYS = 7;
+
+// GET /activity/watch-buckets — classifies every title the user has touched into
+// abandoned / wantToWatch / active (the "watching vs watched" split needs each title's
+// real episode count, which only TMDB has, so that part is left to the caller - active
+// rows carry finishedCount/continue_from so the client can finish the classification the
+// same way it already enriches Continue Watching cards with a TMDB fetch per item).
+//
+// Priority rules (see indexMain "Watched/Watching/Want to Watch/Abandoned" feature):
+// - A title in My List with watch history newer than WATCH_BUCKET_LISTED_STALE_DAYS is
+//   still "active" (being watched) even though it's also saved - watching takes priority
+//   over "want to watch" while there's live progress.
+// - Once that same saved title's watch history goes stale (past the shorter listed-stale
+//   window), it falls back to "want to watch" rather than "abandoned" - it's still on the
+//   list, so calling it abandoned is wrong; the user just hasn't gotten back to it yet.
+// - A title NOT in My List gets the longer abandoned window before being written off
+//   entirely, since there's no saved intent to protect it the way list membership does.
+// - My List items with no watch history at all are "want to watch" outright - never started.
+app.get('/activity/watch-buckets', (req, res) => {
+    const userUID = String(req.query.userUID || '').slice(0, 64);
+    if (!userUID) return res.json({ active: [], abandoned: [], wantToWatch: [] });
+
+    activityDb.all(
+        `SELECT movie_id, item_type, title, watched_at, continue_from, finished, timeStamp_continue
+         FROM watch_history WHERE userUID = ?`,
+        [userUID],
+        (err, historyRows) => {
+            if (err) { console.error('[activity/watch-buckets] history query failed:', err.message); return res.json({ active: [], abandoned: [], wantToWatch: [] }); }
+
+            activityDb.all(
+                `SELECT item_id, item_type FROM user_list WHERE userUID = ?`,
+                [userUID],
+                (err2, listRows) => {
+                    if (err2) { console.error('[activity/watch-buckets] list query failed:', err2.message); return res.json({ active: [], abandoned: [], wantToWatch: [] }); }
+
+                    const listedIds = new Set((listRows || []).map(r => String(r.item_id)));
+                    const watchedIds = new Set();
+                    const nowSec = Date.now() / 1000;
+
+                    const active = [];
+                    const abandoned = [];
+                    const wantToWatch = [];
+
+                    (historyRows || []).forEach(row => {
+                        const id = String(row.movie_id);
+                        watchedIds.add(id);
+                        const isListed = listedIds.has(id);
+                        const ageDays = (nowSec - Number(row.watched_at || 0)) / 86400;
+                        const staleDays = isListed ? WATCH_BUCKET_LISTED_STALE_DAYS : WATCH_BUCKET_ABANDONED_DAYS;
+
+                        let finishedCount = 0;
+                        try {
+                            const parsed = JSON.parse(row.finished || '[]');
+                            if (Array.isArray(parsed)) finishedCount = parsed.length;
+                        } catch (e) { /* leave at 0 */ }
+
+                        const entry = {
+                            id, type: row.item_type === 'tv' ? 'tv' : 'movie',
+                            title: row.title || '', continueFrom: row.continue_from || null,
+                            finishedCount, timeStampContinue: row.timeStamp_continue || null
+                        };
+
+                        if (ageDays > staleDays) {
+                            if (isListed) wantToWatch.push(entry); else abandoned.push(entry);
+                        } else {
+                            active.push(entry);
+                        }
+                    });
+
+                    (listRows || []).forEach(row => {
+                        const id = String(row.item_id);
+                        if (watchedIds.has(id)) return; // already classified from watch_history above
+                        wantToWatch.push({ id, type: row.item_type === 'tv' ? 'tv' : 'movie', title: '', continueFrom: null, finishedCount: 0, timeStampContinue: null });
+                    });
+
+                    res.json({ active, abandoned, wantToWatch });
+                }
+            );
+        }
+    );
+});
+
 // ── NOTIFICATIONS ──────────────────────────────────────────────────────────────
 // No background scheduler here -- generation runs lazily whenever a user's client
 // asks for their notifications (GET /notifications), throttled to once per 10

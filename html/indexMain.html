@@ -346,6 +346,39 @@
 
         </div>
 
+        <!-- ── WATCH STATUS ROWS (Watching / Watched / Want to Watch / Abandoned) ──
+             Backed by /activity/watch-buckets (activity.db watch_history + user_list),
+             classified client-side in loadWatchStatusRows (mainPageControls.js). Same
+             card markup/CSS as indexBrowse's Continue Watching row - reused wholesale,
+             no new CSS needed. -->
+        <section class="row continue-watching-section" id="watchingSection" style="display:none;">
+            <div class="row-header">
+                <h2 class="row-title browse-personal-label">Watching</h2>
+            </div>
+            <div class="continue-watching-list" id="watchingList"></div>
+        </section>
+
+        <section class="row continue-watching-section" id="watchedSection" style="display:none;">
+            <div class="row-header">
+                <h2 class="row-title browse-personal-label">Watched</h2>
+            </div>
+            <div class="continue-watching-list" id="watchedList"></div>
+        </section>
+
+        <section class="row continue-watching-section" id="wantToWatchSection" style="display:none;">
+            <div class="row-header">
+                <h2 class="row-title browse-personal-label">Want to Watch</h2>
+            </div>
+            <div class="continue-watching-list" id="wantToWatchList"></div>
+        </section>
+
+        <section class="row continue-watching-section" id="abandonedSection" style="display:none;">
+            <div class="row-header">
+                <h2 class="row-title browse-personal-label">Abandoned</h2>
+            </div>
+            <div class="continue-watching-list" id="abandonedList"></div>
+        </section>
+
         <!-- ── HOME WIDGETS ──────────────────────────────────────── -->
         <div class="home-widgets-area">
 
