@@ -34,6 +34,17 @@
         }
         try {
             const res = await fetch('/users/friends', { headers: { 'Authorization': `Bearer ${token}` } });
+            if (res.status === 401) {
+                // authToken is a 7-day JWT (JWT_EXPIRES_IN in server.js) with no refresh flow -
+                // a 401 here just means it's expired or was issued for an account that no longer
+                // exists, not a real failure. Clear it and show the same "sign in" message the
+                // no-token case above already uses, instead of a scary generic error - and drop
+                // the stale token so every OTHER authToken-gated feature on the page (My List
+                // sync, watch2gether, etc.) stops silently 401ing on it too.
+                localStorage.removeItem('authToken');
+                container.innerHTML = '<p class="footer-friends-empty">Sign in to see your friends.</p>';
+                return;
+            }
             if (!res.ok) throw new Error(String(res.status));
             const data = await res.json();
             const friends = data.friends || [];
