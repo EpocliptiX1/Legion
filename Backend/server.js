@@ -14779,36 +14779,104 @@ const kinogoResolveCache = new Map(); // key -> { result, resolvedAt }
 const kinogoResolveInFlight = new Map();
 const KINOGO_RESOLVE_CACHE_TTL_MS = 30 * 60 * 1000;
 
-async function resolveKinogoMovie(rawTitle) {
+// Word-token comparison, not substring - confirmed live: searching kinogo.mu's fuzzy lightsearch
+// for "Cold" (tmdb 318354, the Russian show "Холод") returned "Coldplay: A Head Full of Dreams"
+// as its first/only usable result, and the old code just grabbed whatever href appeared first in
+// the response with no check it was actually the right title at all. "cold" is a SUBSTRING of
+// "coldplay" but never a whole word in it, so tokenizing both sides and requiring an exact
+// whole-word-sequence match rejects that pairing while still matching real title variants
+// (trailing year, punctuation).
+function normalizeKinogoTitle(s) {
+    return String(s || '')
+        .toLowerCase()
+        .replace(/\(\d{4}\)/g, '')
+        .replace(/[^a-zа-яё0-9]+/gi, ' ')
+        .trim()
+        .replace(/\s+/g, ' ');
+}
+function scoreKinogoMatch(query, candidateTitles) {
+    const nq = normalizeKinogoTitle(query);
+    if (!nq) return -1;
+    let best = -1;
+    for (const c of candidateTitles) {
+        const nc = normalizeKinogoTitle(c);
+        if (!nc) continue;
+        if (nc === nq) return 100; // exact, can't do better - stop looking at this candidate's other title variants
+        // Whole-word prefix match ("cold case" query against "cold case 2019 sezon 1" candidate) -
+        // both sides split on the SAME normalized word boundaries, so "cold" can never accidentally
+        // prefix-match into the middle of "coldplay" (that's one token, "coldplay", not "cold").
+        const qWords = nq.split(' ');
+        const cWords = nc.split(' ');
+        if (cWords.length >= qWords.length && qWords.every((w, i) => cWords[i] === w)) {
+            best = Math.max(best, 90);
+        }
+    }
+    return best;
+}
+// Minimum score to trust a match at all - below this, resolveKinogoMovie moves on to the next
+// title candidate (or gives up) rather than silently playing the wrong title.
+const KINOGO_MATCH_CONFIDENCE_THRESHOLD = 90;
+
+// titleCandidates is tried in order (typically [originalTitle, displayTitle] - see
+// resolveMovieRuData/resolveTvRuData) - kinogo.mu is a Russian site, so a show's own original
+// Russian title searches far more precisely than TMDB's English-localized display title, which
+// is also the ambiguous one ("Cold" vs "Холод" for tmdb 318354).
+async function resolveKinogoMovie(titleCandidates) {
     const gotScraping = await getGotScraping();
+    const candidates = (Array.isArray(titleCandidates) ? titleCandidates : [titleCandidates])
+        .map(t => String(t || '').trim())
+        .filter((t, i, arr) => t && arr.indexOf(t) === i); // dedupe, drop empties
+    if (!candidates.length) throw new Error('No title to search kinogo.mu with');
 
-    const searchRes = await gotScraping.post('https://user.kinogo.mu/engine/ajax/controller.php?mod=lightsearch', {
-        form: { q: rawTitle, method: '', user_hash: '', skin: 'Kinogo' },
-        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Referer': 'https://user.kinogo.mu/' },
-        timeout: { request: 15000 }
-    });
-    const searchData = JSON.parse(searchRes.body);
-    const html = searchData?.html || '';
-    // kinogo.mu's slug separator isn't consistent -- some ids use a double dash
-    // ("12493--chelovek-...") and others a single dash ("53495-chelovek-...").
-    const m = html.match(/href="(\/\d+-{1,2}[^"]+\.html)"/);
-    if (!m) throw new Error(`No kinogo.mu results for: "${rawTitle}"`);
-    const moviePageUrl = `https://user.kinogo.mu${m[1]}`;
+    let bestOverall = null; // { href, score } across ALL candidates, in case none clears the confidence bar
+    for (const query of candidates) {
+        const searchRes = await gotScraping.post('https://user.kinogo.mu/engine/ajax/controller.php?mod=lightsearch', {
+            form: { q: query, method: '', user_hash: '', skin: 'Kinogo' },
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Referer': 'https://user.kinogo.mu/' },
+            timeout: { request: 15000 }
+        });
+        const searchData = JSON.parse(searchRes.body);
+        const html = searchData?.html || '';
+        const $ = cheerio.load(html);
 
+        $('a.lightsearch__item').each((i, el) => {
+            // kinogo.mu's slug separator isn't consistent -- some ids use a double dash
+            // ("12493--chelovek-...") and others a single dash ("53495-chelovek-...").
+            const href = $(el).attr('href') || '';
+            if (!/^\/\d+-{1,2}[^/]+\.html$/.test(href)) return;
+            const primaryTitle = $(el).find('.lightsearch__itemTitle').first().text().trim();
+            const altTitle = $(el).find('.lightsearch__itemInfo > div').first().text().trim();
+            const score = scoreKinogoMatch(query, [primaryTitle, altTitle]);
+            if (!bestOverall || score > bestOverall.score) {
+                bestOverall = { href, score, matchedTitle: primaryTitle || altTitle };
+            }
+        });
+
+        if (bestOverall && bestOverall.score >= KINOGO_MATCH_CONFIDENCE_THRESHOLD) break; // good enough, stop trying further candidates
+    }
+
+    if (!bestOverall || bestOverall.score < KINOGO_MATCH_CONFIDENCE_THRESHOLD) {
+        throw new Error(`No confident kinogo.mu match for: ${candidates.map(c => `"${c}"`).join(' / ')}`);
+    }
+
+    const moviePageUrl = `https://user.kinogo.mu${bestOverall.href}`;
     const pageRes = await gotScraping.get(moviePageUrl, { timeout: { request: 15000 } });
     const embedM = pageRes.body.match(/data-src="(https:\/\/cinemar\.cc\/embed\/[^"]+)"/);
     if (!embedM) throw new Error('No Cinemar embed found on kinogo.mu page');
     return { moviePageUrl, embedUrl: embedM[1] };
 }
 
-function resolveKinogoMovieCached(rawTitle) {
-    const key = String(rawTitle).toLowerCase().trim();
+// cacheKey is caller-supplied (not derived from titleCandidates) so a tmdbId-backed lookup
+// caches once per SHOW regardless of which localized title text happened to be passed in - two
+// different displayed titles for the same show no longer scrape kinogo.mu twice.
+function resolveKinogoMovieCached(cacheKey, titleCandidates) {
+    const key = String(cacheKey).toLowerCase().trim();
     const cached = kinogoResolveCache.get(key);
     if (cached && (Date.now() - cached.resolvedAt) < KINOGO_RESOLVE_CACHE_TTL_MS) {
         return Promise.resolve(cached.result);
     }
     if (kinogoResolveInFlight.has(key)) return kinogoResolveInFlight.get(key);
-    const p = resolveKinogoMovie(rawTitle)
+    const p = resolveKinogoMovie(titleCandidates)
         .then(result => {
             kinogoResolveCache.set(key, { result, resolvedAt: Date.now() });
             return result;
@@ -14816,6 +14884,28 @@ function resolveKinogoMovieCached(rawTitle) {
         .finally(() => kinogoResolveInFlight.delete(key));
     kinogoResolveInFlight.set(key, p);
     return p;
+}
+
+// RU-MV content is exclusively Russian-origin, so kinogo.mu (itself a Russian site) matches a
+// show's own ORIGINAL Russian title far more precisely than TMDB's English-localized display
+// title ever can - see resolveKinogoMovie's own comment for the exact case (tmdb 318354, "Cold"
+// vs the real title "Холод") this closes. Best-effort only: falls through to just the display
+// title if the TMDB lookup itself fails, same as before this existed.
+async function fetchTmdbOriginalTitle(tmdbId, mediaType) {
+    if (!tmdbId) return null;
+    try {
+        const path = mediaType === 'movie' ? `/movie/${tmdbId}` : `/tv/${tmdbId}`;
+        const cacheKey = `${path}?`;
+        let data = await tmdbDetailCacheGet(cacheKey);
+        if (!data) {
+            const res = await axios.get(`${TMDB_BASE_URL}${path}`, { params: { api_key: TMDB_API_KEY }, timeout: 10000 });
+            data = res.data;
+            tmdbDetailCacheSet(cacheKey, data);
+        }
+        return data?.original_name || data?.original_title || null;
+    } catch (err) {
+        return null;
+    }
 }
 
 // --- Kinogo RU movie/TV comments -------------------------------------------------------
@@ -15100,7 +15190,9 @@ async function resolveMovieRuData(rawTitle, tmdbId) {
         }
     }
 
-    const { moviePageUrl, embedUrl } = await resolveKinogoMovieCached(rawTitle);
+    const originalTitle = await fetchTmdbOriginalTitle(tmdbId, 'movie');
+    const cacheKey = tmdbId ? `tmdb:${tmdbId}` : rawTitle;
+    const { moviePageUrl, embedUrl } = await resolveKinogoMovieCached(cacheKey, [originalTitle, rawTitle]);
     const result = await fetchCinemarStream(embedUrl, moviePageUrl);
 
     if (tmdbId) {
@@ -15180,14 +15272,14 @@ async function fetchCinemarSeriesTree(embedUrl, pageUrl) {
     return tree;
 }
 
-function resolveKinogoSeriesTreeCached(rawTitle) {
-    const key = String(rawTitle).toLowerCase().trim();
+function resolveKinogoSeriesTreeCached(cacheKey, titleCandidates) {
+    const key = String(cacheKey).toLowerCase().trim();
     const cached = kinogoTreeCache.get(key);
     if (cached && (Date.now() - cached.resolvedAt) < KINOGO_TREE_CACHE_TTL_MS) {
         return Promise.resolve(cached.result);
     }
     if (kinogoTreeInFlight.has(key)) return kinogoTreeInFlight.get(key);
-    const p = resolveKinogoMovieCached(rawTitle)
+    const p = resolveKinogoMovieCached(cacheKey, titleCandidates)
         .then(({ moviePageUrl, embedUrl }) => fetchCinemarSeriesTree(embedUrl, moviePageUrl))
         .then(result => {
             kinogoTreeCache.set(key, { result, resolvedAt: Date.now() });
@@ -15227,9 +15319,12 @@ async function resolveTvRuData(rawTitle, tmdbId, season, episode) {
     // resolveKinogoMovieCached is cheap here even though resolveKinogoSeriesTreeCached already
     // calls it internally - it's its own cache (kinogoResolveCache), so this is just a cache hit,
     // not a second real request. Needed for embedUrl as the Referer on the playlist/load POST.
+    const originalTitle = await fetchTmdbOriginalTitle(tmdbId, 'tv');
+    const cacheKey = tmdbId ? `tmdb:${tmdbId}` : rawTitle;
+    const titleCandidates = [originalTitle, rawTitle];
     const [tree, { embedUrl }] = await Promise.all([
-        resolveKinogoSeriesTreeCached(rawTitle),
-        resolveKinogoMovieCached(rawTitle)
+        resolveKinogoSeriesTreeCached(cacheKey, titleCandidates),
+        resolveKinogoMovieCached(cacheKey, titleCandidates)
     ]);
     const result = await getKinogoEpisodeTrack(tree, season, episode, embedUrl);
 
