@@ -2049,6 +2049,12 @@ function chargePlaybackBytes(leaseId, byteLength) {
 // RAM. Known-length HLS segments take the direct pipe fast path; both paths account for bytes
 // against the anonymous playback lease.
 function pipeLeaseMedia(source, res, leaseId, contentLength) {
+    // Do not let an upstream reset turn into an unhandled stream error. The caller has already
+    // authenticated the lease; this is only transport cleanup, not a new authorization path.
+    source.once('error', () => {
+        if (!res.headersSent) res.status(502).send('Media provider stream failed');
+        else res.destroy();
+    });
     const knownBytes = Number(contentLength);
     if (Number.isFinite(knownBytes) && knownBytes >= 0) {
         chargePlaybackBytes(leaseId, knownBytes);
