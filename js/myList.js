@@ -236,7 +236,13 @@ function getEmptyPanelHTML(kind) {
 }
 
 function cardMetaText(record, kind) {
-    const typeLabel = (record.type === 'tv' || record.type === 'anime') ? 'ANIME' : 'MOVIE';
+    // record.type only distinguishes movie vs tv-shaped content - a plain Russian/Western TV
+    // show (e.g. "Cold" via Kino/RU-MV TV) is stored with the exact same item_type='tv' a real
+    // anime series gets, since TMDB itself has no separate "anime" media type to key off of.
+    // record.isAnime (set in resolveTvOrAnimeRow/fetchAnimeCacheRow below from the real
+    // genre/language signal, same heuristic moviePlayer.js uses for its own isAnime check) is
+    // the actual anime-or-not signal; record.type alone is not enough to label this correctly.
+    const typeLabel = record.type === 'movie' ? 'MOVIE' : (record.isAnime ? 'ANIME' : 'TV');
     const bits = [typeLabel];
     if (record.year) bits.push(record.year);
     if (record.rating && record.rating !== '--') bits.push(`★ ${record.rating}`);
@@ -350,6 +356,7 @@ async function resolveTvOrAnimeRow(item) {
             return {
                 id: String(item.id),
                 type: item.type,
+                isAnime: true,
                 title: cached.title || 'Unknown',
                 poster: cached.thumbnail || '/img/LOGO_Short.png',
                 rating: cached.rating || '--',
@@ -361,9 +368,16 @@ async function resolveTvOrAnimeRow(item) {
         const res = await fetch(`/api/tmdb-proxy/tv/${item.id}`);
         const tv = await res.json();
         if (tv && (tv.name || tv.title)) {
+            // Same heuristic moviePlayer.js's own isAnime check uses (Animation genre plus a
+            // Japanese origin signal) - item.type alone is 'tv' for both real anime and plain
+            // TV shows now that Kino TV/RU-MV TV support non-anime content too, so this is the
+            // only real anime-or-not signal available here.
+            const isAnime = item.type === 'anime' || !!(Array.isArray(tv.genres) && tv.genres.some(g => (g.name || '').toLowerCase() === 'animation')
+                && ((tv.original_language || '').toLowerCase() === 'ja' || (Array.isArray(tv.origin_country) && tv.origin_country.includes('JP'))));
             return {
                 id: String(item.id),
                 type: item.type,
+                isAnime,
                 title: tv.name || tv.title || 'Unknown',
                 poster: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.png',
                 rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--',
@@ -528,7 +542,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const poster = (p.movies && p.movies[0] && p.movies[0].poster) ? p.movies[0].poster : '/img/LOGO_Short.png';
                 const count = (p.movies || []).length;
                 return `
-                    <div class="playlist-item" onclick="window.location.href='customPlaylists.html'" style="display: flex; gap: 12px; padding: 12px; background: var(--bg-tertiary); border-radius: 8px; cursor: pointer; transition: all 0.3s ease; border: 1px solid var(--border-color);">
+                    <div class="playlist-item" onclick="window.location.href='customPlaylists.html'" style="display: flex; gap: 12px; padding: 12px; background: #090909; border-radius: 8px; cursor: pointer; transition: all 0.3s ease; border: 1px solid rgb(22 22 22);">
                         <img src="${poster}" onerror="this.src='/img/LOGO_Short.png'" style="width: 60px; height: 90px; border-radius: 6px; object-fit: cover;">
                         <div style="flex: 1; display: flex; flex-direction: column; justify-content: center;">
                             <h4 style="margin: 0 0 5px 0; font-size: 1rem; color: var(--text-primary);">${p.name}</h4>
@@ -602,7 +616,7 @@ async function loadRecentPosts(userUID, mode) {
                 ? (c.tmdbId ? `/html/movieInfo.html?id=${c.tmdbId}&type=anime` : '#')
                 : `/html/movieInfo.html?id=${encodeURIComponent(c.movie_id)}&type=movie`;
             return `
-                <div class="post-item" onclick="window.location.href='${href}'" style="padding: 12px; background: var(--bg-tertiary); border-radius: 8px; cursor: pointer; transition: all 0.3s ease; border: 1px solid var(--border-color);">
+                <div class="post-item" onclick="window.location.href='${href}'" style="padding: 12px; background: #090909; border-radius: 8px; cursor: pointer; transition: all 0.3s ease; border: 1px solid rgb(22 22 22);">
                     <div style="display: flex; align-items: start; gap: 10px;">
                         <span style="font-size: 1.2rem;"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:1em;height:1em;vertical-align:-0.15em;color:var(--accent-primary, #f96d00);"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.76c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 0 1 1.037-.443 48.282 48.282 0 0 0 5.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" /></svg></span>
                         <div style="flex: 1; min-width: 0;">
