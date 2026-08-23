@@ -22,6 +22,7 @@ const rateLimit = require('express-rate-limit');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const { Transform } = require('stream');
 const { Kwik } = require('@consumet/extensions/dist/extractors');
 const { getAnimeSkipTimestamps } = require('./AnimeSkipService');
 const puppeteerExtra = require('puppeteer-extra');
@@ -1945,6 +1946,7 @@ const PLAYBACK_LEASE_IDLE_MS = 10 * 60 * 1000;
 const PLAYBACK_LEASE_MAX_AGE_MS = PROXY_TOKEN_TTL_MS;
 const MAX_ACTIVE_LEASES_PER_SESSION = 2; // permits a normal server/quality switch
 const MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE = 6; // video + audio + small browser prefetch
+const MAX_MEDIA_BYTES_PER_LEASE = 8 * 1024 * 1024 * 1024; // 8 GiB: generous for normal HD viewing, finite for relays
 const playbackLeases = new Map(); // leaseId -> { sessionId, ipPrefix, uaHash, createdAt, lastSeenAt, inFlight }
 
 function createPlaybackLeaseId() {
@@ -1994,7 +1996,8 @@ function claimPlaybackLease(req, decoded, { isPlaybackRequest = true, countAsMed
             uaHash,
             createdAt: now,
             lastSeenAt: now,
-            inFlight: 0
+            inFlight: 0,
+            bytesSent: 0
         };
         playbackLeases.set(decoded.leaseId, lease);
     } else {
@@ -2026,6 +2029,49 @@ function claimPlaybackLease(req, decoded, { isPlaybackRequest = true, countAsMed
         lease.inFlight = Math.max(0, lease.inFlight - 1);
         lease.lastSeenAt = Date.now();
     };
+}
+
+function chargePlaybackBytes(leaseId, byteLength) {
+    if (!leaseId || !byteLength) return;
+    const lease = playbackLeases.get(leaseId);
+    // A pre-rollout token has no lease. Preserve the rollout grace rule used above.
+    if (!lease) return;
+    if (lease.bytesSent + byteLength > MAX_MEDIA_BYTES_PER_LEASE) {
+        const err = new Error('Playback lease egress limit reached');
+        err.leaseLimit = true;
+        throw err;
+    }
+    lease.bytesSent += byteLength;
+    lease.lastSeenAt = Date.now();
+}
+
+// Stream unknown-length upstream bodies through a tiny Transform rather than buffering them in
+// RAM. Known-length HLS segments take the direct pipe fast path; both paths account for bytes
+// against the anonymous playback lease.
+function pipeLeaseMedia(source, res, leaseId, contentLength) {
+    const knownBytes = Number(contentLength);
+    if (Number.isFinite(knownBytes) && knownBytes >= 0) {
+        chargePlaybackBytes(leaseId, knownBytes);
+        source.pipe(res);
+        return true;
+    }
+    const meter = new Transform({
+        transform(chunk, encoding, callback) {
+            try {
+                chargePlaybackBytes(leaseId, chunk.length);
+                callback(null, chunk);
+            } catch (err) {
+                callback(err);
+            }
+        }
+    });
+    meter.on('error', () => {
+        source.destroy();
+        if (!res.headersSent) res.status(429).send('Playback byte limit reached');
+        else res.destroy();
+    });
+    source.pipe(meter).pipe(res);
+    return true;
 }
 
 setInterval(() => {
@@ -2104,8 +2150,8 @@ function buildDownloadRedirectUrl(url, referer, sessionId) {
 // Cinemap's RU-MV downloads can be fetched by the backend, unlike the Cloudflare-protected
 // Neko hosts above. Stream them through our own origin so a browser never receives the raw
 // provider URL in a 302 Location header.
-function buildDownloadProxyUrl(url, referer, sessionId) {
-    return `/api/download-proxy?token=${encryptProxyTarget({ url, referer, sessionId })}`;
+function buildDownloadProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeaseId()) {
+    return `/api/download-proxy?token=${encryptProxyTarget({ url, referer, sessionId, leaseId })}`;
 }
 
 // /api/anime-neko-log's sub/sub2/dub/dub2 download links - same nekostream.site mirror
@@ -6679,14 +6725,28 @@ app.get('/api/download-redirect', (req, res) => {
 
 app.get('/api/download-proxy', async (req, res) => {
     if (!req.query.token) return res.status(400).send('Missing token');
-    let decodedUrl, decodedReferer;
+    let decodedUrl, decodedReferer, decodedLeaseId;
     try {
         const decoded = decryptProxyTarget(req.query.token);
         verifyProxySession(req, decoded);
         decodedUrl = decoded.url;
         decodedReferer = decoded.referer || 'https://cinemar.cc/';
+        decodedLeaseId = decoded.leaseId;
     } catch (err) {
         return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired download token');
+    }
+
+    let releaseLease = () => {};
+    try {
+        releaseLease = claimPlaybackLease(req, { leaseId: decodedLeaseId }, {
+            isPlaybackRequest: true,
+            countAsMediaRequest: true
+        });
+        res.once('finish', releaseLease);
+        res.once('close', releaseLease);
+    } catch (err) {
+        recordPlaybackLeaseViolation(req);
+        return res.status(429).send(err.leaseLimit ? 'Download request limit reached' : 'Download lease is no longer valid');
     }
 
     try {
@@ -6731,8 +6791,13 @@ app.get('/api/download-proxy', async (req, res) => {
         if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
         if (upstream.headers['content-range']) res.setHeader('Content-Range', upstream.headers['content-range']);
         if (upstream.headers['accept-ranges']) res.setHeader('Accept-Ranges', upstream.headers['accept-ranges']);
-        upstream.data.pipe(res);
+        pipeLeaseMedia(upstream.data, res, decodedLeaseId, upstream.headers['content-length']);
     } catch (err) {
+        releaseLease();
+        if (err.leaseLimit) {
+            recordPlaybackLeaseViolation(req);
+            return res.status(429).send('Download byte limit reached');
+        }
         console.error('[RU Download Proxy] Error:', err.message);
         if (!res.headersSent) return res.status(502).send('Download provider is unavailable');
         res.end();
@@ -6956,7 +7021,7 @@ app.get('/api/proxy-stream', async (req, res) => {
             if (response.headers['content-length']) res.set('Content-Length', response.headers['content-length']);
             if (response.headers['content-range']) res.set('Content-Range', response.headers['content-range']);
             if (response.headers['accept-ranges']) res.set('Accept-Ranges', response.headers['accept-ranges']);
-            response.data.pipe(res);
+            pipeLeaseMedia(response.data, res, decodedLeaseId, response.headers['content-length']);
         }
     } catch (err) {
         releaseLease();
@@ -10553,7 +10618,9 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         const response = await axios({
             method: 'GET',
             url: targetUrl,
-            responseType: isM3u8 ? 'text' : 'arraybuffer',
+            // Keep media segments streaming. Buffering an untrusted segment in an ArrayBuffer
+            // lets a relay turn a few requests into a memory spike; playlists remain small text.
+            responseType: isM3u8 ? 'text' : 'stream',
             headers: {
                 'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Referer': refererBase,
@@ -10592,13 +10659,25 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             return res.send(rewrittenM3u8);
         }
 
-        // Handle Video Chunks (.ts, .m4s)
+        // Handle Video Chunks (.ts, .m4s) without buffering them in the Node process.
         const contentType = (response.headers['content-type'] || '').toLowerCase();
+        try {
+            chargePlaybackBytes(decodedLeaseId, Number(response.headers['content-length']) || 0);
+        } catch (err) {
+            recordPlaybackLeaseViolation(req);
+            response.data?.destroy?.();
+            return res.status(429).send('Playback byte limit reached');
+        }
+        if (response.status === 206) res.status(206);
         res.setHeader('Content-Type', contentType || 'video/mp2t');
         if (response.headers['content-length']) {
             res.setHeader('Content-Length', response.headers['content-length']);
         }
-        return res.send(response.data);
+        if (response.headers['content-range']) res.setHeader('Content-Range', response.headers['content-range']);
+        if (response.headers['accept-ranges']) res.setHeader('Accept-Ranges', response.headers['accept-ranges']);
+        // Known-length bodies were charged above. Unknown-length streams use the metered path.
+        if (response.headers['content-length']) return response.data.pipe(res);
+        return pipeLeaseMedia(response.data, res, decodedLeaseId, null);
 
     } catch (err) {
         releaseLease();
