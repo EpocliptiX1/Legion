@@ -2994,8 +2994,72 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
+        // Small anchored menu letting the user pick a quality instead of always getting the
+        // best one - one instance reused for both RU movie and RU TV downloads. Built as a
+        // plain positioned <div> (no existing dropdown component on this page to reuse) styled
+        // with the same theme.js CSS variables apiDocs.css and the rest of the site rely on, so
+        // it matches dark/light theme automatically.
+        let activeQualityMenu = null;
+        function closeRuQualityMenu() {
+            if (activeQualityMenu) {
+                activeQualityMenu.remove();
+                activeQualityMenu = null;
+                document.removeEventListener('click', onRuQualityMenuOutsideClick, true);
+                document.removeEventListener('keydown', onRuQualityMenuEscape, true);
+            }
+        }
+        function onRuQualityMenuOutsideClick(e) {
+            if (activeQualityMenu && !activeQualityMenu.contains(e.target)) closeRuQualityMenu();
+        }
+        function onRuQualityMenuEscape(e) {
+            if (e.key === 'Escape') closeRuQualityMenu();
+        }
+        function showRuQualityMenu(anchorBtn, links) {
+            closeRuQualityMenu();
+            const menu = document.createElement('div');
+            menu.style.cssText = `
+                position: absolute; z-index: 10000; min-width: 160px;
+                background: var(--bg-card, #1c1c1c); border: 1px solid var(--border-color, #333);
+                border-radius: 8px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+                font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            `;
+            links.forEach(link => {
+                const item = document.createElement('button');
+                item.type = 'button';
+                const label = link.hint ? `${link.quality} · ${link.hint}` : (link.quality || 'Download');
+                item.textContent = label;
+                item.style.cssText = `
+                    display: block; width: 100%; text-align: left; background: none; border: none;
+                    color: var(--text-primary, #fff); font-size: 0.88rem; padding: 8px 10px;
+                    border-radius: 6px; cursor: pointer;
+                `;
+                item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg-hover, #2a2a2a)'; });
+                item.addEventListener('mouseleave', () => { item.style.background = 'none'; });
+                item.addEventListener('click', () => {
+                    window.open(link.url, '_blank', 'noopener,noreferrer');
+                    closeRuQualityMenu();
+                });
+                menu.appendChild(item);
+            });
+            document.body.appendChild(menu);
+            const rect = anchorBtn.getBoundingClientRect();
+            const top = rect.bottom + window.scrollY + 6;
+            let left = rect.left + window.scrollX;
+            const maxLeft = window.scrollX + document.documentElement.clientWidth - menu.offsetWidth - 8;
+            if (left > maxLeft) left = Math.max(8, maxLeft);
+            menu.style.top = `${top}px`;
+            menu.style.left = `${left}px`;
+            activeQualityMenu = menu;
+            // Deferred so the click that opened the menu doesn't immediately close it via the
+            // capturing listener below.
+            setTimeout(() => {
+                document.addEventListener('click', onRuQualityMenuOutsideClick, true);
+                document.addEventListener('keydown', onRuQualityMenuEscape, true);
+            }, 0);
+        }
+
         // Mirrors cinemar's own download button: resolves the same title, then asks
-        // cinemar.cc for a direct progressive-MP4 link per quality and opens the best one.
+        // cinemar.cc for direct progressive-MP4 links (one per quality) and lets the user pick.
         async function downloadRuMovie(btn) {
             if (isSeries) {
                 if (typeof window.showLimitToast === 'function') {
@@ -3019,8 +3083,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
 
-                // Links come back best-quality first (site's own ordering).
-                window.open(data.links[0].url, '_blank', 'noopener,noreferrer');
+                // Links come back best-quality first (site's own ordering) - menu keeps that order.
+                showRuQualityMenu(btn, data.links);
             } catch (err) {
                 console.error('[RU Movie Download] error:', err);
                 if (typeof window.showLimitToast === 'function') {
@@ -3121,7 +3185,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
 
-                window.open(data.links[0].url, '_blank', 'noopener,noreferrer');
+                showRuQualityMenu(btn, data.links);
             } catch (err) {
                 console.error('[RU TV Download] error:', err);
                 if (typeof window.showLimitToast === 'function') {

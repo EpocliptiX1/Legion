@@ -18154,11 +18154,9 @@ async function resolveAnimeSeasonCards(tmdbId) {
     // tmdb_season_count early-bust check) and, later, to record a fresh is_finished/season-count
     // alongside a newly-computed result. Same pattern as resolveAnimeSeasonGroups.
     let tmdbSeasonCount;
-    let tmdbName = null;
     try {
         const tmdbStatus = await fetchTmdbShowStatus(tmdbId);
         tmdbSeasonCount = tmdbStatus.numberOfSeasons;
-        tmdbName = tmdbStatus.name;
     } catch (err) {
         console.warn(`[anime-season-cards] TMDB status fetch failed for tmdb ${tmdbId}:`, err.message);
     }
@@ -18192,18 +18190,15 @@ async function resolveAnimeSeasonCards(tmdbId) {
         mappedMalId = mappedMalId || cacheRow?.mal_id || null;
     }
     if (!mappedMalId && !anilistId) {
-        // No mapping at all - negative cache, same tier a genuine "no match" gets in
-        // native_episode_counts (ANIKOTO_NEGATIVE_CACHE_TTL_MS via isNegative above). This branch
-        // is hit for every plain non-anime TV show too (renderSeasonCardsRow calls this endpoint
-        // unconditionally, not gated by an isAnime check - see its own comment in moviePlayer.js),
-        // so tmdbName is passed through here specifically so those rows read as "Cold (not
-        // anime)" in a DB browser instead of a bare tmdb_id sitting next to two NULLs that's
-        // indistinguishable from a real failed anime lookup.
-        try {
-            await animeSeasonCardsCacheSet(tmdbId, mappedMalId, [], 0, tmdbSeasonCount, tmdbName);
-        } catch (err) {
-            console.error('[anime-season-cards] disk cache write failed:', err.message);
-        }
+        // No mapping at all - this table is anime-only, and having neither a MAL nor an AniList
+        // id here means anime_tmdb_mapping/anime_cache (the app's own "is this anime" signal
+        // elsewhere) never recognized this tmdb_id as anime. renderSeasonCardsRow calls this
+        // endpoint unconditionally for every TV show, anime or not (see its own comment in
+        // moviePlayer.js), so deliberately do NOT write a row here - a plain TV show like Game
+        // of Thrones or Cold has no business occupying a row in an anime-specific cache table,
+        // even a negative one. The cost is repeating this cheap local mapping lookup on every
+        // non-anime TV page load instead of skipping it via cache; worth it to keep the table
+        // anime-only.
         return [];
     }
 
