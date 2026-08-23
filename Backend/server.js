@@ -6381,13 +6381,12 @@ let proxyDebugPrinted = false;
 // proxy). pahe.nekostream.site's own download links sit behind a Cloudflare challenge our
 // backend can't solve, so those hosts must ONLY ever be redirect targets, never something our
 // server fetches on the caller's behalf.
-// cinemar.cc: RU movie/TV download links (fetchCinemarDownloadLinks) - couldn't get a live
-// sample of the real download CDN host to confirm (cinemar's own downPage API was returning
-// "no links" for every title tried at the time this was written, an upstream issue unrelated to
-// this change), so this is the domain its OWN download API lives on rather than a confirmed CDN
-// host. If the real download host turns out to differ, this list needs the real host added -
-// the redirect will 403 safely in the meantime rather than silently trusting an unverified host.
-const ALLOWED_DOWNLOAD_REDIRECT_HOSTS = ['nekostream.site', 'cinemar.cc'];
+// cinemap.cc: RU movie/TV download links (fetchCinemarDownloadLinks) - confirmed live the real
+// per-quality download links come back on host.cinemap.cc, a DIFFERENT domain from cinemar.cc
+// (the embed/streaming host). cinemar.cc was the original guess here, made before the download
+// endpoint itself was known to be broken (see fetchCinemarDownloadLinks's own comment) and left
+// in place as a placeholder; corrected now that a real sample confirmed the actual host.
+const ALLOWED_DOWNLOAD_REDIRECT_HOSTS = ['nekostream.site', 'cinemap.cc'];
 
 app.get('/api/download-redirect', (req, res) => {
     if (!req.query.token) return res.status(400).send('Missing token');
@@ -15154,26 +15153,42 @@ async function fetchCinemarStream(embedUrl, moviePageUrl) {
 }
 
 // Mirrors the player's own download button: window.download() calls
-// download.open(playlist.getCurrentItem().dlink), which POSTs that dlink blob
-// to cinemar.cc's own downPage endpoint and gets back a plain array of direct,
-// per-quality progressive MP4 URLs -- no need to decode dlink ourselves.
-// KNOWN ISSUE (unresolved): even a dlink obtained fresh from playlist/load's own `download`
-// field (see resolveCinemarTrackStream) gets "Адрес устарел" ("link expired") back from this
-// endpoint immediately - confirmed live, not a caching artifact. Streaming itself (the actual
-// reported bug) is fully fixed and verified; this download-specific path needs further
-// reverse-engineering (possibly a different Referer, or an extra step before downPage accepts
-// the token) that wasn't chased down further since it's a separate, lower-priority feature.
+// download.open(playlist.getCurrentItem().download), which POSTs that raw download token
+// STRING (not wrapped in an object) to cinemar.cc's OWN /api/player/download endpoint (not
+// "downPage" - that endpoint name was never real, confirmed by pulling player.js itself and
+// finding the actual api.post("player/download", token, cb) call site). The "Адрес устарел"
+// (link expired) error the old code always got was simply POSTing to a URL that doesn't exist
+// on cinemar's server, with a payload shape it never expected either - not an expiry issue at
+// all, that generic-looking error is apparently what a 404-shaped request surfaces as here.
+//
+// The response isn't JSON data either - it's a one-element array containing a ready-to-render
+// HTML fragment (the same "download-window" panel div the real player injects directly into the
+// page), so this parses it with cheerio instead of reading object fields. Each quality's real
+// download host is host.cinemap.cc (confirmed live), NOT cinemar.cc itself - see
+// ALLOWED_DOWNLOAD_REDIRECT_HOSTS below, which needed the real host added.
 async function fetchCinemarDownloadLinks(dlink) {
-    const res = await axios.post('https://cinemar.cc/api/player/downPage',
-        { link: dlink, fhq: true },
+    const res = await axios.post('https://cinemar.cc/api/player/download',
+        JSON.stringify(dlink),
         { headers: { 'Content-Type': 'application/json', 'User-Agent': KINOGO_UA, 'Referer': 'https://cinemar.cc/' }, timeout: 15000 }
     );
-    if (!Array.isArray(res.data)) throw new Error('Cinemar downPage returned no links');
-    return res.data.map(item => ({
-        quality: item.title || '',
-        hint: item.hint || '',
-        url: item.href.startsWith('http') ? item.href : `https:${item.href}`
-    }));
+    const html = Array.isArray(res.data) ? res.data[0] : null;
+    if (!html) throw new Error('Cinemar player/download returned no panel HTML');
+    const $ = cheerio.load(html);
+    const links = [];
+    $('.download-content a').each((i, el) => {
+        const href = $(el).attr('href') || '';
+        if (!href) return;
+        // Quality label ("1080p") is the anchor's own direct text; the optional hint
+        // ("FullHD"/"HD") sits in a nested <span> - clone-and-strip so the quality text doesn't
+        // end up with the hint text concatenated onto it.
+        const $el = $(el).clone();
+        const hint = $el.find('span').text().trim();
+        $el.find('span').remove();
+        const quality = $el.text().trim();
+        links.push({ quality, hint, url: href.startsWith('http') ? href : `https:${href}` });
+    });
+    if (!links.length) throw new Error('Cinemar download panel had no links');
+    return links;
 }
 
 // Cache-aside resolve shared by playback and download -- both need the same
