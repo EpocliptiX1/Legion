@@ -3991,6 +3991,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 animeTitle = data.name || data.original_name || '';
                 isAnime = !!(data && (Array.isArray(data.genres) && data.genres.some(g => (g.name || '').toLowerCase() === 'animation')) && ((data.original_language || '').toLowerCase() === 'ja' || (Array.isArray(data.origin_country) && data.origin_country.includes('JP'))));
                 useAnimeSeasonUX = isAnime && animeLeverActive;
+                // Kino has no Russian-language content at all, so defaulting a Russian series to
+                // it just gets the user a dead/wrong-language stream every time - RU - MV is the
+                // only server that actually has this. TMDB's own origin_country is the signal,
+                // straight off the same /tv/{id} response already fetched above - no extra
+                // request, no caching needed (this only ever runs once per page load).
+                const isRussianSeries = !isAnime && Array.isArray(data.origin_country) && data.origin_country.includes('RU');
+                if (isRussianSeries) {
+                    currentServer = 'srvRuTv';
+                }
                 const animePosterThumb = data.poster_path ? `https://image.tmdb.org/t/p/w342${data.poster_path}` : '/img/LOGO_Short.png';
                 window.currentAnimePosterThumb = animePosterThumb;
                 const animeNotReleasedYet = !!(data.first_air_date && new Date(data.first_air_date) > new Date());
