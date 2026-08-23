@@ -104,12 +104,13 @@ const authLimiter = rateLimit({
 // Public embed player (/embed/*) - unlike everything else here, this is DELIBERATELY reachable
 // cross-origin (that's the entire point of an embeddable player) and carries no shared-secret
 // auth at all, so it needs its own protection instead of requireSameOrigin/apiLimiter. Budget:
-// one real embed view is a handful of requests (the player page itself + a provider resolve call
-// or two), so 40/5min per IP comfortably covers one viewer loading/reloading a player without
-// leaving real headroom for scraping or bulk automation.
+// An official partner can legitimately have a lot of viewers behind one NAT (or load a page with
+// many visible embeds), so this intentionally permits 100+ embed navigations. The backend adds
+// a session-aware resolver budget after the session cookie is available; that is much more useful
+// than treating every viewer sharing an IP as a scraper.
 const embedLimiter = rateLimit({
     windowMs: 5 * 60 * 1000,
-    max: 40,
+    max: 250,
     skip: skipLocalhost,
     standardHeaders: true,
     legacyHeaders: false,

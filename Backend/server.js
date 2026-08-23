@@ -1892,6 +1892,15 @@ const RESOLVE_GATED_PATHS = [
 ];
 app.use(RESOLVE_GATED_PATHS, requireResolveNonce);
 
+// Public embeds are deliberately keyless: a partner may iframe them without an account. They
+// still perform an expensive provider resolve, so put them through the same anonymous resolver
+// budget. This allows legitimate mass embedding while preventing one relay box from minting an
+// unlimited pile of fresh sessions/tokens.
+app.use('/embed', (req, res, next) => {
+    if (!spendResolveBudget(req, res)) return;
+    next();
+});
+
 // --- Proxy target encryption -------------------------------------------------------------
 // /api/m3u8-proxy and /api/proxy-stream used to take the real upstream CDN URL as a plain
 // ?url= query param - visible in cleartext in the browser's network tab, and (unlike the
