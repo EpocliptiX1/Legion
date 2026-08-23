@@ -1394,11 +1394,32 @@ document.addEventListener('DOMContentLoaded', function() {
         };
         applyAudioButtonState(currentAudioMode);
 
+        // Selects the LAST season already in the current dropdown - the fallback used whenever a
+        // season card can't be opened cleanly (see __handleSeasonCardClick below). TMDB doesn't
+        // split anime into seasons consistently with AniList/MAL (confirmed live: AOT's own
+        // "Season 3" card resolved to a tmdb id, 492999, that doesn't exist on TMDB at all - some
+        // franchises get one TMDB season per cour, others bundle several into one, with no
+        // reliable way to detect which from here), so "jump to the furthest real season we
+        // already know is playable" beats risking a broken or circular navigation.
+        const selectLastLocalSeason = () => {
+            const seasonSelectEl = document.getElementById('seasonSelect');
+            if (!seasonSelectEl) return false;
+            const numericOptions = Array.from(seasonSelectEl.options)
+                .map(o => ({ el: o, n: parseInt(o.value, 10) }))
+                .filter(o => Number.isFinite(o.n));
+            if (!numericOptions.length) return false;
+            const last = numericOptions.reduce((a, b) => (b.n > a.n ? b : a));
+            seasonSelectEl.value = last.el.value;
+            seasonSelectEl.dispatchEvent(new Event('change'));
+            document.getElementById('episodeListContainer')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            return true;
+        };
+
         // Season-cards row click: if this season's tmdbId is the show we're already on (TMDB
         // very often bundles every AniList season under one tv entry - see the isCurrent
         // ambiguity comment above), just point the existing Season dropdown at it instead of
         // reloading the whole page for a season that's already sitting right here.
-        window.__handleSeasonCardClick = (seasonNumber, cardTmdbId) => {
+        window.__handleSeasonCardClick = async (seasonNumber, cardTmdbId) => {
             const seasonSelectEl = document.getElementById('seasonSelect');
             const sameShow = String(cardTmdbId) === String(tmdbId) && seasonSelectEl &&
                 Array.from(seasonSelectEl.options).some(o => o.value === String(seasonNumber));
@@ -1408,7 +1429,25 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('episodeListContainer')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                 return;
             }
-            if (cardTmdbId) window.location.href = `movieInfo.html?id=${cardTmdbId}&type=tv`;
+            // Same tmdbId as the current page but no matching dropdown option (e.g. a card whose
+            // AniList/MAL "season" TMDB folded into a show we're already on, past what the
+            // dropdown itself splits out) - navigating here would just reload this exact URL.
+            if (String(cardTmdbId) === String(tmdbId)) { selectLastLocalSeason(); return; }
+            // A genuinely different tmdbId - worth a quick existence check before committing to a
+            // full navigation, since getTmdbIdForAniList's own resolution isn't always a real id.
+            if (cardTmdbId) {
+                try {
+                    const res = await fetch(`/api/tmdb-proxy/tv/${encodeURIComponent(cardTmdbId)}`);
+                    const data = await res.json().catch(() => null);
+                    if (res.ok && data && data.success !== false && data.id) {
+                        window.location.href = `movieInfo.html?id=${cardTmdbId}&type=tv`;
+                        return;
+                    }
+                } catch (err) {
+                    // Network hiccup - fall through to the local fallback below rather than risk a dead navigation.
+                }
+            }
+            selectLastLocalSeason();
         };
 
         window.__handleEpisodeItemClick = (item) => {
