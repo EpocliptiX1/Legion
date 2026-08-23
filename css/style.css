@@ -32,8 +32,9 @@
     width: 1.3em;
     height: 1.3em;
     vertical-align: middle;
-    fill: #f96d00;
-    transition: fill 0.18s;
+    fill: none;
+    stroke: #f96d00;
+    transition: stroke 0.18s;
 }
 .mal-import-toast {
     position: fixed;
