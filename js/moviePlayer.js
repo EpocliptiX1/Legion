@@ -1394,22 +1394,28 @@ document.addEventListener('DOMContentLoaded', function() {
         };
         applyAudioButtonState(currentAudioMode);
 
-        // Selects the LAST season already in the current dropdown - the fallback used whenever a
-        // season card can't be opened cleanly (see __handleSeasonCardClick below). TMDB doesn't
-        // split anime into seasons consistently with AniList/MAL (confirmed live: AOT's own
-        // "Season 3" card resolved to a tmdb id, 492999, that doesn't exist on TMDB at all - some
-        // franchises get one TMDB season per cour, others bundle several into one, with no
-        // reliable way to detect which from here), so "jump to the furthest real season we
-        // already know is playable" beats risking a broken or circular navigation.
-        const selectLastLocalSeason = () => {
+        // Selects the closest season already in the current dropdown to seasonNumber - the
+        // fallback used whenever a season card can't be opened cleanly (see
+        // __handleSeasonCardClick below). TMDB doesn't split anime into seasons consistently with
+        // AniList/MAL (confirmed live: AOT's own "Season 3" card resolved to a tmdb id, 492999,
+        // that doesn't exist on TMDB at all - some franchises get one TMDB season per cour, others
+        // bundle several into one, with no reliable way to detect which from here), so this picks
+        // an exact numeric match first, then the nearest option BELOW seasonNumber (a card past
+        // the dropdown's own range means TMDB folded it into whatever the last real season
+        // covers, not that season 1 is suddenly the closest fit), then finally the lowest option
+        // if seasonNumber undershoots everything available.
+        const selectClosestLocalSeason = (seasonNumber) => {
             const seasonSelectEl = document.getElementById('seasonSelect');
             if (!seasonSelectEl) return false;
             const numericOptions = Array.from(seasonSelectEl.options)
                 .map(o => ({ el: o, n: parseInt(o.value, 10) }))
                 .filter(o => Number.isFinite(o.n));
             if (!numericOptions.length) return false;
-            const last = numericOptions.reduce((a, b) => (b.n > a.n ? b : a));
-            seasonSelectEl.value = last.el.value;
+            const exact = numericOptions.find(o => o.n === seasonNumber);
+            const below = numericOptions.filter(o => o.n <= seasonNumber);
+            const best = exact
+                || (below.length ? below.reduce((a, b) => (b.n > a.n ? b : a)) : numericOptions.reduce((a, b) => (b.n < a.n ? b : a)));
+            seasonSelectEl.value = best.el.value;
             seasonSelectEl.dispatchEvent(new Event('change'));
             document.getElementById('episodeListContainer')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             return true;
@@ -1429,10 +1435,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('episodeListContainer')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                 return;
             }
-            // Same tmdbId as the current page but no matching dropdown option (e.g. a card whose
-            // AniList/MAL "season" TMDB folded into a show we're already on, past what the
+            // Same tmdbId as the current page but no EXACT matching dropdown option (e.g. a card
+            // whose AniList/MAL "season" TMDB folded into a show we're already on, past what the
             // dropdown itself splits out) - navigating here would just reload this exact URL.
-            if (String(cardTmdbId) === String(tmdbId)) { selectLastLocalSeason(); return; }
+            if (String(cardTmdbId) === String(tmdbId)) { selectClosestLocalSeason(seasonNumber); return; }
             // A genuinely different tmdbId - worth a quick existence check before committing to a
             // full navigation, since getTmdbIdForAniList's own resolution isn't always a real id.
             if (cardTmdbId) {
@@ -1447,7 +1453,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Network hiccup - fall through to the local fallback below rather than risk a dead navigation.
                 }
             }
-            selectLastLocalSeason();
+            selectClosestLocalSeason(seasonNumber);
         };
 
         window.__handleEpisodeItemClick = (item) => {
