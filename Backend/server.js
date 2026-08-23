@@ -199,6 +199,40 @@ function tmdbDetailCacheSet(cacheKey, data) {
     );
 }
 
+// A person's own TV filmography barely ever changes - a new show credit appearing is a rare,
+// slow event compared to how often movieInfo.html's Director/Actor rows re-request it (every
+// single page load, no caching at all before this - confirmed live loading movieInfo.html for
+// Attack on Titan: /person/{id}/tv_credits hit TMDB live every time). 180 days, same long tier
+// this session's other "barely ever changes" caches (finished anime season structure, etc) use.
+const TMDB_PERSON_CREDITS_CACHE_TTL = 180 * 24 * 60 * 60 * 1000;
+
+function tmdbPersonCreditsCacheGet(cacheKey) {
+    return new Promise((resolve) => {
+        animeCacheDb.get(
+            `SELECT json, cached_at FROM tmdb_person_credits_cache WHERE cache_key = ?`,
+            [cacheKey],
+            (err, row) => {
+                if (err || !row) return resolve(null);
+                if (Date.now() - row.cached_at > TMDB_PERSON_CREDITS_CACHE_TTL) return resolve(null);
+                try {
+                    resolve(JSON.parse(row.json));
+                } catch {
+                    resolve(null);
+                }
+            }
+        );
+    });
+}
+
+function tmdbPersonCreditsCacheSet(cacheKey, data) {
+    animeCacheDb.run(
+        `INSERT INTO tmdb_person_credits_cache (cache_key, json, cached_at) VALUES (?, ?, ?)
+         ON CONFLICT(cache_key) DO UPDATE SET json = excluded.json, cached_at = excluded.cached_at`,
+        [cacheKey, JSON.stringify(data), Date.now()],
+        (err) => { if (err) console.warn('[TMDB Person Credits Cache] write failed:', err.message); }
+    );
+}
+
 // --- TMDB Proxy (keeps the API key out of the browser) ---
 // Frontend calls /api/tmdb-proxy/tv/123?language=en-US
 // → this route adds the key and forwards to https://api.themoviedb.org/3/tv/123
@@ -220,6 +254,23 @@ app.use('/api/tmdb-proxy', async (req, res) => {
                 headers: { Accept: 'application/json' },
             });
             tmdbDiscoverCacheSet(cacheKey, tmdbRes.data);
+            return res.json(tmdbRes.data);
+        }
+
+        // /person/{id}/tv_credits - powers movieInfo.html's Director/Cast rows. A person's own
+        // filmography barely ever changes, hence the long 180-day TTL (see
+        // TMDB_PERSON_CREDITS_CACHE_TTL) rather than the few-hours tiers above.
+        const personCreditsMatch = tmdbPath.match(/^\/person\/(\d+)\/tv_credits$/);
+        if (personCreditsMatch) {
+            const cacheKey = `${tmdbPath}?${new URLSearchParams(req.query).toString()}`;
+            const cached = await tmdbPersonCreditsCacheGet(cacheKey);
+            if (cached) return res.json(cached);
+
+            const tmdbRes = await axios.get(`${TMDB_BASE_URL}${tmdbPath}`, {
+                params: query,
+                headers: { Accept: 'application/json' },
+            });
+            tmdbPersonCreditsCacheSet(cacheKey, tmdbRes.data);
             return res.json(tmdbRes.data);
         }
 
@@ -1171,6 +1222,17 @@ animeCacheDb.serialize(() => {
     // badge on the visible grid calls this per show. See tmdbDetailCacheGet/Set below.
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS tmdb_detail_cache (
+            cache_key   TEXT PRIMARY KEY,
+            json        TEXT NOT NULL,
+            cached_at   INTEGER NOT NULL
+        )
+    `);
+    // /person/{id}/tv_credits - powers movieInfo.html's "More from the Director" and "More from
+    // the Cast" rows, neither of which matched any of the special cases above, so this hit TMDB
+    // live on every single page load with zero caching (confirmed live on Attack on Titan).
+    // See tmdbPersonCreditsCacheGet/Set below and their 180-day TTL.
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS tmdb_person_credits_cache (
             cache_key   TEXT PRIMARY KEY,
             json        TEXT NOT NULL,
             cached_at   INTEGER NOT NULL
