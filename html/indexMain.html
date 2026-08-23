@@ -346,37 +346,24 @@
 
         </div>
 
-        <!-- ── WATCH STATUS ROWS (Watching / Watched / Want to Watch / Abandoned) ──
+        <!-- ── WATCH STATUS (Watching / Watched / Want to Watch / Abandoned) ──
              Backed by /activity/watch-buckets (activity.db watch_history + user_list),
-             classified client-side in loadWatchStatusRows (mainPageControls.js). Same
-             card markup/CSS as indexBrowse's Continue Watching row - reused wholesale,
-             no new CSS needed. -->
-        <section class="row continue-watching-section" id="watchingSection" style="display:none;">
+             classified client-side in loadWatchStatusRows (mainPageControls.js). One
+             tab-switched row, same tab pattern (.schedule-day-tab/.sch-active) and card
+             markup/CSS (.continue-watching-list/-card) already used by This Week's
+             Schedule and indexBrowse's Continue Watching row - reused wholesale, no new
+             CSS needed. -->
+        <section class="row continue-watching-section" id="watchStatusSection" style="display:none;">
             <div class="row-header">
-                <h2 class="row-title browse-personal-label">Watching</h2>
+                <h2 class="row-title browse-personal-label">My Watch Status</h2>
             </div>
-            <div class="continue-watching-list" id="watchingList"></div>
-        </section>
-
-        <section class="row continue-watching-section" id="watchedSection" style="display:none;">
-            <div class="row-header">
-                <h2 class="row-title browse-personal-label">Watched</h2>
+            <div class="schedule-day-tabs" id="watchStatusTabs">
+                <button class="schedule-day-tab" data-watch-status="watching">Watching</button>
+                <button class="schedule-day-tab" data-watch-status="watched">Watched</button>
+                <button class="schedule-day-tab" data-watch-status="wantToWatch">Want to Watch</button>
+                <button class="schedule-day-tab" data-watch-status="abandoned">Abandoned</button>
             </div>
-            <div class="continue-watching-list" id="watchedList"></div>
-        </section>
-
-        <section class="row continue-watching-section" id="wantToWatchSection" style="display:none;">
-            <div class="row-header">
-                <h2 class="row-title browse-personal-label">Want to Watch</h2>
-            </div>
-            <div class="continue-watching-list" id="wantToWatchList"></div>
-        </section>
-
-        <section class="row continue-watching-section" id="abandonedSection" style="display:none;">
-            <div class="row-header">
-                <h2 class="row-title browse-personal-label">Abandoned</h2>
-            </div>
-            <div class="continue-watching-list" id="abandonedList"></div>
+            <div class="continue-watching-list" id="watchStatusList"></div>
         </section>
 
         <!-- ── HOME WIDGETS ──────────────────────────────────────── -->

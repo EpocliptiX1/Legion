@@ -1885,6 +1885,21 @@ function parseContinueSeconds(raw) {
     return 0;
 }
 
+// A title with zero real episodes/runtime out yet trivially satisfies "watched everything
+// that exists" (0 watched >= 0 - 1, or 0/0 minutes) without the user having watched anything
+// real - confirmed live with "Devil's Crest" (an unreleased/barely-aired show) landing in
+// Watched purely because totalEps was 0. Checking TMDB's own release signal directly (status
+// plus air/release date, not just episode count) closes that regardless of what number the
+// episode-count math happens to produce for an unreleased title.
+function isTmdbReleased(tmdb, type) {
+    const statusRaw = String(tmdb.status || '').toLowerCase();
+    if (statusRaw.includes('planned') || statusRaw.includes('in production') || statusRaw.includes('post production')) return false;
+    const dateStr = type === 'tv' ? tmdb.first_air_date : tmdb.release_date;
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
+    return !Number.isNaN(d.getTime()) && d <= new Date();
+}
+
 async function classifyActiveEntry(entry) {
     const id = encodeURIComponent(entry.id);
     const endpoint = entry.type === 'tv' ? `/api/tmdb-proxy/tv/${id}` : `/api/tmdb-proxy/movie/${id}`;
@@ -1894,16 +1909,18 @@ async function classifyActiveEntry(entry) {
         const tmdb = await res.json();
 
         let watched = false;
-        if (entry.type === 'tv') {
-            const totalEps = Number(tmdb.number_of_episodes);
-            if (Number.isFinite(totalEps) && totalEps > 0) {
-                watched = entry.finishedCount >= totalEps - 1 || isOnFinalEpisode(entry.continueFrom, tmdb.seasons);
-            }
-        } else {
-            const runtimeSec = Number(tmdb.runtime) * 60;
-            const positionSec = parseContinueSeconds(entry.timeStampContinue);
-            if (Number.isFinite(runtimeSec) && runtimeSec > 0 && positionSec > 0) {
-                watched = (positionSec / runtimeSec) >= WATCH_STATUS_MOVIE_WATCHED_RATIO;
+        if (isTmdbReleased(tmdb, entry.type)) {
+            if (entry.type === 'tv') {
+                const totalEps = Number(tmdb.number_of_episodes);
+                if (Number.isFinite(totalEps) && totalEps > 0) {
+                    watched = entry.finishedCount >= totalEps - 1 || isOnFinalEpisode(entry.continueFrom, tmdb.seasons);
+                }
+            } else {
+                const runtimeSec = Number(tmdb.runtime) * 60;
+                const positionSec = parseContinueSeconds(entry.timeStampContinue);
+                if (Number.isFinite(runtimeSec) && runtimeSec > 0 && positionSec > 0) {
+                    watched = (positionSec / runtimeSec) >= WATCH_STATUS_MOVIE_WATCHED_RATIO;
+                }
             }
         }
 
@@ -1926,17 +1943,33 @@ async function enrichWithTmdb(entry) {
     }
 }
 
-function renderWatchStatusSection(sectionId, listId, cards) {
-    const section = document.getElementById(sectionId);
-    const list = document.getElementById(listId);
-    if (!section || !list) return;
-    if (!cards.length) { section.style.display = 'none'; list.innerHTML = ''; return; }
-    list.innerHTML = cards.join('');
-    section.style.display = 'block';
+const WATCH_STATUS_EMPTY_TEXT = {
+    watching: 'Nothing in progress right now.',
+    watched: "You haven't finished anything yet.",
+    wantToWatch: 'Your list is empty.',
+    abandoned: "Nothing abandoned - that's a good thing."
+};
+
+// Populated once per page load by loadWatchStatusRows, read by the tab click handler so
+// switching tabs is an instant re-render instead of a re-fetch.
+let watchStatusCardsByMode = null;
+
+function renderWatchStatusMode(mode) {
+    const list = document.getElementById('watchStatusList');
+    if (!list || !watchStatusCardsByMode) return;
+    const cards = watchStatusCardsByMode[mode] || [];
+    list.innerHTML = cards.length
+        ? cards.join('')
+        : `<p style="color:#666;font-size:.85rem;padding:12px 4px;">${WATCH_STATUS_EMPTY_TEXT[mode] || ''}</p>`;
+    document.querySelectorAll('#watchStatusTabs .schedule-day-tab').forEach(tab => {
+        tab.classList.toggle('sch-active', tab.dataset.watchStatus === mode);
+    });
 }
+window.__loadWatchStatusMode = renderWatchStatusMode;
 
 async function loadWatchStatusRows() {
-    if (!document.getElementById('watchingSection')) return; // indexMain.html only
+    const section = document.getElementById('watchStatusSection');
+    if (!section) return; // indexMain.html only
 
     const userUID = window.recommendationsSystem?.getActivityUID ? window.recommendationsSystem.getActivityUID() : localStorage.getItem('userUID');
     if (!userUID) return;
@@ -1952,26 +1985,34 @@ async function loadWatchStatusRows() {
             Promise.allSettled((buckets.wantToWatch || []).map(enrichWithTmdb))
         ]);
 
-        const watchingCards = [];
-        const watchedCards = [];
+        const watching = [];
+        const watched = [];
         activeSettled.forEach(r => {
             if (r.status !== 'fulfilled' || !r.value) return;
             const card = buildContinueWatchingCard({ movie_id: r.value.entry.id, type: r.value.entry.type }, r.value.tmdb);
-            (r.value.status === 'watched' ? watchedCards : watchingCards).push(card);
+            (r.value.status === 'watched' ? watched : watching).push(card);
         });
 
-        const abandonedCards = abandonedSettled
+        const abandoned = abandonedSettled
             .filter(r => r.status === 'fulfilled' && r.value)
             .map(r => buildContinueWatchingCard({ movie_id: r.value.entry.id, type: r.value.entry.type }, r.value.tmdb));
 
-        const wantToWatchCards = wantSettled
+        const wantToWatch = wantSettled
             .filter(r => r.status === 'fulfilled' && r.value)
             .map(r => buildContinueWatchingCard({ movie_id: r.value.entry.id, type: r.value.entry.type }, r.value.tmdb));
 
-        renderWatchStatusSection('watchingSection', 'watchingList', watchingCards);
-        renderWatchStatusSection('watchedSection', 'watchedList', watchedCards);
-        renderWatchStatusSection('wantToWatchSection', 'wantToWatchList', wantToWatchCards);
-        renderWatchStatusSection('abandonedSection', 'abandonedList', abandonedCards);
+        watchStatusCardsByMode = { watching, watched, wantToWatch, abandoned };
+
+        if (!watching.length && !watched.length && !wantToWatch.length && !abandoned.length) {
+            section.style.display = 'none';
+            return;
+        }
+
+        // Land on the first tab that actually has something in it, so the user isn't greeted
+        // by an empty list when e.g. they have items abandoned but nothing currently watching.
+        const defaultMode = ['watching', 'watched', 'wantToWatch', 'abandoned'].find(m => watchStatusCardsByMode[m].length) || 'watching';
+        renderWatchStatusMode(defaultMode);
+        section.style.display = 'block';
     } catch (err) {
         console.warn('[WatchStatus] failed to load:', err.message);
     }
@@ -1979,6 +2020,10 @@ async function loadWatchStatusRows() {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadWatchStatusRows();
+    document.getElementById('watchStatusTabs')?.addEventListener('click', (e) => {
+        const tab = e.target.closest('.schedule-day-tab');
+        if (tab && tab.dataset.watchStatus) renderWatchStatusMode(tab.dataset.watchStatus);
+    });
 });
 
 // Sets the blurred poster backdrop on browse personal rows
