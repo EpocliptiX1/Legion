@@ -1918,6 +1918,12 @@ function buildStreamProxyUrl(url, referer, ua, sessionId) {
 function buildDownloadRedirectUrl(url, referer, sessionId) {
     return `/api/download-redirect?token=${encryptProxyTarget({ url, referer, sessionId })}`;
 }
+// Cinemap's RU-MV downloads can be fetched by the backend, unlike the Cloudflare-protected
+// Neko hosts above. Stream them through our own origin so a browser never receives the raw
+// provider URL in a 302 Location header.
+function buildDownloadProxyUrl(url, referer, sessionId) {
+    return `/api/download-proxy?token=${encryptProxyTarget({ url, referer, sessionId })}`;
+}
 
 // /api/anime-neko-log's sub/sub2/dub/dub2 download links - same nekostream.site mirror
 // /api/anime-download-links already wraps via buildDownloadRedirectUrl (pahe.nekostream.site
@@ -6459,17 +6465,13 @@ const ALLOWED_PROXY_HOSTS = [
 ];
 let proxyDebugPrinted = false;
 
-// Separate, narrower allowlist for /api/download-redirect - deliberately NOT merged into
-// ALLOWED_PROXY_HOSTS above, since that list also gates /api/proxy-stream (a real byte-fetching
-// proxy). pahe.nekostream.site's own download links sit behind a Cloudflare challenge our
-// backend can't solve, so those hosts must ONLY ever be redirect targets, never something our
-// server fetches on the caller's behalf.
-// cinemap.cc: RU movie/TV download links (fetchCinemarDownloadLinks) - confirmed live the real
-// per-quality download links come back on host.cinemap.cc, a DIFFERENT domain from cinemar.cc
-// (the embed/streaming host). cinemar.cc was the original guess here, made before the download
-// endpoint itself was known to be broken (see fetchCinemarDownloadLinks's own comment) and left
-// in place as a placeholder; corrected now that a real sample confirmed the actual host.
-const ALLOWED_DOWNLOAD_REDIRECT_HOSTS = ['nekostream.site', 'cinemap.cc'];
+// Separate, narrower allowlists for downloads - deliberately NOT merged into
+// ALLOWED_PROXY_HOSTS above, since that list also gates /api/proxy-stream. Neko's download
+// hosts are Cloudflare-protected and therefore must remain browser redirects. Cinemap's RU-MV
+// files are fetched server-side through /api/download-proxy so their raw provider URLs never
+// reach the browser.
+const ALLOWED_DOWNLOAD_REDIRECT_HOSTS = ['nekostream.site'];
+const ALLOWED_DOWNLOAD_PROXY_HOSTS = ['cinemap.cc'];
 
 app.get('/api/download-redirect', (req, res) => {
     if (!req.query.token) return res.status(400).send('Missing token');
@@ -6490,6 +6492,68 @@ app.get('/api/download-redirect', (req, res) => {
         return res.status(400).send('Invalid URL');
     }
     res.redirect(302, decodedUrl);
+});
+
+app.get('/api/download-proxy', async (req, res) => {
+    if (!req.query.token) return res.status(400).send('Missing token');
+    let decodedUrl, decodedReferer;
+    try {
+        const decoded = decryptProxyTarget(req.query.token);
+        verifyProxySession(req, decoded);
+        decodedUrl = decoded.url;
+        decodedReferer = decoded.referer || 'https://cinemar.cc/';
+    } catch (err) {
+        return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired download token');
+    }
+
+    try {
+        const host = new URL(decodedUrl).hostname;
+        if (!ALLOWED_DOWNLOAD_PROXY_HOSTS.some(h => host === h || host.endsWith('.' + h))) {
+            return res.status(403).send('Domain not allowed');
+        }
+
+        // Cinemap currently redirects its download host once to another *.cinemap.cc host.
+        // Follow only redirects that stay inside this allowlist; neither the intermediate nor
+        // final Location header is ever forwarded to the browser.
+        const upstream = await axios({
+            url: decodedUrl,
+            method: 'get',
+            responseType: 'stream',
+            maxRedirects: 3,
+            beforeRedirect: (options) => {
+                const redirectHost = String(options.hostname || '').toLowerCase();
+                if (!ALLOWED_DOWNLOAD_PROXY_HOSTS.some(h => redirectHost === h || redirectHost.endsWith('.' + h))) {
+                    throw new Error('Download provider redirected outside the allowed domain');
+                }
+            },
+            validateStatus: () => true,
+            headers: {
+                'User-Agent': KINOGO_UA,
+                'Referer': decodedReferer,
+                'Accept': '*/*',
+                ...(req.headers.range ? { Range: req.headers.range } : {})
+            },
+            timeout: 30000
+        });
+
+        if (upstream.status < 200 || upstream.status >= 300) {
+            upstream.data?.resume?.();
+            return res.status(502).send('Download provider is unavailable');
+        }
+
+        res.status(upstream.status === 206 ? 206 : 200);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Content-Disposition', 'attachment; filename="anikino-ru-download"');
+        if (upstream.headers['content-type']) res.setHeader('Content-Type', upstream.headers['content-type']);
+        if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
+        if (upstream.headers['content-range']) res.setHeader('Content-Range', upstream.headers['content-range']);
+        if (upstream.headers['accept-ranges']) res.setHeader('Accept-Ranges', upstream.headers['accept-ranges']);
+        upstream.data.pipe(res);
+    } catch (err) {
+        console.error('[RU Download Proxy] Error:', err.message);
+        if (!res.headersSent) return res.status(502).send('Download provider is unavailable');
+        res.end();
+    }
 });
 
 app.get('/api/proxy-stream', async (req, res) => {
@@ -6971,15 +7035,14 @@ function anyItemIsActive(items) {
     return (items || []).some(item => item?.status === 'RELEASING' || item?.status === 'NOT_YET_RELEASED');
 }
 
-function episodeLoadCacheGet(tmdbId, season, episode, audioType, provider) {
+function episodeLoadCacheGet(tmdbId, season, episode, audioType, provider, maxAgeMs = 24 * 60 * 60 * 1000) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
-        const maxAge = 24 * 60 * 60 * 1000; // 24 hours
         animeCacheDb.get(
             `SELECT * FROM episode_load_cache
              WHERE tmdb_id = ? AND season = ? AND episode = ? AND audio_type = ? AND provider = ?
              AND (? - cached_at) < ?`,
-            [tmdbId, season, episode, audioType, provider, now, maxAge],
+            [tmdbId, season, episode, audioType, provider, now, maxAgeMs],
             (err, row) => {
                 if (err) return reject(err);
                 if (row) {
@@ -15278,7 +15341,9 @@ async function fetchCinemarDownloadLinks(dlink) {
 // kinogo/cinemar scrape, so a request to one warms the cache for the other.
 async function resolveMovieRuData(rawTitle, tmdbId) {
     if (tmdbId) {
-        const cached = await episodeLoadCacheGet(tmdbId, 1, 1, 'ru', 'kinogo');
+        const cached = await episodeLoadCacheGet(
+            tmdbId, 1, 1, 'ru', 'kinogo', CINEMAP_MEDIA_CACHE_TTL_MS
+        );
         // Entries cached before the download feature existed only have
         // translationTitle, no dlink -- treat those as a miss and re-scrape
         // rather than serving a permanently-broken download for up to 24h.
@@ -15331,11 +15396,11 @@ app.get('/api/movie-ru-download', async (req, res) => {
         const { dlink, translationTitle } = await resolveMovieRuData(rawTitle, tmdbId);
         if (!dlink) throw new Error('No download link available for this movie');
         const links = await fetchCinemarDownloadLinks(dlink);
-        // Tokenized redirect, not the raw cinemar.cc URL - was returning real direct download
-        // links straight in the JSON response, no auth needed to harvest them.
+        // Server-side download proxy: unlike Neko's Cloudflare-protected hosts, Cinemap can be
+        // fetched here, so never hand the browser an external redirect it can inspect.
         const tokenizedLinks = links.map(l => ({
             ...l,
-            url: buildDownloadRedirectUrl(l.url, 'https://cinemar.cc/', req.sessionId)
+            url: buildDownloadProxyUrl(l.url, 'https://cinemar.cc/', req.sessionId)
         }));
         return res.json({ ok: true, translationTitle, links: tokenizedLinks });
     } catch (err) {
@@ -15357,6 +15422,10 @@ app.get('/api/movie-ru-download', async (req, res) => {
 const kinogoTreeCache = new Map(); // key -> { result, resolvedAt }
 const kinogoTreeInFlight = new Map();
 const KINOGO_TREE_CACHE_TTL_MS = 30 * 60 * 1000;
+// Cinemap stream and download tokens are short-lived signed URLs. Keeping their media rows
+// for the generic 24h episode cache TTL leaves the player with an upstream 410 long after the
+// provider URL has expired. Match Kino's 3h cache window (its stream JWT lasts about 4h).
+const CINEMAP_MEDIA_CACHE_TTL_MS = 3 * 60 * 60 * 1000;
 
 async function fetchCinemarSeriesTree(embedUrl, pageUrl) {
     const embedRes = await axios.get(embedUrl, {
@@ -15407,7 +15476,9 @@ async function getKinogoEpisodeTrack(tree, season, episode, embedUrl) {
 
 async function resolveTvRuData(rawTitle, tmdbId, season, episode) {
     if (tmdbId) {
-        const cached = await episodeLoadCacheGet(tmdbId, season, episode, 'ru', 'kinogotv');
+        const cached = await episodeLoadCacheGet(
+            tmdbId, season, episode, 'ru', 'kinogotv', CINEMAP_MEDIA_CACHE_TTL_MS
+        );
         if (cached && cached.sources && cached.sources[0] && cached.subtitles?.dlink) {
             const meta = cached.subtitles;
             return { streamUrl: cached.sources[0], translationTitle: meta.translationTitle || 'RU', dlink: meta.dlink };
@@ -15468,11 +15539,11 @@ app.get('/api/tv-ru-download', async (req, res) => {
         const { dlink, translationTitle } = await resolveTvRuData(rawTitle, tmdbId, season, episode);
         if (!dlink) throw new Error('No download link available for this episode');
         const links = await fetchCinemarDownloadLinks(dlink);
-        // Tokenized redirect, not the raw cinemar.cc URL - see the matching comment on
-        // /api/movie-ru-download above.
+        // See /api/movie-ru-download: stream Cinemap bytes through our origin instead of
+        // exposing an external redirect URL to the browser.
         const tokenizedLinks = links.map(l => ({
             ...l,
-            url: buildDownloadRedirectUrl(l.url, 'https://cinemar.cc/', req.sessionId)
+            url: buildDownloadProxyUrl(l.url, 'https://cinemar.cc/', req.sessionId)
         }));
         return res.json({ ok: true, translationTitle, links: tokenizedLinks });
     } catch (err) {
