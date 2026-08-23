@@ -1854,8 +1854,110 @@ const PROXY_TOKEN_KEY = loadOrCreateProxyTokenKey();
 // while cutting that exposure window 3x.
 const PROXY_TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
 
-function encryptProxyTarget({ url, referer = null, ua = null, sessionId = null }) {
-    const payload = JSON.stringify({ u: url, r: referer, a: ua, s: sessionId, e: Date.now() + PROXY_TOKEN_TTL_MS });
+// --- Playback leases ---------------------------------------------------------------------
+// Proxy tokens hide the upstream URL and are bound to the anonymous HttpOnly session, but a
+// scraper that owns that session can still reuse its own tokens.  A lease adds short-lived,
+// server-side state: on its first proxy request it becomes bound to one session, network prefix
+// and browser signature.  This is deliberately anonymous (no account or personal data) and is
+// only kept in memory while playback is active.
+const PLAYBACK_LEASE_IDLE_MS = 10 * 60 * 1000;
+const PLAYBACK_LEASE_MAX_AGE_MS = PROXY_TOKEN_TTL_MS;
+const MAX_ACTIVE_LEASES_PER_SESSION = 2; // permits a normal server/quality switch
+const MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE = 6; // video + audio + small browser prefetch
+const playbackLeases = new Map(); // leaseId -> { sessionId, ipPrefix, uaHash, createdAt, lastSeenAt, inFlight }
+
+function createPlaybackLeaseId() {
+    return crypto.randomBytes(18).toString('base64url');
+}
+
+function playbackIpPrefix(req) {
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const ip = forwarded || req.socket?.remoteAddress || '';
+    const v4 = ip.match(/^(?:.*:)?(\d+)\.(\d+)\.(\d+)\.\d+$/);
+    if (v4) return `v4:${v4[1]}.${v4[2]}.${v4[3]}`;
+    // Keep a stable but privacy-preserving IPv6 /56-ish prefix. The middleware is the only
+    // caller allowed to supply X-Forwarded-For, so this is not client-controlled at the backend.
+    return `v6:${ip.toLowerCase().split(':').slice(0, 4).join(':')}`;
+}
+
+function playbackUaHash(req) {
+    return crypto.createHash('sha256').update(String(req.headers['user-agent'] || '')).digest('hex');
+}
+
+function claimPlaybackLease(req, decoded, { isPlaybackRequest = true, countAsMediaRequest = false } = {}) {
+    // Tokens minted before this rollout have no lease id. Let their already-issued two-hour
+    // lifetime finish normally rather than breaking an in-progress viewer on deployment.
+    if (!decoded.leaseId) return () => {};
+
+    // Captions are an auxiliary resource, not a playback stream. Do not let a subtitle track
+    // reserve one of the viewer's two playback slots or block a subsequent quality switch.
+    if (!isPlaybackRequest) return () => {};
+
+    const now = Date.now();
+    const ipPrefix = playbackIpPrefix(req);
+    const uaHash = playbackUaHash(req);
+    let lease = playbackLeases.get(decoded.leaseId);
+
+    if (!lease) {
+        const activeForSession = [...playbackLeases.entries()].filter(([, item]) =>
+            item.sessionId === req.sessionId && now - item.lastSeenAt < PLAYBACK_LEASE_IDLE_MS
+        );
+        if (activeForSession.length >= MAX_ACTIVE_LEASES_PER_SESSION) {
+            const err = new Error('Too many active playback streams for this session');
+            err.leaseLimit = true;
+            throw err;
+        }
+        lease = {
+            sessionId: req.sessionId,
+            ipPrefix,
+            uaHash,
+            createdAt: now,
+            lastSeenAt: now,
+            inFlight: 0
+        };
+        playbackLeases.set(decoded.leaseId, lease);
+    } else {
+        if (lease.sessionId !== req.sessionId || lease.ipPrefix !== ipPrefix || lease.uaHash !== uaHash) {
+            const err = new Error('Playback lease does not belong to this browser context');
+            err.leaseMismatch = true;
+            throw err;
+        }
+        if (now - lease.createdAt > PLAYBACK_LEASE_MAX_AGE_MS || now - lease.lastSeenAt > PLAYBACK_LEASE_IDLE_MS) {
+            playbackLeases.delete(decoded.leaseId);
+            const err = new Error('Playback lease expired');
+            err.leaseExpired = true;
+            throw err;
+        }
+        lease.lastSeenAt = now;
+    }
+
+    if (!countAsMediaRequest) return () => {};
+    if (lease.inFlight >= MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE) {
+        const err = new Error('Too many concurrent media requests for this playback lease');
+        err.leaseLimit = true;
+        throw err;
+    }
+    lease.inFlight++;
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        lease.inFlight = Math.max(0, lease.inFlight - 1);
+        lease.lastSeenAt = Date.now();
+    };
+}
+
+setInterval(() => {
+    const now = Date.now();
+    for (const [leaseId, lease] of playbackLeases) {
+        if (now - lease.lastSeenAt > PLAYBACK_LEASE_IDLE_MS || now - lease.createdAt > PLAYBACK_LEASE_MAX_AGE_MS) {
+            playbackLeases.delete(leaseId);
+        }
+    }
+}, 60 * 1000).unref();
+
+function encryptProxyTarget({ url, referer = null, ua = null, sessionId = null, leaseId = null }) {
+    const payload = JSON.stringify({ u: url, r: referer, a: ua, s: sessionId, l: leaseId, e: Date.now() + PROXY_TOKEN_TTL_MS });
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', PROXY_TOKEN_KEY, iv);
     const encrypted = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
@@ -1883,7 +1985,7 @@ function decryptProxyTarget(token) {
     if (!payload.u || !payload.e || payload.e < Date.now()) {
         throw new Error('Proxy token expired or invalid');
     }
-    return { url: payload.u, referer: payload.r || null, ua: payload.a || null, sessionId: payload.s || null };
+    return { url: payload.u, referer: payload.r || null, ua: payload.a || null, sessionId: payload.s || null, leaseId: payload.l || null };
 }
 
 // Verifies the decrypted token's embedded session id against the CALLER's own session cookie
@@ -1902,11 +2004,11 @@ function verifyProxySession(req, decoded) {
 // manifest-rewriter inside /api/m3u8-proxy itself, subtitle URLs, etc.) shares one code path
 // instead of each hand-rolling its own ?url= string. sessionId is required (not optional) -
 // every caller has a req.sessionId available from the session-cookie middleware above.
-function buildM3u8ProxyUrl(url, referer, sessionId) {
-    return `/api/m3u8-proxy?token=${encryptProxyTarget({ url, referer, sessionId })}`;
+function buildM3u8ProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeaseId()) {
+    return `/api/m3u8-proxy?token=${encryptProxyTarget({ url, referer, sessionId, leaseId })}`;
 }
-function buildStreamProxyUrl(url, referer, ua, sessionId) {
-    return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua, sessionId })}`;
+function buildStreamProxyUrl(url, referer, ua, sessionId, leaseId = createPlaybackLeaseId()) {
+    return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua, sessionId, leaseId })}`;
 }
 // Redirect variant, not a proxy: some download hosts (pahe/nekostream) sit behind a Cloudflare
 // challenge that a real browser clears on its own but our backend can't solve server-side, so
@@ -6561,13 +6663,14 @@ app.get('/api/proxy-stream', async (req, res) => {
     // emitter was already migrated to buildStreamProxyUrl() before this, and pre-launch is the
     // right time to close this rather than carry a permanently-unauthenticated fallback path.
     if (!req.query.token) return res.status(400).send('Missing token');
-    let decodedUrl, decodedReferer, decodedUserAgent;
+    let decodedUrl, decodedReferer, decodedUserAgent, decodedLeaseId;
     try {
         const decoded = decryptProxyTarget(req.query.token);
         verifyProxySession(req, decoded);
         decodedUrl = decoded.url;
         decodedReferer = decoded.referer || 'https://kwik.si/';
         decodedUserAgent = decoded.ua || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+        decodedLeaseId = decoded.leaseId;
     } catch (err) {
         return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token');
     }
@@ -6600,6 +6703,19 @@ app.get('/api/proxy-stream', async (req, res) => {
         }
     const isM3u8 = decodedUrl.includes('.m3u8');
     const isSubtitleFile = /\.(vtt|srt)(\?|$)/i.test(decodedUrl);
+    let releaseLease = () => {};
+    try {
+        releaseLease = claimPlaybackLease(req, { leaseId: decodedLeaseId }, {
+            isPlaybackRequest: !isSubtitleFile,
+            countAsMediaRequest: !isM3u8 && !isSubtitleFile
+        });
+        if (!isM3u8 && !isSubtitleFile) {
+            res.once('finish', releaseLease);
+            res.once('close', releaseLease);
+        }
+    } catch (err) {
+        return res.status(429).send(err.leaseLimit ? 'Playback request limit reached' : 'Playback lease is no longer valid');
+    }
     try {
 
         // console.log({
@@ -6715,12 +6831,12 @@ app.get('/api/proxy-stream', async (req, res) => {
                 if (!trimmed) return line;
 
                 const absUrl = new URL(trimmed, baseUrl).toString();
-                return buildStreamProxyUrl(absUrl, decodedReferer, decodedUserAgent, req.sessionId);
+                return buildStreamProxyUrl(absUrl, decodedReferer, decodedUserAgent, req.sessionId, decodedLeaseId);
             });
             content = content.replace(/URI="([^"]+)"/g, (match, uri) => {
                 if (/^data:/i.test(uri)) return match;
                 const absUrl = new URL(uri, baseUrl).toString();
-                const proxied = buildStreamProxyUrl(absUrl, decodedReferer, decodedUserAgent, req.sessionId);
+                const proxied = buildStreamProxyUrl(absUrl, decodedReferer, decodedUserAgent, req.sessionId, decodedLeaseId);
                 return `URI="${proxied}"`;
             });
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
@@ -6761,6 +6877,7 @@ app.get('/api/proxy-stream', async (req, res) => {
             response.data.pipe(res);
         }
     } catch (err) {
+        releaseLease();
         console.error('[ProxyStream]', err.message);
         res.status(500).send('Proxy error');
     }
@@ -10313,16 +10430,32 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     // already migrated to buildM3u8ProxyUrl() before this, and pre-launch is the right time to
     // close this rather than carry a permanently-unauthenticated fallback path.
     if (!req.query.token) return res.status(400).send('Missing token');
-    let targetUrl, refererOverride;
+    let targetUrl, refererOverride, decodedLeaseId;
     try {
         const decoded = decryptProxyTarget(req.query.token);
         verifyProxySession(req, decoded);
         targetUrl = decoded.url;
         refererOverride = decoded.referer || undefined;
+        decodedLeaseId = decoded.leaseId;
     } catch (err) {
         return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token');
     }
     if (!targetUrl) return res.status(400).send('URL required');
+
+    const isMediaDataRequest = !targetUrl.includes('.m3u8') && !/\.(vtt|srt)(\?|$)/i.test(targetUrl);
+    let releaseLease = () => {};
+    try {
+        releaseLease = claimPlaybackLease(req, { leaseId: decodedLeaseId }, {
+            isPlaybackRequest: !/\.(vtt|srt)(\?|$)/i.test(targetUrl),
+            countAsMediaRequest: isMediaDataRequest
+        });
+        if (isMediaDataRequest) {
+            res.once('finish', releaseLease);
+            res.once('close', releaseLease);
+        }
+    } catch (err) {
+        return res.status(429).send(err.leaseLimit ? 'Playback request limit reached' : 'Playback lease is no longer valid');
+    }
 
     // Most sources proxied here (KAA/Neko) are served off vidtube.site regardless of the
     // actual CDN host, so that's the safe default Referer/Origin. Sources on their own
@@ -10358,7 +10491,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             // paths (e.g. vidsrcme's "/pl/<hash>/index.m3u8") resolve correctly instead
             // of getting naively concatenated onto the directory prefix.
             const resolveUri = (uri) => new URL(uri, targetUrl).href;
-            const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null, req.sessionId);
+            const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null, req.sessionId, decodedLeaseId);
 
             const rewrittenM3u8 = response.data.split('\n').map(line => {
                 const trimmed = line.trim();
@@ -10385,6 +10518,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         return res.send(response.data);
 
     } catch (err) {
+        releaseLease();
         console.error('[Proxy Error]', err.message, '| URL:', targetUrl);
         return res.status(500).send('Proxy failed');
     }
