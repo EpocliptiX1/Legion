@@ -1759,6 +1759,67 @@ app.use((req, res, next) => {
     next();
 });
 
+// --- Resolve nonce (anti-scripted-clone gate on the internal resolve routes) -------------
+// Session-binding + encrypted tokens (below) already stop a captured stream link from being
+// shared or replayed - they were never meant to stop a *first-party* script from getting a
+// working link for itself, since sessions are free and anonymous (no login) and
+// requireSameOrigin (middleware.js) is explicitly just a spoofable header check. Proven live:
+// three plain curl requests (get a session cookie, resolve, fetch) is enough to pull a real
+// stream with zero browser involvement.
+//
+// This doesn't close that gap (nothing short of real DRM fully does on a no-login site) but
+// raises the bar to match what MegaPlay/Neko/KAA's own protections forced on US: a script now
+// has to fetch this nonce first, from a real page load context, before any resolve call works -
+// same shape of extra hop their WASM decrypt/Cloudflare-challenge/JWT-window forced us through,
+// not full DRM, just "can't be a single copy-pasted curl command anymore."
+//
+// Bound to sessionId (can't mint a nonce for someone else's session without SESSION_SECRET,
+// same signing primitive as the session cookie itself) and expires after RESOLVE_NONCE_TTL_MS -
+// long enough to cover one real viewing sitting (binge session, several server retries) without
+// needing to re-mint per episode, short enough that a leaked nonce doesn't stay useful for long.
+const RESOLVE_NONCE_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
+function signResolveNonce(sessionId, issuedAt) {
+    return crypto.createHmac('sha256', SESSION_SECRET).update(`resolve:${sessionId}:${issuedAt}`).digest('hex');
+}
+app.get('/api/resolve-nonce', (req, res) => {
+    const issuedAt = Date.now();
+    const sig = signResolveNonce(req.sessionId, issuedAt);
+    res.json({ nonce: `${issuedAt}.${sig}` });
+});
+function requireResolveNonce(req, res, next) {
+    const raw = String(req.headers['x-resolve-nonce'] || '');
+    const dot = raw.lastIndexOf('.');
+    if (dot === -1) return res.status(403).json({ error: 'Missing resolve nonce' });
+    const issuedAtStr = raw.slice(0, dot);
+    const sigCandidate = raw.slice(dot + 1);
+    const issuedAt = Number(issuedAtStr);
+    if (!Number.isFinite(issuedAt) || !/^[a-f0-9]{64}$/.test(sigCandidate)) {
+        return res.status(403).json({ error: 'Malformed resolve nonce' });
+    }
+    if (Date.now() - issuedAt > RESOLVE_NONCE_TTL_MS || issuedAt > Date.now() + 60000) {
+        return res.status(403).json({ error: 'Resolve nonce expired' });
+    }
+    const expectedSig = signResolveNonce(req.sessionId, issuedAt);
+    const valid = sigCandidate.length === expectedSig.length && crypto.timingSafeEqual(
+        Buffer.from(sigCandidate, 'hex'),
+        Buffer.from(expectedSig, 'hex')
+    );
+    if (!valid) return res.status(403).json({ error: 'Invalid resolve nonce' });
+    next();
+}
+// Applied to the internal routes that actually resolve a real playable source/download link -
+// the ones moviePlayer.js's own JS calls while a real viewer watches something, never meant to
+// be a public API (that's /embed/*, which has its own separate embedLimiter and stays untouched
+// by any of this). Metadata-only routes (anime-mal-id, anime-season-cards, tmdb-proxy, etc.)
+// aren't gated - nothing sensitive to protect there, and gating them would just add friction
+// with no security benefit.
+const RESOLVE_GATED_PATHS = [
+    '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
+    '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
+    '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download'
+];
+app.use(RESOLVE_GATED_PATHS, requireResolveNonce);
+
 // --- Proxy target encryption -------------------------------------------------------------
 // /api/m3u8-proxy and /api/proxy-stream used to take the real upstream CDN URL as a plain
 // ?url= query param - visible in cleartext in the browser's network tab, and (unlike the

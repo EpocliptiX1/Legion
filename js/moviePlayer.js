@@ -1,4 +1,44 @@
 
+// Attaches the resolve-nonce (see server.js's requireResolveNonce) to every call this page
+// makes into the internal stream-resolving routes, without having to touch each of the many
+// fetch() call sites below individually. Wraps window.fetch once, at file-load time (before
+// DOMContentLoaded, so it's active before anything else in this file can call one of these
+// routes), and only augments requests whose URL matches the gated path list - everything else
+// (tmdb-proxy, anime-mal-id, etc.) passes through completely untouched.
+(function () {
+    const RESOLVE_GATED_PATHS = [
+        '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
+        '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
+        '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download'
+    ];
+    let noncePromise = null;
+    function ensureResolveNonce() {
+        if (!noncePromise) {
+            noncePromise = fetch('/api/resolve-nonce')
+                .then(r => r.json())
+                .then(d => d.nonce)
+                .catch(err => { noncePromise = null; throw err; }); // let the next call retry instead of caching a failure forever
+        }
+        return noncePromise;
+    }
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async function (input, init) {
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        if (RESOLVE_GATED_PATHS.some(p => url.startsWith(p))) {
+            try {
+                const nonce = await ensureResolveNonce();
+                init = init ? { ...init } : {};
+                init.headers = { ...(init.headers || {}), 'X-Resolve-Nonce': nonce };
+            } catch (err) {
+                // Nonce fetch failed - let the real request through as-is and let the server's
+                // own 403 (missing nonce) surface the real error, rather than blocking playback
+                // entirely on a transient failure to mint one.
+            }
+        }
+        return originalFetch(input, init);
+    };
+})();
+
 document.addEventListener('DOMContentLoaded', function() {
     function escapeHtml(text) {
         if (!text) return '';

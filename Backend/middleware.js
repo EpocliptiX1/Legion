@@ -116,6 +116,30 @@ const embedLimiter = rateLimit({
     message: { error: 'Too many embed requests. Please slow down.' }
 });
 
+// Internal resolve routes (anime-kaa-servers, anime-megaplay-log, anime-neko-log,
+// movie/tv-kino-log, movie/tv-ru-log, anime-download-links, movie/tv-ru-download) - these are
+// NOT the public API (that's /embed/*, embedLimiter above, untouched by this), they only exist
+// for movieInfo.html's own JS to call while a real person watches something. apiLimiter's
+// 100k/15min is generous enough that scripted bulk-resolving an entire catalog barely notices
+// it. A real viewer, even binge-watching 20+ episodes with a couple of server retries each,
+// lands nowhere near 300 resolve calls in 15 minutes - a scraper trying to mirror a catalog
+// hits this wall fast. Paired with the resolve-nonce gate on the same route list server-side
+// (server.js) - the nonce raises the bar per-request, this caps how much even a working script
+// can pull before getting throttled.
+const RESOLVE_GATED_PATHS = [
+    '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
+    '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
+    '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download'
+];
+const resolveLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 300,
+    skip: skipLocalhost,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many resolve requests. Please slow down.' }
+});
+
 // ── Static files ──────────────────────────────────────────────────────────────
 // Serve ONLY the actual frontend asset directories - never the project root itself.
 // Pentest (2026-08-17) found the previous `express.static(path.join(__dirname, '..'))`
@@ -189,7 +213,11 @@ function requireSameOrigin(req, res, next) {
 }
 
 // Apply limits before proxying to backend.
-app.use(['/api/megacloud', '/api/anime-embed', '/api/anime-allanime', '/api/anime-animetsu', '/api/anime-kite-servers', '/api/yt-search', '/api/jikan', '/api/anime-mal-id'], heavyApiLimiter);
+// megacloud/anime-allanime/anime-animetsu/anime-kite-servers routes themselves were removed
+// (dead debug/scraper endpoints leaking raw source URLs, see server.js 48138b1f/dff6a451) -
+// left off this list now that there's nothing left at those paths to rate-limit.
+app.use(['/api/anime-embed', '/api/yt-search', '/api/jikan', '/api/anime-mal-id'], heavyApiLimiter);
+app.use(RESOLVE_GATED_PATHS, resolveLimiter);
 app.use(['/users/register', '/users/auth', '/users/change-password'], authLimiter);
 app.use('/embed', embedLimiter);
 
