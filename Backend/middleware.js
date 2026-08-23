@@ -17,6 +17,10 @@
  *   BACKEND_HOST      — hostname of the real backend         (default: localhost)
  *   BACKEND_PORT      — port of the real backend             (default: 4000)
  *   MIDDLEWARE_SECRET — shared secret sent to backend        (default: '')
+ *   TRUST_PROXY_HOPS  — set ONLY if a real reverse proxy (nginx/Cloudflare/a load balancer)
+ *                       sits in front of this file and overwrites client-supplied
+ *                       X-Forwarded-For with its own - never on an install where this file is
+ *                       the actual internet-facing edge   (default: off, no proxy trusted)
  */
 
 const express = require('express');
@@ -41,13 +45,32 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || `https://localhost:${MID
 
 const app = express();
 
-// Respect forwarded client IP when deployed behind another proxy.
-app.set('trust proxy', 1);
+// trust proxy defaults OFF, not on - this file IS the internet-facing entrypoint (see the
+// architecture comment at the top: Browser -> [middleware] -> [backend]), with no other reverse
+// proxy in front unless one is deliberately deployed. `trust proxy: 1` unconditionally trusted a
+// CLIENT-SUPPLIED X-Forwarded-For header as the real client IP with nothing else validating it -
+// confirmed live that a plain request with header `X-Forwarded-For: 127.0.0.1` made req.ip
+// resolve to exactly that. Since req.ip feeds skipLocalhost (which gates every rate limiter AND
+// requireSameOrigin) and the x-forwarded-for value relayed to the backend below (which the
+// backend's own rate limiting keys off), that one header let anyone on the internet impersonate
+// localhost and both bypass same-origin enforcement AND dodge rate limiting by rotating a fake
+// IP per request. Only set TRUST_PROXY_HOPS when this is genuinely deployed behind a real reverse
+// proxy (nginx/Cloudflare/a load balancer) that overwrites client-supplied X-Forwarded-For with
+// its own - never on an install where this file is the actual edge.
+const TRUST_PROXY_HOPS = process.env.TRUST_PROXY_HOPS ? parseInt(process.env.TRUST_PROXY_HOPS, 10) : false;
+app.set('trust proxy', TRUST_PROXY_HOPS);
 
 // Edge rate limiting (this is the internet-facing entrypoint).
 // Skip all rate limiting for local/loopback requests (dev convenience).
+//
+// Uses req.socket.remoteAddress ONLY, never req.ip - `trust proxy: 1` above makes req.ip trust a
+// client-supplied X-Forwarded-For header as-is (confirmed live: a plain request with header
+// `X-Forwarded-For: 127.0.0.1` made req.ip resolve to exactly that, with no real proxy involved
+// at all). Since skipLocalhost gates every rate limiter here AND requireSameOrigin below, that
+// meant anyone on the internet could bypass both entirely with one spoofed header - the actual
+// TCP socket peer is what genuinely can't be spoofed, so that's the only thing this check trusts.
 function skipLocalhost(req) {
-    const ip = req.ip || req.socket?.remoteAddress || '';
+    const ip = req.socket?.remoteAddress || '';
     return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 }
 
