@@ -16818,7 +16818,8 @@ async function fetchTmdbShowStatus(tmdbId) {
     const res = await axios.get(`${TMDB_BASE_URL}/tv/${tmdbId}`, { params: { api_key: TMDB_API_KEY } });
     const numberOfSeasons = Number.isFinite(res.data?.number_of_seasons) ? res.data.number_of_seasons : undefined;
     const isFinished = res.data?.status === 'Ended' || res.data?.status === 'Canceled';
-    return { numberOfSeasons, isFinished };
+    const name = res.data?.name || null;
+    return { numberOfSeasons, isFinished, name };
 }
 
 // TMDB often doesn't split a multi-cour anime into separate seasons at all — it just
@@ -18153,9 +18154,11 @@ async function resolveAnimeSeasonCards(tmdbId) {
     // tmdb_season_count early-bust check) and, later, to record a fresh is_finished/season-count
     // alongside a newly-computed result. Same pattern as resolveAnimeSeasonGroups.
     let tmdbSeasonCount;
+    let tmdbName = null;
     try {
         const tmdbStatus = await fetchTmdbShowStatus(tmdbId);
         tmdbSeasonCount = tmdbStatus.numberOfSeasons;
+        tmdbName = tmdbStatus.name;
     } catch (err) {
         console.warn(`[anime-season-cards] TMDB status fetch failed for tmdb ${tmdbId}:`, err.message);
     }
@@ -18190,9 +18193,14 @@ async function resolveAnimeSeasonCards(tmdbId) {
     }
     if (!mappedMalId && !anilistId) {
         // No mapping at all - negative cache, same tier a genuine "no match" gets in
-        // native_episode_counts (ANIKOTO_NEGATIVE_CACHE_TTL_MS via isNegative above).
+        // native_episode_counts (ANIKOTO_NEGATIVE_CACHE_TTL_MS via isNegative above). This branch
+        // is hit for every plain non-anime TV show too (renderSeasonCardsRow calls this endpoint
+        // unconditionally, not gated by an isAnime check - see its own comment in moviePlayer.js),
+        // so tmdbName is passed through here specifically so those rows read as "Cold (not
+        // anime)" in a DB browser instead of a bare tmdb_id sitting next to two NULLs that's
+        // indistinguishable from a real failed anime lookup.
         try {
-            await animeSeasonCardsCacheSet(tmdbId, mappedMalId, [], 0, tmdbSeasonCount);
+            await animeSeasonCardsCacheSet(tmdbId, mappedMalId, [], 0, tmdbSeasonCount, tmdbName);
         } catch (err) {
             console.error('[anime-season-cards] disk cache write failed:', err.message);
         }
