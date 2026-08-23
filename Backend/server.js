@@ -1778,10 +1778,81 @@ app.use((req, res, next) => {
 // long enough to cover one real viewing sitting (binge session, several server retries) without
 // needing to re-mint per episode, short enough that a leaked nonce doesn't stay useful for long.
 const RESOLVE_NONCE_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
+
+// --- Anonymous resolver budgets ----------------------------------------------------------
+// A nonce proves that a request is tied to a browser session, not that the browser is being
+// used honestly. These small in-memory budgets make a session farm expensive without requiring
+// accounts or collecting personal information. The network key is a one-way hash of an IP
+// prefix, retained only for the short limiter window.
+const RESOLVE_BUDGET_WINDOW_MS = 15 * 60 * 1000;
+const MAX_RESOLVES_PER_SESSION = 90;
+const MAX_RESOLVES_PER_NETWORK = 240;
+const MAX_NONCES_PER_SESSION = 12;
+const MAX_NONCES_PER_NETWORK = 36;
+const LEASE_ABUSE_COOLDOWN_MS = 15 * 60 * 1000;
+const resolveSessionBudgets = new Map();
+const resolveNetworkBudgets = new Map();
+
+function resolverNetworkKey(req) {
+    return crypto.createHash('sha256').update(playbackIpPrefix(req)).digest('base64url');
+}
+
+function getResolveBudget(store, key, now) {
+    let budget = store.get(key);
+    if (!budget || now - budget.windowStartedAt >= RESOLVE_BUDGET_WINDOW_MS) {
+        budget = { windowStartedAt: now, resolves: 0, nonces: 0, violations: 0, cooldownUntil: 0 };
+        store.set(key, budget);
+    }
+    return budget;
+}
+
+function retryAfterSeconds(budget, now) {
+    return Math.max(1, Math.ceil((Math.max(budget.cooldownUntil || 0, budget.windowStartedAt + RESOLVE_BUDGET_WINDOW_MS) - now) / 1000));
+}
+
+function spendResolveBudget(req, res, { nonce = false } = {}) {
+    const now = Date.now();
+    const sessionBudget = getResolveBudget(resolveSessionBudgets, req.sessionId, now);
+    const networkBudget = getResolveBudget(resolveNetworkBudgets, resolverNetworkKey(req), now);
+    const field = nonce ? 'nonces' : 'resolves';
+    const sessionMaximum = nonce ? MAX_NONCES_PER_SESSION : MAX_RESOLVES_PER_SESSION;
+    const networkMaximum = nonce ? MAX_NONCES_PER_NETWORK : MAX_RESOLVES_PER_NETWORK;
+    const denied = sessionBudget.cooldownUntil > now || networkBudget.cooldownUntil > now ||
+        sessionBudget[field] >= sessionMaximum || networkBudget[field] >= networkMaximum;
+    if (denied) {
+        const retry = Math.max(retryAfterSeconds(sessionBudget, now), retryAfterSeconds(networkBudget, now));
+        res.set('Retry-After', String(retry));
+        res.status(429).json({ error: 'Playback resolver limit reached. Please wait before trying again.' });
+        return false;
+    }
+    sessionBudget[field]++;
+    networkBudget[field]++;
+    return true;
+}
+
+function recordPlaybackLeaseViolation(req) {
+    const now = Date.now();
+    const budget = getResolveBudget(resolveNetworkBudgets, resolverNetworkKey(req), now);
+    budget.violations++;
+    // Repeated lease-context failures are a strong signal of replay/automation, unlike one
+    // ordinary failed video request. Only then pause fresh resolutions from that network.
+    if (budget.violations >= 3) budget.cooldownUntil = Math.max(budget.cooldownUntil, now + LEASE_ABUSE_COOLDOWN_MS);
+}
+
+setInterval(() => {
+    const now = Date.now();
+    for (const store of [resolveSessionBudgets, resolveNetworkBudgets]) {
+        for (const [key, budget] of store) {
+            if (now - budget.windowStartedAt >= RESOLVE_BUDGET_WINDOW_MS && budget.cooldownUntil <= now) store.delete(key);
+        }
+    }
+}, 60 * 1000).unref();
+
 function signResolveNonce(sessionId, issuedAt) {
     return crypto.createHmac('sha256', SESSION_SECRET).update(`resolve:${sessionId}:${issuedAt}`).digest('hex');
 }
 app.get('/api/resolve-nonce', (req, res) => {
+    if (!spendResolveBudget(req, res, { nonce: true })) return;
     const issuedAt = Date.now();
     const sig = signResolveNonce(req.sessionId, issuedAt);
     res.json({ nonce: `${issuedAt}.${sig}` });
@@ -1805,6 +1876,7 @@ function requireResolveNonce(req, res, next) {
         Buffer.from(expectedSig, 'hex')
     );
     if (!valid) return res.status(403).json({ error: 'Invalid resolve nonce' });
+    if (!spendResolveBudget(req, res)) return;
     next();
 }
 // Applied to the internal routes that actually resolve a real playable source/download link -
@@ -6714,6 +6786,7 @@ app.get('/api/proxy-stream', async (req, res) => {
             res.once('close', releaseLease);
         }
     } catch (err) {
+        recordPlaybackLeaseViolation(req);
         return res.status(429).send(err.leaseLimit ? 'Playback request limit reached' : 'Playback lease is no longer valid');
     }
     try {
@@ -10454,6 +10527,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             res.once('close', releaseLease);
         }
     } catch (err) {
+        recordPlaybackLeaseViolation(req);
         return res.status(429).send(err.leaseLimit ? 'Playback request limit reached' : 'Playback lease is no longer valid');
     }
 
