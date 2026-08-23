@@ -6010,7 +6010,7 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
     font-weight: 800;
     margin: 0 0 10px 0;
     line-height: 1.1;
-    white-space: nowrap;
+    /* white-space: nowrap; */
     overflow: hidden;
     text-overflow: ellipsis;
 }
@@ -9970,7 +9970,9 @@ body.personal-list-page .grid-card {
 }
 
 @media (max-width: 770px) {
-    
+    .movie-title{
+        font-size: 2.6rem;
+    }
     .hero-main-poster{
             transform: scale(0.7);
     }
@@ -10620,7 +10622,9 @@ body.personal-list-page .grid-card {
 /* Season-cards row (movieInfo.html player) - blurred-cover blocks with a dot-matrix overlay */
 .season-cards-row { width:100%; margin-top:18px; }
 .season-cards-title { color:#ff8000; font-size:1.05rem; font-weight:700; margin:0 0 10px 0; }
-.season-cards-list { display:flex; flex-wrap:wrap; justify-content:space-between; overflow-x:auto; padding-bottom:6px; }
+/* overflow:visible, not auto - cards wrap now (32% width, 3/row) so horizontal scroll was never
+   needed, and auto meant the hover lift/scale on a card could nudge this into scrollbar territory. */
+.season-cards-list { display:flex; flex-wrap:wrap; justify-content:space-between; overflow:visible; padding-bottom:6px; }
 .season-card {
     position:relative; flex:0 0 auto; width:32%; height:92px;
     border-radius:14px; overflow:hidden; cursor:pointer; background:#111;
