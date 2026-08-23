@@ -2770,6 +2770,13 @@ document.addEventListener('DOMContentLoaded', function() {
             if (infoDiv) infoDiv.textContent = 'RU - MV: Loading stream...';
 
             try {
+                stopKaaContinueWatching();
+
+                if (!watchHistoryCache && typeof window.getActivityUID === 'function') {
+                    const activityUID = window.getActivityUID();
+                    await fetchWatchHistory(activityUID, tmdbId).then(setWatchHistoryCache);
+                }
+
                 const title = document.getElementById('title')?.textContent.trim() || '';
                 const query = new URLSearchParams({
                     tmdbId: tmdbId || '',
@@ -2797,6 +2804,24 @@ document.addEventListener('DOMContentLoaded', function() {
                         audio: 'ru'
                     }
                 );
+
+                if (ok) {
+                    const episodeKey = 'movie';
+                    const videoEl = document.getElementById('moviePlayerVideo');
+                    if (videoEl) {
+                        const resumeSeconds = getWatchHistoryResumeSeconds(episodeKey);
+                        if (Number.isFinite(resumeSeconds) && resumeSeconds > 5) {
+                            showKaaResumeOverlay(episodeKey, resumeSeconds, () => applyResumeToVideo(videoEl, resumeSeconds), () => {});
+                        }
+                        const activityUID = typeof window.getActivityUID === 'function' ? window.getActivityUID() : null;
+                        startKaaContinueWatching(videoEl, {
+                            episodeKey,
+                            userUID: activityUID,
+                            movieId: tmdbId,
+                            itemType: 'movie'
+                        });
+                    }
+                }
 
                 if (infoDiv) {
                     infoDiv.textContent = ok
@@ -3112,6 +3137,13 @@ document.addEventListener('DOMContentLoaded', function() {
             if (infoDiv) infoDiv.textContent = 'RU - MV: Loading stream...';
 
             try {
+                stopKaaContinueWatching();
+
+                if (!watchHistoryCache && typeof window.getActivityUID === 'function') {
+                    const activityUID = window.getActivityUID();
+                    await fetchWatchHistory(activityUID, tmdbId).then(setWatchHistoryCache);
+                }
+
                 const title = document.getElementById('title')?.textContent.trim() || '';
                 const query = new URLSearchParams({
                     tmdbId: tmdbId || '',
@@ -3143,6 +3175,24 @@ document.addEventListener('DOMContentLoaded', function() {
                         audio: 'ru'
                     }
                 );
+
+                if (ok) {
+                    const episodeKey = buildEpisodeKey(season, episode);
+                    const videoEl = document.getElementById('moviePlayerVideo');
+                    if (videoEl) {
+                        const resumeSeconds = getWatchHistoryResumeSeconds(episodeKey);
+                        if (Number.isFinite(resumeSeconds) && resumeSeconds > 5) {
+                            showKaaResumeOverlay(episodeKey, resumeSeconds, () => applyResumeToVideo(videoEl, resumeSeconds), () => {});
+                        }
+                        const activityUID = typeof window.getActivityUID === 'function' ? window.getActivityUID() : null;
+                        startKaaContinueWatching(videoEl, {
+                            episodeKey,
+                            userUID: activityUID,
+                            movieId: tmdbId,
+                            itemType: 'tv'
+                        });
+                    }
+                }
 
                 if (infoDiv) {
                     infoDiv.textContent = ok
