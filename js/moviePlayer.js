@@ -4104,6 +4104,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Update server: anime (TV or movie) uses KAA
                 if (isAnime) {
                     currentServer = 'srvPahe1';
+                } else if (isRussianSeries) {
+                    currentServer = 'srvRuTv'; // Kino has no Russian content - keep the earlier default
                 } else if (data.seasons && data.seasons.length > 0) {
                     currentServer = 'srvKinoTv'; // TV shows use Kino
                 }
