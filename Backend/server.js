@@ -17752,7 +17752,7 @@ async function resolveAnimeSeasonCards(tmdbId) {
         anilistId = cacheRow?.anilist_id || null;
         mappedMalId = mappedMalId || cacheRow?.mal_id || null;
     }
-    if (!anilistId) {
+    if (!mappedMalId && !anilistId) {
         // No mapping at all - negative cache, same tier a genuine "no match" gets in
         // native_episode_counts (ANIKOTO_NEGATIVE_CACHE_TTL_MS via isNegative above).
         try {
@@ -17763,125 +17763,120 @@ async function resolveAnimeSeasonCards(tmdbId) {
         return [];
     }
 
-    // Same BFS shape as buildSeasonGroupsFromAniList: only TV entries are real "seasons", but
-    // still walk through movies/OVAs in case a real season is only reachable through one.
-    const visited = new Set();
-    const queue = [anilistId];
     const found = []; // { anilistId, idMal, title, coverImage, airDate, status }
     let hadFailure = false;
     let hasUpcomingSequel = false;
-    while (queue.length && found.length < 8) {
-        const id = Number(queue.shift());
-        if (!id || visited.has(id)) continue;
-        visited.add(id);
-
-        let media;
-        try {
-            media = await fetchAniListMediaForSeasonCards(id);
-        } catch (err) {
-            // One unreachable node (even after fetchAniListMediaForSeasonCards' own retries)
-            // shouldn't drop the rest of the chain - but it DOES mean this result might be
-            // missing a real season reachable only through this node. fetchJikanSeasonCardsChain
-            // below gets a chance to fill that gap; only if it can't either does this stay
-            // reflected in a short cache TTL.
-            hadFailure = true;
-            continue;
-        }
-        if (!media) continue;
-
-        const isTvFormat = ['TV', 'TV_SHORT'].includes(String(media.format || '').toUpperCase());
-        if (isTvFormat) {
-            found.push({
-                anilistId: media.id,
-                idMal: media.idMal || null,
-                title: media.title?.english || media.title?.romaji || media.title?.native || null,
-                coverImage: media.coverImage?.extraLarge || null,
-                airDate: aniListDateToIso(media.startDate),
-                status: String(media.status || '').toUpperCase()
-            });
-        }
-
-        const edges = Array.isArray(media.relations?.edges) ? media.relations.edges : [];
-        for (const edge of edges) {
-            const rType = String(edge?.relationType || '').toUpperCase();
-            if (rType !== 'SEQUEL' && rType !== 'PREQUEL') continue;
-            const node = edge?.node;
-            if (!node || String(node.type || '').toUpperCase() !== 'ANIME') continue;
-            // Real evidence more content is coming, regardless of whether this node itself
-            // gets walked into as a "season" below - same signal buildSeasonGroupsFromAniList's
-            // own hasUpcomingSequel tracks.
-            if (rType === 'SEQUEL') {
-                const nodeStatus = String(node.status || '').toUpperCase();
-                if (nodeStatus === 'NOT_YET_RELEASED' || nodeStatus === 'RELEASING') hasUpcomingSequel = true;
-            }
-            if (!['TV', 'TV_SHORT'].includes(String(node.format || '').toUpperCase())) continue;
-            const relId = Number(node.id || 0);
-            if (relId > 0 && !visited.has(relId)) queue.push(relId);
-        }
-    }
-
-    // AniList can come back "successful" yet still incomplete - no thrown error anywhere in the
-    // BFS, just a relations graph that silently doesn't lead to every real season (confirmed
-    // live: Attack on Titan, tmdb 1429, AniList found only 1 of its 4 real seasons with zero
-    // fetch errors along the way). hadFailure alone can't catch that, so TMDB's own
-    // number_of_seasons - already fetched above for the disk-cache bust check - doubles as an
-    // independent completeness check: fewer TV entries than TMDB knows about means AniList's
-    // walk came up short, trustworthy failure or not.
-    const aniListLooksIncomplete = Number.isFinite(tmdbSeasonCount) && tmdbSeasonCount > 0 && found.length < tmdbSeasonCount;
-
-    // MAL is a last resort, not a co-equal source - AniList's own retries above (now also
-    // covering the whole-site 403 outages AniList has been having, not just 429) already get a
-    // fair shot first. Only reached when AniList either threw after every retry, or came back
-    // clean but demonstrably short per the TMDB count above. Started from whichever malId we
-    // already have (a season AniList DID resolve, or the tmdb_id->mal_id mapping) since that's a
-    // real, known-good entry point.
-    //
-    // Direct MAL scraping (buildSeasonCardsFromMalRelations) is tried BEFORE Jikan, not after -
-    // Jikan is a wrapper around this exact same MAL data, adds its own point of failure on top
-    // (confirmed live: Jikan sustained a 504 on Attack on Titan's Season 2 node across all 4 of
-    // its own internal retries, while MAL's own page for that same id loaded fine), and is
-    // headed for its own sunset regardless. Jikan only gets a turn if the direct scrape didn't
-    // close the gap either.
-    const mergeFallbackResults = (chainFound) => {
+    const isLookingComplete = () => !(Number.isFinite(tmdbSeasonCount) && tmdbSeasonCount > 0 && found.length < tmdbSeasonCount);
+    const mergeResults = (chainFound, withAnilistIds) => {
         const existingMalIds = new Set(found.map(f => f.idMal).filter(Boolean));
+        const existingAnilistIds = new Set(found.map(f => f.anilistId).filter(Boolean));
         let addedAny = false;
         for (const cf of chainFound) {
-            if (existingMalIds.has(cf.idMal)) continue;
-            found.push({ anilistId: null, idMal: cf.idMal, title: cf.title, coverImage: cf.coverImage, airDate: cf.airDate, status: cf.status });
-            existingMalIds.add(cf.idMal);
+            const cfAnilistId = withAnilistIds ? (cf.anilistId || null) : null;
+            if ((cf.idMal && existingMalIds.has(cf.idMal)) || (cfAnilistId && existingAnilistIds.has(cfAnilistId))) continue;
+            found.push({ anilistId: cfAnilistId, idMal: cf.idMal || null, title: cf.title, coverImage: cf.coverImage, airDate: cf.airDate, status: cf.status });
+            if (cf.idMal) existingMalIds.add(cf.idMal);
+            if (cfAnilistId) existingAnilistIds.add(cfAnilistId);
             addedAny = true;
             if (cf.status === 'RELEASING' || cf.status === 'NOT_YET_RELEASED') hasUpcomingSequel = true;
         }
         return addedAny;
     };
 
-    if (hadFailure || aniListLooksIncomplete) {
-        const startMalId = found.find(f => f.idMal)?.idMal || mappedMalId || null;
-        if (startMalId) {
-            let closedGap = false;
+    // MAL is primary now, AniList the fallback - direct MAL scraping has been the more reliable
+    // of the two live this session (confirmed: it independently found all 7 real Attack on Titan
+    // entries, one more than AniList itself returned; and separately closed a gap AniList left on
+    // Arifureta). AniList also wraps a GraphQL service that's had whole-site 403 outages
+    // ("temporarily disabled due to severe stability issues") on top of its own incompleteness
+    // issues, so it's demoted below MAL rather than removed.
+    const startMalId = mappedMalId || null;
+    if (startMalId) {
+        try {
+            const malFound = await buildSeasonCardsFromMalRelations(startMalId);
+            mergeResults(malFound, false);
+        } catch (err) {
+            hadFailure = true;
+        }
+    }
+
+    // Fallback to AniList's own relations BFS - only reached when MAL had nothing to start from,
+    // threw outright, or came back demonstrably short per the TMDB count check. Same BFS shape as
+    // buildSeasonGroupsFromAniList: only TV entries are real "seasons", but still walk through
+    // movies/OVAs in case a real season is only reachable through one.
+    if (anilistId && (!startMalId || hadFailure || !isLookingComplete())) {
+        const aniListFound = [];
+        let aniListHadFailure = false;
+        const visited = new Set();
+        const queue = [anilistId];
+        while (queue.length && found.length + aniListFound.length < 8) {
+            const id = Number(queue.shift());
+            if (!id || visited.has(id)) continue;
+            visited.add(id);
+
+            let media;
             try {
-                const malFound = await buildSeasonCardsFromMalRelations(startMalId);
-                if (mergeFallbackResults(malFound)) closedGap = true;
+                media = await fetchAniListMediaForSeasonCards(id);
             } catch (err) {
-                // Direct MAL scrape failed - Jikan below still gets a shot.
+                // One unreachable node (even after fetchAniListMediaForSeasonCards' own retries)
+                // shouldn't drop the rest of the chain - but it DOES mean this result might be
+                // missing a real season reachable only through this node.
+                aniListHadFailure = true;
+                continue;
+            }
+            if (!media) continue;
+
+            const isTvFormat = ['TV', 'TV_SHORT'].includes(String(media.format || '').toUpperCase());
+            if (isTvFormat) {
+                aniListFound.push({
+                    anilistId: media.id,
+                    idMal: media.idMal || null,
+                    title: media.title?.english || media.title?.romaji || media.title?.native || null,
+                    coverImage: media.coverImage?.extraLarge || null,
+                    airDate: aniListDateToIso(media.startDate),
+                    status: String(media.status || '').toUpperCase()
+                });
             }
 
-            const stillShortAfterMal = Number.isFinite(tmdbSeasonCount) && tmdbSeasonCount > 0 && found.length < tmdbSeasonCount;
-            if (!closedGap || stillShortAfterMal) {
-                try {
-                    const jikanFound = await fetchJikanSeasonCardsChain(startMalId);
-                    if (mergeFallbackResults(jikanFound)) closedGap = true;
-                } catch (err) {
-                    // Jikan fallback also failed - hadFailure/incompleteness stands, short TTL below still applies.
+            const edges = Array.isArray(media.relations?.edges) ? media.relations.edges : [];
+            for (const edge of edges) {
+                const rType = String(edge?.relationType || '').toUpperCase();
+                if (rType !== 'SEQUEL' && rType !== 'PREQUEL') continue;
+                const node = edge?.node;
+                if (!node || String(node.type || '').toUpperCase() !== 'ANIME') continue;
+                if (rType === 'SEQUEL') {
+                    const nodeStatus = String(node.status || '').toUpperCase();
+                    if (nodeStatus === 'NOT_YET_RELEASED' || nodeStatus === 'RELEASING') hasUpcomingSequel = true;
                 }
+                if (!['TV', 'TV_SHORT'].includes(String(node.format || '').toUpperCase())) continue;
+                const relId = Number(node.id || 0);
+                if (relId > 0 && !visited.has(relId)) queue.push(relId);
             }
+        }
+        const closedGap = mergeResults(aniListFound, true);
+        // AniList closing the gap (or at least adding something MAL didn't have) clears
+        // hadFailure - MAL's own failure/incompleteness doesn't matter anymore if the combined
+        // result is now actually complete, re-checked against tmdbSeasonCount below.
+        if (closedGap && !aniListHadFailure) hadFailure = false;
+        else if (!closedGap) hadFailure = hadFailure || aniListHadFailure;
+    }
 
-            // Either fallback successfully covered the gap (found something AniList's walk
-            // didn't already have) - trust this result at the normal TTL tier instead of the
-            // short "retry soon" one below. hadFailure only meant "AniList threw"; it says
-            // nothing about whether the combined result is now actually complete, so that's
-            // re-checked against tmdbSeasonCount below rather than just clearing the flag here.
-            if (closedGap) hadFailure = false;
+    // Jikan is the last-resort-of-the-last-resort - same MAL data as the direct scrape above,
+    // wrapped in a service that's both flakier (confirmed live: sustained 504s on individual
+    // titles across all its own internal retries) and headed for its own sunset. Only reached if
+    // MAL direct AND AniList both still leave this short. Its result is good enough to answer
+    // THIS request but never trusted enough to persist - usedJikan below skips the disk-cache
+    // write entirely, so the next request starts fresh from MAL/AniList instead of getting stuck
+    // serving a Jikan-derived result until some TTL expires.
+    let usedJikan = false;
+    if (startMalId && !isLookingComplete()) {
+        try {
+            const jikanFound = await fetchJikanSeasonCardsChain(startMalId);
+            if (mergeResults(jikanFound, false)) {
+                hadFailure = false;
+                usedJikan = true;
+            }
+        } catch (err) {
+            // Jikan also failed - hadFailure/incompleteness stands, short TTL below still applies.
         }
     }
 
@@ -17922,6 +17917,12 @@ async function resolveAnimeSeasonCards(tmdbId) {
     // have closed the gap entirely, in which case this is a real, trustworthy result and deserves
     // the normal TTL below even though AniList alone needed help getting there.
     const stillIncomplete = hadFailure || (Number.isFinite(tmdbSeasonCount) && tmdbSeasonCount > 0 && found.length < tmdbSeasonCount);
+
+    // Jikan is never persisted, trustworthy result or not - it's an explicit trust-nothing
+    // exception: even a "complete" Jikan-filled result is served to THIS caller only, so the
+    // next request retries MAL/AniList fresh rather than getting stuck serving a Jikan-derived
+    // answer until some TTL expires.
+    if (usedJikan) return seasons;
 
     // Still incomplete even after the Jikan fallback attempt: never cache a result whose season
     // count doesn't match TMDB's - if a previously-good result already exists with at least as
