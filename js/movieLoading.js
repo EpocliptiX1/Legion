@@ -269,16 +269,30 @@ document.addEventListener('DOMContentLoaded', async () => {
                 function updateMovieTitleHyphens() {
                     const titleEl = document.getElementById('title');
                     if (!titleEl) return;
+                    // #title starts as the literal "Loading..." placeholder (see movieInfo.html)
+                    // until the real TMDB title lands via setText('title', ...) later. If this
+                    // runs on mobile width before that happens, it was caching "Loading..." itself
+                    // into data-orig - and since this also fires on every 'resize' event, and
+                    // mobile browsers fire resize on scroll (address bar collapsing/expanding),
+                    // scrolling while still on mobile width would re-apply that stale cached
+                    // placeholder over the real title that had since loaded. Never cache/restore
+                    // the placeholder text itself - only real titles.
+                    const isPlaceholder = t => /^loading\.*$/i.test(String(t || '').trim());
                     if (window.innerWidth <= 730) {
                         // Only apply on mobile
-                        const orig = titleEl.getAttribute('data-orig') || titleEl.innerText;
+                        let orig = titleEl.getAttribute('data-orig');
+                        if (!orig || isPlaceholder(orig)) {
+                            const current = titleEl.innerText;
+                            if (isPlaceholder(current)) return; // real title hasn't arrived yet
+                            orig = current;
+                        }
                         titleEl.setAttribute('data-orig', orig);
                         // Use innerText to avoid double-escaping
                         titleEl.innerHTML = insertSoftHyphens(orig);
                     } else {
                         // Restore original
                         const orig = titleEl.getAttribute('data-orig');
-                        if (orig) titleEl.innerText = orig;
+                        if (orig && !isPlaceholder(orig)) titleEl.innerText = orig;
                     }
                 }
                 updateMovieTitleHyphens();
