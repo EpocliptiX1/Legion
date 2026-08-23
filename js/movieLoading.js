@@ -62,53 +62,23 @@ async function navigateToAnimeRecommendation(cardEl, anilistId, displayName, kno
     }
 }
 
+// Used to hit graphql.anilist.co directly from the browser on every single page load, entirely
+// uncached, then resolve every single result's own tmdbId via up to 20 SEQUENTIAL
+// /api/anime-tmdb-id round trips before this row could even render a clickable card (confirmed
+// live: 20 of those calls fired back to back loading movieInfo.html once). Now goes through
+// /api/anime-timeline-row, which caches the whole result set server-side (same anime_row_cache/
+// anime_cache tables the homepage rows and allMovies.html's filter panel already use) and
+// resolves+embeds each item's tmdbId server-side too - a cache hit costs one request total.
 async function fetchAniListTimelineRow(movieYear) {
-    const startYear = Number(movieYear) - 5;
-    const endYear = Number(movieYear) + 5;
-    if (!Number.isFinite(startYear) || !Number.isFinite(endYear)) return [];
-
-    const query = `
-        query ($startMin: FuzzyDateInt, $startMax: FuzzyDateInt) {
-            Page(page: 1, perPage: 20) {
-                media(
-                    type: ANIME
-                    startDate_greater: $startMin
-                    startDate_lesser: $startMax
-                    sort: SCORE_DESC
-                ) {
-                    id
-                    title { romaji english native }
-                    averageScore
-                    popularity
-                    startDate { year }
-                    coverImage { large extraLarge }
-                }
-            }
-        }
-    `;
-
+    if (!Number.isFinite(Number(movieYear))) return [];
     try {
-        const res = await fetch('https://graphql.anilist.co', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-            body: JSON.stringify({
-                query,
-                variables: {
-                    startMin: Number(`${startYear}0101`),
-                    startMax: Number(`${endYear}1231`)
-                }
-            })
-        });
+        const res = await fetch(`/api/anime-timeline-row?year=${encodeURIComponent(movieYear)}`);
         if (!res.ok) {
-            const errText = await res.text().catch(() => '');
-            console.warn('[AniListTimeline] HTTP error:', res.status, errText.slice(0, 300));
+            console.warn('[AniListTimeline] HTTP error:', res.status);
             return [];
         }
-        const json = await res.json();
-        if (json?.errors?.length) {
-            console.warn('[AniListTimeline] GraphQL errors:', json.errors);
-        }
-        return Array.isArray(json?.data?.Page?.media) ? json.data.Page.media : [];
+        const items = await res.json();
+        return Array.isArray(items) ? items : [];
     } catch (err) {
         console.warn('[AniListTimeline] fetch failed:', err);
         return [];
@@ -1158,6 +1128,9 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                     fetchAniListTimelineRow(movieYear).then(async items => {
                         timelineRow.innerHTML = '';
                         const seen = new Set();
+                        // tmdbId is already resolved+embedded server-side by /api/anime-timeline-row
+                        // (same pattern /api/anime-library uses) - no more per-item /api/anime-tmdb-id
+                        // round trip needed here at all.
                         for (const item of items || []) {
                             const displayName = item?.title?.english || item?.title?.romaji || item?.title?.native || 'Unknown';
                             if (!displayName) continue;
@@ -1167,9 +1140,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
 
                             const poster = item?.coverImage?.extraLarge || item?.coverImage?.large || '/img/LOGO_Short.png';
                             const year = item?.startDate?.year || 'N/A';
-                            const tmdbRes = await fetch(`/api/anime-tmdb-id?anilistId=${encodeURIComponent(item.id)}&title=${encodeURIComponent(displayName)}`);
-                            const tmdbBody = tmdbRes.ok ? await tmdbRes.json().catch(() => ({})) : {};
-                            const tmdbId = tmdbBody?.tmdb_id || tmdbBody?.tmdbId || tmdbBody?.id || null;
+                            const tmdbId = item?.tmdbId || null;
                             if (!tmdbId) continue;
 
                             const card = document.createElement('div');

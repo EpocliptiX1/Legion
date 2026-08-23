@@ -7573,6 +7573,104 @@ app.get('/api/anime-library', async (req, res) => {
     }
 });
 
+// --- movieInfo.html "Same Era" timeline row ------------------------------------------------
+// Was a client-side, ENTIRELY uncached direct fetch to graphql.anilist.co on every single page
+// load, followed by up to 20 sequential (not even parallel - one `await` per loop iteration)
+// /api/anime-tmdb-id round trips to resolve each result's own tmdbId before it could be made
+// clickable. Confirmed live loading movieInfo.html for Attack on Titan: 20 of those calls fired
+// back to back on one page load. Moved server-side onto the exact same anime_row_cache/
+// anime_cache machinery /api/anime-row and /api/anime-library already use - a cache HIT now
+// costs the client one request total, with every item's tmdbId already embedded.
+const TIMELINE_ROW_QUERY = `
+    query ($startMin: FuzzyDateInt, $startMax: FuzzyDateInt) {
+        Page(page: 1, perPage: 20) {
+            media(
+                type: ANIME
+                startDate_greater: $startMin
+                startDate_lesser: $startMax
+                sort: SCORE_DESC
+            ) {
+                id
+                idMal
+                title { romaji english native }
+                averageScore
+                popularity
+                startDate { year month day }
+                coverImage { large extraLarge }
+            }
+        }
+    }
+`;
+
+async function fetchTimelineRowFromAniList(startYear, endYear) {
+    const response = await axios.post(
+        'https://graphql.anilist.co',
+        {
+            query: TIMELINE_ROW_QUERY,
+            variables: {
+                startMin: Number(`${startYear}0101`),
+                startMax: Number(`${endYear}1231`)
+            }
+        },
+        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
+    );
+    if (response.data?.errors) {
+        throw new Error(response.data.errors.map(e => e.message).join('; '));
+    }
+    const items = response.data?.data?.Page?.media || [];
+    return Array.isArray(items) ? items : [];
+}
+
+// Bucketed to the same +-5yr window the client always requests (movieYear-5 to movieYear+5) so
+// every movie released in the same handful of years shares one cache row instead of each exact
+// year minting its own - a franchise's own release year is far more repeat traffic than the
+// window itself needs to be precise to.
+app.get('/api/anime-timeline-row', async (req, res) => {
+    const movieYear = parseInt(req.query.year, 10);
+    if (!Number.isFinite(movieYear)) {
+        return res.status(400).json({ error: 'Missing or invalid year' });
+    }
+    const startYear = movieYear - 5;
+    const endYear = movieYear + 5;
+    const cacheKey = `TIMELINE:${startYear}-${endYear}`;
+
+    try {
+        const ids = await animeRowCacheGet(cacheKey, 1, 20);
+        if (ids && ids.length) {
+            const cached = await animeCacheGetByAniListIds(ids);
+            if (cached.length === ids.length) return res.json(cached);
+        }
+
+        const items = await fetchTimelineRowFromAniList(startYear, endYear);
+        if (!items.length) return res.json([]);
+
+        // Same bounded-concurrency tmdbId resolution as /api/anime-library, same reasoning: a
+        // fully sequential for-of here is exactly the mistake this whole endpoint exists to fix.
+        const idsToCache = items.map(item => item.id);
+        await mapWithConcurrency(items, 6, async (item) => {
+            try {
+                const tmdbId = await getTmdbIdForAniList(
+                    item.id,
+                    item.title?.english || item.title?.romaji,
+                    item.idMal,
+                    item.title?.english,
+                    item.title?.romaji,
+                    item.title?.native
+                );
+                if (tmdbId) item.tmdbId = tmdbId;
+            } catch (e) {
+                // No TMDB match - still cache the AniList metadata, just without a tmdbId.
+            }
+            await animeCacheUpsertFromAniListItem(item);
+        });
+        await animeRowCacheUpsert(cacheKey, 1, 20, idsToCache, anyItemIsActive(items));
+        res.json(items);
+    } catch (err) {
+        console.error('[Anime Timeline Row] Error:', err.message || err, { cacheKey });
+        res.status(500).json({ error: 'Failed to fetch timeline row' });
+    }
+});
+
 async function resolveAnimeIds(tmdbId, season = 1) {
     await ensureAnimeMalListLoaded();
 
