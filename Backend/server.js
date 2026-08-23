@@ -597,116 +597,12 @@ function loadLocalMoviesCsv() {
     }
 }
 // --- Megacloud API route (must be after app is initialized) ---
-app.get('/api/megacloud/:title', async (req, res) => {
-    try {
-        console.log(`[Megacloud API] Searching for: ${req.params.title}`);
-        const downloadMode = String(req.query.download || '') === '1';
-        const searchRes = await flixhq.search(req.params.title);
-
-        if (!searchRes.results || searchRes.results.length === 0) {
-            return res.status(404).json({ error: "Movie not found on FlixHQ" });
-        }
-
-        // Specifically look for a Movie type that matches the title closely
-        let movieTarget = searchRes.results.find(item => 
-            item.type === 'Movie' && item.title.toLowerCase().includes(req.params.title.toLowerCase())
-        );
-        // Fallback to the first item if exact match isn't found
-        if (!movieTarget) movieTarget = searchRes.results[0];
-
-        console.log(`[Megacloud API] Found target: ${movieTarget.title} (${movieTarget.id})`);
-
-        const mediaInfo = await flixhq.fetchMediaInfo(movieTarget.id);
-
-        // Handle FlixHQ returning the episode ID directly on the mediaInfo object sometimes
-        const episodeId = (mediaInfo.episodes && mediaInfo.episodes.length > 0) 
-            ? mediaInfo.episodes[0].id 
-            : movieTarget.id; // Fallback to media ID if episodes array is missing
-
-        console.log(`[Megacloud API] Fetching sources for Episode ID: ${episodeId}`);
-
-        const watchLinks = await flixhq.fetchEpisodeSources(episodeId, mediaInfo.id);
-
-        if (downloadMode) {
-            const candidates = [];
-            const pushCandidate = (value) => {
-                const url = String(value || '').trim();
-                if (!url) return;
-                if (!/^https?:\/\//i.test(url)) return;
-                if (!candidates.includes(url)) candidates.push(url);
-            };
-
-            if (Array.isArray(watchLinks?.sources)) {
-                watchLinks.sources.forEach(src => pushCandidate(src?.url || src?.file || src?.src));
-            }
-            if (Array.isArray(watchLinks?.sourcesBackup)) {
-                watchLinks.sourcesBackup.forEach(src => pushCandidate(src?.url || src?.file || src?.src));
-            }
-            if (Array.isArray(watchLinks?.download)) {
-                watchLinks.download.forEach(src => pushCandidate(src?.url || src?.file || src?.src || src));
-            } else {
-                pushCandidate(watchLinks?.download?.url || watchLinks?.download);
-            }
-
-            const directFile = candidates.find(u => /\.(mp4|mkv|webm)(\?|$)/i.test(u));
-            const nonHls = candidates.find(u => !/\.m3u8(\?|$)/i.test(u));
-            const chosen = directFile || nonHls || candidates[0];
-
-            if (!chosen) {
-                return res.status(404).json({ error: 'No downloadable MegaCloud source found for this title.' });
-            }
-
-            return res.json({
-                title: movieTarget.title,
-                downloadUrl: `/api/megacloud-download?url=${encodeURIComponent(chosen)}`,
-                sourceUrl: chosen
-            });
-        }
-
-        res.json(watchLinks);
-    } catch (error) {
-        console.error("[Megacloud API] Extraction failed:", error.message);
-        res.status(500).json({ error: "Cloudflare blocked the request or extraction failed." });
-    }
-});
-
-// 1. Keep your existing Movie Downloader
-app.get('/api/megacloud-download', (req, res) => {
-    const raw = String(req.query.url || '').trim();
-    if (!raw) {
-        return res.status(400).json({ error: 'Missing url' });
-    }
-    // ... rest of your existing movie code ...
-    try {
-        const parsed = new URL(raw);
-        if (!/^https?:$/i.test(parsed.protocol)) {
-            return res.status(400).json({ error: 'Only http/https URLs are allowed' });
-        }
-        return res.redirect(parsed.toString());
-    } catch {
-        return res.status(400).json({ error: 'Invalid url' });
-    }
-});
-
 // Anime downloader (js/animeDownload.js calls this and expects { sourceUrl }).
 // This was previously a non-functional placeholder - it requested the literal string
 // "https://megaplay.buzz/api/v1/source/..." (ellipsis and all) left behind from a
 // "find the real endpoint in the Network tab" TODO, so every MegaPlay download attempt
 // threw and surfaced as "Download preparation failed". Now wired to the real two-step
 // extraction (see resolveMegaplaySourcesCached, section 9b0).
-app.get('/api/megaplay/extract/:malId/:ep/:type', async (req, res) => {
-    try {
-        const { malId, ep, type } = req.params;
-        const lang = String(type || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
-        const data = await resolveMegaplaySourcesCached(malId, ep, lang);
-        // proxyRef included so the caller can route through our proxy if it needs to -
-        // the CDN 403s the playlist without megaplay's Referer.
-        res.json({ sourceUrl: data.stream, proxyRef: data.proxyRef });
-    } catch (err) {
-        console.error("[MegaPlay Extract] Error:", err.message);
-        res.status(500).json({ error: 'Failed to fetch API' });
-    }
-});
 const BCRYPT_SALT_ROUNDS = 10;
 const GOOGLE_TRANSLATE_API_KEY = process.env.GOOGLE_TRANSLATE_API_KEY || '';
 const LIBRETRANSLATE_URL = process.env.LIBRETRANSLATE_URL || '';
@@ -1950,6 +1846,16 @@ function buildM3u8ProxyUrl(url, referer, sessionId) {
 }
 function buildStreamProxyUrl(url, referer, ua, sessionId) {
     return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua, sessionId })}`;
+}
+// Redirect variant, not a proxy: some download hosts (pahe/nekostream) sit behind a Cloudflare
+// challenge that a real browser clears on its own but our backend can't solve server-side, so
+// those URLs can't be fetched-and-streamed through /api/proxy-stream like everything else - the
+// browser has to navigate there directly. This still keeps the raw CDN URL out of any JSON
+// response (a bare curl/script hitting the API gets an opaque, session-bound token, not a
+// working link) while a real browser's window.open()/navigation follows the 302 straight
+// through to the real host and solves the challenge exactly as it would have anyway.
+function buildDownloadRedirectUrl(url, referer, sessionId) {
+    return `/api/download-redirect?token=${encryptProxyTarget({ url, referer, sessionId })}`;
 }
 
 // MegaPlay's raw {file, label, kind, default} track shape, tokenized into the exact
@@ -6396,6 +6302,40 @@ const ALLOWED_PROXY_HOSTS = [
     'megaplay.buzz', 'watching.onl', 'livedns.my', 'akirax.buzz', 'shiora.top'
 ];
 let proxyDebugPrinted = false;
+
+// Separate, narrower allowlist for /api/download-redirect - deliberately NOT merged into
+// ALLOWED_PROXY_HOSTS above, since that list also gates /api/proxy-stream (a real byte-fetching
+// proxy). pahe.nekostream.site's own download links sit behind a Cloudflare challenge our
+// backend can't solve, so those hosts must ONLY ever be redirect targets, never something our
+// server fetches on the caller's behalf.
+// cinemar.cc: RU movie/TV download links (fetchCinemarDownloadLinks) - couldn't get a live
+// sample of the real download CDN host to confirm (cinemar's own downPage API was returning
+// "no links" for every title tried at the time this was written, an upstream issue unrelated to
+// this change), so this is the domain its OWN download API lives on rather than a confirmed CDN
+// host. If the real download host turns out to differ, this list needs the real host added -
+// the redirect will 403 safely in the meantime rather than silently trusting an unverified host.
+const ALLOWED_DOWNLOAD_REDIRECT_HOSTS = ['nekostream.site', 'cinemar.cc'];
+
+app.get('/api/download-redirect', (req, res) => {
+    if (!req.query.token) return res.status(400).send('Missing token');
+    let decodedUrl;
+    try {
+        const decoded = decryptProxyTarget(req.query.token);
+        verifyProxySession(req, decoded);
+        decodedUrl = decoded.url;
+    } catch (err) {
+        return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired redirect token');
+    }
+    try {
+        const host = new URL(decodedUrl).hostname;
+        if (!ALLOWED_DOWNLOAD_REDIRECT_HOSTS.some(h => host === h || host.endsWith('.' + h))) {
+            return res.status(403).send('Domain not allowed');
+        }
+    } catch {
+        return res.status(400).send('Invalid URL');
+    }
+    res.redirect(302, decodedUrl);
+});
 
 app.get('/api/proxy-stream', async (req, res) => {
     // Token-only now - the legacy plaintext ?url=/&referer=/&ua= fallback is retired. Every
@@ -15117,7 +15057,13 @@ app.get('/api/movie-ru-download', async (req, res) => {
         const { dlink, translationTitle } = await resolveMovieRuData(rawTitle, tmdbId);
         if (!dlink) throw new Error('No download link available for this movie');
         const links = await fetchCinemarDownloadLinks(dlink);
-        return res.json({ ok: true, translationTitle, links });
+        // Tokenized redirect, not the raw cinemar.cc URL - was returning real direct download
+        // links straight in the JSON response, no auth needed to harvest them.
+        const tokenizedLinks = links.map(l => ({
+            ...l,
+            url: buildDownloadRedirectUrl(l.url, 'https://cinemar.cc/', req.sessionId)
+        }));
+        return res.json({ ok: true, translationTitle, links: tokenizedLinks });
     } catch (err) {
         console.error('[RU Movie Download] Error:', err.message);
         return res.status(err.status || 500).json({ ok: false, error: err.message });
@@ -15245,7 +15191,13 @@ app.get('/api/tv-ru-download', async (req, res) => {
         const { dlink, translationTitle } = await resolveTvRuData(rawTitle, tmdbId, season, episode);
         if (!dlink) throw new Error('No download link available for this episode');
         const links = await fetchCinemarDownloadLinks(dlink);
-        return res.json({ ok: true, translationTitle, links });
+        // Tokenized redirect, not the raw cinemar.cc URL - see the matching comment on
+        // /api/movie-ru-download above.
+        const tokenizedLinks = links.map(l => ({
+            ...l,
+            url: buildDownloadRedirectUrl(l.url, 'https://cinemar.cc/', req.sessionId)
+        }));
+        return res.json({ ok: true, translationTitle, links: tokenizedLinks });
     } catch (err) {
         console.error('[RU TV Download] Error:', err.message);
         return res.status(err.status || 500).json({ ok: false, error: err.message });
@@ -16064,40 +16016,6 @@ app.get('/api/animepahe/:malId/:ep/:type', async (req, res) => {
         res.status(err.status || 500).json({ error: err.message || 'KickAssAnime lookup failed' });
     }
 });
-//================================================================
-// KICKASS DEBUGGING ENDPOINT
-//================================================================
-app.get('/api/kickass/test', async (req, res) => {
-    try {
-        const search = await kickass.search('Cowboy Bebop');
-
-        const anime2 = search.results[0];
-
-        const info = await kickass.fetchAnimeInfo(
-            anime2.id
-        );
-
-        const episode = info.episodes[0];
-
-        const sources =
-            await kickass.fetchEpisodeSources(
-                episode.id
-            );
-
-        res.json({
-            anime,
-            episode,
-            sources
-        });
-
-    } catch (err) {
-        console.error(err);
-
-        res.status(500).json({
-            error: err.message
-        });
-    }
-});
 // =========================================
 //  9b0. MEGAPLAY EXTRACTION (real stream, not just an iframe embed)
 // =========================================
@@ -16216,10 +16134,47 @@ app.get('/api/anime-download-links', async (req, res) => {
     const episode = String(req.query.episode || req.query.ep || '1').trim();
     if (!malId) return res.status(400).json({ ok: false, error: 'malId is required' });
 
+    // Tokenizes freshly on every response (cache hit or miss) rather than once at cache-write
+    // time - the token embeds the CALLER's sessionId, so a token minted for whoever happened to
+    // trigger the original live fetch would 403 for every other visitor this cache entry gets
+    // served to afterward. The cache below stores raw provider URLs only; re-tokenizing per
+    // request is cheap (no network call), so there's no real cost to it.
+    //
+    // buildDownloadRedirectUrl, not buildStreamProxyUrl - pahe.nekostream.site sits behind a
+    // Cloudflare challenge a real browser clears on navigation but our backend can't solve via a
+    // server-side fetch, so these can't be proxied like every other stream URL in this file; the
+    // browser has to hit the real host directly. The redirect endpoint still keeps the raw URL
+    // out of this JSON response.
+    const proxyQuality = (obj) => {
+        const out = {};
+        for (const [quality, url] of Object.entries(obj || {})) {
+            out[quality] = buildDownloadRedirectUrl(url, 'https://nekostream.site/', req.sessionId);
+        }
+        return out;
+    };
+    const pickBest = (obj) => {
+        const order = ['1080p', '720p', '480p', '360p'];
+        for (const q of order) if (obj[q]) return obj[q];
+        return Object.values(obj)[0] || null;
+    };
+    const respondFromRaw = (raw, cached) => {
+        const proxiedSub = proxyQuality(raw.sub);
+        const proxiedDub = proxyQuality(raw.dub);
+        res.json({
+            ok: true,
+            providers: raw.providers,
+            sub: proxiedSub,
+            dub: proxiedDub,
+            bestSub: pickBest(proxiedSub),
+            bestDub: pickBest(proxiedDub),
+            cached
+        });
+    };
+
     const key = `${malId}:${episode}`;
-    const cached = animeDownloadLinkCache.get(key);
-    if (cached && (Date.now() - cached.resolvedAt) < ANIME_DL_CACHE_TTL_MS) {
-        return res.json({ ok: true, ...cached.data, cached: true });
+    const cachedEntry = animeDownloadLinkCache.get(key);
+    if (cachedEntry && (Date.now() - cachedEntry.resolvedAt) < ANIME_DL_CACHE_TTL_MS) {
+        return respondFromRaw(cachedEntry.raw, true);
     }
 
     try {
@@ -16252,22 +16207,13 @@ app.get('/api/anime-download-links', async (req, res) => {
             }
         }
 
-        const pickBest = (obj) => {
-            const order = ['1080p', '720p', '480p', '360p'];
-            for (const q of order) if (obj[q]) return obj[q];
-            return Object.values(obj)[0] || null;
-        };
-        const data = {
-            providers,
-            sub: merged.sub,
-            dub: merged.dub,
-            bestSub: pickBest(merged.sub),
-            bestDub: pickBest(merged.dub)
-        };
-        if (!data.bestSub && !data.bestDub) throw new Error('no download links available for this episode');
+        if (!pickBest(merged.sub) && !pickBest(merged.dub)) throw new Error('no download links available for this episode');
 
-        animeDownloadLinkCache.set(key, { data, resolvedAt: Date.now() });
-        res.json({ ok: true, ...data, cached: false });
+        // Raw provider URLs only - see respondFromRaw above for why tokenizing happens per
+        // request instead of here.
+        const raw = { providers, sub: merged.sub, dub: merged.dub };
+        animeDownloadLinkCache.set(key, { raw, resolvedAt: Date.now() });
+        respondFromRaw(raw, false);
     } catch (err) {
         console.error('[Anime Downloads] Error:', err.message);
         res.status(500).json({ ok: false, error: err.message });
@@ -18347,312 +18293,6 @@ function toMp4UploadEmbed(url) {
     return null;
 }
 
-app.get('/api/anime-animetsu', async (req, res) => {
-    const { title, episode, type, sourceUrl, sourceHtml } = req.query;
-    if (!title || !episode) return res.status(400).json({ error: 'Missing title or episode' });
-
-    const audioType = type === 'dub' ? 'dub' : 'sub';
-    const ep = parseInt(episode, 10) || episode;
-
-    let candidateUrl = String(sourceUrl || '').trim();
-    if (!candidateUrl) {
-        const key = `${normalizeAnimetsuKey(title)}|${ep}|${audioType}`;
-        candidateUrl = ANIMETSU_SOURCE_HINTS[key] || '';
-    }
-
-    if (!candidateUrl) {
-        return res.status(404).json({
-            error: 'Animetsu source not found',
-            title,
-            episode: ep,
-            audioType,
-            hint: 'Provide sourceUrl query param from HTTP Toolkit (swiftstream or mp4upload).'
-        });
-    }
-
-    try {
-        if (sourceHtml) {
-            const resolved = await resolveResource(sourceHtml);
-            const plain = String(resolved.decrypted || '').trim();
-
-            // Try to surface a directly playable URL from decrypted payload.
-            let resolvedUrl = '';
-            const directHttp = plain.match(/https?:\/\/[^\s"'<>]+/i);
-            if (directHttp && directHttp[0]) {
-                resolvedUrl = directHttp[0];
-            } else if (plain.startsWith('/')) {
-                resolvedUrl = `https://swiftstream.top${plain}`;
-            }
-
-            if (!resolvedUrl) {
-                return res.status(404).json({
-                    error: 'Animetsu decrypted payload did not contain a playable URL',
-                    provider: 'swiftstream-decrypt',
-                    decrypted: plain,
-                    slug: resolved.slug
-                });
-            }
-
-            console.log(`[anime-animetsu] ${title} ep${ep} -> swiftstream decrypt`);
-            return res.json({
-                url: resolvedUrl,
-                provider: 'swiftstream-decrypt',
-                episode: ep,
-                audioType,
-                slug: resolved.slug
-            });
-        }
-
-        // Swiftstream proxies can be loaded directly in iframe.
-        if (/^https?:\/\/(?:www\.)?swiftstream\.top\/proxy\//i.test(candidateUrl)) {
-            console.log(`[anime-animetsu] ${title} ep${ep} -> swiftstream proxy`);
-            return res.json({
-                url: candidateUrl,
-                provider: 'swiftstream-proxy',
-                episode: ep,
-                audioType
-            });
-        }
-
-        // mp4upload embed -> extract direct video.mp4 when possible.
-        const mp4Embed = toMp4UploadEmbed(candidateUrl);
-        if (mp4Embed) {
-            const embedRes = await axios.get(mp4Embed, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    Referer: 'https://allanime.day/'
-                },
-                timeout: 10000,
-                maxRedirects: 3,
-                validateStatus: () => true
-            });
-
-            if (embedRes.status !== 200) {
-                return res.status(404).json({ error: 'mp4upload embed unavailable', embedUrl: mp4Embed, status: embedRes.status });
-            }
-
-            const body = String(embedRes.data || '');
-            const directMatch =
-                body.match(/src:\s*"(https?:\/\/[^"\\]+video\.mp4[^"\\]*)"/i) ||
-                body.match(/player\.src\(\{[\s\S]*?src:\s*"(https?:\/\/[^"\\]+)"/i);
-
-            if (directMatch && directMatch[1]) {
-                const directUrl = directMatch[1].replace(/\\\//g, '/');
-                console.log(`[anime-animetsu] ${title} ep${ep} -> mp4upload direct`);
-                return res.json({
-                    url: directUrl,
-                    embedUrl: mp4Embed,
-                    provider: 'mp4upload-direct',
-                    episode: ep,
-                    audioType
-                });
-            }
-
-            console.log(`[anime-animetsu] ${title} ep${ep} -> mp4upload embed`);
-            return res.json({
-                url: mp4Embed,
-                embedUrl: mp4Embed,
-                provider: 'mp4upload-embed',
-                episode: ep,
-                audioType
-            });
-        }
-
-        return res.status(404).json({ error: 'Unsupported Animetsu source URL', sourceUrl: candidateUrl });
-    } catch (err) {
-        console.error('[anime-animetsu]', err.message);
-        return res.status(500).json({ error: 'Animetsu resolve failed', detail: err.message });
-    }
-});
-
-// =========================================
-//  9d. ALLANIME SCRAPER (title + episode → bangumi ID + video URL)
-// =========================================
-app.get('/api/anime-allanime', async (req, res) => {
-    const { title, episode, type, bangumiId, embedUrl } = req.query;
-    if (!title || !episode) return res.status(400).json({ error: 'Missing title or episode' });
-
-    try {
-        const audioType = type === 'dub' ? 'dub' : 'sub';
-
-        const resolveMp4Upload = async (mp4EmbedUrl) => {
-            const cleanedEmbedUrl = String(mp4EmbedUrl || '').replace(/\\\//g, '/');
-            if (!/^https?:\/\/(www\.)?mp4upload\.com\/embed-/i.test(cleanedEmbedUrl)) {
-                return null;
-            }
-
-            const embedRes = await axios.get(cleanedEmbedUrl, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    Referer: 'https://allanime.day/'
-                },
-                timeout: 10000,
-                maxRedirects: 3,
-                validateStatus: () => true
-            });
-
-            if (embedRes.status !== 200) return null;
-
-            const body = String(embedRes.data);
-            const directMp4Match =
-                body.match(/src:\s*"(https?:\/\/[^"\\]+video\.mp4[^"\\]*)"/i) ||
-                body.match(/player\.src\(\{[\s\S]*?src:\s*"(https?:\/\/[^"\\]+)"/i);
-
-            if (directMp4Match && directMp4Match[1]) {
-                return {
-                    url: directMp4Match[1].replace(/\\\//g, '/'),
-                    embedUrl: cleanedEmbedUrl,
-                    provider: 'mp4upload-direct'
-                };
-            }
-
-            return {
-                url: cleanedEmbedUrl,
-                embedUrl: cleanedEmbedUrl,
-                provider: 'mp4upload-embed'
-            };
-        };
-
-        // Allow manual embed URL injection for debugging/specific episodes.
-        if (embedUrl) {
-            const resolved = await resolveMp4Upload(embedUrl);
-            if (!resolved) {
-                return res.status(404).json({ error: 'Invalid or unreachable mp4upload embed URL', embedUrl });
-            }
-            console.log(`[anime-allanime] Manual embed resolved: ${resolved.provider}`);
-            return res.json({ ...resolved, episode, audioType });
-        }
-
-        let bangId = bangumiId; // Use provided bangumi ID if available
-        
-        if (!bangId) {
-            const searchUrl = `https://allmanga.to/search?query=${encodeURIComponent(title)}`;
-            console.log(`[anime-allanime] Searching: ${searchUrl}`);
-            try {
-                const searchRes = await Promise.race([
-                    axios.get(searchUrl, {
-                        headers: { 'User-Agent': 'Mozilla/5.0' },
-                        timeout: 5000, maxRedirects: 3, validateStatus: () => true
-                    }),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5500))
-                ]);
-                if (searchRes.status === 200) {
-                    const bangumiMatch = String(searchRes.data).match(/\/bangumi\/([a-zA-Z0-9_-]+)/);
-                    if (bangumiMatch) bangId = bangumiMatch[1];
-                }
-            } catch (e) { console.log(`[anime-allanime] Search failed: ${e.message}`); }
-        }
-        
-        if (!bangId) return res.status(404).json({ error: 'Bangumi ID not found', title });
-
-        const episodeUrl = `https://allmanga.to/bangumi/${bangId}/p-${episode}-${audioType}`;
-        const episodeRes = await axios.get(episodeUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-            timeout: 10000,
-            maxRedirects: 5,
-            validateStatus: () => true
-        });
-
-        if (episodeRes.status !== 200) {
-            return res.status(404).json({
-                error: 'AllManga episode page not found',
-                title,
-                bangumiId: bangId,
-                episode,
-                audioType
-            });
-        }
-
-        const body = String(episodeRes.data);
-        const mp4EmbedMatches = body.match(/https?:\\\/\\\/(?:www\\\.)?mp4upload\\\.com\\\/embed-[a-z0-9]+\\\.html|https?:\/\/(?:www\.)?mp4upload\.com\/embed-[a-z0-9]+\.html/ig) || [];
-
-        const uniqueEmbeds = [...new Set(mp4EmbedMatches.map((u) => u.replace(/\\\//g, '/')))].slice(0, 5);
-
-        for (const candidate of uniqueEmbeds) {
-            const resolved = await resolveMp4Upload(candidate);
-            if (resolved?.url) {
-                console.log(`[anime-allanime] ${title} ep${episode} (${audioType}) -> ${resolved.provider}`);
-                return res.json({
-                    ...resolved,
-                    bangumiId: bangId,
-                    episode,
-                    audioType
-                });
-            }
-        }
-
-        return res.status(404).json({
-            error: 'No mp4upload server found on AllManga episode page',
-            title,
-            bangumiId: bangId,
-            episode,
-            audioType
-        });
-
-    } catch (err) {
-        console.error('[anime-allanime] Error:', err.message);
-        return res.status(500).json({ error: 'Failed', details: err.message });
-    }
-});
-
-// =========================================
-//  9c. KITE (AnimeKai) IFRAME SERVERS
-// =========================================
-app.get('/api/anime-kite-servers', async (req, res) => {
-    const { title, episode } = req.query;
-    const ep = parseInt(episode, 10) || 1;
-    if (!title) return res.status(400).json({ error: 'Missing title' });
-
-    try {
-        const searchRes = await animeKai.search(title);
-        const list = Array.isArray(searchRes?.results) ? searchRes.results : [];
-        if (!list.length) return res.status(404).json({ error: 'Not found on Kite/AnimeKai' });
-
-        const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-        const q = norm(title);
-        const qCompact = q.replace(/\s+/g, '');
-        const scoreTitle = (cand) => {
-            const c = norm(cand);
-            if (!c) return -9999;
-            let score = 0;
-            if (c === q) score += 1000;
-            if (c.includes(q) || q.includes(c)) score += 400;
-            const qWords = q.split(' ').filter(Boolean);
-            const cWords = c.split(' ').filter(Boolean);
-            score += qWords.filter(w => cWords.includes(w)).length * 25;
-            const cCompact = c.replace(/\s+/g, '');
-            if (qCompact.includes('rezero') && cCompact.includes('rezero')) score += 500;
-            if (qCompact.includes('startinglifeinanotherworld') && cCompact.includes('startinglifeinanotherworld')) score += 250;
-            return score;
-        };
-
-        const target = list
-            .map(item => ({ item, score: scoreTitle(item.title) }))
-            .sort((a, b) => b.score - a.score)[0].item;
-        const animeInfo = await animeKai.fetchAnimeInfo(target.id);
-        const episodes = Array.isArray(animeInfo?.episodes) ? animeInfo.episodes : [];
-        if (!episodes.length) return res.status(404).json({ error: 'No episodes found on Kite/AnimeKai' });
-
-        const epEntry = episodes.find(e => Number(e.number) === ep) || episodes[ep - 1];
-        if (!epEntry) return res.status(404).json({ error: `Episode ${ep} not found` });
-
-        const servers = await animeKai.fetchEpisodeServers(epEntry.id);
-        const out = Array.isArray(servers)
-            ? servers.map(s => ({ name: s.name || 'server', url: s.url || '' })).filter(s => !!s.url)
-            : [];
-        if (!out.length) return res.status(404).json({ error: 'No Kite servers found for this episode' });
-
-        return res.json({
-            provider: 'kite',
-            servers: out,
-            animeId: target.id,
-            episodeId: epEntry.id
-        });
-    } catch (err) {
-        console.error('[anime-kite-servers]', err.message);
-        return res.status(500).json({ error: 'Kite fetch failed', details: err.message });
-    }
-});
 const MAL_CLIENT_ID = '654799c0f2c7c74d005686ae46dfd20e'; // OAuth client ID - not secret by design, fine to be public
 // MAL_CLIENT_SECRET was hardcoded here (found during pentest, 2026-08-17 round 4, while
 // mapping the internal API). Unlike proxy_token.key/middleware_secret.key/session_secret.key/
