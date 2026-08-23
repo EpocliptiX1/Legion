@@ -329,9 +329,9 @@
         <!-- Two Column Layout: Playlists (50%) + Recent Posts (50%) -->
         <div class="two-column-layout" style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 40px;">
             <!-- Left Column: My Playlists -->
-            <div class="playlists-column" style="background: var(--bg-card); padding: 25px; border-radius: 12px; box-shadow: var(--shadow-md);">
+            <div class="playlists-column" style="background: #0a0a0a; padding: 25px; border-radius: 12px; box-shadow: var(--shadow-md);">
                 <h2 class="list-title" style="margin: 0 0 20px 0; font-size: 1.6rem; color: var(--text-primary); border-bottom: 2px solid var(--accent-primary); padding-bottom: 10px;">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:0.85em;height:0.85em;vertical-align:-0.1em;"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" /></svg> My Playlists
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:0.85em;height:0.85em;vertical-align:-0.1em;color:var(--accent-primary);"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" /></svg> My Playlists
                 </h2>
                 <div id="myPlaylistsGrid" style="display: flex; flex-direction: column; gap: 12px;">
                     <!-- Playlists will be loaded here -->
@@ -341,10 +341,10 @@
             <!-- Right Column: Your Comments (anime/movie, same as the Your Comments
                  widget on indexMain.html -- was "Recent Posts" pulling from the forum,
                  a separate, unrelated system) -->
-            <div class="recent-posts-column" style="background: var(--bg-card); padding: 25px; border-radius: 12px; box-shadow: var(--shadow-md);">
+            <div class="recent-posts-column" style="background: #0a0a0a; padding: 25px; border-radius: 12px; box-shadow: var(--shadow-md);">
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;border-bottom: 2px solid var(--accent-primary); padding-bottom: 10px;">
                     <h2 class="list-title" style="margin:0;font-size: 1.6rem; color: var(--text-primary);">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:0.85em;height:0.85em;vertical-align:-0.1em;"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.76c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 0 1 1.037-.443 48.282 48.282 0 0 0 5.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" /></svg> Your Comments
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:0.85em;height:0.85em;vertical-align:-0.1em;color:var(--accent-primary);"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.76c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.076-4.076a1.526 1.526 0 0 1 1.037-.443 48.282 48.282 0 0 0 5.68-.494c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" /></svg> Your Comments
                     </h2>
                     <div class="cp-mode-switch" id="plCommentsModeSwitch">
                         <button type="button" class="cp-mode-btn" data-cp-mode="anime">Anime</button>
