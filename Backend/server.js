@@ -3097,6 +3097,25 @@ footerFormsDb.serialize(() => {
         created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
     )`);
     footerFormsDb.run(`CREATE INDEX IF NOT EXISTS idx_footer_submissions_type ON footer_submissions(form_type, created_at)`);
+
+    // apidocs.html's own support form (questions / issue reports / anime add-fix requests from
+    // whoever's actually reading the API docs) - a separate table from footer_submissions on
+    // purpose, since this audience (developers integrating with the public embed API) and
+    // whoever reviews these is distinct from the main site's footer feedback inbox, even though
+    // both live in the same FooterForms.db.
+    footerFormsDb.run(`CREATE TABLE IF NOT EXISTS api_support_submissions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        category    TEXT    NOT NULL,
+        tmdb_id     TEXT,
+        mal_id      TEXT,
+        anilist_id  TEXT,
+        media_title TEXT,
+        message     TEXT    NOT NULL,
+        email       TEXT,
+        status      TEXT    NOT NULL DEFAULT 'open',
+        created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    )`);
+    footerFormsDb.run(`CREATE INDEX IF NOT EXISTS idx_api_support_submissions_category ON api_support_submissions(category, created_at)`);
 });
 
 // POST /activity/watch — record a movie view
@@ -13615,6 +13634,56 @@ app.post('/api/footer/contact', footerFormLimiter, (req, res) => {
         message: safeMessage.slice(0, 4000),
         user_uid: userUID, username
     }, res);
+});
+
+// apidocs.html's support form (Resume Playback section) - questions, issue reports, or
+// add/fix-anime requests from whoever's actually reading the API docs. No auth, so the same
+// abuse surface as the footer forms above: shares footerFormLimiter (5 per 15min per IP) rather
+// than a separate limiter, since the risk (someone scripting hundreds of submissions) is
+// identical. `website` is a honeypot - a real visitor never sees or fills the field (hidden via
+// CSS on apidocs.html), so anything filling it in is scripted and gets silently dropped with a
+// fake success response instead of an error that would teach a bot to omit the field.
+app.post('/api/apidocs/support', footerFormLimiter, (req, res) => {
+    const { category, tmdbId, malId, anilistId, mediaTitle, message, email, website } = req.body || {};
+    if (website) {
+        return res.json({ success: true }); // honeypot tripped - pretend success, don't insert
+    }
+
+    const allowedCategories = new Set(['question', 'issue', 'anime_request']);
+    if (!allowedCategories.has(category)) {
+        return res.status(400).json({ error: 'category must be "question", "issue", or "anime_request"' });
+    }
+    const safeMessage = String(message || '').trim();
+    if (!safeMessage) {
+        return res.status(400).json({ error: 'message is required' });
+    }
+    if (safeMessage.length > 4000) {
+        return res.status(400).json({ error: 'message is too long (max 4000 characters)' });
+    }
+    const safeEmail = String(email || '').trim();
+    if (safeEmail) {
+        const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailPattern.test(safeEmail) || safeEmail.length > 200) {
+            return res.status(400).json({ error: 'Invalid email address' });
+        }
+    }
+    const safeTmdbId = tmdbId != null ? String(tmdbId).trim().slice(0, 50) : null;
+    const safeMalId = malId != null ? String(malId).trim().slice(0, 50) : null;
+    const safeAnilistId = anilistId != null ? String(anilistId).trim().slice(0, 50) : null;
+    const safeMediaTitle = mediaTitle != null ? String(mediaTitle).trim().slice(0, 300) : null;
+
+    footerFormsDb.run(
+        `INSERT INTO api_support_submissions (category, tmdb_id, mal_id, anilist_id, media_title, message, email)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [category, safeTmdbId, safeMalId, safeAnilistId, safeMediaTitle, safeMessage, safeEmail || null],
+        function (err) {
+            if (err) {
+                console.error('[API Docs Support] Insert failed:', err.message);
+                return res.status(500).json({ error: 'Could not submit form' });
+            }
+            res.json({ success: true });
+        }
+    );
 });
 
 // Self-sufficient comments endpoint - doesn't depend on the user ever hitting the Neko

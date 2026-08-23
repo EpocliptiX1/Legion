@@ -272,3 +272,62 @@ td.tbd, pre.placeholder-inline {
     padding: 2px 7px;
     border-radius: 5px;
 }
+
+/* Questions & Support form (#support) */
+.support-form {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-width: 560px;
+}
+.support-form-row { display: flex; flex-direction: column; gap: 6px; }
+.support-form-row label { font-size: 0.85rem; color: var(--text-secondary); font-weight: 600; }
+.support-form-row input,
+.support-form-row select,
+.support-form-row textarea {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    padding: 9px 11px;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-family: inherit;
+    resize: vertical;
+}
+.support-form-row input:focus,
+.support-form-row select:focus,
+.support-form-row textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+.support-form-id-group { display: flex; gap: 8px; margin-top: 4px; }
+.support-form-id-group input { flex: 1; min-width: 0; }
+/* Honeypot - off-screen rather than display:none/visibility:hidden, which some spam bots
+   specifically detect and skip filling; kept in the tab order out via tabindex="-1" above. */
+.support-form-honeypot {
+    position: absolute;
+    left: -9999px;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+}
+.support-form-submit {
+    align-self: flex-start;
+    background: var(--accent-primary);
+    color: #000;
+    font-weight: 700;
+    font-size: 0.9rem;
+    border: none;
+    border-radius: 7px;
+    padding: 10px 22px;
+    cursor: pointer;
+}
+.support-form-submit:disabled { opacity: 0.6; cursor: default; }
+.support-form-submit:hover:not(:disabled) { filter: brightness(1.08); }
+.support-form-status { margin: 0; font-size: 0.85rem; min-height: 1.2em; }
+.support-form-status.success { color: #3ecf6c; }
+.support-form-status.error { color: #e35d5d; }
