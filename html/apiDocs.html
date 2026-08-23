@@ -45,6 +45,7 @@
             </div>
             <div class="docs-nav-group">
                 <h4>Info</h4>
+                <a href="#support">Questions &amp; Support</a>
                 <a href="#last-updated">Last Updated</a>
             </div>
         </nav>
@@ -378,6 +379,48 @@ iframe.src = '/embed/movie/293660?startAt=' + resumeAt;</pre>
                 </div>
             </section>
 
+            <section class="docs-section" id="support">
+                <h2>Questions &amp; Support</h2>
+                <p>
+                    Got a question about the embed API, found a bug, or want a title added or
+                    fixed? Send it here.
+                </p>
+                <form id="apiSupportForm" class="support-form" novalidate>
+                    <div class="support-form-row">
+                        <label for="supportCategory">What's this about?</label>
+                        <select id="supportCategory" name="category" required>
+                            <option value="question">A question</option>
+                            <option value="issue">Report an issue</option>
+                            <option value="anime_request">Add or fix an anime</option>
+                        </select>
+                    </div>
+                    <div class="support-form-row" id="supportMediaRow" style="display:none;">
+                        <label for="supportMediaTitle">Title (or a TMDB/MAL/AniList ID below)</label>
+                        <input type="text" id="supportMediaTitle" name="mediaTitle" maxlength="300" placeholder="e.g. Arifureta">
+                        <div class="support-form-id-group">
+                            <input type="text" id="supportTmdbId" name="tmdbId" maxlength="50" placeholder="TMDB ID">
+                            <input type="text" id="supportMalId" name="malId" maxlength="50" placeholder="MAL ID">
+                            <input type="text" id="supportAnilistId" name="anilistId" maxlength="50" placeholder="AniList ID">
+                        </div>
+                    </div>
+                    <div class="support-form-row">
+                        <label for="supportMessage">Message</label>
+                        <textarea id="supportMessage" name="message" maxlength="4000" rows="5" required placeholder="Describe your question, issue, or request..."></textarea>
+                    </div>
+                    <div class="support-form-row">
+                        <label for="supportEmail">Email (optional, if you want a reply)</label>
+                        <input type="email" id="supportEmail" name="email" maxlength="200" placeholder="you@example.com">
+                    </div>
+                    <!-- Honeypot - hidden from real visitors via CSS, a filled value marks the submission as scripted. -->
+                    <div class="support-form-honeypot" aria-hidden="true">
+                        <label for="supportWebsite">Website</label>
+                        <input type="text" id="supportWebsite" name="website" tabindex="-1" autocomplete="off">
+                    </div>
+                    <button type="submit" class="support-form-submit">Send</button>
+                    <p id="supportFormStatus" class="support-form-status" role="status"></p>
+                </form>
+            </section>
+
             <section class="docs-section" id="last-updated">
                 <h2>Last Updated</h2>
                 <p>This page and the embed API were last updated <strong>August 22, 2026</strong>.</p>
@@ -450,6 +493,75 @@ iframe.src = '/embed/movie/293660?startAt=' + resumeAt;</pre>
 
             window.addEventListener('scroll', onScroll, { passive: true });
             onScroll();
+        })();
+
+        // Questions & Support form (#support) - posts to /api/apidocs/support, which is rate
+        // limited server-side and never echoes submitted content back, so there's nothing here
+        // to sanitize beyond basic client-side field limits (the server re-validates everything
+        // regardless - this is just faster feedback for a real visitor, not the actual defense).
+        (function () {
+            var form = document.getElementById('apiSupportForm');
+            if (!form) return;
+            var categorySelect = document.getElementById('supportCategory');
+            var mediaRow = document.getElementById('supportMediaRow');
+            var statusEl = document.getElementById('supportFormStatus');
+            var submitBtn = form.querySelector('.support-form-submit');
+
+            function syncMediaRow() {
+                var showMedia = categorySelect.value === 'issue' || categorySelect.value === 'anime_request';
+                mediaRow.style.display = showMedia ? '' : 'none';
+            }
+            categorySelect.addEventListener('change', syncMediaRow);
+            syncMediaRow();
+
+            form.addEventListener('submit', function (e) {
+                e.preventDefault();
+                statusEl.textContent = '';
+                statusEl.className = 'support-form-status';
+
+                var message = document.getElementById('supportMessage').value.trim();
+                if (!message) {
+                    statusEl.textContent = 'Please enter a message.';
+                    statusEl.classList.add('error');
+                    return;
+                }
+
+                var payload = {
+                    category: categorySelect.value,
+                    message: message,
+                    email: document.getElementById('supportEmail').value.trim(),
+                    mediaTitle: document.getElementById('supportMediaTitle').value.trim(),
+                    tmdbId: document.getElementById('supportTmdbId').value.trim(),
+                    malId: document.getElementById('supportMalId').value.trim(),
+                    anilistId: document.getElementById('supportAnilistId').value.trim(),
+                    website: document.getElementById('supportWebsite').value // honeypot
+                };
+
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Sending...';
+
+                fetch('/api/apidocs/support', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                })
+                    .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+                    .then(function (result) {
+                        if (!result.ok) throw new Error(result.data && result.data.error ? result.data.error : 'Submission failed');
+                        statusEl.textContent = 'Sent - thanks for the feedback!';
+                        statusEl.classList.add('success');
+                        form.reset();
+                        syncMediaRow();
+                    })
+                    .catch(function (err) {
+                        statusEl.textContent = err.message || 'Could not send right now. Please try again later.';
+                        statusEl.classList.add('error');
+                    })
+                    .finally(function () {
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = 'Send';
+                    });
+            });
         })();
     </script>
 </body>
