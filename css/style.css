@@ -7702,7 +7702,7 @@ body.blur-active {
     background-color: #050505;
     background-image: linear-gradient(180deg, rgba(5,5,5,0.86), rgba(5,5,5,0.94)), url('/img/footer.jpg');
     background-size: cover;
-    background-position: center 30%;
+    background-position: 70% 30%;
     background-repeat: no-repeat;
     border-top: 1px solid #222;
     padding: 36px 0 24px;
