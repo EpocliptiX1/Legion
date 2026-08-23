@@ -1858,6 +1858,18 @@ function buildDownloadRedirectUrl(url, referer, sessionId) {
     return `/api/download-redirect?token=${encryptProxyTarget({ url, referer, sessionId })}`;
 }
 
+// /api/anime-neko-log's sub/sub2/dub/dub2 download links - same nekostream.site mirror
+// /api/anime-download-links already wraps via buildDownloadRedirectUrl (pahe.nekostream.site
+// sits behind a Cloudflare challenge, so these redirect the browser to the real host rather
+// than being proxied server-side like every other stream URL in this file).
+function tokenizeNekoDownloads(downloads, sessionId) {
+    const out = {};
+    for (const [key, url] of Object.entries(downloads || {})) {
+        out[key] = url ? buildDownloadRedirectUrl(url, 'https://nekostream.site/', sessionId) : null;
+    }
+    return out;
+}
+
 // MegaPlay's raw {file, label, kind, default} track shape, tokenized into the exact
 // {url, lang, default} shape the frontend consumes directly - moves the proxy URL building
 // (and the raw CDN url that used to travel with it) server-side, matching the video stream URL.
@@ -14058,7 +14070,11 @@ app.get('/api/anime-neko-log', async (req, res) => {
                     proxyRef: __proxyRef || null,
                     // Same fresh-per-response tokenizing as `stream` above, not stored this way.
                     tracks: tokenizeMegaplayTracks(__tracks, req.sessionId),
-                    downloads,
+                    // Same reasoning as the live-resolve path below: these are raw
+                    // mapper.nekostream.site/pahe.nekostream.site URLs, tokenized fresh per
+                    // response (not at cache-write time) via buildDownloadRedirectUrl, same as
+                    // /api/anime-download-links.
+                    downloads: tokenizeNekoDownloads(downloads, req.sessionId),
                     skipSegments
                 });
             }
@@ -14167,6 +14183,16 @@ app.get('/api/anime-neko-log', async (req, res) => {
         logNekoDebug('[Neko] Sub Mirrors:', subLinks.length);
         logNekoDebug('[Neko] Dub Mirrors:', dubLinks.length);
 
+        // Raw mapper.nekostream.site/pahe.nekostream.site URLs - never sent to the browser
+        // as-is (see tokenizeNekoDownloads below), only cached raw so they can be re-tokenized
+        // fresh on every response/cache-hit, same pattern as /api/anime-download-links.
+        const rawDownloads = {
+            sub: subLinks[0] || null,
+            sub2: subLinks[1] || subLinks[0] || null,
+            dub: dubLinks[0] || null,
+            dub2: dubLinks[1] || dubLinks[0] || null
+        };
+
         const responseData = {
             ok: true,
             // Tokenized here (not stored this way) - the raw streamUrl never reaches the
@@ -14174,20 +14200,17 @@ app.get('/api/anime-neko-log', async (req, res) => {
             stream: buildM3u8ProxyUrl(streamUrl, streamProxyRef, req.sessionId),
             proxyRef: streamProxyRef,
             tracks: tokenizeMegaplayTracks(megaplayTracks, req.sessionId),
-            downloads: {
-                sub: subLinks[0] || null,
-                sub2: subLinks[1] || subLinks[0] || null,
-                dub: dubLinks[0] || null,
-                dub2: dubLinks[1] || dubLinks[0] || null
-            },
+            downloads: tokenizeNekoDownloads(rawDownloads, req.sessionId),
             skipSegments
         };
 
         // Cache the result - proxyRef/tracks bundled into the same blob as downloads (see the
         // GET above for why: a cache hit needs to reconstruct the exact same response shape).
+        // Stores rawDownloads (not responseData.downloads), which is already tokenized/session-
+        // bound and would be stale/wrong to replay from cache.
         if (tmdbId && streamUrl) {
             const sources = [streamUrl];
-            const subtitles = { ...responseData.downloads, __proxyRef: streamProxyRef, __tracks: megaplayTracks };
+            const subtitles = { ...rawDownloads, __proxyRef: streamProxyRef, __tracks: megaplayTracks };
             episodeLoadCacheSet(parseInt(tmdbId), malId, season, episode, audio, 'neko',
                 null, rawTitle, sources, subtitles).catch(err =>
                 logNekoDebug('[Cache] Failed to cache Neko result:', err.message));
@@ -18152,48 +18175,6 @@ app.get('/api/anime-season-groups', async (req, res) => {
 // =========================================
 // 9c. MEGAPLAY PROXY (With Verbose Debugging)
 // =========================================
-app.get('/api/megaplay', async (req, res) => {
-    const { url, referer } = req.query;
-
-    if (!url) {
-        console.error(`[DEBUG] ❌ MegaPlay Error: No URL parameter provided.`);
-        return res.status(400).json({ error: 'Missing target URL parameter' });
-    }
-
-    const targetUrl = url;
-    const targetReferer = referer || 'https://megaplay.buzz/';
-
-    // PRE-FLIGHT DEBUG LOG - This shows exactly what we are about to send
-    console.log(`[DEBUG] 🚀 [PRE-FLIGHT] Requesting:`);
-    console.log(`[DEBUG] 🔗 URL: ${targetUrl}`);
-    console.log(`[DEBUG] 🏷️ Referer Header: ${targetReferer}`);
-    console.log(`[DEBUG] 👤 User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36`);
-
-    try {
-        const response = await axios.get(targetUrl, {
-            responseType: 'stream',
-            headers: {
-                'Referer': targetReferer,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-            },
-            validateStatus: () => true 
-        });
-
-        console.log(`[DEBUG] 📡 [RESPONSE] Status: ${response.status}`);
-
-        // Pipe the response back
-        if (response.headers['content-type']) {
-            res.setHeader('Content-Type', response.headers['content-type']);
-        }
-        
-        response.data.pipe(res);
-
-    } catch (err) {
-        console.error('[DEBUG] 💥 [CRITICAL] Request Failed:');
-        console.error(`[DEBUG] 🛑 Error Details: ${err.message}`);
-        res.status(500).json({ error: 'MegaPlay proxy failed', details: err.message });
-    }
-});
 // =========================================
 //  9e. ANIMETSU SOURCE RESOLVER (swiftstream/mp4upload)
 // =========================================
