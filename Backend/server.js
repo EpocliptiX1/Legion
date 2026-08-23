@@ -16565,11 +16565,15 @@ async function fetchMalAnimeDetailsUncached(malId) {
     let airDate = null;
     let titleEn = null;
     let type = null;
+    let status = null;
     // The page's own <h1> is MAL's main/native title (usually romaji) - separate from the
     // "English:" sidebar field below. Needed for scrapeMalRelations/buildSeasonGroupsFromMal
     // Relations, which push this straight into the same romajiTitle field
     // buildSeasonGroupsFromAniList already populates.
     const titleNative = $('h1.title-name').first().text().trim() || $('h1').first().text().trim() || null;
+    // og:image is the same poster CDN URL Jikan's images.jpg.large_image_url would have given -
+    // needed by buildSeasonCardsFromMalRelations (season-cards' own cover art, Jikan-free path).
+    const coverImage = $('meta[property="og:image"]').attr('content') || null;
     $('.spaceit_pad, .spaceit').each((i, el) => {
         const text = $(el).text().trim();
         const epMatch = text.match(/^Episodes:\s*(\d+)/i);
@@ -16595,8 +16599,13 @@ async function fetchMalAnimeDetailsUncached(malId) {
         // tell these apart, only the real catalog type can).
         const typeMatch = text.match(/^Type:\s*([A-Za-z]+)/i);
         if (typeMatch) type = typeMatch[1].trim().toUpperCase();
+        // "Status: Finished Airing" / "Currently Airing" / "Not yet aired" - same 3-way signal
+        // Jikan's own `status` field gives, needed by buildSeasonCardsFromMalRelations to detect
+        // an upcoming/ongoing season the same way fetchJikanSeasonCardsChain already does.
+        const statusMatch = text.match(/^Status:\s*(.+)$/i);
+        if (statusMatch) status = statusMatch[1].trim();
     });
-    return { episodes, airDate, titleEn, type, titleNative };
+    return { episodes, airDate, titleEn, type, titleNative, coverImage, status };
 }
 
 async function fetchMalAnimeDetails(malId) {
@@ -16696,6 +16705,59 @@ async function buildSeasonGroupsFromMalRelations(malId) {
     }
 
     return { metaList, failedLookups };
+}
+
+// Season-cards' own MAL-direct fallback - same BFS-over-SEQUEL/PREQUEL shape as
+// buildSeasonGroupsFromMalRelations just above, sourced from the same two plain MAL scrapes
+// (scrapeMalRelations/fetchMalAnimeDetails), just returning the season-cards shape (idMal/
+// title/coverImage/airDate/status) instead of metaList's episode-group shape. This replaces
+// fetchJikanSeasonCardsChain as the primary AniList fallback: confirmed live that Jikan can
+// sustain a 504 on one specific mid-chain node across all 4 of its own retries (Attack on
+// Titan's Season 2 entry, mal 25777) while MAL's own page for that same id loads fine - Jikan
+// is also headed for its own sunset, so it's demoted to a last-resort-of-the-last-resort below
+// rather than removed outright.
+async function buildSeasonCardsFromMalRelations(malId) {
+    const visited = new Set();
+    const queue = [Number(malId)];
+    const found = []; // { idMal, title, coverImage, airDate, status }
+
+    while (queue.length && found.length < 8) {
+        const id = Number(queue.shift());
+        if (!id || visited.has(id)) continue;
+        visited.add(id);
+
+        let details;
+        try {
+            details = await fetchMalAnimeDetails(id);
+        } catch (err) {
+            continue; // one unreachable MAL entry shouldn't drop the rest of this chain
+        }
+
+        if (details.type === 'TV') {
+            const statusLower = String(details.status || '').toLowerCase();
+            found.push({
+                idMal: id,
+                title: details.titleEn || details.titleNative || null,
+                coverImage: details.coverImage || null,
+                airDate: details.airDate || null,
+                status: statusLower.includes('currently airing') ? 'RELEASING'
+                    : statusLower.includes('not yet') ? 'NOT_YET_RELEASED' : 'FINISHED'
+            });
+        }
+
+        let relations;
+        try {
+            relations = await scrapeMalRelations(id);
+        } catch (err) {
+            continue;
+        }
+        relations.forEach(rel => {
+            if (rel.relationType !== 'SEQUEL' && rel.relationType !== 'PREQUEL') return;
+            if (rel.malId > 0 && !visited.has(rel.malId)) queue.push(rel.malId);
+        });
+    }
+
+    return found;
 }
 
 // --- Health check log file ---------------------------------------------------------------
@@ -17767,35 +17829,59 @@ async function resolveAnimeSeasonCards(tmdbId) {
     // walk came up short, trustworthy failure or not.
     const aniListLooksIncomplete = Number.isFinite(tmdbSeasonCount) && tmdbSeasonCount > 0 && found.length < tmdbSeasonCount;
 
-    // MAL/Jikan is a last resort, not a co-equal source - AniList's own retries above (now also
+    // MAL is a last resort, not a co-equal source - AniList's own retries above (now also
     // covering the whole-site 403 outages AniList has been having, not just 429) already get a
     // fair shot first. Only reached when AniList either threw after every retry, or came back
     // clean but demonstrably short per the TMDB count above. Started from whichever malId we
     // already have (a season AniList DID resolve, or the tmdb_id->mal_id mapping) since that's a
     // real, known-good entry point.
+    //
+    // Direct MAL scraping (buildSeasonCardsFromMalRelations) is tried BEFORE Jikan, not after -
+    // Jikan is a wrapper around this exact same MAL data, adds its own point of failure on top
+    // (confirmed live: Jikan sustained a 504 on Attack on Titan's Season 2 node across all 4 of
+    // its own internal retries, while MAL's own page for that same id loaded fine), and is
+    // headed for its own sunset regardless. Jikan only gets a turn if the direct scrape didn't
+    // close the gap either.
+    const mergeFallbackResults = (chainFound) => {
+        const existingMalIds = new Set(found.map(f => f.idMal).filter(Boolean));
+        let addedAny = false;
+        for (const cf of chainFound) {
+            if (existingMalIds.has(cf.idMal)) continue;
+            found.push({ anilistId: null, idMal: cf.idMal, title: cf.title, coverImage: cf.coverImage, airDate: cf.airDate, status: cf.status });
+            existingMalIds.add(cf.idMal);
+            addedAny = true;
+            if (cf.status === 'RELEASING' || cf.status === 'NOT_YET_RELEASED') hasUpcomingSequel = true;
+        }
+        return addedAny;
+    };
+
     if (hadFailure || aniListLooksIncomplete) {
         const startMalId = found.find(f => f.idMal)?.idMal || mappedMalId || null;
         if (startMalId) {
+            let closedGap = false;
             try {
-                const jikanFound = await fetchJikanSeasonCardsChain(startMalId);
-                const existingMalIds = new Set(found.map(f => f.idMal).filter(Boolean));
-                let addedAny = false;
-                for (const jf of jikanFound) {
-                    if (existingMalIds.has(jf.idMal)) continue;
-                    found.push({ anilistId: null, idMal: jf.idMal, title: jf.title, coverImage: jf.coverImage, airDate: jf.airDate, status: jf.status });
-                    existingMalIds.add(jf.idMal);
-                    addedAny = true;
-                    if (jf.status === 'RELEASING' || jf.status === 'NOT_YET_RELEASED') hasUpcomingSequel = true;
-                }
-                // Jikan successfully covered the gap (found something AniList's walk didn't
-                // already have) - trust this result at the normal TTL tier instead of the short
-                // "retry soon" one below. hadFailure only meant "AniList threw"; it says nothing
-                // about whether the combined result is now actually complete, so that's
-                // re-checked against tmdbSeasonCount below rather than just clearing the flag here.
-                if (addedAny) hadFailure = false;
+                const malFound = await buildSeasonCardsFromMalRelations(startMalId);
+                if (mergeFallbackResults(malFound)) closedGap = true;
             } catch (err) {
-                // Jikan fallback also failed - hadFailure/incompleteness stands, short TTL below still applies.
+                // Direct MAL scrape failed - Jikan below still gets a shot.
             }
+
+            const stillShortAfterMal = Number.isFinite(tmdbSeasonCount) && tmdbSeasonCount > 0 && found.length < tmdbSeasonCount;
+            if (!closedGap || stillShortAfterMal) {
+                try {
+                    const jikanFound = await fetchJikanSeasonCardsChain(startMalId);
+                    if (mergeFallbackResults(jikanFound)) closedGap = true;
+                } catch (err) {
+                    // Jikan fallback also failed - hadFailure/incompleteness stands, short TTL below still applies.
+                }
+            }
+
+            // Either fallback successfully covered the gap (found something AniList's walk
+            // didn't already have) - trust this result at the normal TTL tier instead of the
+            // short "retry soon" one below. hadFailure only meant "AniList threw"; it says
+            // nothing about whether the combined result is now actually complete, so that's
+            // re-checked against tmdbSeasonCount below rather than just clearing the flag here.
+            if (closedGap) hadFailure = false;
         }
     }
 
