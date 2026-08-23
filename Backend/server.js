@@ -16843,6 +16843,24 @@ async function scrapeMalRelationsUncached(malId) {
         if (!animeMatch || !title) return; // not an anime relation (manga/LN/etc.) - skip
         relations.push({ relationType, malId: parseInt(animeMatch[1], 10), title });
     });
+    // A side-story/spin-off (confirmed live: Sword Oratoria, a DanMachi spin-off TMDB bundles
+    // into the SAME tv entry as the main show's own seasons) often has NO Sequel/Prequel edges
+    // at all - its own Related Entries section is just manga/LN adaptations. Its real season
+    // chain (matching TMDB's own bundling) lives on the PARENT series instead, which MAL surfaces
+    // in a completely separate "Parent Story:" table, not part of .related-entries at all.
+    // Captured here as its own relationType so callers can choose to fall back into it only when
+    // Sequel/Prequel came up empty, rather than always walking into an unrelated parent chain.
+    $('.entries-table tr').each((i, row) => {
+        const label = $(row).find('td').first().text().trim();
+        if (!/^Parent Story:?$/i.test(label)) return;
+        $(row).find('td .entries li a').each((j, a) => {
+            const href = $(a).attr('href') || '';
+            const title = $(a).text().trim();
+            const animeMatch = href.match(/\/anime\/(\d+)\//);
+            if (!animeMatch || !title) return;
+            relations.push({ relationType: 'PARENT_STORY', malId: parseInt(animeMatch[1], 10), title });
+        });
+    });
     return relations;
 }
 
@@ -16918,6 +16936,7 @@ async function buildSeasonCardsFromMalRelations(malId) {
     const visited = new Set();
     const queue = [Number(malId)];
     const found = []; // { idMal, title, coverImage, airDate, status }
+    const parentStoryIds = new Set();
 
     while (queue.length && found.length < 8) {
         const id = Number(queue.shift());
@@ -16950,9 +16969,57 @@ async function buildSeasonCardsFromMalRelations(malId) {
             continue;
         }
         relations.forEach(rel => {
+            if (rel.relationType === 'PARENT_STORY') {
+                if (rel.malId > 0) parentStoryIds.add(rel.malId);
+                return;
+            }
             if (rel.relationType !== 'SEQUEL' && rel.relationType !== 'PREQUEL') return;
             if (rel.malId > 0 && !visited.has(rel.malId)) queue.push(rel.malId);
         });
+    }
+
+    // A side-story/spin-off (confirmed live: Sword Oratoria, a DanMachi spin-off) can have zero
+    // Sequel/Prequel edges of its own - Related Entries is just manga/LN adaptations - which
+    // left found holding only the seed itself even though TMDB bundles this title into the SAME
+    // tv entry as the main series' own multi-season structure. Only falls back into the parent
+    // chain when the direct walk came up genuinely empty (found <= the seed alone); a title with
+    // its own real Sequel/Prequel chain never touches this, parent story or not.
+    if (found.length <= 1 && parentStoryIds.size) {
+        const parentQueue = Array.from(parentStoryIds).filter(id => !visited.has(id));
+        while (parentQueue.length && found.length < 8) {
+            const id = Number(parentQueue.shift());
+            if (!id || visited.has(id)) continue;
+            visited.add(id);
+
+            let details;
+            try {
+                details = await fetchMalAnimeDetails(id);
+            } catch (err) {
+                continue;
+            }
+            if (details.type === 'TV') {
+                const statusLower = String(details.status || '').toLowerCase();
+                found.push({
+                    idMal: id,
+                    title: details.titleEn || details.titleNative || null,
+                    coverImage: details.coverImage || null,
+                    airDate: details.airDate || null,
+                    status: statusLower.includes('currently airing') ? 'RELEASING'
+                        : statusLower.includes('not yet') ? 'NOT_YET_RELEASED' : 'FINISHED'
+                });
+            }
+
+            let relations;
+            try {
+                relations = await scrapeMalRelations(id);
+            } catch (err) {
+                continue;
+            }
+            relations.forEach(rel => {
+                if (rel.relationType !== 'SEQUEL' && rel.relationType !== 'PREQUEL') return;
+                if (rel.malId > 0 && !visited.has(rel.malId)) parentQueue.push(rel.malId);
+            });
+        }
     }
 
     return found;
