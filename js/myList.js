@@ -72,6 +72,22 @@ function escapeQuotes(text) {
     return String(text || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
+// A guest's 'userUID' localStorage key literally holds the string '0' (see
+// mainPageControls.js: localStorage.setItem('userUID', String(user.userUID || 0))), while every
+// write path that actually persists My List/History (toggleMyList -> persistMyListChange,
+// loadMyListFromDB) resolves the real per-guest ID through recommendationsSystem.getActivityUID(),
+// which treats '0' as "not a real account" and substitutes a stable guestUID instead. Reading the
+// raw 'userUID' key directly here sent removals under '0', which never matches the guestUID-keyed
+// row a guest's items were actually saved under - so the DELETE silently no-opped server-side, and
+// the "removed" item reappeared on the next page load/relogin once loadMyListFromDB() merged the
+// still-present DB row back into localStorage. Routing through the same resolver both paths already
+// use keeps them pointed at the same ID.
+function getPersistUID() {
+    if (window.recommendationsSystem?.getActivityUID) return window.recommendationsSystem.getActivityUID();
+    const stored = localStorage.getItem('userUID');
+    return (stored && stored !== '0') ? stored : (localStorage.getItem('guestUID') || null);
+}
+
 function toYear(value) {
     if (!value) return '';
     const str = String(value);
@@ -309,7 +325,7 @@ async function getHistoryRows(limit = 50) {
     }
 
     try {
-        const userUID = localStorage.getItem('userUID');
+        const userUID = getPersistUID();
         if (!userUID) return [];
         const res = await fetch(`/activity/history?userUID=${encodeURIComponent(userUID)}&limit=${limit}`);
         if (!res.ok) return [];
@@ -724,7 +740,7 @@ window.removeFromList = function(id, evt) {
         list = list.filter(item => (typeof item === 'object' && item !== null) ? String(item.id) !== String(id) : String(item) !== String(id));
         localStorage.setItem('myList', JSON.stringify(list));
         try {
-            const userUID = localStorage.getItem('userUID');
+            const userUID = getPersistUID();
             if (userUID) await fetch('/activity/list/remove', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -767,7 +783,7 @@ window.removeFromHistory = function(id, evt) {
     document.getElementById('__deleteYes').onclick = async () => {
         popup.remove();
         try {
-            const userUID = localStorage.getItem('userUID');
+            const userUID = getPersistUID();
             if (userUID) await fetch('/activity/history/remove', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
