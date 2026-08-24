@@ -864,7 +864,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const res = await fetch(`/api/movie-kino-log?tmdbId=${encodeURIComponent(tmdbId)}`);
             const data = await res.json().catch(() => ({}));
             if (data?.stream) {
-                window.__preloadedKinoSource = { tmdbId, data };
+                window.__preloadedKinoSource = { tmdbId, data, cachedAt: Date.now() };
                 console.log('[Preload] ✓ Kino stream cached for tmdbId ' + tmdbId);
             } else {
                 console.log('[Preload] ✗ Kino returned no stream:', data);
@@ -900,7 +900,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const res = await fetch(`/api/tv-kino-log?${query.toString()}`);
             const data = await res.json().catch(() => ({}));
             if (data?.stream) {
-                window.__preloadedKinoTvSource = { tmdbId, season, episode, data };
+                window.__preloadedKinoTvSource = { tmdbId, season, episode, data, cachedAt: Date.now() };
                 console.log('[Preload] ✓ Kino TV stream cached for S' + season + 'E' + episode);
             } else {
                 console.log('[Preload] ✗ Kino TV returned no stream:', data);
@@ -909,6 +909,14 @@ document.addEventListener('DOMContentLoaded', function() {
             console.log('[Preload] ✗ Kino TV preload failed:', err);
         }
     };
+
+    // Browser-side source preloads contain session-bound proxy tokens. They are only a speed-up,
+    // never a source of truth: discard them after one hour so a tab left open cannot reuse an
+    // expired token or a mapping that finished resolving after the initial page load.
+    const SOURCE_PRELOAD_TTL_MS = 60 * 60 * 1000;
+    function isFreshSourcePreload(value) {
+        return !!value && Number.isFinite(value.cachedAt) && Date.now() - value.cachedAt < SOURCE_PRELOAD_TTL_MS;
+    }
 
     // Background preload function for anime episodes
     window.preloadEpisodeSources = async function() {
@@ -994,7 +1002,7 @@ document.addEventListener('DOMContentLoaded', function() {
             fetch(kaaUrl).then(res => res.json()).then(data => {
                 if (data?.sources?.length > 0) {
                     window.__preloadedKaaSources = data;
-                    window.__preloadedKaaEpisode = { season, ep: episode, audioType };
+                    window.__preloadedKaaEpisode = { season, ep: episode, audioType, cachedAt: Date.now() };
                     console.log('[Preload] ✓ KAA sources cached for S' + season + 'E' + episode, { sourceCount: data.sources.length });
                 } else {
                     console.log('[Preload] ✗ KAA returned no sources:', data);
@@ -1018,7 +1026,7 @@ document.addEventListener('DOMContentLoaded', function() {
             fetch(nekoUrl).then(res => res.json()).then(data => {
                 if (data?.stream || data?.sources?.file) {
                     window.__preloadedNekoSources = data;
-                    window.__preloadedNekoEpisode = { season, ep: episode, audio: audioType };
+                    window.__preloadedNekoEpisode = { season, ep: episode, audio: audioType, cachedAt: Date.now() };
                     console.log('[Preload] ✓ Neko sources cached for S' + season + 'E' + episode, { hasStream: !!data.stream });
                 } else {
                     console.log('[Preload] ✗ Neko returned no stream:', data);
@@ -1038,7 +1046,7 @@ document.addEventListener('DOMContentLoaded', function() {
             fetch(newUrl).then(res => res.json()).then(data => {
                 if (data?.stream) {
                     window.__preloadedNewSources = data;
-                    window.__preloadedNewEpisode = { season, ep: episode };
+                    window.__preloadedNewEpisode = { season, ep: episode, cachedAt: Date.now() };
                     console.log('[Preload] ✓ RU-MV sources cached for S' + season + 'E' + episode);
                 } else {
                     console.log('[Preload] ✗ RU-MV returned no stream:', data);
@@ -1059,7 +1067,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 fetch(megaUrl).then(res => res.json()).then(data => {
                     if (data?.ok && data.stream) {
                         window.__preloadedMegaSources = data;
-                        window.__preloadedMegaEpisode = { season, ep: episode, audioType };
+                        window.__preloadedMegaEpisode = { season, ep: episode, audioType, cachedAt: Date.now() };
                         console.log('[Preload] ✓ MegaPlay sources cached for S' + season + 'E' + episode);
                     } else {
                         console.log('[Preload] ✗ MegaPlay returned no stream:', data);
@@ -2021,7 +2029,7 @@ document.addEventListener('DOMContentLoaded', function() {
         function preloadNekoForEpisode(season, episode, audioType) {
             const key = `${season}:${episode}:${audioType}`;
             const already = window.__preloadedNekoEpisode;
-            if (window.__preloadedNekoSources && already && parseInt(season) === parseInt(already.season || 1) && parseInt(episode) === parseInt(already.ep || 1) && (already.audio || 'sub') === audioType) {
+            if (window.__preloadedNekoSources && isFreshSourcePreload(already) && parseInt(season) === parseInt(already.season || 1) && parseInt(episode) === parseInt(already.ep || 1) && (already.audio || 'sub') === audioType) {
                 return;
             }
             if (window.__nekoPreloadInFlight.has(key)) return;
@@ -2038,7 +2046,7 @@ document.addEventListener('DOMContentLoaded', function() {
             fetch(`/api/anime-neko-log?${query.toString()}`).then(res => res.json()).then(data => {
                 if (data?.stream || data?.sources?.file) {
                     window.__preloadedNekoSources = data;
-                    window.__preloadedNekoEpisode = { season, ep: episode, audio: audioType };
+                    window.__preloadedNekoEpisode = { season, ep: episode, audio: audioType, cachedAt: Date.now() };
                     console.log(`[Preload] ✓ Neko ready for S${season}E${episode}`);
                 }
             }).catch(() => {}).finally(() => window.__nekoPreloadInFlight.delete(key));
@@ -2089,7 +2097,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 // time this ran, using none of the override logic below at all).
                 const isSyntheticSeasonForKaa = (window.__resolvedSeasonGroups || [])
                     .some(g => Number(g.seasonNumber) === Number(selectedSeason));
-                if (!isSyntheticSeasonForKaa && window.__preloadedKaaSources && preloadedEp && parseInt(selectedSeason) === parseInt(preloadedEp.season || 1) && parseInt(episode) === parseInt(preloadedEp.ep || 1) && preloadedEp.audioType === audioType) {
+                if (!isSyntheticSeasonForKaa && window.__preloadedKaaSources && isFreshSourcePreload(preloadedEp) && parseInt(selectedSeason) === parseInt(preloadedEp.season || 1) && parseInt(episode) === parseInt(preloadedEp.ep || 1) && preloadedEp.audioType === audioType) {
                     console.log('[KAA] Using preloaded sources for S' + selectedSeason + 'E' + episode);
                     data = window.__preloadedKaaSources;
                     window.__preloadedKaaSources = null;
@@ -2172,7 +2180,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     // call, so the same synthetic-season distrust applies here too.
                     const isSyntheticSeasonForNekoFallback = (window.__resolvedSeasonGroups || [])
                         .some(g => Number(g.seasonNumber) === Number(selectedSeason));
-                    if (!isSyntheticSeasonForNekoFallback && window.__preloadedNekoSources && preloadedNekoEp && parseInt(selectedSeason) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1) && (preloadedNekoEp.audio || 'sub') === audioType) {
+                    if (!isSyntheticSeasonForNekoFallback && window.__preloadedNekoSources && isFreshSourcePreload(preloadedNekoEp) && parseInt(selectedSeason) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1) && (preloadedNekoEp.audio || 'sub') === audioType) {
                         console.log('[Fallback] KAA had no sources, using preloaded Neko instead');
                         document.querySelectorAll('.server-btn').forEach(btn => btn.classList.toggle('active', btn.id === 'srvNeko1'));
                         window.currentServer = 'srvNeko1';
@@ -2401,7 +2409,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // live, even on the common path where the page-load preload had already resolved the
             // exact same season/episode/audio combo well before the click happened.
             const preloadedMegaEp = window.__preloadedMegaEpisode;
-            const hasMatchingMegaPreload = window.__preloadedMegaSources && preloadedMegaEp &&
+            const hasMatchingMegaPreload = window.__preloadedMegaSources && isFreshSourcePreload(preloadedMegaEp) &&
                 parseInt(selectedSeason) === parseInt(preloadedMegaEp.season || 1) &&
                 parseInt(episode) === parseInt(preloadedMegaEp.ep || 1) &&
                 preloadedMegaEp.audioType === audioType;
@@ -2579,7 +2587,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 // window.__resolvedSeasonGroups existed, so any cached result for one of these
                 // seasons never had the override applied at all.
                 const isSyntheticSeasonForNeko = !!nekoSeasonMatch;
-                if (!isSyntheticSeasonForNeko && window.__preloadedNekoSources && preloadedNekoEp && parseInt(season) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1) && (preloadedNekoEp.audio || 'sub') === audioType) {
+                if (!isSyntheticSeasonForNeko && window.__preloadedNekoSources && isFreshSourcePreload(preloadedNekoEp) && parseInt(season) === parseInt(preloadedNekoEp.season || 1) && parseInt(episode) === parseInt(preloadedNekoEp.ep || 1) && (preloadedNekoEp.audio || 'sub') === audioType) {
                     console.log('[Neko] Using preloaded sources for S' + season + 'E' + episode);
                     data = window.__preloadedNekoSources;
                     window.__preloadedNekoSources = null;
@@ -2701,7 +2709,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 let data;
                 const preloadedNewEp = window.__preloadedNewEpisode;
-                if (window.__preloadedNewSources && preloadedNewEp && parseInt(season) === parseInt(preloadedNewEp.season || 1) && parseInt(episode) === parseInt(preloadedNewEp.ep || 1)) {
+                if (window.__preloadedNewSources && isFreshSourcePreload(preloadedNewEp) && parseInt(season) === parseInt(preloadedNewEp.season || 1) && parseInt(episode) === parseInt(preloadedNewEp.ep || 1)) {
                     console.log('[NewStream] Using preloaded sources for S' + season + 'E' + episode);
                     data = window.__preloadedNewSources;
                     window.__preloadedNewSources = null;
@@ -2882,7 +2890,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 let data;
                 const preloaded = window.__preloadedKinoSource;
-                if (preloaded && String(preloaded.tmdbId) === String(tmdbId) && preloaded.data?.stream) {
+                if (isFreshSourcePreload(preloaded) && String(preloaded.tmdbId) === String(tmdbId) && preloaded.data?.stream) {
                     if (infoDiv) infoDiv.textContent = 'Kino: Loading (preloaded)...';
                     data = preloaded.data;
                     window.__preloadedKinoSource = null;
@@ -2968,7 +2976,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 let data;
                 const preloaded = window.__preloadedKinoTvSource;
-                if (preloaded && String(preloaded.tmdbId) === String(tmdbId)
+                if (isFreshSourcePreload(preloaded) && String(preloaded.tmdbId) === String(tmdbId)
                     && parseInt(preloaded.season) === parseInt(season || 1)
                     && parseInt(preloaded.episode) === parseInt(episode || 1)
                     && preloaded.data?.stream) {
