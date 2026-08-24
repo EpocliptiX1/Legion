@@ -80,9 +80,12 @@ A resolver token creates a random playback lease. The first playback request bin
 - a coarse IP prefix; and
 - a hash of the browser User-Agent.
 
-The lease has a ten-minute idle timeout and a two-hour maximum lifetime. Each session may have two
-active leases, allowing a normal server or quality switch. A lease allows at most six concurrent
-media requests, enough for normal HLS video/audio fetches and modest browser prefetching.
+The lease has a ten-minute idle timeout and a two-hour maximum lifetime. Each session may have six
+active leases, allowing normal title/server/quality exploration without punishing a viewer for
+recently stopped players. The player calls the authenticated, idempotent `/api/playback-stop`
+endpoint whenever it tears down an HLS instance, so the idle timeout is a fallback rather than the
+normal release path. A lease allows at most six concurrent media requests, enough for normal HLS
+video/audio fetches and modest browser prefetching.
 
 Subtitles do not claim a playback slot. This matters because a caption track should never block a
 quality switch or a second legitimate player.
@@ -165,7 +168,8 @@ Use the public HTTPS address, not port 4000. Local development has a self-signed
 The relevant constants are near the playback-lease section in `Backend/server.js`. Tune gradually
 and observe real playback before tightening:
 
-- `MAX_ACTIVE_LEASES_PER_SESSION`: keep at least 2 for server/quality switching.
+- `MAX_ACTIVE_LEASES_PER_SESSION`: keep enough room for normal title/server/quality switching;
+  the current value of 6 also covers recently stopped players if an unload cleanup is missed.
 - `MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE`: do not lower below 6 without testing Safari,
   hls.js, and high-latency networks.
 - `MAX_MEDIA_BYTES_PER_LEASE`: 8 GiB is intentionally forgiving. Lower only after measuring

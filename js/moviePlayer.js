@@ -1669,7 +1669,25 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
+        function releasePlaybackLease(streamUrl) {
+            try {
+                const url = new URL(String(streamUrl || ''), window.location.origin);
+                if (url.origin !== window.location.origin || !['/api/m3u8-proxy', '/api/proxy-stream'].includes(url.pathname)) return;
+                const token = url.searchParams.get('token');
+                if (!token) return;
+                // Best-effort cleanup only. The server still has its idle/max-age expiry if this
+                // request is interrupted during navigation or the browser is closed.
+                fetch('/api/playback-stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token }),
+                    keepalive: true
+                }).catch(() => {});
+            } catch (e) {}
+        }
+
         function resetSharedVideoPlayer() {
+            releasePlaybackLease(window.currentVideo?.playlist);
             destroyCurrentHls();
             if (window.plyrInstance) {
                 try {
@@ -1697,6 +1715,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 frame.src = 'about:blank';
                 frame.style.display = 'none';
             }
+            window.currentVideo = null;
         }
 
         // Shown while a stream is being resolved - the iframe/video area can go small or briefly

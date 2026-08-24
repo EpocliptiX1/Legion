@@ -1944,7 +1944,10 @@ const PROXY_TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
 // only kept in memory while playback is active.
 const PLAYBACK_LEASE_IDLE_MS = 10 * 60 * 1000;
 const PLAYBACK_LEASE_MAX_AGE_MS = PROXY_TOKEN_TTL_MS;
-const MAX_ACTIVE_LEASES_PER_SESSION = 2; // permits a normal server/quality switch
+// Browsing between titles (or trying several server buttons while diagnosing a provider) can
+// leave recently-idle HLS instances behind for a moment. Six still puts a firm ceiling on a
+// relay session without turning ordinary same-browser exploration into a false positive.
+const MAX_ACTIVE_LEASES_PER_SESSION = 6;
 const MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE = 6; // video + audio + small browser prefetch
 const MAX_MEDIA_BYTES_PER_LEASE = 8 * 1024 * 1024 * 1024; // 8 GiB: generous for normal HD viewing, finite for relays
 const playbackLeases = new Map(); // leaseId -> { sessionId, ipPrefix, uaHash, createdAt, lastSeenAt, inFlight }
@@ -2143,6 +2146,27 @@ function buildM3u8ProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeas
 function buildStreamProxyUrl(url, referer, ua, sessionId, leaseId = createPlaybackLeaseId()) {
     return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua, sessionId, leaseId })}`;
 }
+
+// The player sends this when it tears down an HLS instance or switches servers. It is intentionally
+// idempotent: the encrypted token and current session must still match, and deleting a lease only
+// releases that caller's own slot. This avoids making the idle timeout the normal release path.
+app.post('/api/playback-stop', (req, res) => {
+    const token = String(req.body?.token || '');
+    if (!token) return res.status(400).json({ ok: false, error: 'Missing token' });
+    try {
+        const decoded = decryptProxyTarget(token);
+        verifyProxySession(req, decoded);
+        if (decoded.leaseId) {
+            const lease = playbackLeases.get(decoded.leaseId);
+            if (lease && lease.sessionId === req.sessionId && lease.ipPrefix === playbackIpPrefix(req) && lease.uaHash === playbackUaHash(req)) {
+                playbackLeases.delete(decoded.leaseId);
+            }
+        }
+        return res.json({ ok: true });
+    } catch (err) {
+        return res.status(403).json({ ok: false, error: err.sessionMismatch ? 'Session mismatch' : 'Invalid playback token' });
+    }
+});
 // Redirect variant, not a proxy: some download hosts (pahe/nekostream) sit behind a Cloudflare
 // challenge that a real browser clears on its own but our backend can't solve server-side, so
 // those URLs can't be fetched-and-streamed through /api/proxy-stream like everything else - the
