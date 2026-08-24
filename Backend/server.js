@@ -1896,6 +1896,122 @@ app.use(RESOLVE_GATED_PATHS, requireResolveNonce);
 app.use(RESOLVE_GATED_PATHS, attachPlaybackIntegrityDecoy);
 app.use(RESOLVE_GATED_PATHS, scoreBrowserRequestSignals);
 
+// --- Proof-of-work gate on /embed/* --------------------------------------------------------
+// Pentest (2026-08-24) confirmed the session+budget+rate-limit stack above still lets a script
+// resolve a working stream for the cost of ~3 plain HTTP requests - cheap enough to do at scale.
+// Nothing here makes that impossible (same "no real DRM" ceiling as everything else on this
+// file), but it makes each fresh session cost real CPU time instead of network round-trips:
+// first /embed/* hit without a valid aniko_pow pass gets a small hashcash-style challenge page
+// instead of the player. It solves entirely client-side (SubtleCrypto SHA-256, brute-forcing a
+// suffix until the digest has POW_DIFFICULTY leading hex zeros) and POSTs the solution back for
+// a signed pass cookie, then reloads itself into the real player. A real viewer never notices
+// (sub-second on any modern device); a curl-only scraper has to actually implement and run a
+// SHA-256 miner per session it wants, not just replay a captured header. Session-scoped (not
+// per-request) so one viewer only pays this once per POW_TTL_MS, not on every episode/season nav.
+const POW_DIFFICULTY = 5; // hex leading zeros required; ~16^5 ≈ 1M avg attempts
+const POW_TTL_MS = 20 * 60 * 1000; // one solve covers roughly a binge sitting
+const POW_CHALLENGE_TTL_MS = 60 * 1000; // a minted challenge must be redeemed within a minute
+const POW_COOKIE_NAME = 'aniko_pow';
+function signPowChallenge(sessionId, seed, issuedAt) {
+    return crypto.createHmac('sha256', SESSION_SECRET).update(`powc:${sessionId}:${seed}:${issuedAt}`).digest('hex');
+}
+function signPowPass(sessionId, issuedAt) {
+    return crypto.createHmac('sha256', SESSION_SECRET).update(`powp:${sessionId}:${issuedAt}`).digest('hex');
+}
+function issuePowPassCookie(req, res) {
+    const issuedAt = Date.now();
+    res.cookie(POW_COOKIE_NAME, `${issuedAt}.${signPowPass(req.sessionId, issuedAt)}`, {
+        httpOnly: true, secure: true, sameSite: 'lax', maxAge: POW_TTL_MS
+    });
+}
+function hasValidPowPass(req) {
+    const raw = parseCookies(req)[POW_COOKIE_NAME] || '';
+    const dot = raw.lastIndexOf('.');
+    if (dot === -1) return false;
+    const issuedAt = Number(raw.slice(0, dot));
+    const sig = raw.slice(dot + 1);
+    if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > POW_TTL_MS) return false;
+    const expected = signPowPass(req.sessionId, issuedAt);
+    return sig.length === expected.length && /^[a-f0-9]+$/.test(sig) &&
+        crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
+}
+app.get('/api/pow-challenge', (req, res) => {
+    const seed = crypto.randomBytes(16).toString('hex');
+    const issuedAt = Date.now();
+    res.json({ seed, difficulty: POW_DIFFICULTY, token: `${issuedAt}.${signPowChallenge(req.sessionId, seed, issuedAt)}` });
+});
+app.post('/api/pow-verify', (req, res) => {
+    const { seed, token, solution } = req.body || {};
+    if (typeof seed !== 'string' || typeof token !== 'string' || typeof solution !== 'string' || solution.length > 64) {
+        return res.status(400).json({ error: 'Malformed proof' });
+    }
+    const dot = token.lastIndexOf('.');
+    const issuedAt = dot === -1 ? NaN : Number(token.slice(0, dot));
+    const sig = dot === -1 ? '' : token.slice(dot + 1);
+    if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > POW_CHALLENGE_TTL_MS) {
+        return res.status(400).json({ error: 'Challenge expired' });
+    }
+    const expectedSig = signPowChallenge(req.sessionId, seed, issuedAt);
+    if (sig.length !== expectedSig.length || !/^[a-f0-9]+$/.test(sig) ||
+        !crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expectedSig, 'hex'))) {
+        return res.status(400).json({ error: 'Invalid challenge token' });
+    }
+    const digest = crypto.createHash('sha256').update(seed + ':' + solution).digest('hex');
+    if (!digest.startsWith('0'.repeat(POW_DIFFICULTY))) {
+        return res.status(400).json({ error: 'Proof does not meet difficulty' });
+    }
+    issuePowPassCookie(req, res);
+    res.json({ ok: true });
+});
+function renderEmbedPowChallengeHtml() {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>AniKino Embed</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0a0a; color: #888; display: flex; align-items: center; justify-content: center;
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div id="s">Preparing player&hellip;</div>
+<script>
+(async function () {
+  function bytesToHex(buf) { return Array.prototype.map.call(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join(''); }
+  async function sha256Hex(text) { return bytesToHex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))); }
+  try {
+    const challenge = await (await fetch('/api/pow-challenge')).json();
+    const prefix = '0'.repeat(challenge.difficulty);
+    let solution = 0, digest = '';
+    // Yield to the event loop periodically so this doesn't freeze the tab on slower devices.
+    while (true) {
+      for (let i = 0; i < 2000; i++, solution++) {
+        digest = await sha256Hex(challenge.seed + ':' + solution);
+        if (digest.startsWith(prefix)) break;
+      }
+      if (digest.startsWith(prefix)) break;
+      await new Promise(r => setTimeout(r, 0));
+    }
+    const verify = await fetch('/api/pow-verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed: challenge.seed, token: challenge.token, solution: String(solution) })
+    });
+    if (!verify.ok) throw new Error('verify failed');
+    location.reload();
+  } catch (err) {
+    document.getElementById('s').textContent = 'Could not prepare player. Please reload.';
+  }
+})();
+</script>
+</body>
+</html>`;
+}
+function requireEmbedPow(req, res, next) {
+    if (hasValidPowPass(req)) return next();
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.status(200).send(renderEmbedPowChallengeHtml());
+}
+app.use('/embed', requireEmbedPow);
+
 // Public embeds are deliberately keyless: a partner may iframe them without an account. They
 // still perform an expensive provider resolve, so put them through the same anonymous resolver
 // budget. This allows legitimate mass embedding while preventing one relay box from minting an
