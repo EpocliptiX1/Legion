@@ -2297,6 +2297,15 @@ const HONEYPOT_ENFORCE = process.env.HONEYPOT_ENFORCE === '1';
 const playbackIntegrityScores = new Map();
 const playbackIntegrityNetworkScores = new Map();
 const LOCAL_AUDIT_NOTICE = 'Security audit ended: multiple playback-integrity tripwires were triggered. In a production scenario this client would now be temporarily blocked.';
+// A canary is intentionally never used by the player. Rotate its public shape for every
+// protected response so a scraper cannot rely on filtering one static header/path it learned
+// from an earlier run. All variants decrypt to a harmless local-only marker, never an upstream.
+const INTEGRITY_DECOY_VARIANTS = Object.freeze([
+    { id: 'integrity', header: 'X-Playback-Integrity', path: '/api/playback-integrity' },
+    { id: 'context', header: 'X-Source-Context', path: '/api/source-context' },
+    { id: 'availability', header: 'X-Stream-Availability', path: '/api/stream-availability' },
+    { id: 'metadata', header: 'X-Playback-Metadata', path: '/api/playback-metadata' }
+]);
 
 function auditClientIp(req) {
     return String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || '';
@@ -2368,12 +2377,15 @@ function sendIntegrityFailure(req, res, outcome, status, fallback) {
     return res.status(status).send(fallback);
 }
 function attachPlaybackIntegrityDecoy(req, res, next) {
+    const variant = INTEGRITY_DECOY_VARIANTS[crypto.randomInt(INTEGRITY_DECOY_VARIANTS.length)];
     const token = encryptProxyTarget({
-        url: 'honey://playback-integrity', sessionId: req.sessionId, purpose: 'playback-integrity-decoy'
+        url: `honey://playback-integrity/${variant.id}`,
+        sessionId: req.sessionId,
+        purpose: `playback-integrity-decoy:${variant.id}`
     });
     // This is ignored by browsers/HLS. It catches code that mechanically follows every
     // endpoint returned by the protected resolver API.
-    res.set('X-Playback-Integrity', `/api/playback-integrity?token=${token}`);
+    res.set(variant.header, `${variant.path}?token=${token}`);
     next();
 }
 function scoreBrowserRequestSignals(req, res, next) {
@@ -2390,12 +2402,13 @@ function scoreBrowserRequestSignals(req, res, next) {
     next();
 }
 
-app.get('/api/playback-integrity', (req, res) => {
+app.get(INTEGRITY_DECOY_VARIANTS.map(variant => variant.path), (req, res) => {
     try {
         const decoded = decryptProxyTarget(req.query.token);
         verifyProxySession(req, decoded);
-        if (decoded.purpose !== 'playback-integrity-decoy') throw new Error('Not an integrity token');
-        const outcome = recordPlaybackIntegrityEvent(req, 'integrity-decoy-requested', 12);
+        const variant = INTEGRITY_DECOY_VARIANTS.find(item => decoded.purpose === `playback-integrity-decoy:${item.id}`);
+        if (!variant) throw new Error('Not an integrity token');
+        const outcome = recordPlaybackIntegrityEvent(req, 'integrity-decoy-requested', 12, variant.id);
         if (outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req))) {
             return sendIntegrityFailure(req, res, outcome, 404, 'Not found');
         }
