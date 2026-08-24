@@ -2358,8 +2358,14 @@ function isPlaybackIntegrityNetworkBlocked(req) {
     const entry = playbackIntegrityNetworkScores.get(resolverNetworkKey(req));
     return !!entry && entry.blockedUntil > Date.now();
 }
-function auditThresholdMessage(req, outcome, fallback) {
-    return outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req)) ? LOCAL_AUDIT_NOTICE : fallback;
+function sendIntegrityFailure(req, res, outcome, status, fallback) {
+    if (outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req))) {
+        // This header makes local black-box audits see the result even when the request was a
+        // failed HLS fetch whose response body the browser/player itself does not render.
+        res.set('X-Playback-Integrity-Audit', 'threshold-hit');
+        return res.status(status).type('text/plain').send(LOCAL_AUDIT_NOTICE);
+    }
+    return res.status(status).send(fallback);
 }
 function attachPlaybackIntegrityDecoy(req, res, next) {
     const token = encryptProxyTarget({
@@ -2391,10 +2397,13 @@ app.get('/api/playback-integrity', (req, res) => {
         if (decoded.purpose !== 'playback-integrity-decoy') throw new Error('Not an integrity token');
         const outcome = recordPlaybackIntegrityEvent(req, 'integrity-decoy-requested', 12);
         if (outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req))) {
-            return res.status(404).send(LOCAL_AUDIT_NOTICE);
+            return sendIntegrityFailure(req, res, outcome, 404, 'Not found');
         }
     } catch (err) {
-        recordPlaybackIntegrityEvent(req, 'integrity-decoy-invalid', 2, err.message);
+        const outcome = recordPlaybackIntegrityEvent(req, 'integrity-decoy-invalid', 2, err.message);
+        if (outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req))) {
+            return sendIntegrityFailure(req, res, outcome, 404, 'Not found');
+        }
     }
     return res.status(404).send('Not found');
 });
@@ -7104,7 +7113,8 @@ app.get('/api/proxy-stream', async (req, res) => {
     // right time to close this rather than carry a permanently-unauthenticated fallback path.
     if (!req.query.token) {
         if (req.query.url || req.query.referer || req.query.ua) {
-            recordPlaybackIntegrityEvent(req, 'legacy-proxy-stream-parameters', 4);
+            const outcome = recordPlaybackIntegrityEvent(req, 'legacy-proxy-stream-parameters', 4);
+            return sendIntegrityFailure(req, res, outcome, 400, 'Missing token');
         }
         return res.status(400).send('Missing token');
     }
@@ -7120,7 +7130,7 @@ app.get('/api/proxy-stream', async (req, res) => {
     } catch (err) {
         const outcome = recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'proxy-stream-session-replay' : 'proxy-stream-invalid-token', err.sessionMismatch ? 6 : 1);
         const fallback = err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token';
-        return res.status(403).send(auditThresholdMessage(req, outcome, fallback));
+        return sendIntegrityFailure(req, res, outcome, 403, fallback);
     }
 
     try {
@@ -10890,7 +10900,10 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     // already migrated to buildM3u8ProxyUrl() before this, and pre-launch is the right time to
     // close this rather than carry a permanently-unauthenticated fallback path.
     if (!req.query.token) {
-        if (req.query.url || req.query.ref) recordPlaybackIntegrityEvent(req, 'legacy-m3u8-parameters', 4);
+        if (req.query.url || req.query.ref) {
+            const outcome = recordPlaybackIntegrityEvent(req, 'legacy-m3u8-parameters', 4);
+            return sendIntegrityFailure(req, res, outcome, 400, 'Missing token');
+        }
         return res.status(400).send('Missing token');
     }
     if (isPlaybackIntegrityBlocked(req)) return res.status(429).send('Playback temporarily unavailable');
@@ -10904,7 +10917,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     } catch (err) {
         const outcome = recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'm3u8-session-replay' : 'm3u8-invalid-token', err.sessionMismatch ? 6 : 1);
         const fallback = err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token';
-        return res.status(403).send(auditThresholdMessage(req, outcome, fallback));
+        return sendIntegrityFailure(req, res, outcome, 403, fallback);
     }
     if (!targetUrl) return res.status(400).send('URL required');
 
