@@ -1908,12 +1908,21 @@ app.use(RESOLVE_GATED_PATHS, scoreBrowserRequestSignals);
 // (sub-second on any modern device); a curl-only scraper has to actually implement and run a
 // SHA-256 miner per session it wants, not just replay a captured header. Session-scoped (not
 // per-request) so one viewer only pays this once per POW_TTL_MS, not on every episode/season nav.
-const POW_DIFFICULTY = 5; // hex leading zeros required; ~16^5 ≈ 1M avg attempts
+const POW_DIFFICULTY = 5; // normal browser path: ~16^5 ≈ 1M avg attempts
+const POW_SUSPECT_DIFFICULTY = 6; // missing browser signals: 16x more work (~16M attempts)
 const POW_TTL_MS = 20 * 60 * 1000; // one solve covers roughly a binge sitting
 const POW_CHALLENGE_TTL_MS = 60 * 1000; // a minted challenge must be redeemed within a minute
 const POW_COOKIE_NAME = 'aniko_pow';
-function signPowChallenge(sessionId, seed, issuedAt) {
-    return crypto.createHmac('sha256', SESSION_SECRET).update(`powc:${sessionId}:${seed}:${issuedAt}`).digest('hex');
+function powDifficultyForRequest(req) {
+    const hasFetchMetadata = ['sec-fetch-mode', 'sec-fetch-site', 'sec-fetch-dest']
+        .every(header => typeof req.headers[header] === 'string' && req.headers[header].length > 0);
+    const hasBrowserHints = typeof req.headers['sec-ch-ua'] === 'string' ||
+        typeof req.headers['sec-ch-ua-mobile'] === 'string';
+    const hasLanguage = typeof req.headers['accept-language'] === 'string' && req.headers['accept-language'].length > 0;
+    return (!hasFetchMetadata && !hasBrowserHints && !hasLanguage) ? POW_SUSPECT_DIFFICULTY : POW_DIFFICULTY;
+}
+function signPowChallenge(sessionId, seed, difficulty, issuedAt) {
+    return crypto.createHmac('sha256', SESSION_SECRET).update(`powc:${sessionId}:${seed}:${difficulty}:${issuedAt}`).digest('hex');
 }
 function signPowPass(sessionId, issuedAt) {
     return crypto.createHmac('sha256', SESSION_SECRET).update(`powp:${sessionId}:${issuedAt}`).digest('hex');
@@ -1938,26 +1947,29 @@ function hasValidPowPass(req) {
 app.get('/api/pow-challenge', (req, res) => {
     const seed = crypto.randomBytes(16).toString('hex');
     const issuedAt = Date.now();
-    res.json({ seed, difficulty: POW_DIFFICULTY, token: `${issuedAt}.${signPowChallenge(req.sessionId, seed, issuedAt)}` });
+    const difficulty = powDifficultyForRequest(req);
+    res.json({ seed, difficulty, token: `${issuedAt}.${difficulty}.${signPowChallenge(req.sessionId, seed, difficulty, issuedAt)}` });
 });
 app.post('/api/pow-verify', (req, res) => {
     const { seed, token, solution } = req.body || {};
     if (typeof seed !== 'string' || typeof token !== 'string' || typeof solution !== 'string' || solution.length > 64) {
         return res.status(400).json({ error: 'Malformed proof' });
     }
-    const dot = token.lastIndexOf('.');
-    const issuedAt = dot === -1 ? NaN : Number(token.slice(0, dot));
-    const sig = dot === -1 ? '' : token.slice(dot + 1);
-    if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > POW_CHALLENGE_TTL_MS) {
+    const [issuedAtRaw, difficultyRaw, sig] = token.split('.');
+    const issuedAt = Number(issuedAtRaw);
+    const difficulty = Number(difficultyRaw);
+    if (!Number.isFinite(issuedAt) || !Number.isInteger(difficulty) ||
+        ![POW_DIFFICULTY, POW_SUSPECT_DIFFICULTY].includes(difficulty) ||
+        Date.now() - issuedAt > POW_CHALLENGE_TTL_MS) {
         return res.status(400).json({ error: 'Challenge expired' });
     }
-    const expectedSig = signPowChallenge(req.sessionId, seed, issuedAt);
+    const expectedSig = signPowChallenge(req.sessionId, seed, difficulty, issuedAt);
     if (sig.length !== expectedSig.length || !/^[a-f0-9]+$/.test(sig) ||
         !crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expectedSig, 'hex'))) {
         return res.status(400).json({ error: 'Invalid challenge token' });
     }
     const digest = crypto.createHash('sha256').update(seed + ':' + solution).digest('hex');
-    if (!digest.startsWith('0'.repeat(POW_DIFFICULTY))) {
+    if (!digest.startsWith('0'.repeat(difficulty))) {
         return res.status(400).json({ error: 'Proof does not meet difficulty' });
     }
     issuePowPassCookie(req, res);
@@ -15989,7 +16001,7 @@ app.get('/api/movie-ru-log', async (req, res) => {
         return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, 'https://cinemar.cc/', req.sessionId), proxyRef: 'https://cinemar.cc/', translationTitle });
     } catch (err) {
         console.error('[RU Movie] Error:', err.message);
-        return res.status(err.status || 500).json({ ok: false, error: err.message });
+        return res.status(err.status || 500).json({ ok: false, error: 'Stream unavailable' });
     }
 });
 
@@ -16130,7 +16142,7 @@ app.get('/api/tv-ru-log', async (req, res) => {
         return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, 'https://cinemar.cc/', req.sessionId), proxyRef: 'https://cinemar.cc/', translationTitle });
     } catch (err) {
         console.error('[RU TV] Error:', err.message);
-        return res.status(err.status || 500).json({ ok: false, error: err.message });
+        return res.status(err.status || 500).json({ ok: false, error: 'Stream unavailable' });
     }
 });
 
@@ -16600,7 +16612,7 @@ app.get('/api/movie-kino-log', async (req, res) => {
         return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, proxyRef || null, req.sessionId), proxyRef });
     } catch (err) {
         console.error('[Kino] Error:', err.message);
-        return res.status(err.status || 500).json({ ok: false, error: err.message });
+        return res.status(err.status || 500).json({ ok: false, error: 'Stream unavailable' });
     }
 });
 
@@ -16620,7 +16632,7 @@ app.get('/api/tv-kino-log', async (req, res) => {
         return res.json({ ok: true, stream: buildM3u8ProxyUrl(streamUrl, proxyRef || null, req.sessionId), proxyRef });
     } catch (err) {
         console.error('[Kino TV] Error:', err.message);
-        return res.status(err.status || 500).json({ ok: false, error: err.message });
+        return res.status(err.status || 500).json({ ok: false, error: 'Stream unavailable' });
     }
 });
 

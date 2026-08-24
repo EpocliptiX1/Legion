@@ -2719,7 +2719,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     data = await res.json().catch(() => ({}));
 
                     if (!res.ok || !data?.stream) {
-                        if (infoDiv) infoDiv.textContent = `RU - MV: ${data?.error || 'Not available yet.'}`;
+                        if (infoDiv) infoDiv.textContent = 'RU - MV: Stream unavailable.';
                         return false;
                     }
                 }
@@ -2814,7 +2814,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const data = await res.json().catch(() => ({}));
 
                 if (!res.ok || !data?.stream) {
-                    if (infoDiv) infoDiv.textContent = `RU - MV: ${data?.error || 'Not available yet.'}`;
+                    if (infoDiv) infoDiv.textContent = 'RU - MV: Stream unavailable.';
                     return false;
                 }
 
@@ -2900,7 +2900,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     const res = await fetch(`/api/movie-kino-log?${query.toString()}`);
                     data = await res.json().catch(() => ({}));
                     if (!res.ok || !data?.stream) {
-                        if (infoDiv) infoDiv.textContent = `Kino: ${data?.error || 'Not available yet.'}`;
+                        if (infoDiv) infoDiv.textContent = 'Kino: Stream unavailable.';
                         return false;
                     }
                 }
@@ -2993,7 +2993,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     const res = await fetch(`/api/tv-kino-log?${query.toString()}`);
                     data = await res.json().catch(() => ({}));
                     if (!res.ok || !data?.stream) {
-                        if (infoDiv) infoDiv.textContent = `Kino: ${data?.error || 'Not available yet.'}`;
+                        if (infoDiv) infoDiv.textContent = 'Kino: Stream unavailable.';
                         return false;
                     }
                 }
@@ -3183,7 +3183,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const data = await res.json().catch(() => ({}));
 
                 if (!res.ok || !data?.stream) {
-                    if (infoDiv) infoDiv.textContent = `RU - MV: ${data?.error || 'Not available yet.'}`;
+                    if (infoDiv) infoDiv.textContent = 'RU - MV: Stream unavailable.';
                     return false;
                 }
 
