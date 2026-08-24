@@ -10641,7 +10641,12 @@ body.personal-list-page .grid-card {
 .season-cards-title { color:#ff8000; font-size:1.05rem; font-weight:700; margin:0 0 10px 0; }
 /* overflow:visible, not auto - cards wrap now (32% width, 3/row) so horizontal scroll was never
    needed, and auto meant the hover lift/scale on a card could nudge this into scrollbar territory. */
-.season-cards-list { display:flex; flex-wrap:wrap; justify-content:space-between; overflow:visible; padding-bottom:6px; }
+/* justify-content:space-between stretched a partial last row (e.g. 8 cards at 3-per-row
+   leaves 2 on the final row) to the far edges, leaving an ugly empty gap in the middle
+   instead of the cards just sitting left-aligned next to each other. flex-start + an
+   explicit gap keeps consistent spacing on full AND partial rows - 3 cards at 32% width
+   plus 2 gaps at 2% each fills the same 100% a full row already did. */
+.season-cards-list { display:flex; flex-wrap:wrap; justify-content:flex-start; gap:2%; overflow:visible; padding-bottom:6px; }
 .season-card {
     position:relative; flex:0 0 auto; width:32%; height:92px;
     border-radius:14px; overflow:hidden; cursor:pointer; background:#111;

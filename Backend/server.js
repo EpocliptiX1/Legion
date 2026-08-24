@@ -9873,13 +9873,30 @@ function parseAnimeTitle(title) {
             season = 3;
         else if (/\b(?:4th|fourth)\b/i.test(text))
             season = 4;
-        // Try Roman numerals
-        else if (/\bii\b/i.test(text))
-            season = 2;
-        else if (/\biii\b/i.test(text))
-            season = 3;
+        else if (/\b(?:5th|fifth)\b/i.test(text))
+            season = 5;
+        else if (/\b(?:6th|sixth)\b/i.test(text))
+            season = 6;
+        else if (/\b(?:7th|seventh)\b/i.test(text))
+            season = 7;
+        else if (/\b(?:8th|eighth)\b/i.test(text))
+            season = 8;
+        // Try Roman numerals (checked longest-first so "viii" doesn't get caught by an
+        // earlier, shorter numeral's word-boundary match)
+        else if (/\bviii\b/i.test(text))
+            season = 8;
+        else if (/\bvii\b/i.test(text))
+            season = 7;
+        else if (/\bvi\b/i.test(text))
+            season = 6;
+        else if (/\bv\b/i.test(text))
+            season = 5;
         else if (/\biv\b/i.test(text))
             season = 4;
+        else if (/\biii\b/i.test(text))
+            season = 3;
+        else if (/\bii\b/i.test(text))
+            season = 2;
         // Special case: "The Final Season" is often Season 4
         else if (/\bfinal\s+season|kanketsu/i.test(text))
             season = 4;
@@ -18853,8 +18870,18 @@ async function resolveAnimeSeasonCards(tmdbId) {
         } catch (err) {
             // No TMDB match - card still renders, just isn't clickable.
         }
+        // The anime industry splits franchises up too inconsistently for a plain array
+        // index to mean anything (confirmed live: a franchise with entries titled "IV",
+        // "IV Part 2", and "V" showed as index-based "Season 6"/"Season 7"/"Season 8" -
+        // technically true by position, but meaningless against the show's OWN numbering,
+        // which the card's own subtitle already displays right next to it). Parse the
+        // real season number straight out of each entry's title instead (same numeral/
+        // ordinal detection KAA's candidate sorting already uses) so the label agrees
+        // with what the subtitle says. Two split-cour entries sharing one real season
+        // number (e.g. "IV" and "IV Part 2" both parsing to 4) is the correct, honest
+        // result, not a bug - they ARE the same season.
         seasons.push({
-            seasonNumber: i + 1,
+            seasonNumber: parseAnimeTitle(f.title).season,
             title: f.title,
             coverImage: f.coverImage,
             anilistId: f.anilistId,
