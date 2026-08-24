@@ -1648,22 +1648,11 @@ function mapTmdbMovieWithCredits(item, credits) {
 // through that check anyway (bound to 'localhost' only, plus the x-middleware-secret guard
 // right below - only middleware.js can produce a request that gets this far), so a second,
 // worse-informed origin check here added no real protection - just broke anything that wasn't
-// literally localhost:3000 (this ngrok pentest tunnel included). Still sets proper CORS
-// response headers via cors(), just no longer rejects based on origin.
-//
-// credentials: false (was true) - caught in a pentest of the public embed API: origin:true
-// reflects Access-Control-Allow-Origin back to WHATEVER Origin a request sends, and pairing
-// that with credentials:true means any cross-origin page's script could in principle read a
-// cookie-bearing response via fetch(..., {credentials:'include'}). It only stayed harmless
-// because aniko_sid is SameSite=Lax (browsers already withhold Lax cookies from cross-site
-// fetch/XHR) - safety that shouldn't depend on a cookie attribute nobody was consciously
-// defending here. No legitimate request in this app actually needs cross-origin credentials:
-// same-origin calls (the normal site, and the embed iframe's own same-origin calls back to
-// /api/m3u8-proxy - it's served from OUR origin regardless of who iframes it) never trigger
-// CORS at all, and requireSameOrigin above already gates every real cross-origin case except
-// /embed/* itself, which is meant to be publicly loadable but carries no session cookie of its
-// own to steal.
-app.use(cors({ origin: true, credentials: false }));
+// literally localhost:3000 (this ngrok pentest tunnel included). The backend never needs to
+// grant CORS: normal player calls are same-origin, and an embedded iframe's own player code is
+// also same-origin with this server. Do not reflect arbitrary Origin values from a protected
+// media endpoint; that makes future middleware mistakes much more dangerous.
+app.use(cors({ origin: false }));
 app.use(express.json({ limit: '8mb' })); // raised from 5mb for base64 profile picture uploads
 
 // Secret-header guard — backend refuses any request that didn't come through the middleware.
@@ -1726,6 +1715,10 @@ const SESSION_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // any sid it wants, but can't produce a signature that validates without SESSION_SECRET, which
 // never leaves the server. Same pattern as MIDDLEWARE_SECRET/proxy_token.key (see secretStore.js).
 const SESSION_SECRET = require('./secretStore').loadOrCreateSecret('session_secret.key');
+// Used only when HONEYPOT_ENFORCE=1. A signed anonymous cookie is normally stateless, so a
+// short in-memory revocation table is the deliberate escape hatch for ending a compromised
+// playback session immediately without collecting accounts or persistent identity data.
+const revokedPlaybackSessions = new Map();
 function signSessionId(sid) {
     return crypto.createHmac('sha256', SESSION_SECRET).update(sid).digest('hex');
 }
@@ -1755,6 +1748,10 @@ app.use((req, res, next) => {
     } else {
         sid = crypto.randomBytes(32).toString('hex');
         issueSessionCookie(res, sid);
+    }
+    if (revokedPlaybackSessions.get(sid) > Date.now()) {
+        res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, secure: true, sameSite: 'lax' });
+        return res.status(429).json({ error: 'Playback session temporarily unavailable' });
     }
     req.sessionId = sid;
     next();
@@ -1897,6 +1894,7 @@ app.use(RESOLVE_GATED_PATHS, requireResolveNonce);
 // discovered endpoint will hit it, giving us a high-confidence signal without exposing a real
 // provider URL or changing playback.
 app.use(RESOLVE_GATED_PATHS, attachPlaybackIntegrityDecoy);
+app.use(RESOLVE_GATED_PATHS, scoreBrowserRequestSignals);
 
 // Public embeds are deliberately keyless: a partner may iframe them without an account. They
 // still perform an expensive provider resolve, so put them through the same anonymous resolver
@@ -1909,6 +1907,7 @@ app.use('/embed', (req, res, next) => {
 // Public embeds have no API key by design, but their response still gets the same harmless
 // session-bound canary as the internal player routes. An iframe never consumes this header.
 app.use('/embed', attachPlaybackIntegrityDecoy);
+app.use('/embed', scoreBrowserRequestSignals);
 
 // --- Proxy target encryption -------------------------------------------------------------
 // /api/m3u8-proxy and /api/proxy-stream used to take the real upstream CDN URL as a plain
@@ -2199,6 +2198,7 @@ function recordPlaybackIntegrityEvent(req, kind, points, detail = null) {
     const thresholdReached = entry.score >= HONEYPOT_BLOCK_SCORE;
     if (thresholdReached && HONEYPOT_ENFORCE && !protectedClient) {
         entry.blockedUntil = Math.max(entry.blockedUntil, now + HONEYPOT_BLOCK_MS);
+        revokedPlaybackSessions.set(req.sessionId, entry.blockedUntil);
     }
     writeHoneypotEvent({
         at: new Date(now).toISOString(), kind, points, score: entry.score,
@@ -2222,6 +2222,19 @@ function attachPlaybackIntegrityDecoy(req, res, next) {
     res.set('X-Playback-Integrity', `/api/playback-integrity?token=${token}`);
     next();
 }
+function scoreBrowserRequestSignals(req, res, next) {
+    // Browser automation can reproduce these eventually, so this is deliberately low weight.
+    // It catches cheap curl/node resolver farms without treating a nonstandard browser as guilty.
+    const hasFetchMetadata = ['sec-fetch-mode', 'sec-fetch-site', 'sec-fetch-dest']
+        .every(header => typeof req.headers[header] === 'string' && req.headers[header].length > 0);
+    const hasBrowserHints = typeof req.headers['sec-ch-ua'] === 'string' ||
+        typeof req.headers['sec-ch-ua-mobile'] === 'string';
+    const hasLanguage = typeof req.headers['accept-language'] === 'string' && req.headers['accept-language'].length > 0;
+    if (!hasFetchMetadata && !hasBrowserHints && !hasLanguage) {
+        recordPlaybackIntegrityEvent(req, 'missing-browser-request-signals', 2);
+    }
+    next();
+}
 
 app.get('/api/playback-integrity', (req, res) => {
     try {
@@ -2239,6 +2252,9 @@ setInterval(() => {
     const now = Date.now();
     for (const [key, entry] of playbackIntegrityScores) {
         if (now - entry.windowStartedAt >= HONEYPOT_WINDOW_MS && entry.blockedUntil <= now) playbackIntegrityScores.delete(key);
+    }
+    for (const [sessionId, until] of revokedPlaybackSessions) {
+        if (until <= now) revokedPlaybackSessions.delete(sessionId);
     }
 }, 60 * 1000).unref();
 
@@ -7076,12 +7092,6 @@ app.get('/api/proxy-stream', async (req, res) => {
             //     'Saved playlist to kaa-294d-playlist.txt'
             // );
         }
-        // Pentest (2026-08-17/18, round 5) flagged this wildcard as thinner defense-in-depth
-        // than intended - requireSameOrigin (middleware.js) already rejects any request that
-        // didn't come from our own origin before it gets this far, so reflecting the caller's
-        // own (already-validated) Origin back is equivalent for legitimate traffic and doesn't
-        // additionally invite third-party sites to read the response via CORS-enabled fetch/XHR.
-        if (req.headers.origin) res.set('Access-Control-Allow-Origin', req.headers.origin);
         res.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
 
         if (response.status >= 400) {
@@ -10784,9 +10794,6 @@ app.get('/api/m3u8-proxy', async (req, res) => {
                 ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {})
             }
         });
-
-        // See the matching comment in /api/proxy-stream - requireSameOrigin already gates entry.
-        if (req.headers.origin) res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
 
         // Handle Master / Media Playlists (.m3u8)
         if (isM3u8) {
@@ -16516,6 +16523,20 @@ const kinoImdbIdCache = new Map(); // `${mediaType}:${tmdbId}` -> imdbId (doesn'
 const kinoSubsCache = new Map();   // cacheKey -> { tracks, resolvedAt }
 const KINO_SUBS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const kinoVttCache = new Map();    // downloadLink -> vttText (converted subtitle files never change)
+// The legacy OpenSubtitles API returns download URLs on these hosts. Keep this an allowlist,
+// not a "not private IP" check: otherwise this endpoint is an arbitrary external fetch relay.
+const ALLOWED_KINO_SUBTITLE_HOSTS = ['opensubtitles.org'];
+
+function isAllowedKinoSubtitleUrl(value) {
+    try {
+        const parsed = new URL(String(value));
+        return parsed.protocol === 'https:' && ALLOWED_KINO_SUBTITLE_HOSTS.some(host =>
+            parsed.hostname === host || parsed.hostname.endsWith(`.${host}`)
+        );
+    } catch {
+        return false;
+    }
+}
 
 async function getKinoImdbId(tmdbId, mediaType) {
     const key = `${mediaType}:${tmdbId}`;
@@ -16618,6 +16639,7 @@ function srtToVtt(srtText) {
 }
 
 async function fetchKinoVtt(downloadLink, encoding) {
+    if (!isAllowedKinoSubtitleUrl(downloadLink)) throw new Error('Subtitle host is not allowed');
     if (kinoVttCache.has(downloadLink)) return kinoVttCache.get(downloadLink);
 
     const res = await axios.get(downloadLink, { responseType: 'arraybuffer', timeout: 15000 });
@@ -16666,15 +16688,13 @@ app.get('/api/kino-subtitles', async (req, res) => {
 app.get('/api/kino-subtitle-vtt', async (req, res) => {
     const link = req.query.link;
     const enc = req.query.enc || 'UTF-8';
-    if (!link || !link.startsWith('https://')) {
+    if (!isAllowedKinoSubtitleUrl(link)) {
         return res.status(400).send('Invalid subtitle link');
     }
 
     try {
         const vtt = await fetchKinoVtt(link, enc);
         res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-        // See the matching comment in /api/proxy-stream - requireSameOrigin already gates entry.
-        if (req.headers.origin) res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
         return res.send(vtt);
     } catch (err) {
         console.error('[Kino Subtitle VTT] Error:', err.message);
