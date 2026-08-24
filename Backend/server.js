@@ -2329,6 +2329,40 @@ const HONEYPOT_BLOCK_SCORE = 12;
 const HONEYPOT_ENFORCE = process.env.HONEYPOT_ENFORCE === '1';
 const playbackIntegrityScores = new Map();
 const playbackIntegrityNetworkScores = new Map();
+const PERSISTENT_BAN_STRIKE_RESET_MS = 30 * 24 * 60 * 60 * 1000;
+const PERSISTENT_BAN_DURATIONS_MS = [30 * 60 * 1000, 24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000];
+const SECURITY_ENFORCEMENT_DB_FILE = path.join(__dirname, 'security_enforcement.db');
+const persistentNetworkBans = new Map(); // hashed prefix -> { strikes, lastStrikeAt, banUntil }
+const securityEnforcementDb = new sqlite3.Database(SECURITY_ENFORCEMENT_DB_FILE, err => {
+    if (err) console.error('[Playback integrity] enforcement database unavailable:', err.message);
+});
+securityEnforcementDb.serialize(() => {
+    securityEnforcementDb.run(`CREATE TABLE IF NOT EXISTS playback_integrity_bans (
+        network_hash TEXT PRIMARY KEY,
+        strikes INTEGER NOT NULL,
+        last_strike_at INTEGER NOT NULL,
+        ban_until INTEGER NOT NULL,
+        last_reason TEXT NOT NULL
+    )`);
+    securityEnforcementDb.all(
+        `SELECT network_hash, strikes, last_strike_at, ban_until
+         FROM playback_integrity_bans
+         WHERE last_strike_at > ? OR ban_until > ?`,
+        [Date.now() - PERSISTENT_BAN_STRIKE_RESET_MS, Date.now()],
+        (err, rows = []) => {
+            if (err) return console.error('[Playback integrity] could not load enforcement history:', err.message);
+            for (const row of rows) {
+                persistentNetworkBans.set(row.network_hash, {
+                    strikes: row.strikes,
+                    lastStrikeAt: row.last_strike_at,
+                    banUntil: row.ban_until
+                });
+            }
+        }
+    );
+    securityEnforcementDb.run(`DELETE FROM playback_integrity_bans WHERE last_strike_at <= ? AND ban_until <= ?`,
+        [Date.now() - PERSISTENT_BAN_STRIKE_RESET_MS, Date.now()]);
+});
 const LOCAL_AUDIT_NOTICE = 'Security audit ended: multiple playback-integrity tripwires were triggered. In a production scenario this client would now be temporarily blocked.';
 // A canary is intentionally never used by the player. Rotate its public shape for every
 // protected response so a scraper cannot rely on filtering one static header/path it learned
@@ -2355,7 +2389,7 @@ function integrityScoreKey(req) {
 function getIntegrityScore(store, key, now) {
     let entry = store.get(key);
     if (!entry || now - entry.windowStartedAt >= HONEYPOT_WINDOW_MS) {
-        entry = { windowStartedAt: now, score: 0, blockedUntil: 0 };
+        entry = { windowStartedAt: now, score: 0, blockedUntil: 0, thresholdHandled: false };
         store.set(key, entry);
     }
     return entry;
@@ -2367,6 +2401,27 @@ function writeHoneypotEvent(event) {
         console.warn('[Playback integrity] failed to write audit event:', err.message);
     }
 }
+function registerPersistentNetworkBan(req, reason, now) {
+    const networkHash = resolverNetworkKey(req);
+    const previous = persistentNetworkBans.get(networkHash);
+    const recent = previous && now - previous.lastStrikeAt <= PERSISTENT_BAN_STRIKE_RESET_MS;
+    const strikes = recent ? previous.strikes + 1 : 1;
+    const durationMs = PERSISTENT_BAN_DURATIONS_MS[Math.min(strikes, PERSISTENT_BAN_DURATIONS_MS.length) - 1];
+    const record = { strikes, lastStrikeAt: now, banUntil: now + durationMs };
+    persistentNetworkBans.set(networkHash, record);
+    securityEnforcementDb.run(
+        `INSERT INTO playback_integrity_bans (network_hash, strikes, last_strike_at, ban_until, last_reason)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(network_hash) DO UPDATE SET
+           strikes = excluded.strikes,
+           last_strike_at = excluded.last_strike_at,
+           ban_until = excluded.ban_until,
+           last_reason = excluded.last_reason`,
+        [networkHash, strikes, now, record.banUntil, reason],
+        err => { if (err) console.error('[Playback integrity] could not persist ban:', err.message); }
+    );
+    return { strikes, durationMs, banUntil: record.banUntil };
+}
 function recordPlaybackIntegrityEvent(req, kind, points, detail = null) {
     const now = Date.now();
     const key = integrityScoreKey(req);
@@ -2377,16 +2432,25 @@ function recordPlaybackIntegrityEvent(req, kind, points, detail = null) {
     const clientIp = auditClientIp(req);
     const protectedClient = isLocalOrPrivateClient(clientIp);
     const thresholdReached = entry.score >= HONEYPOT_BLOCK_SCORE || networkEntry.score >= HONEYPOT_BLOCK_SCORE;
-    if (thresholdReached && HONEYPOT_ENFORCE && !protectedClient) {
-        entry.blockedUntil = Math.max(entry.blockedUntil, now + HONEYPOT_BLOCK_MS);
-        networkEntry.blockedUntil = Math.max(networkEntry.blockedUntil, now + HONEYPOT_BLOCK_MS);
+    const thresholdJustReached = thresholdReached && !entry.thresholdHandled && !networkEntry.thresholdHandled;
+    let escalation = null;
+    if (thresholdJustReached) {
+        entry.thresholdHandled = true;
+        networkEntry.thresholdHandled = true;
+    }
+    if (thresholdJustReached && HONEYPOT_ENFORCE && !protectedClient) {
+        escalation = registerPersistentNetworkBan(req, kind, now);
+        entry.blockedUntil = Math.max(entry.blockedUntil, escalation.banUntil);
+        networkEntry.blockedUntil = Math.max(networkEntry.blockedUntil, escalation.banUntil);
         revokedPlaybackSessions.set(req.sessionId, entry.blockedUntil);
     }
     writeHoneypotEvent({
         at: new Date(now).toISOString(), kind, points, score: entry.score, networkScore: networkEntry.score,
         ip: clientIp, ipPrefix: playbackIpPrefix(req),
         session: crypto.createHash('sha256').update(req.sessionId).digest('hex').slice(0, 16),
-        detail, thresholdReached, enforcement: HONEYPOT_ENFORCE && !protectedClient ? 'enabled' : 'audit-only'
+        detail, thresholdReached, thresholdJustReached,
+        strike: escalation?.strikes || null, banDurationMs: escalation?.durationMs || null,
+        enforcement: HONEYPOT_ENFORCE && !protectedClient ? 'enabled' : 'audit-only'
     });
     return { score: entry.score, networkScore: networkEntry.score, thresholdReached };
 }
@@ -2397,8 +2461,10 @@ function isPlaybackIntegrityBlocked(req) {
 }
 function isPlaybackIntegrityNetworkBlocked(req) {
     if (!HONEYPOT_ENFORCE || isLocalOrPrivateClient(auditClientIp(req))) return false;
-    const entry = playbackIntegrityNetworkScores.get(resolverNetworkKey(req));
-    return !!entry && entry.blockedUntil > Date.now();
+    const networkHash = resolverNetworkKey(req);
+    const entry = playbackIntegrityNetworkScores.get(networkHash);
+    const persisted = persistentNetworkBans.get(networkHash);
+    return (!!entry && entry.blockedUntil > Date.now()) || (!!persisted && persisted.banUntil > Date.now());
 }
 function sendIntegrityFailure(req, res, outcome, status, fallback) {
     if (outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req))) {
