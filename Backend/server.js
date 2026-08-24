@@ -1892,6 +1892,11 @@ const RESOLVE_GATED_PATHS = [
     '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download'
 ];
 app.use(RESOLVE_GATED_PATHS, requireResolveNonce);
+// Every real resolver response also carries a session-bound decoy URL in a response header.
+// The first-party player never reads this header. A clone which inventories and probes every
+// discovered endpoint will hit it, giving us a high-confidence signal without exposing a real
+// provider URL or changing playback.
+app.use(RESOLVE_GATED_PATHS, attachPlaybackIntegrityDecoy);
 
 // Public embeds are deliberately keyless: a partner may iframe them without an account. They
 // still perform an expensive provider resolve, so put them through the same anonymous resolver
@@ -2092,8 +2097,8 @@ setInterval(() => {
     }
 }, 60 * 1000).unref();
 
-function encryptProxyTarget({ url, referer = null, ua = null, sessionId = null, leaseId = null }) {
-    const payload = JSON.stringify({ u: url, r: referer, a: ua, s: sessionId, l: leaseId, e: Date.now() + PROXY_TOKEN_TTL_MS });
+function encryptProxyTarget({ url, referer = null, ua = null, sessionId = null, leaseId = null, purpose = null }) {
+    const payload = JSON.stringify({ u: url, r: referer, a: ua, s: sessionId, l: leaseId, p: purpose, e: Date.now() + PROXY_TOKEN_TTL_MS });
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', PROXY_TOKEN_KEY, iv);
     const encrypted = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
@@ -2121,7 +2126,7 @@ function decryptProxyTarget(token) {
     if (!payload.u || !payload.e || payload.e < Date.now()) {
         throw new Error('Proxy token expired or invalid');
     }
-    return { url: payload.u, referer: payload.r || null, ua: payload.a || null, sessionId: payload.s || null, leaseId: payload.l || null };
+    return { url: payload.u, referer: payload.r || null, ua: payload.a || null, sessionId: payload.s || null, leaseId: payload.l || null, purpose: payload.p || null };
 }
 
 // Verifies the decrypted token's embedded session id against the CALLER's own session cookie
@@ -2146,6 +2151,93 @@ function buildM3u8ProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeas
 function buildStreamProxyUrl(url, referer, ua, sessionId, leaseId = createPlaybackLeaseId()) {
     return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua, sessionId, leaseId })}`;
 }
+
+// --- Playback integrity decoys (monitor-only by default) --------------------------------
+const HONEYPOT_LOG_PATH = path.join(__dirname, 'security-honeypot-events.jsonl');
+const HONEYPOT_WINDOW_MS = 30 * 60 * 1000;
+const HONEYPOT_BLOCK_MS = 30 * 60 * 1000;
+const HONEYPOT_BLOCK_SCORE = 12;
+// Keep this off while testing. Set HONEYPOT_ENFORCE=1 only after reviewing real traffic.
+// Local/private addresses always remain audit-only, so a LAN-hosted development server cannot
+// lock itself out.
+const HONEYPOT_ENFORCE = process.env.HONEYPOT_ENFORCE === '1';
+const playbackIntegrityScores = new Map();
+
+function auditClientIp(req) {
+    return String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || '';
+}
+function isLocalOrPrivateClient(ip) {
+    const normalized = String(ip).toLowerCase().replace(/^::ffff:/, '');
+    return normalized === '::1' || normalized === '127.0.0.1' ||
+        /^10\./.test(normalized) || /^192\.168\./.test(normalized) ||
+        /^172\.(1[6-9]|2\d|3[0-1])\./.test(normalized) || /^fc|^fd|^fe80:/.test(normalized);
+}
+function integrityScoreKey(req) {
+    return `${req.sessionId}:${resolverNetworkKey(req)}`;
+}
+function writeHoneypotEvent(event) {
+    try {
+        fs.appendFileSync(HONEYPOT_LOG_PATH, `${JSON.stringify(event)}\n`);
+    } catch (err) {
+        console.warn('[Playback integrity] failed to write audit event:', err.message);
+    }
+}
+function recordPlaybackIntegrityEvent(req, kind, points, detail = null) {
+    const now = Date.now();
+    const key = integrityScoreKey(req);
+    let entry = playbackIntegrityScores.get(key);
+    if (!entry || now - entry.windowStartedAt >= HONEYPOT_WINDOW_MS) {
+        entry = { windowStartedAt: now, score: 0, blockedUntil: 0 };
+        playbackIntegrityScores.set(key, entry);
+    }
+    entry.score += points;
+    const clientIp = auditClientIp(req);
+    const protectedClient = isLocalOrPrivateClient(clientIp);
+    const thresholdReached = entry.score >= HONEYPOT_BLOCK_SCORE;
+    if (thresholdReached && HONEYPOT_ENFORCE && !protectedClient) {
+        entry.blockedUntil = Math.max(entry.blockedUntil, now + HONEYPOT_BLOCK_MS);
+    }
+    writeHoneypotEvent({
+        at: new Date(now).toISOString(), kind, points, score: entry.score,
+        ip: clientIp, ipPrefix: playbackIpPrefix(req),
+        session: crypto.createHash('sha256').update(req.sessionId).digest('hex').slice(0, 16),
+        detail, thresholdReached, enforcement: HONEYPOT_ENFORCE && !protectedClient ? 'enabled' : 'audit-only'
+    });
+    return entry;
+}
+function isPlaybackIntegrityBlocked(req) {
+    if (!HONEYPOT_ENFORCE || isLocalOrPrivateClient(auditClientIp(req))) return false;
+    const entry = playbackIntegrityScores.get(integrityScoreKey(req));
+    return !!entry && entry.blockedUntil > Date.now();
+}
+function attachPlaybackIntegrityDecoy(req, res, next) {
+    const token = encryptProxyTarget({
+        url: 'honey://playback-integrity', sessionId: req.sessionId, purpose: 'playback-integrity-decoy'
+    });
+    // This is ignored by browsers/HLS. It catches code that mechanically follows every
+    // endpoint returned by the protected resolver API.
+    res.set('X-Playback-Integrity', `/api/playback-integrity?token=${token}`);
+    next();
+}
+
+app.get('/api/playback-integrity', (req, res) => {
+    try {
+        const decoded = decryptProxyTarget(req.query.token);
+        verifyProxySession(req, decoded);
+        if (decoded.purpose !== 'playback-integrity-decoy') throw new Error('Not an integrity token');
+        recordPlaybackIntegrityEvent(req, 'integrity-decoy-requested', 12);
+    } catch (err) {
+        recordPlaybackIntegrityEvent(req, 'integrity-decoy-invalid', 2, err.message);
+    }
+    return res.status(404).send('Not found');
+});
+
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of playbackIntegrityScores) {
+        if (now - entry.windowStartedAt >= HONEYPOT_WINDOW_MS && entry.blockedUntil <= now) playbackIntegrityScores.delete(key);
+    }
+}, 60 * 1000).unref();
 
 // The player sends this when it tears down an HLS instance or switches servers. It is intentionally
 // idempotent: the encrypted token and current session must still match, and deleting a lease only
@@ -6838,7 +6930,13 @@ app.get('/api/proxy-stream', async (req, res) => {
     // Token-only now - the legacy plaintext ?url=/&referer=/&ua= fallback is retired. Every
     // emitter was already migrated to buildStreamProxyUrl() before this, and pre-launch is the
     // right time to close this rather than carry a permanently-unauthenticated fallback path.
-    if (!req.query.token) return res.status(400).send('Missing token');
+    if (!req.query.token) {
+        if (req.query.url || req.query.referer || req.query.ua) {
+            recordPlaybackIntegrityEvent(req, 'legacy-proxy-stream-parameters', 4);
+        }
+        return res.status(400).send('Missing token');
+    }
+    if (isPlaybackIntegrityBlocked(req)) return res.status(429).send('Playback temporarily unavailable');
     let decodedUrl, decodedReferer, decodedUserAgent, decodedLeaseId;
     try {
         const decoded = decryptProxyTarget(req.query.token);
@@ -6848,6 +6946,7 @@ app.get('/api/proxy-stream', async (req, res) => {
         decodedUserAgent = decoded.ua || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
         decodedLeaseId = decoded.leaseId;
     } catch (err) {
+        recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'proxy-stream-session-replay' : 'proxy-stream-invalid-token', err.sessionMismatch ? 6 : 1);
         return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token');
     }
 
@@ -10623,7 +10722,11 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     // Token-only now - the legacy plaintext ?url=/&ref= fallback is retired. Every emitter was
     // already migrated to buildM3u8ProxyUrl() before this, and pre-launch is the right time to
     // close this rather than carry a permanently-unauthenticated fallback path.
-    if (!req.query.token) return res.status(400).send('Missing token');
+    if (!req.query.token) {
+        if (req.query.url || req.query.ref) recordPlaybackIntegrityEvent(req, 'legacy-m3u8-parameters', 4);
+        return res.status(400).send('Missing token');
+    }
+    if (isPlaybackIntegrityBlocked(req)) return res.status(429).send('Playback temporarily unavailable');
     let targetUrl, refererOverride, decodedLeaseId;
     try {
         const decoded = decryptProxyTarget(req.query.token);
@@ -10632,6 +10735,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         refererOverride = decoded.referer || undefined;
         decodedLeaseId = decoded.leaseId;
     } catch (err) {
+        recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'm3u8-session-replay' : 'm3u8-invalid-token', err.sessionMismatch ? 6 : 1);
         return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token');
     }
     if (!targetUrl) return res.status(400).send('URL required');

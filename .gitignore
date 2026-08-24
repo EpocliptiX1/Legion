@@ -13,6 +13,9 @@ Backend/middleware_secret.key
 # "valid" session id of its choosing. Auto-generated on first run.
 Backend/session_secret.key
 
+# Local playback-integrity honeypot audit trail. It contains client IP addresses by design.
+Backend/security-honeypot-events.jsonl
+
 # Signs/verifies every login session JWT. Used to run on a hardcoded 'dev-secret-change-me'
 # fallback (pentest, 2026-08-17 round 3, confirmed live) - leaking this key lets anyone forge
 # a valid session for any userUID/userEmail with no password. Auto-generated on first run.
