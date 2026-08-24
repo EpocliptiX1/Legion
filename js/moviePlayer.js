@@ -4123,7 +4123,18 @@ document.addEventListener('DOMContentLoaded', function() {
                         if (!isJapanese(r)) return false;
                         const n = norm(r?.name || r?.original_name || '');
                         if (!n) return false;
-                        if (n === baseNorm || n.startsWith(baseNorm) || baseNorm.startsWith(n)) return true;
+                        // Dropped the baseNorm.startsWith(n) direction - confirmed live it was
+                        // exactly the "spinoff swallowed into the parent's sequel chain" bug
+                        // (tmdb 70590, Sword Oratoria, a DanMachi spin-off): the base show's own
+                        // TMDB title, "Is It Wrong to Try to Pick Up Girls in a Dungeon?", is a
+                        // literal PREFIX of the spinoff's full title "...On the Side: Sword
+                        // Oratoria", so every one of the base show's own real sequels (II/III/IV/
+                        // etc, each a separate TMDB entry) matched here too, turning a genuine
+                        // single-season spin-off into a fake 6+ season dropdown. n.startsWith(
+                        // baseNorm) is still safe to keep (candidate is a superset of the query,
+                        // e.g. a real "...Final Season" sequel) - only the reverse direction,
+                        // where the CANDIDATE is missing words the query has, was ever wrong.
+                        if (n === baseNorm || n.startsWith(baseNorm)) return true;
                         // Whole-token match only. Substring matching lets "six" hit "sixed".
                         const nTokens = new Set(n.split(' '));
                         return baseTokens.length > 0 && baseTokens.every(t => nTokens.has(t));

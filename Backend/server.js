@@ -17620,7 +17620,7 @@ async function buildSeasonGroupsFromMalRelations(malId) {
 // Titan's Season 2 entry, mal 25777) while MAL's own page for that same id loads fine - Jikan
 // is also headed for its own sunset, so it's demoted to a last-resort-of-the-last-resort below
 // rather than removed outright.
-async function buildSeasonCardsFromMalRelations(malId) {
+async function buildSeasonCardsFromMalRelations(malId, tmdbSeasonCount) {
     const visited = new Set();
     const queue = [Number(malId)];
     const found = []; // { idMal, title, coverImage, airDate, status }
@@ -17668,11 +17668,15 @@ async function buildSeasonCardsFromMalRelations(malId) {
 
     // A side-story/spin-off (confirmed live: Sword Oratoria, a DanMachi spin-off) can have zero
     // Sequel/Prequel edges of its own - Related Entries is just manga/LN adaptations - which
-    // left found holding only the seed itself even though TMDB bundles this title into the SAME
-    // tv entry as the main series' own multi-season structure. Only falls back into the parent
-    // chain when the direct walk came up genuinely empty (found <= the seed alone); a title with
-    // its own real Sequel/Prequel chain never touches this, parent story or not.
-    if (found.length <= 1 && parentStoryIds.size) {
+    // left found holding only the seed itself. This fallback exists for the case where TMDB
+    // genuinely bundles the parent's multi-season structure into the SAME tv entry as the
+    // spin-off - but Sword Oratoria itself is proof that's not universal: TMDB lists it as its
+    // own standalone single-season entry, so walking into the parent's ENTIRE sequel chain (II/
+    // III/IV/etc, each a real season of a DIFFERENT show) just relabels those as if they were
+    // more seasons of the spin-off. tmdbSeasonCount > 1 is the actual evidence of bundling this
+    // fallback needs - without it, "found nothing of its own" more often just means "this really
+    // is a standalone side-story," not "TMDB folded it into the parent."
+    if (found.length <= 1 && parentStoryIds.size && Number(tmdbSeasonCount) > 1) {
         const parentQueue = Array.from(parentStoryIds).filter(id => !visited.has(id));
         while (parentQueue.length && found.length < 8) {
             const id = Number(parentQueue.shift());
@@ -18747,7 +18751,7 @@ async function resolveAnimeSeasonCards(tmdbId) {
     const startMalId = mappedMalId || null;
     if (startMalId) {
         try {
-            const malFound = await buildSeasonCardsFromMalRelations(startMalId);
+            const malFound = await buildSeasonCardsFromMalRelations(startMalId, tmdbSeasonCount);
             mergeResults(malFound, false);
         } catch (err) {
             hadFailure = true;
