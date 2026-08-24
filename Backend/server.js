@@ -10765,7 +10765,28 @@ async function resolveExactWatchUrl(title, targetSeason = '1', overrideSeasonTit
       let score = scoreAnimeSearchResult({ title: r.title }, title);
 
       if (foundTitle === wantedTitle) score += 120;
-      else if (foundTitle.includes(wantedTitle) || wantedTitle.includes(foundTitle)) score += 70;
+      else if (foundTitle.includes(wantedTitle)) score += 70;
+      else {
+        // Confirmed live: querying Sword Oratoria's full TMDB title ("...On the Side: Sword
+        // Oratoria") against anikoto's catalog, this symmetric check used to also award +70
+        // to the base show "Is It Wrong to Try to Pick Up Girls in a Dungeon?" purely because
+        // its short title is a literal PREFIX of the longer query - wantedTitle.includes(
+        // foundTitle) doesn't care that the candidate is missing "Sword"/"Oratoria"/"On the
+        // Side", the exact words that distinguish the spinoff from its parent show. That beat
+        // the real spinoff entry (whose anikoto title reverses the word order to "Sword
+        // Oratoria: Is it Wrong to Try to Pick Up Girls in a Dungeon? On the Side", so the
+        // literal substring checks above don't fire for it either way) every time.
+        // Token coverage instead: what fraction of the query's own words does this candidate
+        // actually contain, order-independent. The base show covers ~8/11 wanted tokens
+        // (missing sword/oratoria/side) and scores well below the spinoff, which covers all
+        // 11 in a different order - fixes the mismatch without needing a literal substring.
+        const wantedTokens = wantedTitle.split(' ').filter(Boolean);
+        const foundTokens = new Set(foundTitle.split(' ').filter(Boolean));
+        const coverage = wantedTokens.length
+          ? wantedTokens.filter(t => foundTokens.has(t)).length / wantedTokens.length
+          : 0;
+        score += Math.round(coverage * 70);
+      }
 
       // For specials search: penalize sequels/parts, but DON'T penalize special/ova keywords
       if (isSpecialSearch) {
@@ -10809,9 +10830,24 @@ async function resolveExactWatchUrl(title, targetSeason = '1', overrideSeasonTit
     // contain the right literal season string, both completely unrelated to Sword Art Online.
     // Restricting to candidates that actually share the base title first is what makes the
     // broader, more complete grid pool safe to search against.
+    // Same token-coverage signal scoreResult uses below, for the same reason: a spinoff whose
+    // anikoto title reorders the words ("Sword Oratoria: Is it Wrong to..." vs the query's "...
+    // On the Side: Sword Oratoria") fails BOTH literal substring directions even though it's
+    // clearly the same franchise. Confirmed live: this used to filter the correctly-scored
+    // Sword Oratoria candidate out of relatedCandidates entirely, leaving only the (wrongly
+    // substring-related) base show behind to be picked by relatedCandidates[0] regardless of
+    // its own worse score. >=0.5 keeps this from falsely relating two shows that just happen to
+    // share a couple of common words.
+    const titleTokenCoverage = (wanted, found) => {
+      const wantedTokens = wanted.split(' ').filter(Boolean);
+      if (!wantedTokens.length) return 0;
+      const foundTokens = new Set(found.split(' ').filter(Boolean));
+      return wantedTokens.filter(t => foundTokens.has(t)).length / wantedTokens.length;
+    };
     const isRelatedToTitle = (r) => {
       const foundTitle = normalizeAnimeTitle(r.title);
-      return foundTitle.includes(wantedTitle) || wantedTitle.includes(foundTitle);
+      return foundTitle.includes(wantedTitle) || wantedTitle.includes(foundTitle)
+        || titleTokenCoverage(wantedTitle, foundTitle) >= 0.5;
     };
     const relatedCandidates = regularCandidates.filter(isRelatedToTitle);
     const relatedRanked = rankedResults.filter(isRelatedToTitle);
