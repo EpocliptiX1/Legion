@@ -1954,7 +1954,7 @@ app.get('/api/pow-challenge', (req, res) => {
     res.json({ seed, difficulty, token: `${issuedAt}.${difficulty}.${signPowChallenge(req.sessionId, seed, difficulty, issuedAt)}` });
 });
 app.post('/api/pow-verify', (req, res) => {
-    const { seed, token, solution } = req.body || {};
+    const { seed, token, solution, automationSignals } = req.body || {};
     if (typeof seed !== 'string' || typeof token !== 'string' || typeof solution !== 'string' || solution.length > 64) {
         return res.status(400).json({ error: 'Malformed proof' });
     }
@@ -1975,6 +1975,22 @@ app.post('/api/pow-verify', (req, res) => {
     if (!digest.startsWith('0'.repeat(difficulty))) {
         return res.status(400).json({ error: 'Proof does not meet difficulty' });
     }
+    // Client signals are advisory only: a determined automation operator can spoof them and
+    // some privacy tools resemble automation. They make a cheap bot farm noisier, but never
+    // directly block a viewer; only the existing scored enforcement can do that.
+    const automation = automationSignals && typeof automationSignals === 'object' ? automationSignals : {};
+    const webdriver = automation.webdriver === true;
+    const pluginsEmpty = automation.pluginsEmpty === true;
+    const languagesEmpty = automation.languagesEmpty === true;
+    const cdpConsoleSignal = automation.cdpConsoleSignal === true;
+    if (cdpConsoleSignal) {
+        recordPlaybackIntegrityEvent(req, 'pow-cdp-console-signal', 4, 'advisory');
+    }
+    if (webdriver && (pluginsEmpty || languagesEmpty)) {
+        recordPlaybackIntegrityEvent(req, 'pow-automation-fingerprint', 3, 'webdriver+browser-shape');
+    } else if (pluginsEmpty && languagesEmpty) {
+        recordPlaybackIntegrityEvent(req, 'pow-automation-fingerprint', 2, 'empty-plugins+languages');
+    }
     issuePowPassCookie(req, res);
     res.json({ ok: true });
 });
@@ -1993,6 +2009,23 @@ function renderEmbedPowChallengeHtml() {
 (async function () {
   function bytesToHex(buf) { return Array.prototype.map.call(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join(''); }
   async function sha256Hex(text) { return bytesToHex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))); }
+  function collectAutomationSignals() {
+    const signals = {
+      webdriver: navigator.webdriver === true,
+      pluginsEmpty: !navigator.plugins || navigator.plugins.length === 0,
+      languagesEmpty: !navigator.languages || navigator.languages.length === 0,
+      cdpConsoleSignal: false
+    };
+    // CDP's Runtime domain can force console argument inspection that touches Error.stack.
+    // This is deliberately only one low-confidence signal: DevTools and stealth tools can
+    // change this behavior, so it must never be treated as proof on its own.
+    try {
+      const probe = new Error('playback-integrity-probe');
+      Object.defineProperty(probe, 'stack', { get() { signals.cdpConsoleSignal = true; return ''; } });
+      console.debug(probe);
+    } catch (_) { /* advisory probe only */ }
+    return signals;
+  }
   try {
     const challenge = await (await fetch('/api/pow-challenge')).json();
     const prefix = '0'.repeat(challenge.difficulty);
@@ -2008,7 +2041,7 @@ function renderEmbedPowChallengeHtml() {
     }
     const verify = await fetch('/api/pow-verify', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seed: challenge.seed, token: challenge.token, solution: String(solution) })
+      body: JSON.stringify({ seed: challenge.seed, token: challenge.token, solution: String(solution), automationSignals: collectAutomationSignals() })
     });
     if (!verify.ok) throw new Error('verify failed');
     location.reload();
