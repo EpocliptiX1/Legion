@@ -2372,6 +2372,12 @@ function sendIntegrityFailure(req, res, outcome, status, fallback) {
         // This header makes local black-box audits see the result even when the request was a
         // failed HLS fetch whose response body the browser/player itself does not render.
         res.set('X-Playback-Integrity-Audit', 'threshold-hit');
+        // A browser navigation (as opposed to an HLS/XHR subrequest) gets an actual visible
+        // page for local audit work. Never redirect a media fetch: a player should simply see
+        // its failed request and cannot safely consume HTML as a segment.
+        if (String(req.headers.accept || '').includes('text/html')) {
+            return res.redirect(302, '/html/security-audit-ended.html');
+        }
         return res.status(status).type('text/plain').send(LOCAL_AUDIT_NOTICE);
     }
     return res.status(status).send(fallback);
