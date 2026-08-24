@@ -1753,6 +1753,9 @@ app.use((req, res, next) => {
         res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, secure: true, sameSite: 'lax' });
         return res.status(429).json({ error: 'Playback session temporarily unavailable' });
     }
+    if (isPlaybackIntegrityNetworkBlocked(req)) {
+        return res.status(429).json({ error: 'Playback temporarily unavailable' });
+    }
     req.sessionId = sid;
     next();
 });
@@ -2292,6 +2295,8 @@ const HONEYPOT_BLOCK_SCORE = 12;
 // lock itself out.
 const HONEYPOT_ENFORCE = process.env.HONEYPOT_ENFORCE === '1';
 const playbackIntegrityScores = new Map();
+const playbackIntegrityNetworkScores = new Map();
+const LOCAL_AUDIT_NOTICE = 'Security audit ended: multiple playback-integrity tripwires were triggered. In a production scenario this client would now be temporarily blocked.';
 
 function auditClientIp(req) {
     return String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || '';
@@ -2305,6 +2310,14 @@ function isLocalOrPrivateClient(ip) {
 function integrityScoreKey(req) {
     return `${req.sessionId}:${resolverNetworkKey(req)}`;
 }
+function getIntegrityScore(store, key, now) {
+    let entry = store.get(key);
+    if (!entry || now - entry.windowStartedAt >= HONEYPOT_WINDOW_MS) {
+        entry = { windowStartedAt: now, score: 0, blockedUntil: 0 };
+        store.set(key, entry);
+    }
+    return entry;
+}
 function writeHoneypotEvent(event) {
     try {
         fs.appendFileSync(HONEYPOT_LOG_PATH, `${JSON.stringify(event)}\n`);
@@ -2315,31 +2328,38 @@ function writeHoneypotEvent(event) {
 function recordPlaybackIntegrityEvent(req, kind, points, detail = null) {
     const now = Date.now();
     const key = integrityScoreKey(req);
-    let entry = playbackIntegrityScores.get(key);
-    if (!entry || now - entry.windowStartedAt >= HONEYPOT_WINDOW_MS) {
-        entry = { windowStartedAt: now, score: 0, blockedUntil: 0 };
-        playbackIntegrityScores.set(key, entry);
-    }
+    const entry = getIntegrityScore(playbackIntegrityScores, key, now);
+    const networkEntry = getIntegrityScore(playbackIntegrityNetworkScores, resolverNetworkKey(req), now);
     entry.score += points;
+    networkEntry.score += points;
     const clientIp = auditClientIp(req);
     const protectedClient = isLocalOrPrivateClient(clientIp);
-    const thresholdReached = entry.score >= HONEYPOT_BLOCK_SCORE;
+    const thresholdReached = entry.score >= HONEYPOT_BLOCK_SCORE || networkEntry.score >= HONEYPOT_BLOCK_SCORE;
     if (thresholdReached && HONEYPOT_ENFORCE && !protectedClient) {
         entry.blockedUntil = Math.max(entry.blockedUntil, now + HONEYPOT_BLOCK_MS);
+        networkEntry.blockedUntil = Math.max(networkEntry.blockedUntil, now + HONEYPOT_BLOCK_MS);
         revokedPlaybackSessions.set(req.sessionId, entry.blockedUntil);
     }
     writeHoneypotEvent({
-        at: new Date(now).toISOString(), kind, points, score: entry.score,
+        at: new Date(now).toISOString(), kind, points, score: entry.score, networkScore: networkEntry.score,
         ip: clientIp, ipPrefix: playbackIpPrefix(req),
         session: crypto.createHash('sha256').update(req.sessionId).digest('hex').slice(0, 16),
         detail, thresholdReached, enforcement: HONEYPOT_ENFORCE && !protectedClient ? 'enabled' : 'audit-only'
     });
-    return entry;
+    return { score: entry.score, networkScore: networkEntry.score, thresholdReached };
 }
 function isPlaybackIntegrityBlocked(req) {
     if (!HONEYPOT_ENFORCE || isLocalOrPrivateClient(auditClientIp(req))) return false;
     const entry = playbackIntegrityScores.get(integrityScoreKey(req));
+    return (!!entry && entry.blockedUntil > Date.now()) || isPlaybackIntegrityNetworkBlocked(req);
+}
+function isPlaybackIntegrityNetworkBlocked(req) {
+    if (!HONEYPOT_ENFORCE || isLocalOrPrivateClient(auditClientIp(req))) return false;
+    const entry = playbackIntegrityNetworkScores.get(resolverNetworkKey(req));
     return !!entry && entry.blockedUntil > Date.now();
+}
+function auditThresholdMessage(req, outcome, fallback) {
+    return outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req)) ? LOCAL_AUDIT_NOTICE : fallback;
 }
 function attachPlaybackIntegrityDecoy(req, res, next) {
     const token = encryptProxyTarget({
@@ -2369,7 +2389,10 @@ app.get('/api/playback-integrity', (req, res) => {
         const decoded = decryptProxyTarget(req.query.token);
         verifyProxySession(req, decoded);
         if (decoded.purpose !== 'playback-integrity-decoy') throw new Error('Not an integrity token');
-        recordPlaybackIntegrityEvent(req, 'integrity-decoy-requested', 12);
+        const outcome = recordPlaybackIntegrityEvent(req, 'integrity-decoy-requested', 12);
+        if (outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req))) {
+            return res.status(404).send(LOCAL_AUDIT_NOTICE);
+        }
     } catch (err) {
         recordPlaybackIntegrityEvent(req, 'integrity-decoy-invalid', 2, err.message);
     }
@@ -2378,8 +2401,10 @@ app.get('/api/playback-integrity', (req, res) => {
 
 setInterval(() => {
     const now = Date.now();
-    for (const [key, entry] of playbackIntegrityScores) {
-        if (now - entry.windowStartedAt >= HONEYPOT_WINDOW_MS && entry.blockedUntil <= now) playbackIntegrityScores.delete(key);
+    for (const store of [playbackIntegrityScores, playbackIntegrityNetworkScores]) {
+        for (const [key, entry] of store) {
+            if (now - entry.windowStartedAt >= HONEYPOT_WINDOW_MS && entry.blockedUntil <= now) store.delete(key);
+        }
     }
     for (const [sessionId, until] of revokedPlaybackSessions) {
         if (until <= now) revokedPlaybackSessions.delete(sessionId);
@@ -7093,8 +7118,9 @@ app.get('/api/proxy-stream', async (req, res) => {
         decodedUserAgent = decoded.ua || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
         decodedLeaseId = decoded.leaseId;
     } catch (err) {
-        recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'proxy-stream-session-replay' : 'proxy-stream-invalid-token', err.sessionMismatch ? 6 : 1);
-        return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token');
+        const outcome = recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'proxy-stream-session-replay' : 'proxy-stream-invalid-token', err.sessionMismatch ? 6 : 1);
+        const fallback = err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token';
+        return res.status(403).send(auditThresholdMessage(req, outcome, fallback));
     }
 
     try {
@@ -10876,8 +10902,9 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         refererOverride = decoded.referer || undefined;
         decodedLeaseId = decoded.leaseId;
     } catch (err) {
-        recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'm3u8-session-replay' : 'm3u8-invalid-token', err.sessionMismatch ? 6 : 1);
-        return res.status(403).send(err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token');
+        const outcome = recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'm3u8-session-replay' : 'm3u8-invalid-token', err.sessionMismatch ? 6 : 1);
+        const fallback = err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token';
+        return res.status(403).send(auditThresholdMessage(req, outcome, fallback));
     }
     if (!targetUrl) return res.status(400).send('URL required');
 
