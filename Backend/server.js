@@ -1906,6 +1906,9 @@ app.use('/embed', (req, res, next) => {
     if (!spendResolveBudget(req, res)) return;
     next();
 });
+// Public embeds have no API key by design, but their response still gets the same harmless
+// session-bound canary as the internal player routes. An iframe never consumes this header.
+app.use('/embed', attachPlaybackIntegrityDecoy);
 
 // --- Proxy target encryption -------------------------------------------------------------
 // /api/m3u8-proxy and /api/proxy-stream used to take the real upstream CDN URL as a plain
