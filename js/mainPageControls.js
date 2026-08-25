@@ -31,6 +31,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (wrap) wrap.classList.toggle('anime-active', isAnimeMode());
         }
         window.__toggleAnimeMode = function () {
+            // Same guard as animePage.js's own __toggleAnimeMode - switching modes mid-stream
+            // is what w2g's hero sync couldn't reliably chase, so it's just not allowed while
+            // hosting. Pick the mode before starting a room instead.
+            if (localStorage.getItem('w2gHostingSessionId')) {
+                if (typeof window.showLimitToast === 'function') {
+                    window.showLimitToast("Can't switch modes while hosting a Watch2Gether session.");
+                }
+                if (cb) cb.checked = isAnimeMode();
+                return;
+            }
             localStorage.setItem('animeMode', isAnimeMode() ? 'false' : 'true');
             window.location.reload();
         };

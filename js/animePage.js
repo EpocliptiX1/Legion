@@ -150,6 +150,22 @@
     window.__animeMode = isAnimeMode() && (_isMain || _isBrowse || _isAllMovies || _isCalendar);
 
     window.__toggleAnimeMode = function () {
+        // Switching modes mid-stream is exactly what w2g's hero sync couldn't reliably chase
+        // (each mode has its own separate hero implementation/data shape) - rather than keep
+        // patching that race, just don't allow it while actively hosting. Pick the mode before
+        // starting a room instead (see the Anime/Movies selector on the Watch2Gether create panel).
+        if (localStorage.getItem('w2gHostingSessionId')) {
+            if (typeof window.showLimitToast === 'function') {
+                window.showLimitToast("Can't switch modes while hosting a Watch2Gether session.");
+            }
+            // The checkbox's own `checked` already flipped by the time this onchange handler
+            // runs (that's just how checkbox click events work) - snap it back to match the
+            // localStorage value we're NOT changing, or it visually shows the wrong state
+            // until the next full page load.
+            const cb = document.getElementById('animeModeCheck');
+            if (cb) cb.checked = isAnimeMode();
+            return;
+        }
         localStorage.setItem('animeMode', isAnimeMode() ? 'false' : 'true');
         window.location.reload();
     };

@@ -816,6 +816,14 @@
                 <button type="button" class="w2g-create-mode active" data-mode="public" onclick="setW2gCreateMode('public', this)"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:16px;height:16px;vertical-align:-3px;margin-right:5px;"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418" /></svg>Public Room</button>
                 <button type="button" class="w2g-create-mode" data-mode="private" onclick="setW2gCreateMode('private', this)"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:16px;height:16px;vertical-align:-3px;margin-right:5px;"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" /></svg>Private Room</button>
             </div>
+            <!-- Picks the room's mode UP FRONT instead of relying on the site's nav toggle mid-
+                 session - the nav toggle is now blocked entirely while hosting (each mode has
+                 its own separate hero implementation, and syncing across a mode switch mid-
+                 stream wasn't reliable), so this is the only place to choose it for a room. -->
+            <div class="w2g-create-mode-tabs" id="w2gCreateContentModeTabs" style="margin-top:8px;">
+                <button type="button" class="w2g-create-mode active" data-content-mode="anime" onclick="setW2gCreateContentMode('anime', this)">⛩ Anime</button>
+                <button type="button" class="w2g-create-mode" data-content-mode="movie" onclick="setW2gCreateContentMode('movie', this)">🎬 Movies</button>
+            </div>
             <div class="w2g-create-form">
                 <div class="w2g-create-field">
                     <label>What are you watching? <span class="w2g-optional">(optional — pick later if you skip this)</span></label>
@@ -983,13 +991,27 @@
     // there would mean updating every page that shares it just to avoid breaking their layout.
     // A standalone section here sidesteps that entirely.
     let w2gCreateMode = 'public';
+    let w2gCreateContentMode = 'anime';
     let w2gCreateSelectedMedia = null;
 
     window.setW2gCreateMode = function(mode, btn) {
         w2gCreateMode = mode;
-        document.querySelectorAll('.w2g-create-mode').forEach(b => b.classList.remove('active'));
+        // Scoped to [data-mode] specifically - the Anime/Movies picker below shares the same
+        // .w2g-create-mode styling class for a matching look, but is a separate button group
+        // ([data-content-mode]) that must keep its own active state independent of this one.
+        document.querySelectorAll('.w2g-create-mode[data-mode]').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         document.getElementById('w2gCreateFriendField').style.display = mode === 'private' ? 'flex' : 'none';
+    };
+
+    // Picks the room's mode up front (see the markup's own comment on why this exists instead
+    // of relying on the nav's anime/movie toggle mid-session) - applied to localStorage right
+    // before the room actually starts, in submitW2gCreateRoom below, so the host's very first
+    // page load into the room is already in the right mode.
+    window.setW2gCreateContentMode = function(mode, btn) {
+        w2gCreateContentMode = mode;
+        document.querySelectorAll('.w2g-create-mode[data-content-mode]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
     };
 
     let w2gCreateSearchTimeout = null;
@@ -1051,6 +1073,11 @@
             alert('Sign in to use Watch2Gether!');
             return;
         }
+        // Set BEFORE the room actually starts reporting, so the host's very first page load
+        // into it is already in the right mode - the nav toggle is blocked entirely once
+        // hosting starts (see __toggleAnimeMode's own guard), so this picker is the only
+        // chance to choose it.
+        localStorage.setItem('animeMode', w2gCreateContentMode === 'anime' ? 'true' : 'false');
         const submitBtn = document.querySelector('.w2g-create-submit');
         submitBtn.disabled = true;
         submitBtn.textContent = 'Starting...';
