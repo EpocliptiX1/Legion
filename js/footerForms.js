@@ -63,7 +63,7 @@
             }).join('');
         } catch (err) {
             console.error('[Footer] Failed to load friends:', err);
-            container.innerHTML = '<p class="footer-friends-empty">Could not load friends.</p>';
+            container.innerHTML = '<p class="footer-friends-empty">Could not load friends, re-log in required</p>';
         }
     }
     loadFooterFriends();
@@ -75,6 +75,9 @@
     function openFooterModal(id) {
         document.getElementById(id)?.classList.add('active');
     }
+    // Exposed so other scripts on the page (e.g. moviePlayer.js's "Report a Problem" button)
+    // can open a footer modal without duplicating this one-line classList toggle themselves.
+    window.openFooterModal = openFooterModal;
     document.addEventListener('mousedown', (e) => {
         ['footerReportBugModal', 'footerRequestAnimeModal', 'footerContactModal'].forEach(id => {
             if (e.target.id === id) window.closeFooterModal(id);
