@@ -1129,10 +1129,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 .server-btn { background:#222; color:#fff; padding:6px 14px; border:none; border-radius:8px; cursor:pointer; font-size:0.95rem; font-weight:bold; margin:0 6px 6px 0; box-shadow:0 2px 8px #ff800033,0 1.5px 4px #0004; letter-spacing:0.5px; transition:background 0.2s,box-shadow 0.2s; }
                 .server-btn.active { background:#ff8000; color:#fff; box-shadow:0 2px 12px #ff800055; }
                 .player-section-divider { width:100%; height:2px; background:#ff8000; margin:12px 0 8px 0; border-radius:2px; opacity:0.7; }
-                .player-report-btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-width:150px; margin:0 16px 0 0; background:#1a1a1a; color:#ddd; border:none; border-radius:8px; padding:6px 12px; font-size:0.95rem; font-weight:700; cursor:pointer; transition:background 0.2s,color 0.2s; box-shadow:0 2px 8px #ff000033; }
+                .player-report-btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-width:150px; margin:0; background:#1a1a1a; color:#ddd; border:none; border-radius:8px; padding:6px 12px; font-size:0.95rem; font-weight:700; cursor:pointer; transition:background 0.2s,color 0.2s; box-shadow:0 2px 8px #ff000033; }
                 .player-report-btn:hover { background:#241a10; color:#ff8000; }
                 .player-report-btn svg { width:16px; height:16px; flex-shrink:0; }
-                .player-block-report { margin:10px 0; }
+                .player-block-actions { display:flex; flex-direction:row; align-items:center; flex-wrap:wrap; gap:16px; margin:10px 0; }
+                .player-block-report { margin:0; }
                 .player-info { color:#fff; font-size:0.95rem; margin-bottom:6px; }
                 .player-select { background:#222; color:#fff; padding:6px 12px; border-radius:8px; border:none; font-size:0.95rem; margin:0 0px; box-shadow:0 1px 6px #ff800033; }
                 .audio-btn { background:#222; color:#fff; padding:6px 18px; border:none; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.95rem; margin:0 6px; transition:background 0.2s; box-shadow:0 2px 8px #ff800033; }
@@ -1221,37 +1222,39 @@ document.addEventListener('DOMContentLoaded', function() {
                                                 <span id="episodeNum" style="display:none;">1</span>
                                                 <div class="player-info">Our servers: Kino, KAA, Neko, RU - MV, MegaVid<br>The rest we have no control over, just close whatever opens up.<br>MegaVid = fastest<br>NekoStream = fast<br>KAA = old, may not have dub<br>Kino = fast<br>RU - MV = normal</div>
                                             </div>
-                                            <div class="player-block-report">
-                                                <button type="button" class="player-report-btn" onclick="window.openFooterModal ? window.openFooterModal('footerReportBugModal') : document.getElementById('footerReportBugModal')?.classList.add('active')">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
-                                                    </svg>
-                                                    Report a Problem
-                                                </button>
-                                            </div>
-                                            <div class="player-block-downloads">
-                                                <div id="animeDownloadWrap" style="display:none;margin-top:auto;padding-top:10px;">
-                                                    <div class="downloadButtonMovieInfoParent">
-                                                        <button id="btnDownloadAnime" class="audio-btn" style="margin:0;padding:6px 12px;display:inline-flex;align-items:center;gap:6px;">
-                                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:15px;height:15px;">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                                                            </svg>
-                                                            Download Anime
-                                                        </button>
-                                                    </div>
+                                            <div class="player-block-actions">
+                                                <div class="player-block-report">
+                                                    <button type="button" class="player-report-btn" onclick="window.openFooterModal ? window.openFooterModal('footerReportBugModal') : document.getElementById('footerReportBugModal')?.classList.add('active')">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+                                                        </svg>
+                                                        Report a Problem
+                                                    </button>
                                                 </div>
-                                                <div id="movieDownloadWrap" style="display:none;margin-top:auto;padding-top:10px;">
-                                                    <div class="downloadTextNextoBtn" style="font-size:0.85rem;color:#ffb366;margin-bottom:6px;">Movie Downloads</div>
-                                                    <div class="downloadButtonMovieInfoParent">
-                                                        <button id="btnDownloadRuMovie" class="audio-btn" style="margin:0;padding:6px 12px;">Download (RU - MV)</button>
-                                                        <button id="btnDownloadKino" class="audio-btn" style="margin:0;padding:6px 12px;">Download (Kino)</button>
+                                                <div class="player-block-downloads">
+                                                    <div id="animeDownloadWrap" style="display:none;">
+                                                        <div class="downloadButtonMovieInfoParent">
+                                                            <button id="btnDownloadAnime" class="audio-btn" style="margin:0;padding:6px 12px;display:inline-flex;align-items:center;gap:6px;">
+                                                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:15px;height:15px;">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                                                </svg>
+                                                                Download Anime
+                                                            </button>
+                                                        </div>
                                                     </div>
-                                                </div>
-                                                <div id="tvDownloadWrap" style="display:none;margin-top:auto;padding-top:10px;">
-                                                    <div class="downloadTextNextoBtn" style="font-size:0.85rem;color:#ffb366;margin-bottom:6px;">TV Downloads</div>
-                                                    <div class="downloadButtonMovieInfoParent">
-                                                        <button id="btnDownloadRuTv" class="audio-btn" style="margin:0;padding:6px 12px;">Download Episode (RU - MV)</button>
-                                                        <button id="btnDownloadKinoTv" class="audio-btn" style="margin:0;padding:6px 12px;">Download Episode (Kino)</button>
+                                                    <div id="movieDownloadWrap" style="display:none;">
+                                                        <div class="downloadTextNextoBtn" style="font-size:0.85rem;color:#ffb366;margin-bottom:6px;">Movie Downloads</div>
+                                                        <div class="downloadButtonMovieInfoParent">
+                                                            <button id="btnDownloadRuMovie" class="audio-btn" style="margin:0;padding:6px 12px;">Download (RU - MV)</button>
+                                                            <button id="btnDownloadKino" class="audio-btn" style="margin:0;padding:6px 12px;">Download (Kino)</button>
+                                                        </div>
+                                                    </div>
+                                                    <div id="tvDownloadWrap" style="display:none;">
+                                                        <div class="downloadTextNextoBtn" style="font-size:0.85rem;color:#ffb366;margin-bottom:6px;">TV Downloads</div>
+                                                        <div class="downloadButtonMovieInfoParent">
+                                                            <button id="btnDownloadRuTv" class="audio-btn" style="margin:0;padding:6px 12px;">Download Episode (RU - MV)</button>
+                                                            <button id="btnDownloadKinoTv" class="audio-btn" style="margin:0;padding:6px 12px;">Download Episode (Kino)</button>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
