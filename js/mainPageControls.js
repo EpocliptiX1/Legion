@@ -3791,13 +3791,28 @@ function _w2gReportState() {
     // instead of the host's, even though the rest of the page mirrors correctly. Only sent
     // when there's something real to send - an empty/missing hero on a page that doesn't have
     // one (e.g. movieInfo.html) would otherwise overwrite a previously-reported page's data.
-    if (heroMovies.length > 0 && heroMovies[currentSlide]) {
+    //
+    // Anime mode has its own completely separate hero implementation (animePage.js's
+    // animeHeroList/renderAnimeHero, not this file's heroMovies/updateHero) - switching modes
+    // reloads the page into a different code path entirely, so which one is live has to be
+    // checked here rather than assumed. heroMode is tagged on the payload so a receiving page
+    // in the OTHER mode can tell the data doesn't apply to it instead of rendering garbage
+    // from a shape it doesn't understand (confirmed live: switching anime mode on either side
+    // left the viewer stuck on stale pre-switch hero data with nothing updating it, since
+    // heroMovies stays empty in anime mode and nothing was reporting animeHeroList at all).
+    const isAnimeModeNow = !!window.__animeMode;
+    if (isAnimeModeNow && typeof window.__getAnimeHeroDataForSync === 'function') {
+        const animeHero = window.__getAnimeHeroDataForSync();
+        if (animeHero) {
+            body.heroData = { ...animeHero, mode: 'anime' };
+        }
+    } else if (heroMovies.length > 0 && heroMovies[currentSlide]) {
         // The full carousel + index, not just the current movie - sending only the current
         // movie collapsed the viewer's own heroMovies to a 1-item array, which made the dots
         // row show a single lonely dot instead of the real multi-slide carousel the host
         // actually has (confirmed live). Sending the whole array keeps the viewer's carousel
         // visually identical to the host's, dots and all.
-        body.heroData = { movies: heroMovies, slide: currentSlide };
+        body.heroData = { movies: heroMovies, slide: currentSlide, mode: 'movie' };
     }
     if (Array.isArray(window.__lastRecommendedMovies) && window.__lastRecommendedMovies.length) {
         body.recommendedData = window.__lastRecommendedMovies;
@@ -3822,8 +3837,20 @@ function _w2gReportState() {
 // the trailer and fades the whole hero out/in) when the slide genuinely changed, or the exact
 // same host pick re-triggered that fade/trailer-reload every single poll tick regardless of
 // whether anything was different, which is what looked like the page "refreshing" on a loop.
+// heroData.mode ('anime'/'movie', tagged by _w2gReportState above) has to match THIS page's
+// own current mode before applying anything - anime and movie hero data use completely
+// different shapes (show.name/first_air_date/poster_path vs movie.title/year/poster), and a
+// mode mismatch (host switched modes, this tab hasn't reloaded into the new one yet) would
+// otherwise render one shape's fields through the other's renderer. Skipping silently here is
+// correct: the next poll after this tab's own mode-switch reload will match again on its own.
 let _w2gLastAppliedHeroKey = null;
 window.__w2gApplyHero = function (heroData) {
+    const wantsAnime = heroData?.mode === 'anime';
+    if (wantsAnime !== !!window.__animeMode) return;
+    if (wantsAnime) {
+        window.__applyAnimeHeroDataForSync?.(heroData);
+        return;
+    }
     const movies = Array.isArray(heroData?.movies) ? heroData.movies : null;
     if (!movies || !movies.length) return;
     const slide = Number.isInteger(heroData.slide) ? heroData.slide : 0;

@@ -806,6 +806,11 @@
     // ── Hero management ───────────────────────────────────────────
     let animeHeroList = [];
     let animeHeroIdx = 0;
+    // Same overlapping-call guard mainPageControls.js's movie-mode updateHero() uses (see its
+    // own comment) - renderAnimeHero has the identical shape (async trailer-key fetch, THEN a
+    // separate delayed setTimeout for title/desc/poster), so it's exposed to the exact same
+    // race if two calls overlap.
+    let _animeHeroRenderGen = 0;
 
     // Standalone so the full candidate list (which arrives AFTER the hero has already started
     // playing on just its first-resolved show - see buildAnimeHeroFromRecommendations'
@@ -821,6 +826,7 @@
     }
 
     function renderAnimeHero(show) {
+        const myGen = ++_animeHeroRenderGen;
         const content = document.querySelector('.hero-content');
         if (content) content.style.opacity = '0';
 
@@ -830,6 +836,7 @@
             .then(r => r.json());
 
         setTimeout(() => {
+            if (myGen !== _animeHeroRenderGen) return; // superseded while this timeout was pending
             const title = show.name || show.original_name || '';
             const rating = show.vote_average ? show.vote_average.toFixed(1) : '--';
             const year = (show.first_air_date || '----').slice(0, 4);
@@ -884,6 +891,7 @@
             if (iframe) {
                 trailerKeysPromise
                     .then(data => {
+                        if (myGen !== _animeHeroRenderGen) return; // superseded while this fetch was pending
                         // Already trailers-first, teasers/clips after - same priority order the
                         // old client-side filtering produced.
                         const trailerKeys = Array.isArray(data.trailerKeys) ? data.trailerKeys : [];
@@ -932,11 +940,41 @@
                         };
 
                         playTrailer(trailerKeys[0]);
+                        // Push the newly-shown anime hero pick to any w2g session this tab is
+                        // hosting - same idea as movie-mode's updateHero()/updateHeroUI() report
+                        // hooks, just sourced from animeHeroList/animeHeroIdx instead of
+                        // heroMovies/currentSlide (see __getAnimeHeroDataForSync below, which
+                        // _w2gReportState reads when window.__animeMode is true).
+                        if (typeof _w2gReportState === 'function') _w2gReportState();
                     })
                     .catch(() => { iframe.src = ''; });
             }
         }, 300);
     }
+
+    // Read by mainPageControls.js's _w2gReportState when window.__animeMode is true -
+    // animeHeroList/animeHeroIdx are private to this closure, so this is the only way for the
+    // shared w2g reporting code (which doesn't know anime mode's data shape) to see them.
+    window.__getAnimeHeroDataForSync = function () {
+        if (!animeHeroList.length) return null;
+        return { movies: animeHeroList, slide: animeHeroIdx };
+    };
+
+    // Called by mainPageControls.js's __w2gApplyHero when window.__animeMode is true on this
+    // (viewer) page - same dedupe-by-key + generation-guard idea as the movie-mode override,
+    // just landing on renderAnimeHero() instead of updateHero().
+    let _w2gLastAppliedAnimeHeroKey = null;
+    window.__applyAnimeHeroDataForSync = function (heroData) {
+        const movies = Array.isArray(heroData?.movies) ? heroData.movies : null;
+        if (!movies || !movies.length) return;
+        const slide = Number.isInteger(heroData.slide) ? heroData.slide : 0;
+        const key = `${slide}:${movies[slide]?.id ?? ''}`;
+        if (key === _w2gLastAppliedAnimeHeroKey) return;
+        _w2gLastAppliedAnimeHeroKey = key;
+        animeHeroList = movies;
+        animeHeroIdx = Math.min(slide, movies.length - 1);
+        renderAnimeHero(animeHeroList[animeHeroIdx]);
+    };
 
     // Override slider controls
     function patchSlider() {
