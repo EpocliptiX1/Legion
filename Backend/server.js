@@ -11644,7 +11644,10 @@ function linkAnimeCommentParent(malId, episodeNumber, sourceCommentId, parentSou
 // kinogo movie comments later) whatever offset that source picks for itself.
 const ANIMEGO_USER_ID_OFFSET = 2_000_000_000;
 
-function hasRecentSourceComments(malId, episodeNumber, source, maxAgeSeconds = 3600) {
+// 7 days by default (was 1h here / 24h at the animego call site) - comment threads don't move
+// fast enough to justify re-scraping this often, and every re-scrape is a real round trip
+// against the source site. Scrape once, serve from anime_comments for a week, scrape again.
+function hasRecentSourceComments(malId, episodeNumber, source, maxAgeSeconds = 7 * 24 * 3600) {
     return new Promise((resolve) => {
         animeCacheDb.get(
             `SELECT scraped_at FROM anime_comment_scrape_log WHERE mal_id = ? AND episode_number = ? AND source = ?`,
@@ -11821,7 +11824,7 @@ function runAnimegoCommentImportJob(malId, rawTitle, season) {
     if (animegoCommentJobsInFlight.has(key)) return animegoCommentJobsInFlight.get(key);
 
     const job = (async () => {
-        const alreadyFresh = await hasRecentSourceComments(malId, 0, 'animego', 24 * 3600);
+        const alreadyFresh = await hasRecentSourceComments(malId, 0, 'animego');
         if (alreadyFresh) return;
         if (!rawTitle) return;
         await recordCommentScrape(malId, 0, 'animego');
@@ -11881,7 +11884,9 @@ function runAnimegoCommentImportJob(malId, rawTitle, season) {
 // Skip re-scraping if we already imported comments for this mal_id+episode recently.
 // 24h TTL, same as the kinogo movie-comments cache - new comments trickling in isn't
 // worth paying a full anikoto.to re-scrape on every single page visit for.
-function hasRecentAnimeComments(malId, episodeNumber, maxAgeSeconds = 24 * 3600) {
+// 7 days (was 24h) - same reasoning as hasRecentSourceComments above: scrape once, serve from
+// anime_comments for a week before checking anikoto again.
+function hasRecentAnimeComments(malId, episodeNumber, maxAgeSeconds = 7 * 24 * 3600) {
     return hasRecentSourceComments(malId, episodeNumber, 'anikoto', maxAgeSeconds);
 }
 
@@ -14410,13 +14415,28 @@ app.get('/api/anime-comments/by-user', (req, res) => {
             if (err) return res.status(500).json({ error: 'Could not load comments' });
             if (!rows.length) return res.json([]);
 
+            // anime_tmdb_mapping (populated by any anime feature that's ever resolved this
+            // mal_id, not just episode playback) tried first - episode_load_cache alone missed
+            // tmdbId for a comment whose show was never actually played through the video
+            // player on this account (imported Anikoto comments, or a comment left without
+            // watching), leaving the "Your Comments" widget's link with nothing to point at and
+            // falling back to a literal "#" (confirmed live - clicking did nothing).
             const withTitles = await Promise.all(rows.map(row => new Promise(resolve => {
                 animeCacheDb.get(
-                    `SELECT tmdb_id, anime_title FROM episode_load_cache
-                     WHERE mal_id = ? AND anime_title IS NOT NULL ORDER BY cached_at DESC LIMIT 1`,
+                    `SELECT tmdb_id, title FROM anime_tmdb_mapping WHERE mal_id = ? LIMIT 1`,
                     [row.mal_id],
-                    (lookupErr, match) => {
-                        resolve({ ...row, animeTitle: match?.anime_title || null, tmdbId: match?.tmdb_id || null });
+                    (mapErr, mapRow) => {
+                        if (mapRow?.tmdb_id) {
+                            return resolve({ ...row, animeTitle: mapRow.title || null, tmdbId: mapRow.tmdb_id });
+                        }
+                        animeCacheDb.get(
+                            `SELECT tmdb_id, anime_title FROM episode_load_cache
+                             WHERE mal_id = ? AND anime_title IS NOT NULL ORDER BY cached_at DESC LIMIT 1`,
+                            [row.mal_id],
+                            (lookupErr, match) => {
+                                resolve({ ...row, animeTitle: match?.anime_title || null, tmdbId: match?.tmdb_id || null });
+                            }
+                        );
                     }
                 );
             })));
@@ -15953,7 +15973,8 @@ async function fetchKinogoComments(moviePageUrl) {
     return comments;
 }
 
-function hasRecentKinogoComments(movieId, maxAgeSeconds = 24 * 3600) {
+// 7 days (was 24h) - same reasoning as hasRecentAnimeComments/hasRecentSourceComments above.
+function hasRecentKinogoComments(movieId, maxAgeSeconds = 7 * 24 * 3600) {
     return new Promise((resolve) => {
         activityDb.get(
             `SELECT scraped_at FROM movie_comment_scrape_log WHERE movie_id = ? AND source = 'kinogo'`,
