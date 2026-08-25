@@ -1207,7 +1207,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                                      source in several places in this file, so it stays in the DOM (just hidden) rather
                                                      than being removed outright along with the visible box the user actually wanted gone. -->
                                                 <span id="episodeNum" style="display:none;">1</span>
-                                                <div class="player-info">If current server doesn't work<br>please try other servers beside. KickAssAnime is ours, most stable, yet slower to load initially, Neko is run through us, faster than KickAssAnime but may be unavailable later on</div>
+                                                <div class="player-info">Our servers: Kino, KAA, Neko, RU - MV, MegaVid<br>The rest we have no control over, just close whatever opens up.<br>MegaVid = fastest<br>NekoStream = fast<br>KAA = old, may not have dub<br>Kino = fast<br>RU - MV = normal</div>
                                                 <button type="button" class="player-report-btn" onclick="window.openFooterModal ? window.openFooterModal('footerReportBugModal') : document.getElementById('footerReportBugModal')?.classList.add('active')">
                                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                                                         <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
