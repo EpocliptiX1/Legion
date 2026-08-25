@@ -1844,58 +1844,15 @@ function buildContinueWatchingCard(row, tmdb) {
     `;
 }
 
-async function loadContinueWatching() {
-    const section = document.getElementById('continueWatchingSection');
-    const list = document.getElementById('continueWatchingList');
-    if (!section || !list) return;
-
-    section.style.display = 'none';
-    list.innerHTML = '';
-
-    const userUID = window.recommendationsSystem?.getActivityUID ? window.recommendationsSystem.getActivityUID() : localStorage.getItem('userUID');
-    if (!userUID) return;
-
-    try {
-        const res = await fetch(`/activity/continueWatching?userUID=${encodeURIComponent(userUID)}`);
-        if (!res.ok) throw new Error('Continue watching request failed');
-
-        const rows = await res.json();
-        if (!Array.isArray(rows) || rows.length === 0) return;
-
-        const fetches = rows.map(row => {
-            const id = String(row.movie_id);
-            const endpoint = row.type === 'tv'
-                ? `/api/tmdb-proxy/tv/${encodeURIComponent(id)}`
-                : `/api/tmdb-proxy/movie/${encodeURIComponent(id)}`;
-            return fetch(endpoint)
-                .then(response => {
-                    if (!response.ok) throw new Error('TMDB request failed');
-                    return response.json();
-                })
-                .then(tmdb => ({ row, tmdb }));
-        });
-
-        const settled = await Promise.allSettled(fetches);
-        const cards = settled
-            .filter(r => r.status === 'fulfilled' && r.value && r.value.tmdb)
-            .map(r => buildContinueWatchingCard(r.value.row, r.value.tmdb));
-
-        if (cards.length === 0) return;
-
-        list.innerHTML = cards.join('');
-        section.style.display = 'block';
-    } catch (err) {
-        section.style.display = 'none';
-    }
-}
-
 async function initPersonalRows() {
     const isBrowsePage = window.location.pathname.includes('indexBrowse.html');
     if (!isBrowsePage) return;
 
-    // My List & playlists load in all modes (filtered per mode inside each loader)
+    // My List & playlists load in all modes (filtered per mode inside each loader). Continue
+    // Watching used to load here too - replaced by the shared My Watch Status row (see
+    // loadWatchStatusRows, its own DOMContentLoaded handler runs independently of this
+    // function and picks up #watchStatusSection now that indexBrowse.html has it as well).
     await Promise.allSettled([loadMyListRow(), loadMyPlaylistsRow()]);
-    await loadContinueWatching();
 
     if (window.__animeMode) return; // animePage.js handles history + recommended rows in anime mode
 
@@ -1909,13 +1866,13 @@ async function initPersonalRows() {
     ]);
 }
 
-// ── WATCHING / WATCHED / WANT TO WATCH / ABANDONED ROWS (indexMain.html) ──
+// ── WATCHING / WATCHED / WANT TO WATCH / ABANDONED ROWS (indexMain.html + indexBrowse.html) ──
 // /activity/watch-buckets already sorted every touched title into abandoned/wantToWatch/active
 // using pure date+list-membership rules (see its own comment in server.js) - the one thing it
 // can't resolve server-side is "watched vs still watching" for an active title, since that needs
 // the title's REAL episode count, which only TMDB has. This does that TMDB fetch per active
-// title (same enrichment loadContinueWatching already does for its own cards) and finishes the
-// split: TV counts as watched once finishedCount covers all-but-one episode OR the user's last
+// title and finishes the split: TV counts as watched once finishedCount covers all-but-one
+// episode OR the user's last
 // known position is already the show's final episode; movies count as watched past 90% of
 // runtime. Falls back to "watching" on missing/ambiguous data rather than guessing wrong in
 // either the "abandoned" or "watched" direction.
@@ -2029,7 +1986,7 @@ window.__loadWatchStatusMode = renderWatchStatusMode;
 
 async function loadWatchStatusRows() {
     const section = document.getElementById('watchStatusSection');
-    if (!section) return; // indexMain.html only
+    if (!section) return; // only runs on pages that actually have #watchStatusSection
 
     const userUID = window.recommendationsSystem?.getActivityUID ? window.recommendationsSystem.getActivityUID() : localStorage.getItem('userUID');
     if (!userUID) return;

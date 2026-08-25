@@ -356,15 +356,17 @@
             </div>
         </div>
 
-        <section class="row continue-watching-section" id="continueWatchingSection">
+        <section class="row continue-watching-section" id="watchStatusSection" style="display:none;">
             <div class="row-header">
-                <h2 class="row-title browse-personal-label" data-i18n="section_continue_watching">Continue Watching</h2>
-                <!-- <div class="row-arrows">
-                    <button class="row-arrow-btn" type="button">&#8249;</button>
-                    <button class="row-arrow-btn" type="button">&#8250;</button>
-                </div> -->
+                <h2 class="row-title browse-personal-label">My Watch Status</h2>
             </div>
-            <div class="continue-watching-list" id="continueWatchingList"></div>
+            <div class="schedule-day-tabs" id="watchStatusTabs">
+                <button class="schedule-day-tab" data-watch-status="watching">Watching</button>
+                <button class="schedule-day-tab" data-watch-status="watched">Watched</button>
+                <button class="schedule-day-tab" data-watch-status="wantToWatch">Want to Watch</button>
+                <button class="schedule-day-tab" data-watch-status="abandoned">Abandoned</button>
+            </div>
+            <div class="continue-watching-list" id="watchStatusList"></div>
         </section>
 
         <section class="row" id="topAiringSection" style="display: none;">

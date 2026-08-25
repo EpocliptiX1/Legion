@@ -9885,7 +9885,7 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
         margin: 0;
     }
     .personal-left-stack > #historyRowSection,
-    .personal-left-stack > #continueWatchingSection {
+    .personal-left-stack > #watchStatusSection {
         grid-column: 1 / -1;
         width: 100%;
         margin: 0;
