@@ -11,6 +11,32 @@ function scrollRow(id, dir) {
 }
 
 // --- SETTINGS/ACCOUNT/API STATUS INIT FOR MOVIEINFO ---
+// Fallback anime-mode toggle for pages that have the #animeModeCheck nav switch (copy-pasted
+// onto ~10 pages' shared nav markup) but don't load animePage.js - the file that actually
+// defines window.__toggleAnimeMode and syncs the checkbox's initial checked state from
+// localStorage. Confirmed live on watch2getherPublic.html: without animePage.js, the checkbox
+// always rendered unchecked regardless of the real saved value ("always sets to off no matter
+// what"), and clicking it did nothing since __toggleAnimeMode simply didn't exist. Same bug
+// exists on customPlaylists.html/forum.html for the same reason. Guarded on
+// !window.__toggleAnimeMode so this never runs on a page that DOES load animePage.js - with
+// defer, script tags execute in document order, so on those pages animePage.js's own (fuller,
+// page-gated) definition has already run by the time this DOMContentLoaded fires.
+document.addEventListener('DOMContentLoaded', () => {
+    if (!window.__toggleAnimeMode) {
+        const cb = document.getElementById('animeModeCheck');
+        const wrap = document.getElementById('modeToggleWrap');
+        const isAnimeMode = () => localStorage.getItem('animeMode') === 'true';
+        if (cb) {
+            cb.checked = isAnimeMode();
+            if (wrap) wrap.classList.toggle('anime-active', isAnimeMode());
+        }
+        window.__toggleAnimeMode = function () {
+            localStorage.setItem('animeMode', isAnimeMode() ? 'false' : 'true');
+            window.location.reload();
+        };
+    }
+});
+
 document.addEventListener('DOMContentLoaded', () => {
     if (document.getElementById('settingsModal')) {
         const nameInput = document.getElementById('settingsUsername');
