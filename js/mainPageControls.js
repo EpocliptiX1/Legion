@@ -68,8 +68,15 @@ document.addEventListener('DOMContentLoaded', () => {
 /* =========================================
    1. DYNAMIC HERO SLIDER LOGIC
    ========================================= */
-let heroMovies = []; 
+let heroMovies = [];
 let currentSlide = 0;
+// Guards against overlapping updateHero() calls applying out of order - confirmed live in a
+// w2g viewer: two calls close together (e.g. rapid poll ticks applying different host slides)
+// can interleave, since the trailer is set synchronously right after its own await but the
+// title/desc/poster are set inside a separate, later setTimeout. A slower call's delayed title
+// update landing after a faster call's trailer update left the hero showing one movie's title
+// with a DIFFERENT movie's trailer. See updateHero()'s own generation checks below.
+let _heroRenderGen = 0;
 let _heroInitStarted = false;
 
 const HERO_TRAILER_CUTOFF_RATIO = 0.9;
@@ -911,22 +918,27 @@ function clampHeroTitleHeight() {
     }
 }
 
-async function updateHero(_skipCount = 0) {
+async function updateHero(_skipCount = 0, _gen = null) {
     if (heroMovies.length === 0) return;
+    // Only bump the generation on the true outermost call - the internal no-trailer-found
+    // retry recursion below is a continuation of the SAME logical render, not a new,
+    // independent one that should be able to race against it.
+    const myGen = _gen != null ? _gen : ++_heroRenderGen;
     const movie = heroMovies[currentSlide];
-    
+
     const content = document.querySelector('.hero-content');
     if (content) content.style.opacity = '0';
 
     if (window.fetchYTId) {
         const searchQuery = movie.year ? `${movie.title} ${movie.year}` : movie.title;
         const tId = await window.fetchYTId(searchQuery);
+        if (myGen !== _heroRenderGen) return; // a newer render started while this awaited - abandon
         movie.currentTrailerId = tId;
 
         // If no trailer found, silently advance to next slide (max one full cycle)
         if (!tId && _skipCount < heroMovies.length - 1) {
             currentSlide = (currentSlide + 1) % heroMovies.length;
-            return updateHero(_skipCount + 1);
+            return updateHero(_skipCount + 1, myGen);
         }
 
         const heroFrame = document.getElementById('heroTrailerFrame');
@@ -946,6 +958,7 @@ async function updateHero(_skipCount = 0) {
 
     // 2. UPDATE TEXT: Matching your HTML IDs exactly
     setTimeout(() => {
+        if (myGen !== _heroRenderGen) return; // superseded while this timeout was pending
         if (document.getElementById('heroTitle')) document.getElementById('heroTitle').innerText = movie.title;
         if (document.getElementById('statRating')) document.getElementById('statRating').innerText = movie.rating || "--";
         if (document.getElementById('statDate')) document.getElementById('statDate').innerText = movie.year || "----";

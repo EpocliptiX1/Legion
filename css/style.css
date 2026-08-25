@@ -3854,7 +3854,19 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
     left: 50%;
     width: 100%;
     height: 100%;
-    transform: translate(-50%, -50%) scale(1.5);
+    /* A flat scale(1.5) only fully covers the container for one specific range of container
+       aspect ratios - on a wide monitor (or any layout where this panel ends up proportionally
+       shorter/wider than the 16:9 trailer), 1.5x wasn't enough overscan and left black bars
+       along the edges (reported live with a screenshot). min-width/min-height in vw/vh replace
+       the fixed multiplier with a real "always cover" guarantee: 177.78vh (16/9 * 100vh) and
+       56.25vw (9/16 * 100vw) are each, on their own, large enough to fully cover ANY element on
+       the page regardless of this panel's actual size, since 100vw/100vh already bounds the
+       whole viewport. Any excess just gets clipped by this container's own overflow:hidden -
+       harmless, since it's a background video with pointer-events already disabled.
+    */
+    min-width: 177.78vh;
+    min-height: 56.25vw;
+    transform: translate(-50%, -50%);
     pointer-events: none;
 }
 
