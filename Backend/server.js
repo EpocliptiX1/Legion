@@ -3557,6 +3557,16 @@ activityDb.serialize(() => {
     // thing they watched" instead of flickering to a placeholder the moment they navigate off
     // the movieInfo.html page.
     activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN last_media_path TEXT`, () => {});
+    // Hero carousel + "Recommended for You" row, JSON-encoded. indexMain.html/indexBrowse.html
+    // build these client-side from each viewer's OWN account (personalized recommendations,
+    // independently-timed hero rotation) - without this, a friend following along in the w2g
+    // viewer iframe loads a real, independent copy of that page and sees THEIR OWN hero pick/
+    // recommendations, not the host's, even though every other part of the page is mirrored.
+    // Only ever set when the host is actually on one of those two pages (see w2gReportState);
+    // browsing away leaves the last-known value in place rather than clearing it, same
+    // reasoning as last_media_path above.
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN hero_data TEXT`, () => {});
+    activityDb.run(`ALTER TABLE watch2gether_sessions ADD COLUMN recommended_data TEXT`, () => {});
     // Group sessions: up to 5 people total (host + up to 4 participants). The old single
     // friend_uid column is left in place (unused going forward) rather than dropped -- SQLite
     // can't cheaply drop a NOT NULL column, and nothing reads it anymore now that
@@ -5119,6 +5129,14 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
     const hasSearchQuery = req.body?.searchQuery !== undefined;
     const searchQuery = hasSearchQuery ? String(req.body.searchQuery).slice(0, 200) : null;
 
+    // Optional -- hero carousel + recommended row, only sent while the host is actually on
+    // indexMain.html/indexBrowse.html (see w2gReportState). Capped generously but well under
+    // SQLite's per-row practical limits; these are small plain-object arrays, never HTML.
+    const hasHeroData = req.body?.heroData !== undefined;
+    const heroData = hasHeroData ? JSON.stringify(req.body.heroData).slice(0, 8000) : null;
+    const hasRecommendedData = req.body?.recommendedData !== undefined;
+    const recommendedData = hasRecommendedData ? JSON.stringify(req.body.recommendedData).slice(0, 8000) : null;
+
     activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
         if (err) return res.status(500).json({ error: 'Database error' });
         if (!row) return res.status(404).json({ error: 'Session not found' });
@@ -5151,6 +5169,14 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
             if (hasSearchQuery) {
                 setClauses.push('search_query = ?');
                 params.push(searchQuery);
+            }
+            if (hasHeroData) {
+                setClauses.push('hero_data = ?');
+                params.push(heroData);
+            }
+            if (hasRecommendedData) {
+                setClauses.push('recommended_data = ?');
+                params.push(recommendedData);
             }
             params.push(sessionId);
 
@@ -5200,6 +5226,8 @@ app.get('/watch2gether/session/:id/state', requireAuth, (req, res) => {
                             videoPaused: session.video_paused == null ? null : !!session.video_paused,
                             videoTime: session.video_time == null ? null : session.video_time,
                             searchQuery: session.search_query,
+                            heroData: (() => { try { return session.hero_data ? JSON.parse(session.hero_data) : null; } catch (e) { return null; } })(),
+                            recommendedData: (() => { try { return session.recommended_data ? JSON.parse(session.recommended_data) : null; } catch (e) { return null; } })(),
                             participants
                         });
                     });

@@ -263,6 +263,18 @@
                         }
                     } catch (e) {}
                 }
+                // Hero pick + Recommended-for-You row: indexMain.html/indexBrowse.html compute
+                // both independently per account, so without this a friend following along sees
+                // their OWN version instead of the host's. Re-applied every poll tick (not just
+                // once) so it wins even if this iframe's own async initHero()/loadRecommendedRow()
+                // resolves afterward and briefly overwrites it - see the hooks' own comments in
+                // mainPageControls.js for why that's safe to just keep stomping.
+                if (data.heroData) {
+                    try { frame.contentWindow.__w2gApplyHero?.(data.heroData); } catch (e) {}
+                }
+                if (Array.isArray(data.recommendedData) && data.recommendedData.length) {
+                    try { frame.contentWindow.__w2gApplyRecommended?.(data.recommendedData); } catch (e) {}
+                }
             }
         } catch (e) {}
     }

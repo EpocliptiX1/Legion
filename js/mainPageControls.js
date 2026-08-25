@@ -948,6 +948,9 @@ async function updateHero(_skipCount = 0) {
                 sourceLang: 'EN'
             });
         }
+        // Push the newly-shown hero pick to any w2g session this tab is hosting - no-ops
+        // instantly if not hosting (see the guards at the top of _w2gReportState).
+        if (typeof _w2gReportState === 'function') _w2gReportState();
     }, 300);
 }
 window.openMovie = async function() {
@@ -2092,9 +2095,14 @@ async function loadRecommendedRow() {
         section.style.display = 'none';
         return;
     }
+    // Stashed so a w2g host's report can send exactly what's actually rendered here (see
+    // _w2gReportState below) - a friend following along in the viewer iframe otherwise gets
+    // THEIR OWN independently-generated recommendations instead of the host's.
+    window.__lastRecommendedMovies = movies.slice(0, 6);
     container.innerHTML = movies.slice(0, 6).map(movie => createCard(movie)).join('');
     window.mountEpisodeCountBadges?.(container);
     applyBrowseRowBg('recommendedSection');
+    if (typeof _w2gReportState === 'function') _w2gReportState();
 }
 
 // Genre rows built from localStorage click history (works from first movie click)
@@ -3721,6 +3729,19 @@ function _w2gReportState() {
         body.searchQuery = searchBox.value;
     }
 
+    // Hero carousel + Recommended-for-You row are both computed independently per account
+    // (personalized recs, an unsynced rotation index) - without sending the host's actual
+    // picks, a friend following in the viewer iframe sees THEIR OWN version of these sections
+    // instead of the host's, even though the rest of the page mirrors correctly. Only sent
+    // when there's something real to send - an empty/missing hero on a page that doesn't have
+    // one (e.g. movieInfo.html) would otherwise overwrite a previously-reported page's data.
+    if (heroMovies.length > 0 && heroMovies[currentSlide]) {
+        body.heroData = heroMovies[currentSlide];
+    }
+    if (Array.isArray(window.__lastRecommendedMovies) && window.__lastRecommendedMovies.length) {
+        body.recommendedData = window.__lastRecommendedMovies;
+    }
+
     fetch(`/watch2gether/session/${sessionId}/state`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -3729,6 +3750,35 @@ function _w2gReportState() {
         if (res.status === 403) _w2gFollowing = true; // friend just took control -- stop pushing, start following
     }).catch(() => {});
 }
+
+// Called by the parent watch2getherViewer.js (via frame.contentWindow) on every poll tick
+// while this page is loaded in a friend's viewer iframe and NOT the one in control - overrides
+// this tab's own independently-computed hero pick with the host's actual one. Sets a
+// single-item heroMovies array (rather than trying to keep both sides' full arrays/indices in
+// sync) so updateHero() renders exactly this movie regardless of what this account's own
+// rotation/personalization would have shown, and can't "skip" it for lacking a trailer (the
+// skip guard in updateHero is `_skipCount < heroMovies.length - 1`, which is never true for a
+// length-1 array). Re-called every ~800ms poll, so even if this tab's OWN initHero() finishes
+// its async fetch afterward and briefly overwrites this, the next poll corrects it again.
+window.__w2gApplyHero = function (movie) {
+    if (!movie || typeof movie !== 'object') return;
+    heroMovies = [movie];
+    currentSlide = 0;
+    if (typeof updateHero === 'function') updateHero();
+};
+
+// Same idea for the Recommended-for-You row - createCard() is the same renderer
+// loadRecommendedRow() itself uses, so the markup is identical either way.
+window.__w2gApplyRecommended = function (movies) {
+    if (!Array.isArray(movies) || !movies.length) return;
+    const section = document.getElementById('recommendedSection');
+    const container = document.getElementById('rowRecommended');
+    if (!section || !container || typeof createCard !== 'function') return;
+    container.innerHTML = movies.map(movie => createCard(movie)).join('');
+    window.mountEpisodeCountBadges?.(container);
+    section.style.display = 'block';
+    applyBrowseRowBg('recommendedSection');
+};
 
 let _w2gSearchThrottle = null;
 let _w2gApplyingRemoteSearch = false;
