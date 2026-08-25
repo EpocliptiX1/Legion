@@ -9815,11 +9815,7 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     .downloadTextNextoBtn{
         display: none;
     }
-    .downloadButtonMovieInfoParent{
-        flex-direction: row;
-        flex-wrap:nowrap !important;
-    }
-    .player-episode 
+    .player-episode
     { 
         display: flex; 
         justify-content: center; 
@@ -10033,15 +10029,6 @@ body.personal-list-page .grid-card {
 }
 }
 @media (max-width: 730px) {
-        /* 4 download buttons in a single nowrap row (forced by the 1000px breakpoint's
-       flex-wrap:nowrap !important) get cramped/overflow at this width -- switch to a
-       2x2 grid instead. Grid ignores flex-direction/flex-wrap, so this wins over that
-       rule regardless of it coming later in the file. */
-
-    .downloadButtonMovieInfoParent {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-    }
     .player-block-left{
         flex-direction: column !important;
     }
