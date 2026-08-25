@@ -1129,7 +1129,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 .server-btn { background:#222; color:#fff; padding:6px 14px; border:none; border-radius:8px; cursor:pointer; font-size:0.95rem; font-weight:bold; margin:0 6px 6px 0; box-shadow:0 2px 8px #ff800033,0 1.5px 4px #0004; letter-spacing:0.5px; transition:background 0.2s,box-shadow 0.2s; }
                 .server-btn.active { background:#ff8000; color:#fff; box-shadow:0 2px 12px #ff800055; }
                 .player-section-divider { width:100%; height:2px; background:#ff8000; margin:12px 0 8px 0; border-radius:2px; opacity:0.7; }
-                .player-report-btn { display:flex; align-items:center; justify-content:center; gap:7px; width:28%; min-width:150px; margin-right:16px; background:#1a1a1a; color:#ddd; border:1px solid #333; border-radius:8px; padding:8px 16px; font-size:0.92rem; font-weight:700; cursor:pointer; transition:background 0.2s,border-color 0.2s,color 0.2s; }
+                .player-report-btn { display:flex; align-items:center; justify-content:center; gap:7px;min-width:150px; margin-right:16px; background:#1a1a1a; color:#ddd; border:1px solid #333; border-radius:8px; padding:8px 16px; font-size:0.92rem; font-weight:700; cursor:pointer; transition:background 0.2s,border-color 0.2s,color 0.2s; }
                 .player-report-btn:hover { background:#241a10; border-color:#ff8000; color:#ff8000; }
                 .player-report-btn svg { width:16px; height:16px; flex-shrink:0; }
                 .player-info { color:#fff; font-size:0.95rem; margin-bottom:6px; }
@@ -1207,13 +1207,13 @@ document.addEventListener('DOMContentLoaded', function() {
                                                      source in several places in this file, so it stays in the DOM (just hidden) rather
                                                      than being removed outright along with the visible box the user actually wanted gone. -->
                                                 <span id="episodeNum" style="display:none;">1</span>
+                                                <div class="player-info">If current server doesn't work<br>please try other servers beside. KickAssAnime is ours, most stable, yet slower to load initially, Neko is run through us, faster than KickAssAnime but may be unavailable later on</div>
                                                 <button type="button" class="player-report-btn" onclick="window.openFooterModal ? window.openFooterModal('footerReportBugModal') : document.getElementById('footerReportBugModal')?.classList.add('active')">
                                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                                                         <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
                                                     </svg>
                                                     Report a Problem
                                                 </button>
-                                                <div class="player-info">If current server doesn't work<br>please try other servers beside. KickAssAnime is ours, most stable, yet slower to load initially, Neko is run through us, faster than KickAssAnime but may be unavailable later on</div>
                                             </div>
                                             <div class="player-block-downloads">
                                                 <div id="animeDownloadWrap" style="display:none;margin-top:auto;padding-top:10px;">

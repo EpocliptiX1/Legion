@@ -1673,6 +1673,12 @@ body {
     position: relative;
 }
 
+/* Report a Bug/Request Anime/Contact modals only - scoped rather than changing .modal-header
+   globally, since the Settings modal (and anything else reusing that class) still wants it. */
+.footer-form-content .modal-header {
+    background: none;
+}
+
 .modal-title {
     font-size: 1.5rem;
     font-weight: 700;
