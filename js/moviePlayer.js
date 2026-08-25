@@ -1129,8 +1129,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 .server-btn { background:#222; color:#fff; padding:6px 14px; border:none; border-radius:8px; cursor:pointer; font-size:0.95rem; font-weight:bold; margin:0 6px 6px 0; box-shadow:0 2px 8px #ff800033,0 1.5px 4px #0004; letter-spacing:0.5px; transition:background 0.2s,box-shadow 0.2s; }
                 .server-btn.active { background:#ff8000; color:#fff; box-shadow:0 2px 12px #ff800055; }
                 .player-section-divider { width:100%; height:2px; background:#ff8000; margin:12px 0 8px 0; border-radius:2px; opacity:0.7; }
-                .player-report-btn { display:flex; align-items:center; justify-content:center; gap:7px; min-width:150px; margin-right:16px; background:#1a1a1a; color:#ddd; border:1px solid #333; border-radius:8px; padding:6px 18px; font-size:0.95rem; font-weight:700; cursor:pointer; transition:background 0.2s,border-color 0.2s,color 0.2s; }
-                .player-report-btn:hover { background:#241a10; border-color:#ff8000; color:#ff8000; }
+                .player-report-btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-width:150px; margin-right:16px; margin:0 16px 0 0; background:#1a1a1a; color:#ddd; border:none; border-radius:8px; padding:6px 12px; font-size:0.95rem; font-weight:700; cursor:pointer; transition:background 0.2s,color 0.2s; }
+                .player-report-btn:hover { background:#241a10; color:#ff8000; }
                 .player-report-btn svg { width:16px; height:16px; flex-shrink:0; }
                 .player-block-report { margin:10px 0; }
                 .player-info { color:#fff; font-size:0.95rem; margin-bottom:6px; }

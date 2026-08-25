@@ -9559,7 +9559,7 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     box-sizing: border-box;
     margin: 0 0 10px 0;
     padding: 12px 14px;
-    background: #141414;
+    background: #040404;
     border: 1px solid #2a2a2a;
     border-radius: 10px;
 }
@@ -9829,12 +9829,13 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     #animeDownloadWrap{
         display: flex !important;
         flex-direction: row;
+        flex-wrap: wrap;
         padding-top: 0 !important;
-        margin: auto !important;
+        margin: 0 !important;
          gap: 12px;
     }
     .player-block-left{
-        flex-direction: row !important;
+        flex-direction: column !important;
         justify-content:left !important;
         align-content: center !important;
         width: 100% !important;
