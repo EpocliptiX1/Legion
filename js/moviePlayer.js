@@ -1198,6 +1198,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 @media (max-width: 1100px) {
                     .player-layout { grid-template-columns: 1fr; }
                 }
+                /* .player-block was a fixed 20%/80% flex row with no mobile override at all -
+                   on a narrow screen .player-block-left has so little room the info text, the
+                   Report a Problem button, and the download button(s) all get cramped into a
+                   column not much wider than the button's own min-width. Stack it instead of
+                   trying to force everything to fit sideways. Same 850px breakpoint the site
+                   already uses for its other player-specific mobile layout (see
+                   movePlyrTopControls' own comment). */
+                @media (max-width: 850px) {
+                    .player-block { flex-direction: column; align-items: stretch; }
+                    .player-block-left { width: 100%; padding-right: 0; margin-bottom: 12px; }
+                    .player-report-btn { width: 100%; }
+                }
             </style>
             <div class="player-section">
             
