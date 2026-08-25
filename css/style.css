@@ -2589,13 +2589,24 @@ body {
 
 .hero-bg-trailer iframe {
     position: absolute;
-    inset: -1px;
-    width: calc(100% + 2px);
-    height: calc(100% + 2px);
-    object-fit: cover;
-    object-position: center center;
-    transform: scale(1.22);
-    transform-origin: center center;
+    top: 50%;
+    left: 50%;
+    /* object-fit doesn't reliably apply to iframes (it's a replaced-element property, and
+       browser support for iframes is patchy) - this was actually relying entirely on the flat
+       scale(1.22) for overscan, same fragile fixed-multiplier issue as .hero-trailer-side
+       iframe had (see that rule's own comment for the full "always-cover 16:9" derivation).
+       Same fix here: width/height as one valid 16:9 pair in vw units, min-width/min-height as
+       the other valid pair in vh units - these two are mathematically coupled (whichever one
+       binds is decided by the same viewport-aspect comparison on both axes simultaneously), so
+       the result is always an exact 16:9 box at least as large as the full viewport, guaranteed
+       to cover this element (which is already inset:0 on the hero, i.e. viewport-width-ish) in
+       both dimensions regardless of screen size or aspect ratio.
+    */
+    width: 100vw;
+    height: 56.25vw;
+    min-width: 177.78vh;
+    min-height: 100vh;
+    transform: translate(-50%, -50%);
     pointer-events: none;
     border: none;
     opacity: 0;
@@ -3852,20 +3863,23 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
     position: absolute;
     top: 50%;
     left: 50%;
-    width: 100%;
-    height: 100%;
-    /* A flat scale(1.5) only fully covers the container for one specific range of container
-       aspect ratios - on a wide monitor (or any layout where this panel ends up proportionally
-       shorter/wider than the 16:9 trailer), 1.5x wasn't enough overscan and left black bars
-       along the edges (reported live with a screenshot). min-width/min-height in vw/vh replace
-       the fixed multiplier with a real "always cover" guarantee: 177.78vh (16/9 * 100vh) and
-       56.25vw (9/16 * 100vw) are each, on their own, large enough to fully cover ANY element on
-       the page regardless of this panel's actual size, since 100vw/100vh already bounds the
-       whole viewport. Any excess just gets clipped by this container's own overflow:hidden -
-       harmless, since it's a background video with pointer-events already disabled.
+    /* The classic "always-cover 16:9" pair: width/height as ONE valid 16:9 box in vw units,
+       min-width/min-height as the OTHER valid 16:9 box in vh units. This is NOT the same as
+       the previous attempt (width/height:100% + vh/vw mins) - mixing a container-relative base
+       with viewport-relative mins left width and height governed by unrelated constraints, so
+       the box could end up NOT actually 16:9 and still fall short in one dimension (confirmed
+       live: still had black bars after that "fix"). These two pairs are mathematically coupled -
+       whichever one wins is decided by the SAME width/height >=< comparison on both axes at
+       once (100vw>=177.78vh iff 56.25vw>=100vh, since both reduce to the same viewport-aspect
+       inequality), so the browser can never end up with a distorted, sub-16:9 result: it always
+       resolves to an exact 16:9 box at least as large as the full viewport in both dimensions,
+       which is always >= this panel's actual size. Excess is clipped by the container's own
+       overflow:hidden - harmless, this is a background video with pointer-events disabled.
     */
+    width: 100vw;
+    height: 56.25vw;
     min-width: 177.78vh;
-    min-height: 56.25vw;
+    min-height: 100vh;
     transform: translate(-50%, -50%);
     pointer-events: none;
 }
