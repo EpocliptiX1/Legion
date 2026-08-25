@@ -1132,6 +1132,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 .player-report-btn { display:flex; align-items:center; justify-content:center; gap:7px;min-width:150px; margin-right:16px; background:#1a1a1a; color:#ddd; border:1px solid #333; border-radius:8px; padding:8px 16px; font-size:0.92rem; font-weight:700; cursor:pointer; transition:background 0.2s,border-color 0.2s,color 0.2s; }
                 .player-report-btn:hover { background:#241a10; border-color:#ff8000; color:#ff8000; }
                 .player-report-btn svg { width:16px; height:16px; flex-shrink:0; }
+                .player-block-report { margin:10px 0; }
                 .player-info { color:#fff; font-size:0.95rem; margin-bottom:6px; }
                 .player-select { background:#222; color:#fff; padding:6px 12px; border-radius:8px; border:none; font-size:0.95rem; margin:0 0px; box-shadow:0 1px 6px #ff800033; }
                 .audio-btn { background:#222; color:#fff; padding:6px 18px; border:none; border-radius:8px; cursor:pointer; font-weight:bold; font-size:0.95rem; margin:0 6px; transition:background 0.2s; box-shadow:0 2px 8px #ff800033; }
@@ -1208,6 +1209,8 @@ document.addEventListener('DOMContentLoaded', function() {
                                                      than being removed outright along with the visible box the user actually wanted gone. -->
                                                 <span id="episodeNum" style="display:none;">1</span>
                                                 <div class="player-info">Our servers: Kino, KAA, Neko, RU - MV, MegaVid<br>The rest we have no control over, just close whatever opens up.<br>MegaVid = fastest<br>NekoStream = fast<br>KAA = old, may not have dub<br>Kino = fast<br>RU - MV = normal</div>
+                                            </div>
+                                            <div class="player-block-report">
                                                 <button type="button" class="player-report-btn" onclick="window.openFooterModal ? window.openFooterModal('footerReportBugModal') : document.getElementById('footerReportBugModal')?.classList.add('active')">
                                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                                                         <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
