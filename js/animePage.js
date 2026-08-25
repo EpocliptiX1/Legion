@@ -154,9 +154,15 @@
         // (each mode has its own separate hero implementation/data shape) - rather than keep
         // patching that race, just don't allow it while actively hosting. Pick the mode before
         // starting a room instead (see the Anime/Movies selector on the Watch2Gether create panel).
-        if (localStorage.getItem('w2gHostingSessionId')) {
+        // window.top !== window.self covers the VIEWER side of the same problem: a friend who's
+        // been granted control interacts with this exact page loaded inside
+        // watch2getherViewer.html's mirror iframe, not a normal top-level tab - blocking any
+        // page running inside an iframe context is the only signal available there (a viewer
+        // has no w2gHostingSessionId of their own to check), and reloading the page a friend is
+        // actively controlling out from under them would break the mirror either way.
+        if (localStorage.getItem('w2gHostingSessionId') || window.top !== window.self) {
             if (typeof window.showLimitToast === 'function') {
-                window.showLimitToast("Can't switch modes while hosting a Watch2Gether session.");
+                window.showLimitToast("Can't switch modes during a Watch2Gether session.");
             }
             // The checkbox's own `checked` already flipped by the time this onchange handler
             // runs (that's just how checkbox click events work) - snap it back to match the
