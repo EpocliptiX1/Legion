@@ -1316,7 +1316,13 @@ function updateHeroUI() {
             trailerSection.classList.remove('content-hidden');
         }
         isAnimating = false;
-    }, 400); 
+        // Manual carousel nav (arrows/dots -> nextSlide/prevSlide/goToSlide) all render through
+        // HERE, not updateHero() - confirmed live a w2g host swiping the carousel never reported
+        // the new slide at all, leaving the viewer stuck on whatever updateHero()'s one-time
+        // initial-load report last sent (host visibly on "Sword Art Online", viewer still
+        // showing "Spider-Man" from page load). No-ops instantly if not hosting.
+        if (typeof _w2gReportState === 'function') _w2gReportState();
+    }, 400);
 }
 function nextSlide() {
     if (isAnimating) return;
