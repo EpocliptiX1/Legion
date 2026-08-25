@@ -10334,11 +10334,21 @@ function parseAnimeTitle(title) {
             season = 4;
     }
 
-    const partMatch = text.match(/\bpart\s*(\d+)\b/i);
+    // "Cour" is anime-industry shorthand for the same thing "Part" means here (a quarter-split
+    // continuation of the current season, e.g. "Jobless Reincarnation Cour 2") - same pattern
+    // already used by the sort-by-part logic further down (see its own partMatchA/B).
+    const partMatch = text.match(/\bpart\s*(\d+)\b|\bcour\s*(\d+)\b/i);
 
     return {
         season,
-        part: partMatch ? Number(partMatch[1]) : 1,
+        // Whether `season` above came from something actually IN the title, vs. just the
+        // "nothing matched" default of 1. A totally unrelated side-story/shorts spinoff (e.g.
+        // Re:Zero's "Starting Break Time From Zero" 3-minute comedy shorts) has no season
+        // marker in its title either, so it defaults to season=1 same as a real opening season
+        // - metaListToGroups uses this flag to tell the two apart before merging into a season's
+        // real episode list (see its own comment for why that distinction matters there).
+        hasExplicitSeasonSignal: !!(seasonMatch || partMatch || /\b(?:2nd|second|3rd|third|4th|fourth|5th|fifth|6th|sixth|7th|seventh|8th|eighth)\b/i.test(text) || /\b(?:ii|iii|iv|v|vi|vii|viii)\b/i.test(text) || /\bfinal\s+season|kanketsu/i.test(text)),
+        part: partMatch ? Number(partMatch[1] || partMatch[2]) : 1,
 
         isMovie: /\bmovie\b|hyouketsu|frozen bond|memory snow|manner/i.test(text),
         isOVA: /\b(?:ova|oad)\b/i.test(text),
@@ -18428,13 +18438,24 @@ function metaListToGroups(metaList, tmdbEpisodes = []) {
         // "season" instead of being folded into the real season they actually belong to (confirmed
         // live: Jobless Reincarnation's 6 raw MAL/AniList entries collapse to 3 real seasons this
         // way, matching MAL/AniList's own canonical season count instead of TMDB's over-split one).
-        const trueSeason = parseAnimeTitle(m.title || '').season;
-        return { trueSeason, member: m, episodes };
+        const parsed = parseAnimeTitle(m.title || '');
+        return { trueSeason: parsed.season, hasExplicitSeasonSignal: parsed.hasExplicitSeasonSignal, member: m, episodes };
     });
 
     const groupsBySeason = new Map();
     const seasonOrder = [];
-    perEntry.forEach(({ trueSeason, member, episodes }) => {
+    perEntry.forEach(({ trueSeason, hasExplicitSeasonSignal, member, episodes }) => {
+        // A title with no season/part/ordinal marker at all defaults to season 1 same as a
+        // real opening season does - fine for the genuine root entry (the very first thing to
+        // claim season 1), but an unrelated side-story/shorts spinoff (e.g. Re:Zero's "Starting
+        // Break Time From Zero" comedy shorts) ALSO has no marker and would otherwise get its
+        // episodes silently spliced onto the end of season 1's real numbering. Once season 1
+        // already has a real entry, trust the default only when the title itself says so -
+        // drop anything else rather than corrupting an already-established season's episode list.
+        if (!hasExplicitSeasonSignal && groupsBySeason.has(trueSeason)) {
+            logAnikotoDebug(`[anime-season-groups] dropping "${member.title}" (mal ${member.malId}) - no season/part marker in title and season ${trueSeason} already has a real entry, likely an unrelated spinoff/shorts series`);
+            return;
+        }
         if (!groupsBySeason.has(trueSeason)) {
             groupsBySeason.set(trueSeason, {
                 seasonNumber: trueSeason,
