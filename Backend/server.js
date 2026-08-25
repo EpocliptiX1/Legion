@@ -5133,9 +5133,16 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
     // indexMain.html/indexBrowse.html (see w2gReportState). Capped generously but well under
     // SQLite's per-row practical limits; these are small plain-object arrays, never HTML.
     const hasHeroData = req.body?.heroData !== undefined;
-    const heroData = hasHeroData ? JSON.stringify(req.body.heroData).slice(0, 8000) : null;
+    // heroData now carries the host's FULL hero carousel (up to 8 movies, not just the current
+    // one - see mainPageControls.js's own comment on why), so the cap needs real headroom. A
+    // plain .slice() truncation would produce invalid JSON that silently fails to parse back out
+    // on the GET side, so this is sized generously rather than tightly - better to accept a
+    // slightly larger row than to truncate mid-object and drop the whole carousel.
+    const heroDataRaw = hasHeroData ? JSON.stringify(req.body.heroData) : null;
+    const heroData = heroDataRaw && heroDataRaw.length <= 20000 ? heroDataRaw : null;
     const hasRecommendedData = req.body?.recommendedData !== undefined;
-    const recommendedData = hasRecommendedData ? JSON.stringify(req.body.recommendedData).slice(0, 8000) : null;
+    const recommendedDataRaw = hasRecommendedData ? JSON.stringify(req.body.recommendedData) : null;
+    const recommendedData = recommendedDataRaw && recommendedDataRaw.length <= 20000 ? recommendedDataRaw : null;
 
     activityDb.get(`SELECT * FROM watch2gether_sessions WHERE id = ?`, [sessionId], (err, row) => {
         if (err) return res.status(500).json({ error: 'Database error' });
@@ -5170,11 +5177,14 @@ app.post('/watch2gether/session/:id/state', requireAuth, (req, res) => {
                 setClauses.push('search_query = ?');
                 params.push(searchQuery);
             }
-            if (hasHeroData) {
+            // Guarded on the parsed/size-checked value, not just hasHeroData/hasRecommendedData -
+            // an oversized payload leaves heroData/recommendedData null, and writing that would
+            // silently WIPE a previously-good carousel instead of just skipping this update.
+            if (heroData) {
                 setClauses.push('hero_data = ?');
                 params.push(heroData);
             }
-            if (hasRecommendedData) {
+            if (recommendedData) {
                 setClauses.push('recommended_data = ?');
                 params.push(recommendedData);
             }

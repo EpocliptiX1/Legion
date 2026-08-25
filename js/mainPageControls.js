@@ -3736,7 +3736,12 @@ function _w2gReportState() {
     // when there's something real to send - an empty/missing hero on a page that doesn't have
     // one (e.g. movieInfo.html) would otherwise overwrite a previously-reported page's data.
     if (heroMovies.length > 0 && heroMovies[currentSlide]) {
-        body.heroData = heroMovies[currentSlide];
+        // The full carousel + index, not just the current movie - sending only the current
+        // movie collapsed the viewer's own heroMovies to a 1-item array, which made the dots
+        // row show a single lonely dot instead of the real multi-slide carousel the host
+        // actually has (confirmed live). Sending the whole array keeps the viewer's carousel
+        // visually identical to the host's, dots and all.
+        body.heroData = { movies: heroMovies, slide: currentSlide };
     }
     if (Array.isArray(window.__lastRecommendedMovies) && window.__lastRecommendedMovies.length) {
         body.recommendedData = window.__lastRecommendedMovies;
@@ -3751,26 +3756,39 @@ function _w2gReportState() {
     }).catch(() => {});
 }
 
-// Called by the parent watch2getherViewer.js (via frame.contentWindow) on every poll tick
-// while this page is loaded in a friend's viewer iframe and NOT the one in control - overrides
-// this tab's own independently-computed hero pick with the host's actual one. Sets a
-// single-item heroMovies array (rather than trying to keep both sides' full arrays/indices in
-// sync) so updateHero() renders exactly this movie regardless of what this account's own
-// rotation/personalization would have shown, and can't "skip" it for lacking a trailer (the
-// skip guard in updateHero is `_skipCount < heroMovies.length - 1`, which is never true for a
-// length-1 array). Re-called every ~800ms poll, so even if this tab's OWN initHero() finishes
-// its async fetch afterward and briefly overwrites this, the next poll corrects it again.
-window.__w2gApplyHero = function (movie) {
-    if (!movie || typeof movie !== 'object') return;
-    heroMovies = [movie];
-    currentSlide = 0;
+// Called by the parent watch2getherViewer.js (via frame.contentWindow) on every ~800ms poll
+// tick while this page is loaded in a friend's viewer iframe and NOT the one in control -
+// overrides this tab's own independently-computed hero carousel with the host's actual one
+// (full array + slide index, so the dots row shows the real slide count instead of collapsing
+// to one - confirmed live that sending just the current movie made it look like a single-item
+// carousel). Re-called every poll so it wins even if this tab's OWN async initHero() finishes
+// afterward and briefly overwrites it - but only actually re-renders (updateHero() re-fetches
+// the trailer and fades the whole hero out/in) when the slide genuinely changed, or the exact
+// same host pick re-triggered that fade/trailer-reload every single poll tick regardless of
+// whether anything was different, which is what looked like the page "refreshing" on a loop.
+let _w2gLastAppliedHeroKey = null;
+window.__w2gApplyHero = function (heroData) {
+    const movies = Array.isArray(heroData?.movies) ? heroData.movies : null;
+    if (!movies || !movies.length) return;
+    const slide = Number.isInteger(heroData.slide) ? heroData.slide : 0;
+    const key = `${slide}:${movies[slide]?.id ?? ''}`;
+    if (key === _w2gLastAppliedHeroKey) return;
+    _w2gLastAppliedHeroKey = key;
+    heroMovies = movies;
+    currentSlide = Math.min(slide, movies.length - 1);
     if (typeof updateHero === 'function') updateHero();
 };
 
 // Same idea for the Recommended-for-You row - createCard() is the same renderer
-// loadRecommendedRow() itself uses, so the markup is identical either way.
+// loadRecommendedRow() itself uses, so the markup is identical either way. Deduped the same
+// way: re-rendering identical data every poll tick reloads every poster image and re-runs
+// mountEpisodeCountBadges for no reason, which is its own flavor of "keeps refreshing."
+let _w2gLastAppliedRecommendedKey = null;
 window.__w2gApplyRecommended = function (movies) {
     if (!Array.isArray(movies) || !movies.length) return;
+    const key = movies.map(m => m?.ID ?? m?.id ?? '').join(',');
+    if (key === _w2gLastAppliedRecommendedKey) return;
+    _w2gLastAppliedRecommendedKey = key;
     const section = document.getElementById('recommendedSection');
     const container = document.getElementById('rowRecommended');
     if (!section || !container || typeof createCard !== 'function') return;
