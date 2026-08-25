@@ -10334,6 +10334,17 @@ function parseAnimeTitle(title) {
             season = 4;
     }
 
+    // Whether `season` above came from an ACTUAL season-defining marker in the title (a
+    // number, ordinal, roman numeral, or "Final Season"), as opposed to just the "nothing
+    // matched" default of 1. Deliberately does NOT include the part/cour match below - a
+    // "Part 2" with no season number of its own doesn't define a season, it CONTINUES
+    // whichever season came before it (see metaListToGroups' own comment on why the two
+    // need to stay distinguishable: "War of Underworld Part 2" has no season marker either,
+    // but wrongly defaulting it to season 1 - same as this flag's OTHER use, an unrelated
+    // spinoff with an equally bare title - merged it into Sword Art Online's real season 1
+    // instead of the later season it's actually a continuation of).
+    const hasSeasonMarker = !!(seasonMatch || /\b(?:2nd|second|3rd|third|4th|fourth|5th|fifth|6th|sixth|7th|seventh|8th|eighth)\b/i.test(text) || /\b(?:ii|iii|iv|v|vi|vii|viii)\b/i.test(text) || /\bfinal\s+season|kanketsu/i.test(text));
+
     // "Cour" is anime-industry shorthand for the same thing "Part" means here (a quarter-split
     // continuation of the current season, e.g. "Jobless Reincarnation Cour 2") - same pattern
     // already used by the sort-by-part logic further down (see its own partMatchA/B).
@@ -10341,19 +10352,21 @@ function parseAnimeTitle(title) {
 
     return {
         season,
-        // Whether `season` above came from something actually IN the title, vs. just the
-        // "nothing matched" default of 1. A totally unrelated side-story/shorts spinoff (e.g.
-        // Re:Zero's "Starting Break Time From Zero" 3-minute comedy shorts) has no season
-        // marker in its title either, so it defaults to season=1 same as a real opening season
-        // - metaListToGroups uses this flag to tell the two apart before merging into a season's
-        // real episode list (see its own comment for why that distinction matters there).
-        hasExplicitSeasonSignal: !!(seasonMatch || partMatch || /\b(?:2nd|second|3rd|third|4th|fourth|5th|fifth|6th|sixth|7th|seventh|8th|eighth)\b/i.test(text) || /\b(?:ii|iii|iv|v|vi|vii|viii)\b/i.test(text) || /\bfinal\s+season|kanketsu/i.test(text)),
+        hasSeasonMarker,
+        hasPartMarker: !!partMatch,
         part: partMatch ? Number(partMatch[1] || partMatch[2]) : 1,
 
         isMovie: /\bmovie\b|hyouketsu|frozen bond|memory snow|manner/i.test(text),
         isOVA: /\b(?:ova|oad)\b/i.test(text),
         isONA: /\bona\b/i.test(text),
         isSpecial: /\b(?:special|recap|pv|trailer|preview)\b/i.test(text),
+        // A same-universe side story with its own separate watch page (e.g. "Sword Art
+        // Online Alternative: Gun Gale Online") - AniList's relations graph still surfaces
+        // these as SEQUEL/PREQUEL edges off the main show, and their titles often carry a
+        // season-shaped number of their own (GGO's "II") that has nothing to do with the
+        // main show's actual season count. metaListToGroups drops these outright rather
+        // than trying to fold their number into the main show's numbering.
+        isAlternateSpinoff: /\balternative\b|\bgaiden\b|\bspin-?off\b|\bside\s+story\b/i.test(text),
 
         normalizedTitle: normalizeAnimeTitle(title)
     };
@@ -17743,7 +17756,18 @@ async function buildSeasonGroupsFromAniList(anilistId) {
                 // is 48569) with its own local episode numbering. Providers keyed by MAL id
                 // (Megaplay) need THIS season's id, not the base show's, or they'll resolve
                 // the wrong episode entirely.
-                malId: media.idMal || null
+                malId: media.idMal || null,
+                // TV_SHORT specifically (as opposed to plain TV) is what tags AniList's own
+                // 3-4 minute comedy-skit spinoffs (e.g. Re:Zero's "Starting Break Time From
+                // Zero") - metaListToGroups uses this to recognize those as bonus content
+                // rather than real season episodes, even when their title has no marker to
+                // say so either.
+                format: media.format || null,
+                // Per-episode runtime in minutes - a second, independent signal for the same
+                // thing `format` above is for (some of these bonus-shorts entries are still
+                // tagged plain "TV" on MAL/AniList rather than "TV_SHORT", so format alone
+                // isn't always enough).
+                duration: Number.isFinite(media.duration) ? media.duration : null
             });
         }
 
@@ -17951,6 +17975,7 @@ async function fetchMalAnimeDetailsUncached(malId) {
     let titleEn = null;
     let type = null;
     let status = null;
+    let duration = null;
     // The page's own <h1> is MAL's main/native title (usually romaji) - separate from the
     // "English:" sidebar field below. Needed for scrapeMalRelations/buildSeasonGroupsFromMal
     // Relations, which push this straight into the same romajiTitle field
@@ -17989,8 +18014,15 @@ async function fetchMalAnimeDetailsUncached(malId) {
         // an upcoming/ongoing season the same way fetchJikanSeasonCardsChain already does.
         const statusMatch = text.match(/^Status:\s*(.+)$/i);
         if (statusMatch) status = statusMatch[1].trim();
+        // "Duration: 3 min. per ep." / "Duration: 24 min." - same signal AniList's own
+        // `duration` field gives, needed alongside `type` to catch bonus-shorts spinoffs
+        // MAL itself still tags plain "TV" (confirmed live: Re:Zero's "Starting Break Time
+        // From Zero" comedy shorts pass the type==='TV' check above but are 3 min/ep, not a
+        // real season's ~24 min episodes).
+        const durationMatch = text.match(/^Duration:\s*(\d+)\s*min/i);
+        if (durationMatch) duration = parseInt(durationMatch[1], 10);
     });
-    return { episodes, airDate, titleEn, type, titleNative, coverImage, status };
+    return { episodes, airDate, titleEn, type, titleNative, coverImage, status, duration };
 }
 
 async function fetchMalAnimeDetails(malId) {
@@ -18083,14 +18115,21 @@ async function buildSeasonGroupsFromMalRelations(malId) {
         }
 
         // Same reasoning as the AniList/Jikan walkers: only TV entries are real seasons.
-        if (details.type === 'TV') {
+        // Duration check same as findMalOnlyCourSiblings' own - MAL still tags some
+        // bonus-shorts spinoffs plain "TV" (Re:Zero's "Starting Break Time From Zero"), the
+        // type check alone won't catch those.
+        const isBonusShort = Number.isFinite(details.duration) && details.duration > 0 && details.duration < 10;
+        if (details.type === 'TV' && !isBonusShort) {
             metaList.push({
                 title: details.titleEn || details.titleNative || `Season ${metaList.length + 1}`,
                 romajiTitle: details.titleNative || null,
                 episodesCount: Number(details.episodes || 0),
                 airDate: details.airDate || null,
-                malId: id
+                malId: id,
+                duration: details.duration || null
             });
+        } else if (details.type === 'TV' && isBonusShort) {
+            logAnikotoDebug(`[anime-season-groups] mal ${id}: rejecting short-duration TV entry "${details.titleEn || details.titleNative}" (${details.duration} min/ep), likely a bonus/shorts spinoff`);
         }
 
         let relations;
@@ -18335,6 +18374,13 @@ async function findMalOnlyCourSiblings(searchQuery, anchorRomajiTitle, excludeMa
                 logAnikotoDebug(`[MAL siblings] rejecting non-TV candidate "${c.title}" (mal ${c.malId}, type ${details.type})`);
                 continue;
             }
+            // MAL itself still tags some bonus-shorts spinoffs plain "TV" (confirmed live:
+            // Re:Zero's "Starting Break Time From Zero" comedy shorts) - the type check above
+            // alone doesn't catch those, but their per-episode runtime does.
+            if (Number.isFinite(details.duration) && details.duration > 0 && details.duration < 10) {
+                logAnikotoDebug(`[MAL siblings] rejecting short-duration candidate "${c.title}" (mal ${c.malId}, ${details.duration} min/ep)`);
+                continue;
+            }
             // Prefer the English title for the group's primary display/matching title, same
             // convention buildSeasonGroupsFromAniList already follows (media.title?.english ||
             // media.title?.romaji) - keeps every downstream consumer (Neko/anikoto's own
@@ -18347,7 +18393,8 @@ async function findMalOnlyCourSiblings(searchQuery, anchorRomajiTitle, excludeMa
                 title: details.titleEn || c.title,
                 titleNative: c.title,
                 episodesCount: details.episodes,
-                airDate: details.airDate
+                airDate: details.airDate,
+                duration: details.duration
             });
         } catch (err) {
             logAnikotoDebug(`[MAL siblings] detail fetch failed for mal ${c.malId}`, { error: err.message || String(err) });
@@ -18439,23 +18486,73 @@ function metaListToGroups(metaList, tmdbEpisodes = []) {
         // live: Jobless Reincarnation's 6 raw MAL/AniList entries collapse to 3 real seasons this
         // way, matching MAL/AniList's own canonical season count instead of TMDB's over-split one).
         const parsed = parseAnimeTitle(m.title || '');
-        return { trueSeason: parsed.season, hasExplicitSeasonSignal: parsed.hasExplicitSeasonSignal, member: m, episodes };
+        return { parsed, member: m, episodes };
     });
 
     const groupsBySeason = new Map();
     const seasonOrder = [];
-    perEntry.forEach(({ trueSeason, hasExplicitSeasonSignal, member, episodes }) => {
-        // A title with no season/part/ordinal marker at all defaults to season 1 same as a
-        // real opening season does - fine for the genuine root entry (the very first thing to
-        // claim season 1), but an unrelated side-story/shorts spinoff (e.g. Re:Zero's "Starting
-        // Break Time From Zero" comedy shorts) ALSO has no marker and would otherwise get its
-        // episodes silently spliced onto the end of season 1's real numbering. Once season 1
-        // already has a real entry, trust the default only when the title itself says so -
-        // drop anything else rather than corrupting an already-established season's episode list.
-        if (!hasExplicitSeasonSignal && groupsBySeason.has(trueSeason)) {
-            logAnikotoDebug(`[anime-season-groups] dropping "${member.title}" (mal ${member.malId}) - no season/part marker in title and season ${trueSeason} already has a real entry, likely an unrelated spinoff/shorts series`);
+    // Tracks the season currently being built, and the title of whichever entry most
+    // recently landed in it - both reset to null and rebuilt as entries are walked in
+    // air-date order (see below for how each branch uses them).
+    let currentSeason = null;
+    let currentSeasonLabel = null;
+    perEntry.forEach(({ parsed, member, episodes }) => {
+        let trueSeason;
+        if (parsed.isAlternateSpinoff) {
+            // A same-universe side story with its own separate watch page (e.g. "Sword Art
+            // Online Alternative: Gun Gale Online II") - AniList's relations graph still
+            // surfaces it as a SEQUEL/PREQUEL of the main show, and its own "II" would
+            // otherwise get misread as this show's season 2. Drop outright.
+            logAnikotoDebug(`[anime-season-groups] dropping "${member.title}" (mal ${member.malId}) - looks like a same-universe spinoff with its own separate entry, not a real season`);
             return;
         }
+        if (parsed.hasSeasonMarker) {
+            // An explicit season number/ordinal/roman numeral/"Final Season" in the title -
+            // trust it directly, same as before.
+            trueSeason = parsed.season;
+        } else if (parsed.hasPartMarker) {
+            // "Part 2"/"Cour 2" with no season number of its own always continues whichever
+            // season is currently open, never the hardcoded season-1 default.
+            trueSeason = currentSeason !== null ? currentSeason : 1;
+        } else if (member.format === 'TV_SHORT' || (Number.isFinite(member.duration) && member.duration > 0 && member.duration < 10)) {
+            // No season/part marker AND either a comedy-shorts/bonus format or a sub-10-minute
+            // runtime (e.g. Re:Zero's "Starting Break Time From Zero", 3 min/ep - some paths
+            // only have one of these two signals available, so both are checked) - almost
+            // certainly unrelated bonus content, not real season episodes. Drop rather than
+            // let it default into season 1 or merge into whatever season is open.
+            logAnikotoDebug(`[anime-season-groups] dropping "${member.title}" (mal ${member.malId}) - short-form/no season marker, likely a bonus/shorts spinoff`);
+            return;
+        } else if (currentSeason === null) {
+            // Genuine root entry: no season/part marker, and nothing established yet - this
+            // is what a real opening season's own title usually looks like.
+            trueSeason = 1;
+        } else if (currentSeasonLabel && (() => {
+            const a = normalizeAnimeTitle(member.title);
+            const b = normalizeAnimeTitle(currentSeasonLabel);
+            if (!a || !b) return false;
+            const contained = a.includes(b) ? b : (b.includes(a) ? a : null);
+            // The shorter (contained) string needs to be specific enough to mean something -
+            // a bare one-word franchise name like "Bleach" is trivially a substring of every
+            // sequel too ("Bleach: Thousand-Year Blood War"), which would wrongly fold a
+            // whole new season into season 1 forever. Requiring a few real words makes this
+            // only fire for genuinely matching arc names (e.g. "Sword Art Online:
+            // Alicization" inside "...Alicization - War of Underworld").
+            return !!contained && contained.split(' ').filter(Boolean).length >= 3;
+        })()) {
+            // No season/part marker, but this title visibly builds on the currently open
+            // season's own title (e.g. "Alicization" -> "Alicization - War of Underworld" -
+            // same base name, no number needed to tell they're the same season/arc).
+            trueSeason = currentSeason;
+        } else {
+            // No season/part marker, real TV/OVA format, and no visible relation to the
+            // currently open season's title - a genuinely new season that just doesn't
+            // number itself in its own title (e.g. SAO's "Alicization" itself, which comes
+            // right after "Sword Art Online II" with nothing in common but the base
+            // franchise name already stripped out above).
+            trueSeason = currentSeason + 1;
+        }
+        currentSeason = trueSeason;
+        currentSeasonLabel = member.title;
         if (!groupsBySeason.has(trueSeason)) {
             groupsBySeason.set(trueSeason, {
                 seasonNumber: trueSeason,
