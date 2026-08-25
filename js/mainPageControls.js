@@ -3732,9 +3732,20 @@ function _w2gIsInsidePlayer(el) {
     return !!el.closest?.('#moviePlayerFrameWrap');
 }
 
+// Same idea for the hero carousel - confirmed live it was DOUBLE-synced: the dedicated
+// heroData mechanism (_w2gReportState/__w2gApplyHero) applied the host's exact slide
+// correctly, but the arrow click ALSO got captured here and replayed as a real .click() on
+// the viewer's OWN nextSlide()/prevSlide() button, which advances the VIEWER's own
+// independent heroMovies/currentSlide right afterward - "shows correctly, then quickly
+// switches to the viewer's own". Excluding hero clicks from generic replay entirely leaves
+// heroData as the only thing driving the viewer's hero, with nothing left to fight it.
+function _w2gIsInsideHero(el) {
+    return !!el.closest?.('#heroSection');
+}
+
 document.addEventListener('click', (e) => {
     if (!localStorage.getItem('w2gHostingSessionId') || _w2gFollowing || !_w2gIsActiveTab()) return;
-    if (_w2gIsInsidePlayer(e.target)) return;
+    if (_w2gIsInsidePlayer(e.target) || _w2gIsInsideHero(e.target)) return;
     const selector = w2gBuildSelector(e.target);
     if (selector) {
         _w2gPendingClickSelector = selector;

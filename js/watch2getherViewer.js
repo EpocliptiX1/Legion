@@ -66,9 +66,13 @@
                 reportThrottle = setTimeout(reportOwnState, 250);
             }, { passive: true });
             // Native <video controls> has no clickable DOM node -- exclude the player from
-            // click replay and sync its actual paused/currentTime state instead.
+            // click replay and sync its actual paused/currentTime state instead. Hero carousel
+            // arrows are excluded the same way mainPageControls.js excludes them on the host
+            // side (see that file's own comment) - it has its own dedicated heroData sync, and
+            // replaying the raw click too would double-apply it against the other party's own
+            // independent hero state once control passes back and forth.
             doc.addEventListener('click', (e) => {
-                if (!iHaveControl || e.target.closest?.('#moviePlayerFrameWrap')) return;
+                if (!iHaveControl || e.target.closest?.('#moviePlayerFrameWrap') || e.target.closest?.('#heroSection')) return;
                 const selector = buildSelector(doc, e.target);
                 if (selector) {
                     pendingClickSelector = selector;
