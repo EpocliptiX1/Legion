@@ -18368,7 +18368,7 @@ function metaListToGroups(metaList, tmdbEpisodes = []) {
     });
 
     let tmdbOffset = 0;
-    return sorted.map((m, idx) => {
+    const perEntry = sorted.map(m => {
         const streaming = Array.isArray(m.streamingEpisodes) ? m.streamingEpisodes : [];
         // AniList/Jikan's `episodes` count is null/0 for a currently-airing season
         // until MAL/AniList staff confirm the final total once it finishes -- a
@@ -18382,11 +18382,26 @@ function metaListToGroups(metaList, tmdbEpisodes = []) {
         const tmdbSlice = tmdbEpisodes.slice(tmdbOffset, tmdbOffset + total);
         tmdbOffset += total;
 
+        // Every episode carries its own OWN part's malId/title alongside the merge that
+        // happens below - a "Season 2" that's really "Episode 0 special" + "Part 1" + "Part
+        // 2" under MAL/AniList (three separate malIds, each with its own local 1-based
+        // episode numbering) still needs each individual episode routed to the malId it
+        // actually lives under, not whichever part happened to be first. `episode_number`
+        // gets renumbered continuously across the merged season further down; `localEpisodeNumber`
+        // keeps the number this part's own provider (KAA/Neko/Anikoto) actually expects.
+        const romajiTitle = m.romajiTitle || m.title || null;
         const episodes = Array.from({ length: total }, (_, i) => {
             const tmdbEp = tmdbSlice[i];
+            const base = {
+                episode_number: i + 1,
+                localEpisodeNumber: i + 1,
+                malId: m.malId || null,
+                sourceTitle: m.title || null,
+                romajiTitle
+            };
             if (tmdbEp) {
                 return {
-                    episode_number: i + 1,
+                    ...base,
                     name: tmdbEp.name || `Episode ${i + 1}`,
                     air_date: tmdbEp.air_date || null,
                     still_path: tmdbEp.still_path || null
@@ -18400,25 +18415,56 @@ function metaListToGroups(metaList, tmdbEpisodes = []) {
             // "S2 · Episode 1 - Undertaker" doubling up.
             const realName = real?.title ? real.title.replace(/^Episode\s*\d+\s*[-:]\s*/i, '').trim() : '';
             return {
-                episode_number: i + 1,
+                ...base,
                 name: realName || `Episode ${i + 1}`,
                 air_date: null,
                 still_path: real?.thumbnail || null
             };
         });
-        return {
-            seasonNumber: idx + 1,
-            label: m.title || `Season ${idx + 1}`,
-            // English title above (`label`) is what Neko/anikoto's own English-titled catalog
-            // needs to match against; KAA's catalog is titled in romaji/native form instead, so
-            // its own override uses this field specifically. Falls back to `label` itself for
-            // AniList-sourced entries that never had a distinct romaji field captured, same as
-            // before this field existed.
-            romajiTitle: m.romajiTitle || m.title || `Season ${idx + 1}`,
-            malId: m.malId || null,
-            episodes
-        };
+
+        // Same title-parsing rule used by the season CARDS list (buildSeasonCardsFromMalRelations)
+        // - reused here so the episode list agrees with it. Without this, a split-cour "Part 2" or
+        // a pre-season recap entry ("Season 2 - Episode 0 ...") each became their own numbered
+        // "season" instead of being folded into the real season they actually belong to (confirmed
+        // live: Jobless Reincarnation's 6 raw MAL/AniList entries collapse to 3 real seasons this
+        // way, matching MAL/AniList's own canonical season count instead of TMDB's over-split one).
+        const trueSeason = parseAnimeTitle(m.title || '').season;
+        return { trueSeason, member: m, episodes };
     });
+
+    const groupsBySeason = new Map();
+    const seasonOrder = [];
+    perEntry.forEach(({ trueSeason, member, episodes }) => {
+        if (!groupsBySeason.has(trueSeason)) {
+            groupsBySeason.set(trueSeason, {
+                seasonNumber: trueSeason,
+                label: member.title || `Season ${trueSeason}`,
+                // English title above (`label`) is what Neko/anikoto's own English-titled catalog
+                // needs to match against; KAA's catalog is titled in romaji/native form instead, so
+                // its own override uses this field specifically. Falls back to `label` itself for
+                // AniList-sourced entries that never had a distinct romaji field captured, same as
+                // before this field existed. Kept as the season-level default for callers that
+                // haven't picked a specific episode yet - each episode's own romajiTitle/malId
+                // above is what actually matters once one has.
+                romajiTitle: member.romajiTitle || member.title || `Season ${trueSeason}`,
+                malId: member.malId || null,
+                episodes: []
+            });
+            seasonOrder.push(trueSeason);
+        }
+        groupsBySeason.get(trueSeason).episodes.push(...episodes);
+    });
+
+    // Renumber continuously within each merged season (Part 1 episodes 1..N, Part 2 picks up
+    // at N+1, etc.) so the episode list itself reads like one normal season - `localEpisodeNumber`
+    // set above is untouched and still holds the number each episode's own provider expects.
+    seasonOrder.forEach(sn => {
+        groupsBySeason.get(sn).episodes.forEach((ep, i) => { ep.episode_number = i + 1; });
+    });
+
+    return seasonOrder
+        .map(sn => groupsBySeason.get(sn))
+        .sort((a, b) => a.seasonNumber - b.seasonNumber);
 }
 
 // --- animefillerlist.com filler/canon status --------------------------------------------

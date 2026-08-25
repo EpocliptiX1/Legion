@@ -2080,6 +2080,36 @@ document.addEventListener('DOMContentLoaded', function() {
             }).catch(() => {}).finally(() => window.__nekoPreloadInFlight.delete(key));
         }
 
+        // A merged season group (e.g. "Season 2" = a recap special + Part 1 + Part 2 under
+        // three separate MAL ids) can't be addressed by one malId/episode-number pair anymore -
+        // episode N might actually live under a completely different part than episode 1 does.
+        // Each episode in window.__resolvedSeasonGroups already carries its OWN part's malId and
+        // localEpisodeNumber (see metaListToGroups server-side) - this just looks that one
+        // episode up instead of blindly using the season group's first/default malId for every
+        // episode in it, which is what silently 404'd for anything past a merged season's first
+        // part before this existed. Falls back to the page-load malId/raw episode number when
+        // this season isn't in the resolved groups at all (unsplit shows), matching the old
+        // (pre-merge) behavior exactly.
+        function resolveEpisodeSourceOverride(selectedSeason, episode) {
+            const groups = window.__resolvedSeasonGroups || [];
+            const group = groups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
+            if (!group) return { malId: null, romajiTitle: null, label: null, localEpisode: episode, episodeCount: null, group: null };
+            const episodes = Array.isArray(group.episodes) ? group.episodes : [];
+            const epMatch = episodes.find(e => Number(e.episode_number) === Number(episode));
+            const partMalId = epMatch?.malId || group.malId || null;
+            const episodeCount = partMalId
+                ? episodes.filter(e => (e.malId || group.malId) === partMalId).length
+                : episodes.length;
+            return {
+                malId: partMalId,
+                romajiTitle: epMatch?.romajiTitle || group.romajiTitle || group.label || null,
+                label: epMatch?.sourceTitle || group.label || null,
+                localEpisode: epMatch?.localEpisodeNumber != null ? epMatch.localEpisodeNumber : episode,
+                episodeCount,
+                group
+            };
+        }
+
         async function loadKickAssAnimeVideo(
             episode,
             audioType
@@ -2136,25 +2166,26 @@ document.addEventListener('DOMContentLoaded', function() {
                     // season) lookup would find nothing to anchor its disambiguation on for
                     // those, so pass the season-group's own already-known title/episode count
                     // straight through as an override instead (see that function's comment).
-                    const kaaSeasonGroups = window.__resolvedSeasonGroups || [];
-                    const kaaSeasonMatch = kaaSeasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
                     // KAA's own catalog is titled in romaji/native form, not English - use
                     // romajiTitle specifically (Neko/anikoto's own loader uses `label`, the
                     // English one, instead - see its own comment for why the two providers
-                    // need different languages here).
-                    const seasonTitleParam = (kaaSeasonMatch?.romajiTitle || kaaSeasonMatch?.label) ? `&seasonTitle=${encodeURIComponent(kaaSeasonMatch.romajiTitle || kaaSeasonMatch.label)}` : '';
-                    const seasonEpCountParam = Number.isFinite(kaaSeasonMatch?.episodes?.length) ? `&seasonEpisodeCount=${kaaSeasonMatch.episodes.length}` : '';
+                    // need different languages here). malId/ep are this SPECIFIC episode's own
+                    // part (see resolveEpisodeSourceOverride's comment) - a merged season's
+                    // episode 15 might live under an entirely different malId/local-episode than
+                    // episode 1 does.
+                    const kaaOverride = resolveEpisodeSourceOverride(selectedSeason, episode);
+                    const seasonTitleParam = kaaOverride.romajiTitle ? `&seasonTitle=${encodeURIComponent(kaaOverride.romajiTitle)}` : '';
+                    const seasonEpCountParam = Number.isFinite(kaaOverride.episodeCount) ? `&seasonEpisodeCount=${kaaOverride.episodeCount}` : '';
                     // `malId` alone is whatever lookupMalId() resolved ONCE at page load with no
                     // season awareness (defaults to season 1 server-side) - a multi-season show
                     // (e.g. Sword Art Online, 4 real seasons each under a DIFFERENT MAL id) kept
                     // getting season 1's own episodes back for every season, since this always
                     // sent that same stale id regardless of which season was actually selected.
-                    // kaaSeasonMatch.malId (this season's own real id, from the same season-groups
-                    // resolution megaplayMalId below already trusts) is the fix - only falls back
+                    // kaaOverride.malId (this episode's own real id) is the fix - only falls back
                     // to the stale id when this season isn't in the resolved groups at all.
-                    const kaaMalId = kaaSeasonMatch?.malId || malId;
+                    const kaaMalId = kaaOverride.malId || malId;
                     const res = await fetch(
-                        `/api/anime-kaa-servers?malId=${encodeURIComponent(kaaMalId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=${encodeURIComponent(requestedType)}&title=${encodeURIComponent(title)}${seasonTitleParam}${seasonEpCountParam}`
+                        `/api/anime-kaa-servers?malId=${encodeURIComponent(kaaMalId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(selectedSeason)}&ep=${encodeURIComponent(kaaOverride.localEpisode)}&audio=${encodeURIComponent(audioType)}&itemType=${encodeURIComponent(requestedType)}&title=${encodeURIComponent(title)}${seasonTitleParam}${seasonEpCountParam}`
                     );
                     data = await res.json().catch(() => ({}));
                     if (!res.ok) {
@@ -2216,14 +2247,13 @@ document.addEventListener('DOMContentLoaded', function() {
                         return await loadNekoStreamVideo(episode, audioType, selectedSeason);
                     }
 
-                    const seasonGroups = window.__resolvedSeasonGroups || [];
-                    const seasonMatch = seasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
-                    const megaplayMalId = seasonMatch?.malId || malId;
+                    const megaplayOverride = resolveEpisodeSourceOverride(selectedSeason, episode);
+                    const megaplayMalId = megaplayOverride.malId || malId;
                     try {
                         // Prefer the extracted stream in OUR player (subs + skip markers, no
                         // megaplay ads) - same treatment the MegaVid button itself now gets.
                         // The iframe embed stays as the last resort below.
-                        const exRes = await fetch(`/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalId)}&episode=${encodeURIComponent(episode)}&lang=${encodeURIComponent(audioType)}`);
+                        const exRes = await fetch(`/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalId)}&episode=${encodeURIComponent(megaplayOverride.localEpisode)}&lang=${encodeURIComponent(audioType)}`);
                         const ex = exRes.ok ? await exRes.json().catch(() => null) : null;
                         if (ex?.ok && ex.stream) {
                             console.log('[Megaplay fallback] KAA had no sources, using extracted Megaplay stream');
@@ -2277,7 +2307,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         console.warn('[Megaplay fallback] extraction failed, trying iframe:', e.message);
                     }
                     try {
-                        const mpRes = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(episode)}/${encodeURIComponent(audioType)}`);
+                        const mpRes = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(megaplayOverride.localEpisode)}/${encodeURIComponent(audioType)}`);
                         const mpData = await mpRes.json().catch(() => ({}));
                         if (mpRes.ok && mpData?.embedUrl) {
                             console.log('[Megaplay fallback] using Megaplay iframe embed:', mpData.embedUrl);
@@ -2351,11 +2381,10 @@ document.addEventListener('DOMContentLoaded', function() {
         // below can reuse it instead of duplicating the tracks->subs mapping.
         async function fetchMegaplaySubtitlesForEpisode(episode, season) {
             try {
-                const seasonGroups = window.__resolvedSeasonGroups || [];
-                const seasonMatch = seasonGroups.find(g => Number(g.seasonNumber) === Number(season));
-                const megaplayMalId = seasonMatch?.malId || malId;
+                const override = resolveEpisodeSourceOverride(season, episode);
+                const megaplayMalId = override.malId || malId;
                 if (!megaplayMalId) return [];
-                const res = await fetch(`/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalId)}&episode=${encodeURIComponent(episode)}&lang=sub`);
+                const res = await fetch(`/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalId)}&episode=${encodeURIComponent(override.localEpisode)}&lang=sub`);
                 if (!res.ok) return [];
                 const data = await res.json().catch(() => ({}));
                 // Already pre-tokenized in {url, lang, default} shape server-side.
@@ -2373,14 +2402,13 @@ document.addEventListener('DOMContentLoaded', function() {
             // Same stale-malId issue as the main KAA loader above (see kaaMalId's comment) -
             // this borrow-KAA's-subtitles path needs this season's own id too, not whatever
             // lookupMalId() resolved once at page load for season 1.
-            const subSeasonGroups = window.__resolvedSeasonGroups || [];
-            const subSeasonMatch = subSeasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
-            const kaaSubMalId = subSeasonMatch?.malId || malId;
+            const subOverride = resolveEpisodeSourceOverride(selectedSeason, episode);
+            const kaaSubMalId = subOverride.malId || malId;
             const fetchFor = async (kaaAudio) => {
                 try {
                     const query = new URLSearchParams({
                         malId: kaaSubMalId || '', tmdbId: tmdbId || '',
-                        season: selectedSeason, ep: episode || 1, type: kaaAudio, title
+                        season: selectedSeason, ep: subOverride.localEpisode || 1, type: kaaAudio, title
                     });
                     const res = await fetch(`/api/anime-kaa-servers?${query.toString()}`);
                     if (!res.ok) return [];
@@ -2420,9 +2448,8 @@ document.addEventListener('DOMContentLoaded', function() {
             // the wrong season's episode.
             const seasonSelectEl = document.getElementById('seasonSelect');
             const selectedSeason = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || 1;
-            const seasonGroups = window.__resolvedSeasonGroups || [];
-            const seasonMatch = seasonGroups.find(g => Number(g.seasonNumber) === Number(selectedSeason));
-            const megaplayMalId = seasonMatch?.malId || malId;
+            const megaplayFrameOverride = resolveEpisodeSourceOverride(selectedSeason, episode);
+            const megaplayMalId = megaplayFrameOverride.malId || malId;
             // Was previously never wired up at all - MegaPlay never saved or resumed progress,
             // same pattern KAA/Neko/RU-MV use. Stop any tracking left running from whichever
             // server was active before this one, same as loadNekoStreamVideo does on entry.
@@ -2444,7 +2471,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             try {
                 if (!hasMatchingMegaPreload) {
-                    const res = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(episode)}/${encodeURIComponent(audioType)}`);
+                    const res = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(megaplayFrameOverride.localEpisode)}/${encodeURIComponent(audioType)}`);
                     if (!res.ok) {
                         if (infoDiv) infoDiv.textContent = 'MegaPlay: Failed to resolve stream.';
                         return false;
@@ -2463,7 +2490,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         window.__preloadedMegaSources = null;
                         window.__preloadedMegaEpisode = null;
                     } else {
-                        const exRes = await fetch(`/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalId)}&episode=${encodeURIComponent(episode)}&lang=${encodeURIComponent(audioType)}`);
+                        const exRes = await fetch(`/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalId)}&episode=${encodeURIComponent(megaplayFrameOverride.localEpisode)}&lang=${encodeURIComponent(audioType)}`);
                         ex = exRes.ok ? await exRes.json() : null;
                     }
                     if (ex?.ok && ex.stream) {
@@ -4268,21 +4295,23 @@ document.addEventListener('DOMContentLoaded', function() {
                     let resolvedSeasonGroups = null;
 
                     // Primary fallback for anime lever mode: backend MAL/Jikan (+ last-resort MAL-
-                    // search) cached season groups. Used to only run when TMDB's OWN season count
-                    // was <=1 - wrong assumption, since TMDB can bundle a split-cour season into
-                    // ONE combined "Season N" entry while the actual providers (MegaPlay etc.)
-                    // still key episodes to separate MAL ids per cour (confirmed live: TMDB lists
-                    // Tower of God's Season 2 as one 26-episode season, but MegaPlay needs a
-                    // THIRD, completely separate MAL id just for its second half - the "Season 2
-                    // episode 14" request 404s because that id was never even resolved). Always
-                    // attempting this fetch for anime, then preferring it only when it's actually
-                    // MORE granular than what TMDB already gave, catches that case without
-                    // discarding TMDB's own season list when there's nothing extra to find.
+                    // search) cached season groups. Always attempted for anime and trusted whenever
+                    // it resolves (a 404/error throws below and is caught, leaving TMDB's own list
+                    // untouched) - NOT gated on being more granular than TMDB, since TMDB can go
+                    // wrong in both directions: it can bundle a split-cour season into ONE combined
+                    // "Season N" while providers key episodes to separate MAL ids per cour (Tower of
+                    // God's Season 2 case - MegaPlay 404s on "Season 2 episode 14" because the second
+                    // cour's MAL id was never resolved), OR it can OVER-split into extra "seasons" for
+                    // specials/cour artifacts that MAL/AniList correctly collapse (Jobless
+                    // Reincarnation: TMDB reports 5 seasons, MAL/AniList correctly resolve ~4). Only
+                    // the first case had fewer TMDB entries than MAL/AniList groups, so gating on
+                    // `groups.length > seasonEntries.length` silently discarded the correct answer
+                    // for the second case instead of just being redundant.
                     if (useAnimeSeasonUX) {
                         try {
                             const malGroups = await fetchJsonSafe(`/api/anime-season-groups?tmdbId=${tmdbId}`);
                             const groups = Array.isArray(malGroups?.groups) ? malGroups.groups : [];
-                            if (groups.length > seasonEntries.length) {
+                            if (groups.length > 0) {
                                 resolvedSeasonGroups = groups;
                                 // Split-cour seasons are separate MAL entries (e.g. "86" vs "86
                                 // Part 2") with their own local episode numbering. Providers keyed
