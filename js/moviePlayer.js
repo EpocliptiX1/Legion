@@ -1266,6 +1266,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <div class="player-label" id="labelMovies" style="cursor:pointer;" title="Click for info">Movies: <span style="font-size:0.75rem;opacity:0.5;font-weight:400;">ⓘ</span></div>
                         <div class="server-group">
                             <button id="srvKino" class="server-btn active">Kino</button>
+                            <button id="srvT1mM" class="server-btn">T1M</button>
                             <button id="server2embed" class="server-btn">2Embed</button>
                             <button id="srvRuMovie" class="server-btn">
                                 RU - MV <img src="https://upload.wikimedia.org/wikipedia/commons/f/f3/Flag_of_Russia.svg" alt="RU" style="width:16px;height:11px;vertical-align:middle;margin-left:2px;">
@@ -1282,6 +1283,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <div class="player-label" id="labelAnimeTV" style="cursor:pointer;" title="Click for info">TV Shows: <span style="font-size:0.75rem;opacity:0.5;font-weight:400;">ⓘ</span></div>
                         <div class="server-group">
                             <button id="srvKinoTv" class="server-btn">Kino</button>
+                            <button id="srvT1mTV" class="server-btn">T1M</button>
                             <button id="srvMegaTV" class="server-btn">MegaCloud (S1)</button>
                             <button id="srvRuTv" class="server-btn">
                                 RU - MV <img src="https://upload.wikimedia.org/wikipedia/commons/f/f3/Flag_of_Russia.svg" alt="RU" style="width:16px;height:11px;vertical-align:middle;margin-left:2px;">
@@ -3124,6 +3126,80 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
+        // T1M (api.shows.st) - single endpoint covers both movies and TV, unlike Kino's
+        // separate loadKinoVideo/loadKinoTvVideo. Its API hands back a fully plaintext HLS
+        // manifest already resolved server-side (see /api/t1m-servers's own comment) - `stream`
+        // here is already our own /api/t1m-master.m3u8 URL, not a raw upstream one, so there's
+        // no extraction/token step to do client-side at all, same shape as Kino's own `stream`.
+        async function loadT1mVideo(episode, season) {
+            const myGen = playbackRequestGen;
+            const infoDiv = document.getElementById('serverInfoText');
+
+            try {
+                stopKaaContinueWatching();
+                if (!watchHistoryCache && typeof window.getActivityUID === 'function') {
+                    const activityUID = window.getActivityUID();
+                    await fetchWatchHistory(activityUID, tmdbId).then(setWatchHistoryCache);
+                }
+
+                if (infoDiv) infoDiv.textContent = 'T1M: Resolving stream...';
+                const query = new URLSearchParams({
+                    tmdbId: tmdbId || '',
+                    type: isSeries ? 'tv' : 'movie',
+                    season: season || 1,
+                    episode: episode || 1
+                });
+                const res = await fetch(`/api/t1m-servers?${query.toString()}`);
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data?.ok || !data.stream) {
+                    if (infoDiv) infoDiv.textContent = `T1M: ${data?.error || 'Stream unavailable.'}`;
+                    return false;
+                }
+
+                if (myGen !== playbackRequestGen) return false;
+                const ok = showVideoPlayer(
+                    data.stream,
+                    Array.isArray(data.tracks) ? data.tracks : [],
+                    {
+                        provider: 't1m',
+                        title: document.getElementById('title')?.textContent.trim() || '',
+                        season,
+                        episode,
+                        audio: 'en'
+                    }
+                );
+
+                if (ok) {
+                    const episodeKey = buildEpisodeKey(season, episode);
+                    const videoEl = document.getElementById('moviePlayerVideo');
+                    if (videoEl) {
+                        const resumeSeconds = getWatchHistoryResumeSeconds(episodeKey);
+                        if (Number.isFinite(resumeSeconds) && resumeSeconds > 5) {
+                            showKaaResumeOverlay(episodeKey, resumeSeconds, () => applyResumeToVideo(videoEl, resumeSeconds), () => {});
+                        }
+                        const activityUID = typeof window.getActivityUID === 'function' ? window.getActivityUID() : null;
+                        startKaaContinueWatching(videoEl, {
+                            episodeKey,
+                            userUID: activityUID,
+                            movieId: tmdbId,
+                            itemType: isSeries ? 'tv' : 'movie'
+                        });
+                    }
+                }
+
+                if (infoDiv) {
+                    infoDiv.textContent = ok
+                        ? `T1M: Loaded HLS${data.tracks?.length ? ' · subtitles' : ''}`
+                        : 'T1M: HLS playback is not supported in this browser.';
+                }
+                return ok;
+            } catch (err) {
+                console.error('[T1M] playback error:', err);
+                if (infoDiv) infoDiv.textContent = 'T1M: Failed to load stream.';
+                return false;
+            }
+        }
+
         // Small anchored menu letting the user pick a quality instead of always getting the
         // best one - one instance reused for both RU movie and RU TV downloads. Built as a
         // plain positioned <div> (no existing dropdown component on this page to reuse) styled
@@ -3473,6 +3549,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
                 showServerInfo(server);
                 loadKinoTvVideo(e, s);
+                return;
+            }
+            if (server === 'srvT1mM' || server === 'srvT1mTV') {
+                document.querySelectorAll('.server-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.id === server);
+                });
+                showServerInfo(server);
+                loadT1mVideo(e, s);
                 return;
             }
             if (server === 'srvPahe1') {
@@ -4058,8 +4142,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const btnDownloadSub = document.getElementById('btnDownloadSub');
         const btnDownloadDub = document.getElementById('btnDownloadDub');
 
-        const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvNontonGoM', 'srvRuMovie', 'srvKino']);
-        const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvNontonGo']);
+        const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvNontonGoM', 'srvRuMovie', 'srvKino', 'srvT1mM']);
+        const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvNontonGo', 'srvT1mTV']);
         const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1']);
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',

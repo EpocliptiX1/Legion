@@ -2280,8 +2280,8 @@ setInterval(() => {
     }
 }, 60 * 1000).unref();
 
-function encryptProxyTarget({ url, referer = null, ua = null, sessionId = null, leaseId = null, purpose = null }) {
-    const payload = JSON.stringify({ u: url, r: referer, a: ua, s: sessionId, l: leaseId, p: purpose, e: Date.now() + PROXY_TOKEN_TTL_MS });
+function encryptProxyTarget({ url, referer = null, ua = null, sessionId = null, leaseId = null, purpose = null, forcePlaylist = false }) {
+    const payload = JSON.stringify({ u: url, r: referer, a: ua, s: sessionId, l: leaseId, p: purpose, fp: forcePlaylist || undefined, e: Date.now() + PROXY_TOKEN_TTL_MS });
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', PROXY_TOKEN_KEY, iv);
     const encrypted = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
@@ -2309,7 +2309,7 @@ function decryptProxyTarget(token) {
     if (!payload.u || !payload.e || payload.e < Date.now()) {
         throw new Error('Proxy token expired or invalid');
     }
-    return { url: payload.u, referer: payload.r || null, ua: payload.a || null, sessionId: payload.s || null, leaseId: payload.l || null, purpose: payload.p || null };
+    return { url: payload.u, referer: payload.r || null, ua: payload.a || null, sessionId: payload.s || null, leaseId: payload.l || null, purpose: payload.p || null, forcePlaylist: !!payload.fp };
 }
 
 // Verifies the decrypted token's embedded session id against the CALLER's own session cookie
@@ -2328,8 +2328,17 @@ function verifyProxySession(req, decoded) {
 // manifest-rewriter inside /api/m3u8-proxy itself, subtitle URLs, etc.) shares one code path
 // instead of each hand-rolling its own ?url= string. sessionId is required (not optional) -
 // every caller has a req.sessionId available from the session-cookie middleware above.
-function buildM3u8ProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeaseId()) {
-    return `/api/m3u8-proxy?token=${encryptProxyTarget({ url, referer, sessionId, leaseId })}`;
+// forcePlaylist: for providers whose playlist URLs don't carry ".m3u8" anywhere in the path
+// (confirmed live: T1M/shows.st's variant playlists are opaque "/api?d=<token>" URLs at every
+// level, master through media playlist through segments) - the proxy route below normally
+// infers "is this a playlist to rewrite, or a binary segment to stream" purely from the URL
+// string, which silently mis-detects those as segments (streaming the raw, un-rewritten
+// playlist text back as if it were binary, leaking the upstream host to the client and
+// skipping the token/session model every other proxied URL gets). Every EXISTING caller omits
+// this, so the route falls back to the exact same URL-based detection as before - this is
+// purely additive, not a behavior change for KAA/Neko/Kino/etc.
+function buildM3u8ProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeaseId(), forcePlaylist = false) {
+    return `/api/m3u8-proxy?token=${encryptProxyTarget({ url, referer, sessionId, leaseId, ...(forcePlaylist ? { forcePlaylist: true } : {}) })}`;
 }
 function buildStreamProxyUrl(url, referer, ua, sessionId, leaseId = createPlaybackLeaseId()) {
     return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua, sessionId, leaseId })}`;
@@ -11103,13 +11112,14 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         return res.status(400).send('Missing token');
     }
     if (isPlaybackIntegrityBlocked(req)) return res.status(429).send('Playback temporarily unavailable');
-    let targetUrl, refererOverride, decodedLeaseId;
+    let targetUrl, refererOverride, decodedLeaseId, forcePlaylist;
     try {
         const decoded = decryptProxyTarget(req.query.token);
         verifyProxySession(req, decoded);
         targetUrl = decoded.url;
         refererOverride = decoded.referer || undefined;
         decodedLeaseId = decoded.leaseId;
+        forcePlaylist = !!decoded.forcePlaylist;
     } catch (err) {
         const outcome = recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'm3u8-session-replay' : 'm3u8-invalid-token', err.sessionMismatch ? 6 : 1);
         const fallback = err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token';
@@ -11117,7 +11127,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     }
     if (!targetUrl) return res.status(400).send('URL required');
 
-    const isMediaDataRequest = !targetUrl.includes('.m3u8') && !/\.(vtt|srt)(\?|$)/i.test(targetUrl);
+    const isMediaDataRequest = !forcePlaylist && !targetUrl.includes('.m3u8') && !/\.(vtt|srt)(\?|$)/i.test(targetUrl);
     let releaseLease = () => {};
     try {
         releaseLease = claimPlaybackLease(req, { leaseId: decodedLeaseId }, {
@@ -11141,7 +11151,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
 
     try {
         // 1. If it's a media chunk (.ts, .m4s, etc.) or playlist (.m3u8)
-        const isM3u8 = targetUrl.includes('.m3u8');
+        const isM3u8 = forcePlaylist || targetUrl.includes('.m3u8');
 
         const response = await axios({
             method: 'GET',
@@ -17226,6 +17236,128 @@ app.get('/api/kino-subtitle-vtt', async (req, res) => {
     } catch (err) {
         console.error('[Kino Subtitle VTT] Error:', err.message);
         return res.status(500).send('Failed to convert subtitle');
+    }
+});
+
+// --- T1M (api.shows.st, English movies/TV) --------------------------------------------------
+// Discovered live via a manual DevTools capture of player.vidlove.cc's "Archer Queen" server -
+// unlike Kino's vidsrcme flow (encrypted stream_urls needing a WASM decrypt step), this API
+// hands back a fully plaintext, ready-to-play HLS master playlist directly in the JSON response
+// (`source.manifest`) alongside a large multi-language subtitle set - no auth/token dance,
+// no browser needed to resolve. The catch: every level of the playlist chain (master -> media
+// playlist -> segments) uses opaque "/api?d=<token>" URLs with no ".m3u8" anywhere in the path,
+// which is what /api/m3u8-proxy normally keys its playlist-vs-segment detection on - handled via
+// buildM3u8ProxyUrl's forcePlaylist flag (see its own comment) for exactly the one level that
+// needs it (media playlist); segments fall through to the same URL-based detection as always,
+// since they genuinely aren't playlists.
+const T1M_ORIGIN = 'https://api.shows.st';
+const T1M_REFERER = 'https://player.vidlove.cc/';
+const t1mSourceCache = new Map(); // `${type}:${tmdbId}:${season}:${episode}` -> { data, resolvedAt }
+const T1M_CACHE_TTL_MS = 3 * 60 * 60 * 1000; // same order as Kino's own cache lifetime
+
+async function fetchT1mSources(type, tmdbId, season, episode) {
+    const url = type === 'tv'
+        ? `${T1M_ORIGIN}/tv?id=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}&mode=json&sources=vidapi`
+        : `${T1M_ORIGIN}/movie?id=${encodeURIComponent(tmdbId)}&mode=json&sources=vidapi`;
+    const res = await axios.get(url, {
+        headers: { 'User-Agent': KINO_UA, 'Accept': 'application/json' },
+        timeout: 15000
+    });
+    const manifest = res.data?.source?.manifest;
+    if (!manifest || !manifest.trim().startsWith('#EXTM3U')) {
+        throw new Error('T1M returned no playable manifest for this title');
+    }
+    const subtitles = Array.isArray(res.data?.subtitles) ? res.data.subtitles : [];
+    return { manifest, subtitles };
+}
+
+function resolveT1mSourcesCached(type, tmdbId, season, episode) {
+    const key = `${type}:${tmdbId}:${season}:${episode}`;
+    const cached = t1mSourceCache.get(key);
+    if (cached && (Date.now() - cached.resolvedAt) < T1M_CACHE_TTL_MS) {
+        return Promise.resolve(cached.data);
+    }
+    const p = fetchT1mSources(type, tmdbId, season, episode).then(data => {
+        t1mSourceCache.set(key, { data, resolvedAt: Date.now() });
+        return data;
+    });
+    return p;
+}
+
+// Rewritten master-manifest text (each variant line pointed at our own /api/m3u8-proxy, with
+// forcePlaylist since none of these URLs self-identify as playlists) has nowhere else to live -
+// unlike every other provider here, T1M hands back the manifest's actual TEXT, not a URL for one,
+// so there's no upstream URL for the client to fetch through the normal proxy path at the master
+// level. Stored server-side under a short-lived opaque id instead, served by the route below.
+// Session-security still holds at the level that matters: each variant/segment URL embedded
+// inside is its own independently-encrypted, session-bound token, same as everywhere else - this
+// outer id is just an address for a piece of text, not a capability of its own.
+const t1mManifestCache = new Map(); // id -> { text, cachedAt }
+const T1M_MANIFEST_CACHE_TTL_MS = 20 * 60 * 1000;
+
+app.get('/api/t1m-master.m3u8', (req, res) => {
+    const entry = t1mManifestCache.get(req.query.id);
+    if (!entry || (Date.now() - entry.cachedAt) > T1M_MANIFEST_CACHE_TTL_MS) {
+        return res.status(404).send('Expired or unknown manifest');
+    }
+    res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+    res.send(entry.text);
+});
+
+function buildT1mMasterManifestUrl(manifest, sessionId) {
+    // One lease for the whole manifest, not one per variant line. buildM3u8ProxyUrl's leaseId
+    // param defaults via `= createPlaybackLeaseId()`, which fires on every call where the
+    // argument is omitted/undefined - passing undefined here per-line meant every rendition in
+    // an adaptive master (typically several) minted its OWN brand-new lease, burning through
+    // MAX_ACTIVE_LEASES_PER_SESSION (6) in one or two clicks and 429ing all subsequent segment/
+    // variant-playlist requests with "Too many active playback streams for this session" -
+    // confirmed live via read_network_requests (first proxy call 200, everything after 429).
+    // Every other provider shares one leaseId across its whole manifest chain; this matches that.
+    const leaseId = createPlaybackLeaseId();
+    const rewritten = manifest.split('\n').map(line => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return line;
+        return buildM3u8ProxyUrl(trimmed, T1M_REFERER, sessionId, leaseId, true);
+    }).join('\n');
+    const id = crypto.randomBytes(16).toString('hex');
+    t1mManifestCache.set(id, { text: rewritten, cachedAt: Date.now() });
+    return `/api/t1m-master.m3u8?id=${id}`;
+}
+
+app.get('/api/t1m-servers', async (req, res) => {
+    const tmdbId = parseInt(req.query.tmdbId, 10);
+    const type = req.query.type === 'tv' ? 'tv' : 'movie';
+    const season = parseInt(req.query.season, 10) || 1;
+    const episode = parseInt(req.query.episode || req.query.ep, 10) || 1;
+    if (!tmdbId) return res.status(400).json({ ok: false, error: 'tmdbId is required' });
+
+    try {
+        const cached = await episodeLoadCacheGet(tmdbId, season, episode, 'en', 't1m');
+        let subtitles;
+        let manifest;
+        if (cached && cached.sources?.[0]) {
+            manifest = cached.sources[0];
+            subtitles = cached.subtitles?.tracks || [];
+        } else {
+            const resolved = await resolveT1mSourcesCached(type, tmdbId, season, episode);
+            manifest = resolved.manifest;
+            subtitles = resolved.subtitles;
+            episodeLoadCacheSet(tmdbId, null, season, episode, 'en', 't1m',
+                null, null, [manifest], { tracks: subtitles }).catch(err =>
+                console.warn('[T1M] Failed to cache result:', err.message));
+        }
+
+        res.json({
+            ok: true,
+            stream: buildT1mMasterManifestUrl(manifest, req.sessionId),
+            // subtitle files are plain static VTT URLs on cache.vdrk.site, not behind any
+            // token/auth of their own (confirmed live) - no proxy/tokenizing needed, unlike
+            // every stream URL above.
+            tracks: subtitles.map(s => ({ url: s.file, lang: s.label, default: /^english/i.test(s.label || '') }))
+        });
+    } catch (err) {
+        console.error('[T1M] Error:', err.message);
+        res.status(500).json({ ok: false, error: err.message });
     }
 });
 
