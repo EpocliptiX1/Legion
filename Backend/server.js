@@ -1906,7 +1906,8 @@ function requireResolveNonce(req, res, next) {
 const RESOLVE_GATED_PATHS = [
     '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
     '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
-    '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download'
+    '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
+    '/api/t1m-servers'
 ];
 app.use(RESOLVE_GATED_PATHS, requireResolveNonce);
 // Every real resolver response also carries a session-bound decoy URL in a response header.
@@ -20747,12 +20748,19 @@ async function resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType, season, epis
     }
 }
 
+function resolveEmbedServer(rawServer) {
+    if (rawServer === 'ru') return 'ru';
+    if (rawServer === 't1m') return 't1m';
+    return 'kino';
+}
+
 // GET /embed/movie/{id}?server=kino
-// {id}: numeric TMDB id or IMDB id. server: 'kino' (default, vidsrcme.ru) or 'ru' (RU-MV,
-// kinogo.mu -> cinemar.cc - single Russian dub track, no subtitles of its own).
+// {id}: numeric TMDB id or IMDB id. server: 'kino' (default, vidsrcme.ru), 'ru' (RU-MV,
+// kinogo.mu -> cinemar.cc - single Russian dub track, no subtitles of its own), or 't1m'
+// (api.shows.st - English, multi-language subtitle set of its own).
 app.get('/embed/movie/:id', async (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    const server = req.query.server === 'ru' ? 'ru' : 'kino';
+    const server = resolveEmbedServer(req.query.server);
     const startAtParam = parseFloat(req.query.startAt);
     const startAt = Number.isFinite(startAtParam) && startAtParam > 0 ? startAtParam : 0;
     const autoplay = req.query.autoplay === '1';
@@ -20771,6 +20779,10 @@ app.get('/embed/movie/:id', async (req, res) => {
             const ru = await resolveMovieRuData(title, tmdbId);
             streamUrl = buildM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId);
             tracks = [];
+        } else if (server === 't1m') {
+            const t1m = await resolveT1mSourcesCached('movie', tmdbId, 1, 1);
+            streamUrl = buildT1mMasterManifestUrl(t1m.manifest, req.sessionId);
+            tracks = t1m.subtitles.map(s => ({ url: s.file, lang: s.label, default: /^english/i.test(s.label || '') }));
         } else {
             const kino = await resolveKinoCached(`movie:${tmdbId}`, () => runKinoExtraction(`movie/${tmdbId}`, 'movie'));
             streamUrl = buildM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
@@ -20784,8 +20796,8 @@ app.get('/embed/movie/:id', async (req, res) => {
 });
 
 // GET /embed/tv/{id}/{season}/{episode}?server=kino
-// {id}: numeric TMDB id or IMDB id. server: 'kino' (default, vidsrcme.ru) or 'ru' (RU-MV,
-// kinogo.mu -> cinemar.cc).
+// {id}: numeric TMDB id or IMDB id. server: 'kino' (default, vidsrcme.ru), 'ru' (RU-MV,
+// kinogo.mu -> cinemar.cc), or 't1m' (api.shows.st).
 app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     const season = parseInt(req.params.season, 10);
@@ -20793,7 +20805,7 @@ app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
     if (!Number.isFinite(season) || season <= 0 || !Number.isFinite(episode) || episode <= 0) {
         return res.status(400).send(renderPublicEmbedErrorHtml('Invalid season/episode number.'));
     }
-    const server = req.query.server === 'ru' ? 'ru' : 'kino';
+    const server = resolveEmbedServer(req.query.server);
     const startAtParam = parseFloat(req.query.startAt);
     const startAt = Number.isFinite(startAtParam) && startAtParam > 0 ? startAtParam : 0;
     const autoplay = req.query.autoplay === '1';
@@ -20816,6 +20828,10 @@ app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
             const ru = await resolveTvRuData(title, tmdbId, season, episode);
             streamUrl = buildM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId);
             tracks = [];
+        } else if (server === 't1m') {
+            const t1m = await resolveT1mSourcesCached('tv', tmdbId, season, episode);
+            streamUrl = buildT1mMasterManifestUrl(t1m.manifest, req.sessionId);
+            tracks = t1m.subtitles.map(s => ({ url: s.file, lang: s.label, default: /^english/i.test(s.label || '') }));
         } else {
             const kino = await resolveKinoCached(`tv:${tmdbId}:${season}:${episode}`, () => runKinoExtraction(`tv/${tmdbId}/${season}/${episode}`, 'tv'));
             streamUrl = buildM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);

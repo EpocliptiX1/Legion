@@ -9,7 +9,8 @@
     const RESOLVE_GATED_PATHS = [
         '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
         '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
-        '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download'
+        '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
+        '/api/t1m-servers'
     ];
     let noncePromise = null;
     function ensureResolveNonce() {

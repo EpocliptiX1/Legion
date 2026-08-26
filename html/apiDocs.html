@@ -155,6 +155,11 @@
                         <span class="server-value">server=kino</span>
                     </div>
                     <div class="provider-card">
+                        <h4>T1M <span class="server-value" style="margin-left:6px;">movie/TV</span></h4>
+                        <p>English movie/TV source with its own large multi-language subtitle set - good alternate when Kino doesn't have a title.</p>
+                        <span class="server-value">server=t1m</span>
+                    </div>
+                    <div class="provider-card">
                         <h4>RU MV <span class="server-value" style="margin-left:6px;">movie/TV</span></h4>
                         <p>Russian-dub movie/TV source - single audio track, no subtitles of its own.</p>
                         <span class="server-value">server=ru</span>
@@ -168,12 +173,12 @@
                     <span class="endpoint-path">/embed/movie/{id}</span>
                 </div>
                 <h2 style="border:none;padding-top:0;font-size:1.1rem;">Movie Embed</h2>
-                <p>Embed a movie player. Resolves through Kino (default) or RU MV.</p>
+                <p>Embed a movie player. Resolves through Kino (default), T1M, or RU MV.</p>
                 <table class="param-table">
                     <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
                     <tbody>
                         <tr><td><code>{id}</code></td><td>Yes</td><td>TMDB movie id or IMDB id (<code>tt...</code>)</td></tr>
-                        <tr><td><code>server</code></td><td>Optional</td><td><code>kino</code> (default) or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
+                        <tr><td><code>server</code></td><td>Optional</td><td><code>kino</code> (default), <code>t1m</code>, or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
                         <tr><td><code>startAt</code></td><td>Optional</td><td>Seconds into the video to start playback at - see <a href="#resume-playback">Resume Playback</a></td></tr>
                         <tr><td><code>autoplay</code></td><td>Optional</td><td><code>1</code> to start playback automatically once the stream loads</td></tr>
                     </tbody>
@@ -187,6 +192,7 @@
                     <pre data-tab-panel="url" style="display:none;"
 ><span class="url-example"><span class="url-example-note"># Deadpool 2, default (Kino)</span><a href="/embed/movie/293660" target="_blank" rel="noopener">/embed/movie/293660</a></span
 ><span class="url-example"><span class="url-example-note"># same movie, by IMDB id</span><a href="/embed/movie/tt4425200" target="_blank" rel="noopener">/embed/movie/tt4425200</a></span
+><span class="url-example"><span class="url-example-note"># forced T1M</span><a href="/embed/movie/293660?server=t1m" target="_blank" rel="noopener">/embed/movie/293660?server=t1m</a></span
 ><span class="url-example"><span class="url-example-note"># forced RU MV</span><a href="/embed/movie/293660?server=ru" target="_blank" rel="noopener">/embed/movie/293660?server=ru</a></span
 ><span class="url-example"><span class="url-example-note"># autoplay on load, resume from 2 minutes in</span><a href="/embed/movie/293660?autoplay=1&amp;startAt=120" target="_blank" rel="noopener">/embed/movie/293660?autoplay=1&amp;startAt=120</a></span
 ></pre>
@@ -199,14 +205,14 @@
                     <span class="endpoint-path">/embed/tv/{id}/{season}/{episode}</span>
                 </div>
                 <h2 style="border:none;padding-top:0;font-size:1.1rem;">TV Show Embed</h2>
-                <p>Embed a specific episode. Resolves through Kino (default) or RU MV.</p>
+                <p>Embed a specific episode. Resolves through Kino (default), T1M, or RU MV.</p>
                 <table class="param-table">
                     <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
                     <tbody>
                         <tr><td><code>{id}</code></td><td>Yes</td><td>TMDB TV id or IMDB id (<code>tt...</code>)</td></tr>
                         <tr><td><code>{season}</code></td><td>Yes</td><td>Season number</td></tr>
                         <tr><td><code>{episode}</code></td><td>Yes</td><td>Episode number within that season</td></tr>
-                        <tr><td><code>server</code></td><td>Optional</td><td><code>kino</code> (default) or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
+                        <tr><td><code>server</code></td><td>Optional</td><td><code>kino</code> (default), <code>t1m</code>, or <code>ru</code> - see <a href="#providers">Providers</a></td></tr>
                         <tr><td><code>startAt</code></td><td>Optional</td><td>Seconds into the video to start playback at - see <a href="#resume-playback">Resume Playback</a></td></tr>
                         <tr><td><code>autoplay</code></td><td>Optional</td><td><code>1</code> to start playback automatically once the stream loads</td></tr>
                         <tr><td><code>autonext</code></td><td>Optional</td><td><code>1</code> to load episode + 1 (same season) automatically when this one ends</td></tr>
@@ -220,6 +226,7 @@
                     <pre data-tab-panel="html">&lt;iframe src="https://your-domain.example/embed/tv/{id}/{season}/{episode}" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;</pre>
                     <pre data-tab-panel="url" style="display:none;"
 ><span class="url-example"><span class="url-example-note"># Breaking Bad S1E1, default (Kino)</span><a href="/embed/tv/1396/1/1" target="_blank" rel="noopener">/embed/tv/1396/1/1</a></span
+><span class="url-example"><span class="url-example-note"># forced T1M</span><a href="/embed/tv/1396/1/1?server=t1m" target="_blank" rel="noopener">/embed/tv/1396/1/1?server=t1m</a></span
 ><span class="url-example"><span class="url-example-note"># forced RU MV</span><a href="/embed/tv/1396/1/1?server=ru" target="_blank" rel="noopener">/embed/tv/1396/1/1?server=ru</a></span
 ><span class="url-example"><span class="url-example-note"># binge mode - autoplay + auto-advance to S1E2, S1E3... on end</span><a href="/embed/tv/1396/1/1?autoplay=1&amp;autonext=1" target="_blank" rel="noopener">/embed/tv/1396/1/1?autoplay=1&amp;autonext=1</a></span
 ></pre>
@@ -423,7 +430,7 @@ iframe.src = '/embed/movie/293660?startAt=' + resumeAt;</pre>
 
             <section class="docs-section" id="last-updated">
                 <h2>Last Updated</h2>
-                <p>This page and the embed API were last updated <strong>August 22, 2026</strong>.</p>
+                <p>This page and the embed API were last updated <strong>August 26, 2026</strong>.</p>
             </section>
         </main>
     </div>
