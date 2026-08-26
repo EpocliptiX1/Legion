@@ -1278,7 +1278,6 @@ document.addEventListener('DOMContentLoaded', function() {
                             <button id="serverSuperembed" class="server-btn">SuperEmbed</button>
                             <button id="srvMoviesApiM" class="server-btn">MoviesAPI</button>
                             <button id="srv111MoviesM" class="server-btn">111Movies</button>
-                            <button id="srvNontonGoM" class="server-btn">NontonGo</button>
                         </div>
                         <div class="player-section-divider"></div>
                         <div class="player-label" id="labelAnimeTV" style="cursor:pointer;" title="Click for info">TV Shows: <span style="font-size:0.75rem;opacity:0.5;font-weight:400;">ⓘ</span></div>
@@ -1293,7 +1292,6 @@ document.addEventListener('DOMContentLoaded', function() {
                             <button id="srvTTV" class="server-btn">T-Cloud (S3)</button>
                             <button id="srvMoviesApi" class="server-btn">MoviesAPI</button>
                             <button id="srv111Movies" class="server-btn">111Movies</button>
-                            <button id="srvNontonGo" class="server-btn">NontonGo</button>
                         </div>
                         <div class="player-section-divider"></div>
                         <div class="player-label" id="labelAnimeDub" style="cursor:pointer;" title="Click for info">Anime Sub/Dub: <span style="font-size:0.75rem;opacity:0.5;font-weight:400;">ⓘ</span></div>
@@ -1633,10 +1631,8 @@ document.addEventListener('DOMContentLoaded', function() {
             srvTTV: 'T-Cloud TV: Reliable Backup',
             srvMoviesApi: 'MoviesAPI: Extra Source',
             srv111Movies: '111Movies: Extra Source',
-            srvNontonGo: 'NontonGo: Extra Source',
             srvMoviesApiM: 'MoviesAPI: Extra Source',
             srv111MoviesM: '111Movies: Extra Source',
-            srvNontonGoM: 'NontonGo: Extra Source',
             srvMega1: 'MegaPlay: Anime MAL-based stream'
         };
         // function showLimitToast2(message) {
@@ -3592,7 +3588,6 @@ document.addEventListener('DOMContentLoaded', function() {
             if (server === 'srvTTV') logicalServer = 'srvT';
             if (server === 'srvMoviesApiM') logicalServer = 'srvMoviesApi';
             if (server === 'srv111MoviesM') logicalServer = 'srv111Movies';
-            if (server === 'srvNontonGoM') logicalServer = 'srvNontonGo';
 
             if (logicalServer === 'srvMega') {
                 url = isSeries
@@ -3614,8 +3609,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 url = isSeries ? `https://moviesapi.club/tv/${tmdbId}-${s}-${e}` : `https://moviesapi.club/movie/${tmdbId}`;
             } else if (logicalServer === 'srv111Movies') {
                 url = isSeries ? `https://111movies.com/tv/${tmdbId}/${s}/${e}` : `https://111movies.com/movie/${tmdbId}`;
-            } else if (logicalServer === 'srvNontonGo') {
-                url = isSeries ? `https://www.NontonGo.win/embed/tv/${tmdbId}/${s}/${e}` : `https://www.NontonGo.win/embed/movie/${tmdbId}`;
             } else if (logicalServer === 'srvMega1') {
                 url = '__async__';
                 showIframePlayer('about:blank');
@@ -4157,8 +4150,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const btnDownloadSub = document.getElementById('btnDownloadSub');
         const btnDownloadDub = document.getElementById('btnDownloadDub');
 
-        const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvNontonGoM', 'srvRuMovie', 'srvKino', 'srvT1mM']);
-        const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvNontonGo', 'srvT1mTV']);
+        const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvRuMovie', 'srvKino', 'srvT1mM']);
+        const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvT1mTV']);
         const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1']);
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',
