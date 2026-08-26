@@ -2610,22 +2610,33 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 const title =
                     animeTitle || document.getElementById('title')?.textContent.trim() || '';
+                // A merged season can span multiple MAL parts (see resolveEpisodeSourceOverride's
+                // own comment) - this episode's own malId/local episode number, not the season's
+                // first/default one, same fix KAA/MegaPlay already got. Without this, an episode
+                // past a merged season's first part sent the WRONG malId to Neko, which
+                // anikotoapi.site correctly rejects before falling back to the old VidTube path's
+                // own separate (slower, less reliable) Part-2-search logic.
+                const nekoOverride = resolveEpisodeSourceOverride(season, episode);
                 const query = new URLSearchParams({
-                    malId: malId || '',
+                    malId: nekoOverride.malId || malId || '',
                     tmdbId: tmdbId || '',
                     title,
                     type: audioType,
                     season: season || 1,
-                    ep: episode || 1
+                    ep: nekoOverride.localEpisode || episode || 1
                 });
                 // Synthetic cour-split seasons (e.g. Workshop Battle) need this override -
                 // anikoto's own page for one is often titled with the WRONG literal season too
                 // (Workshop Battle's own anikoto title says "Season 2", not "Season 3"), so the
                 // backend's literal-season-number matching can't find it without an anchor. See
-                // resolveExactWatchUrl's overrideSeasonTitle comment for the full story.
+                // resolveExactWatchUrl's overrideSeasonTitle comment for the full story. Uses
+                // this episode's own part title (nekoOverride.label) rather than the season's
+                // overall label, so a merged season's second+ part gets its OWN title as the
+                // anchor instead of always anchoring to the first part's.
                 const nekoSeasonGroups = window.__resolvedSeasonGroups || [];
                 const nekoSeasonMatch = nekoSeasonGroups.find(g => Number(g.seasonNumber) === Number(season));
-                if (nekoSeasonMatch?.label) query.set('seasonTitle', nekoSeasonMatch.label);
+                const nekoSeasonTitle = nekoOverride.label || nekoSeasonMatch?.label;
+                if (nekoSeasonTitle) query.set('seasonTitle', nekoSeasonTitle);
                 const intervalId = setInterval(() => {
                     syncEpisodePanelHeight();
                 }, 1000);
