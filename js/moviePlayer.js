@@ -2611,11 +2611,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 const title =
                     animeTitle || document.getElementById('title')?.textContent.trim() || '';
                 // A merged season can span multiple MAL parts (see resolveEpisodeSourceOverride's
-                // own comment) - this episode's own malId/local episode number, not the season's
-                // first/default one, same fix KAA/MegaPlay already got. Without this, an episode
-                // past a merged season's first part sent the WRONG malId to Neko, which
-                // anikotoapi.site correctly rejects before falling back to the old VidTube path's
-                // own separate (slower, less reliable) Part-2-search logic.
+                // own comment) - this episode's own malId, not the season's first/default one,
+                // same fix KAA/MegaPlay already got. Without this, an episode past a merged
+                // season's first part sent the WRONG malId to Neko, which anikotoapi.site
+                // correctly rejects before falling back to the old VidTube path's own separate
+                // (slower, less reliable) Part-2-search logic.
+                // `ep` stays the CONTINUOUS episode number always - the backend's own search
+                // fallback needs that (anikoto doesn't always split a season into the same
+                // per-part pages MAL does - sometimes it bundles multiple cours into one
+                // continuously-numbered page, confirmed live for Attack on Titan Season 3 Part
+                // 2). `localEp` carries this episode's number within its own part - only used
+                // backend-side when the malId above actually resolves to that part's own,
+                // separate anikoto entry via the fast path; ignored otherwise.
                 const nekoOverride = resolveEpisodeSourceOverride(season, episode);
                 const query = new URLSearchParams({
                     malId: nekoOverride.malId || malId || '',
@@ -2623,7 +2630,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     title,
                     type: audioType,
                     season: season || 1,
-                    ep: nekoOverride.localEpisode || episode || 1
+                    ep: episode || 1,
+                    localEp: nekoOverride.localEpisode || episode || 1
                 });
                 // Synthetic cour-split seasons (e.g. Workshop Battle) need this override -
                 // anikoto's own page for one is often titled with the WRONG literal season too

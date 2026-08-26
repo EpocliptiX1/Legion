@@ -12188,25 +12188,31 @@ async function ensureAnikotoCommentUserAccounts(commenterInfo) {
 // stream pipeline and the comments endpoint below, so comment scraping doesn't depend
 // on the user ever picking the Neko video server (KAA is the default anime server).
 // Extracted verbatim from what was previously inlined in /api/anime-neko-log.
-async function resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTitle, malId) {
+async function resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTitle, malId, localEpisode) {
     // For Season 0 (Specials), ignore season filtering and search by title only
     // Anikoto usually doesn't have separate season 0 pages; specials are on main series page
     const searchSeason = season === 0 ? null : season;
 
     let internalAnimeId = null;
     let animeWatchUrl = null;
+    let usedFastPath = false;
 
     // Fast path: this episode's malId already known and in our locally-crawled catalog map -
     // skip the search-grid-scoring + watch-page-HTML-scrape below entirely. Any miss (no malId
     // passed by this caller, title not yet crawled, map not populated on a fresh deployment, or
     // this lookup itself erroring) falls straight through to the exact same resolution that ran
-    // before this existed - never the only path, purely a fast lane in front of it.
+    // before this existed - never the only path, purely a fast lane in front of it. A miss also
+    // legitimately happens when anikoto's own catalog just doesn't split a season the same way
+    // MAL does (confirmed live: Attack on Titan Season 3 Part 2 has its own separate MAL id, but
+    // anikoto bundles both cours into ONE combined page under Part 1's id/malId instead) - the
+    // fallback below already handles that correctly, this isn't an error case.
     if (malId) {
         try {
             const mapped = await getAnikotoIdByMalId(malId);
             if (mapped) {
                 internalAnimeId = String(mapped.anikoto_id);
                 animeWatchUrl = `https://anikoto.cz/watch/${mapped.slug}`;
+                usedFastPath = true;
                 logNekoDebug('[Neko] 0. Fast-path anikoto id from local catalog map', { malId, internalAnimeId, animeWatchUrl });
             }
         } catch (err) {
@@ -12228,6 +12234,14 @@ async function resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTi
         }
         logNekoDebug('[Neko] Watch page internal id', { animeWatchUrl, internalAnimeId });
     }
+
+    // The fast path resolves to the SPECIFIC part's own anikoto entry (found by its own malId),
+    // whose own episode list is numbered locally starting at 1 - use localEpisode there. The
+    // search fallback instead resolves whatever page anikoto actually HAS for this season/title,
+    // which is sometimes a combined multi-cour page numbered continuously (see the comment
+    // above) - its own "search for Part 2/3/4/5" logic further down already expects and handles
+    // the continuous episode number itself, so keep sending it that unchanged.
+    const episodeToUse = (usedFastPath && localEpisode) ? localEpisode : episode;
 
     const baseHeaders = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -12253,17 +12267,17 @@ async function resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTi
             text: $ep(el).text().trim()
         });
     });
-    logNekoDebug(`[Neko] Found ${episodeCandidates.length} total episodes in current part`);
+    logNekoDebug(`[Neko] Found ${episodeCandidates.length} total episodes in current part`, { episodeToUse, usedFastPath });
     // Try to find the requested episode
-    let epElement = $ep(`a[data-num="${episode}"]`).first();
-    if (!epElement.length) epElement = $ep(`a[data-slug="${episode}"]`).first();
+    let epElement = $ep(`a[data-num="${episodeToUse}"]`).first();
+    if (!epElement.length) epElement = $ep(`a[data-slug="${episodeToUse}"]`).first();
 
     // If episode not found and number is higher than available, search for Part 2
     const maxEpisodeNum = Math.max(...episodeCandidates.map(e => parseInt(e.num, 10) || 0));
-    const requestedEpNum = parseInt(episode, 10) || 0;
+    const requestedEpNum = parseInt(episodeToUse, 10) || 0;
 
     if (!epElement.length && requestedEpNum > maxEpisodeNum && requestedEpNum > 16) {
-        logNekoDebug(`[Neko] Episode ${episode} not in current part (max: ${maxEpisodeNum}), searching for continuation parts...`);
+        logNekoDebug(`[Neko] Episode ${episodeToUse} not in current part (max: ${maxEpisodeNum}), searching for continuation parts...`);
 
         try {
             // Track cumulative episodes as we search through parts
@@ -12361,6 +12375,7 @@ async function resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTi
     const anikotoEpisodeId = epElement.attr('data-id');
     logNekoDebug('[Neko] Selected episode', {
         requestedEpisode: episode,
+        episodeLookedUp: episodeToUse,
         requestedSeason: season,
         selected: {
             num: epElement.attr('data-num'),
@@ -12394,7 +12409,7 @@ const anikotoEpisodeResolveInFlight = new Map(); // key -> Promise
 // turns out to matter in practice.
 const ANIKOTO_RESOLVE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-function resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTitle, malId) {
+function resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTitle, malId, localEpisode) {
     // overrideSeasonTitle folded into the key too - a plain (title, season, episode) lookup and
     // an overridden one for the SAME triple must never share a cache slot, or whichever caller
     // happens to run first (the download-availability check has no override at all) permanently
@@ -12411,7 +12426,7 @@ function resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTi
     if (anikotoEpisodeResolveInFlight.has(key)) {
         return anikotoEpisodeResolveInFlight.get(key);
     }
-    const p = resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTitle, malId)
+    const p = resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTitle, malId, localEpisode)
         .then(result => {
             anikotoEpisodeResolveCache.set(key, { result, resolvedAt: Date.now() });
             return result;
@@ -14819,7 +14834,13 @@ app.get('/api/anime-comments', async (req, res) => {
             jobs.push(
                 runAnimeCommentImportJob(malId, episodeNumber, async () => {
                     if (!rawTitle) return null; // joining an existing job - resolveIds won't run for it anyway
-                    const resolved = await resolveAnikotoEpisodeCached(rawTitle, season, episodeNumber, undefined, malId);
+                    // No localEpisode available here (this job only ever sees the continuous
+                    // episode number) - deliberately NOT passing malId either, since the fast
+                    // path would resolve internalAnimeId to a merged season's specific part
+                    // while episodeToUse fell back to the continuous number, looking up the
+                    // wrong episode on that part's own locally-numbered page. Search fallback's
+                    // own Part 2/3/4/5 logic already handles continuous numbers correctly.
+                    const resolved = await resolveAnikotoEpisodeCached(rawTitle, season, episodeNumber);
                     if (!resolved.anikotoEpisodeId || !resolved.internalAnimeId) return null;
                     return { anikotoAnimeId: resolved.internalAnimeId, anikotoEpisodeId: resolved.anikotoEpisodeId };
                 }).catch(resolveErr => {
@@ -15221,8 +15242,15 @@ app.get('/api/anime-neko-log', async (req, res) => {
     // anikoto's own title-similarity match has a real anchor instead of trying (and failing) to
     // find a literal season-number string that a synthetic season's anikoto page never has.
     const overrideSeasonTitle = req.query.seasonTitle || undefined;
+    // Optional - this episode's number WITHIN its own part/cour (from resolveEpisodeSourceOverride
+    // client-side), only meaningful if the fast-path malId lookup actually resolves to that
+    // part's own distinct anikoto entry. `episode` above stays the continuous number always -
+    // needed as-is if the fast path misses and this falls back to search (anikoto sometimes
+    // bundles multiple MAL-side cours into one combined, continuously-numbered page - see
+    // resolveAnikotoEpisode's own comment on why the two can't be conflated).
+    const localEpisode = req.query.localEp || undefined;
 
-    logNekoDebug('[NekoLog] START', { malId, tmdbId, rawTitle, audio, episode, season, overrideSeasonTitle });
+    logNekoDebug('[NekoLog] START', { malId, tmdbId, rawTitle, audio, episode, localEpisode, season, overrideSeasonTitle });
 
     if (!rawTitle) {
         return res.status(400).json({ ok: false, error: 'Title is required' });
@@ -15278,7 +15306,7 @@ app.get('/api/anime-neko-log', async (req, res) => {
         }
 
         const { internalAnimeId, anikotoEpisodeId, serverToken, mal, epSlug, timestamp, baseHeaders } =
-            await resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTitle, malId);
+            await resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTitle, malId, localEpisode);
 
         // Fire-and-forget: pull Anikoto's comment section for this episode into our own
         // anime_comments table. Never blocks/breaks playback if it fails. (This is a bonus
@@ -20462,7 +20490,12 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
     if (server === 'neko') {
         const { title } = await getTmdbAnimeTitle(tmdbId);
         if (!title) throw new Error('could not resolve a title for Neko');
-        const epInfo = await resolveAnikotoEpisodeCached(title, season, episode, undefined, malId);
+        // Same reasoning as the comment-import job's own call - this public embed route has no
+        // concept of a merged season's per-part local episode number, only the plain episode
+        // it was given, so malId is deliberately left out here too rather than risk the fast
+        // path resolving a merged season's specific part while looking up the wrong (continuous,
+        // not local) episode number on that part's own page.
+        const epInfo = await resolveAnikotoEpisodeCached(title, season, episode);
         try {
             const sources = await resolveNekoStreamSources({
                 internalAnimeId: epInfo.internalAnimeId, episodeNumber: episode,
