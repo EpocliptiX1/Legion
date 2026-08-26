@@ -1081,6 +1081,23 @@ animeCacheDb.serialize(() => {
             UNIQUE(tmdb_id, season, episode, audio_type, provider)
         );
     `);
+    // Locally-crawled mirror of anikotoapi.site's whole /recent-anime catalog (mal_id -> its
+    // own internal anikoto id + watch-page slug) - see crawlAnikotoIdMap/getAnikotoIdByMalId.
+    // Lets resolveAnikotoEpisode skip its own search-grid-scoring + watch-page-HTML-scrape
+    // entirely for any title already in here, since that whole dance exists only to find this
+    // one id. Kept as a pure fast-path lookup, never the only source of truth - a miss here
+    // (title not yet crawled, or this table not populated yet on a fresh deployment) falls
+    // straight through to the existing search-based resolution unchanged.
+    animeCacheDb.run(`
+        CREATE TABLE IF NOT EXISTS anikoto_id_map (
+            mal_id INTEGER PRIMARY KEY,
+            anikoto_id INTEGER NOT NULL,
+            ani_id INTEGER,
+            slug TEXT NOT NULL,
+            title TEXT,
+            updated_at INTEGER NOT NULL
+        );
+    `);
     // TMDB per-episode metadata cache (title/air_date/still/runtime/overview), read by
     // /api/tmdb-proxy's season-request special case above. This table only existed in
     // the live DB by historical accident (created once, outside any code in this file) --
@@ -12171,28 +12188,52 @@ async function ensureAnikotoCommentUserAccounts(commenterInfo) {
 // stream pipeline and the comments endpoint below, so comment scraping doesn't depend
 // on the user ever picking the Neko video server (KAA is the default anime server).
 // Extracted verbatim from what was previously inlined in /api/anime-neko-log.
-async function resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTitle) {
+async function resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTitle, malId) {
     // For Season 0 (Specials), ignore season filtering and search by title only
     // Anikoto usually doesn't have separate season 0 pages; specials are on main series page
     const searchSeason = season === 0 ? null : season;
-    logNekoDebug(`[Neko] 0. Resolving watch URL for: "${rawTitle}"${searchSeason ? ` (Season ${searchSeason})` : ' (Specials - ignoring season filter)'}`);
-    const animeWatchUrl = await resolveExactWatchUrl(rawTitle, searchSeason, overrideSeasonTitle);
-    logNekoDebug('[Neko] Resolved watch URL', animeWatchUrl);
+
+    let internalAnimeId = null;
+    let animeWatchUrl = null;
+
+    // Fast path: this episode's malId already known and in our locally-crawled catalog map -
+    // skip the search-grid-scoring + watch-page-HTML-scrape below entirely. Any miss (no malId
+    // passed by this caller, title not yet crawled, map not populated on a fresh deployment, or
+    // this lookup itself erroring) falls straight through to the exact same resolution that ran
+    // before this existed - never the only path, purely a fast lane in front of it.
+    if (malId) {
+        try {
+            const mapped = await getAnikotoIdByMalId(malId);
+            if (mapped) {
+                internalAnimeId = String(mapped.anikoto_id);
+                animeWatchUrl = `https://anikoto.cz/watch/${mapped.slug}`;
+                logNekoDebug('[Neko] 0. Fast-path anikoto id from local catalog map', { malId, internalAnimeId, animeWatchUrl });
+            }
+        } catch (err) {
+            logNekoDebug('[Neko] Fast-path catalog map lookup failed, falling back to search', { malId, error: err.message });
+        }
+    }
+
+    if (!internalAnimeId) {
+        logNekoDebug(`[Neko] 0. Resolving watch URL for: "${rawTitle}"${searchSeason ? ` (Season ${searchSeason})` : ' (Specials - ignoring season filter)'}`);
+        animeWatchUrl = await resolveExactWatchUrl(rawTitle, searchSeason, overrideSeasonTitle);
+        logNekoDebug('[Neko] Resolved watch URL', animeWatchUrl);
+
+        const pageRes = await axios.get(animeWatchUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' } });
+        const $page = cheerio.load(pageRes.data);
+
+        internalAnimeId = $page('#watch-main').attr('data-id');
+        if (!internalAnimeId) {
+            throw new Error('Could not dynamically extract internal data-id from the resolved watch page.');
+        }
+        logNekoDebug('[Neko] Watch page internal id', { animeWatchUrl, internalAnimeId });
+    }
 
     const baseHeaders = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'X-Requested-With': 'XMLHttpRequest',
         'Referer': animeWatchUrl
     };
-
-    const pageRes = await axios.get(animeWatchUrl, { headers: { 'User-Agent': baseHeaders['User-Agent'] } });
-    const $page = cheerio.load(pageRes.data);
-
-    const internalAnimeId = $page('#watch-main').attr('data-id');
-    if (!internalAnimeId) {
-        throw new Error('Could not dynamically extract internal data-id from the resolved watch page.');
-    }
-    logNekoDebug('[Neko] Watch page internal id', { animeWatchUrl, internalAnimeId });
 
     // 1. Fetch episode list using resolved internal ID
     logNekoDebug(`[Neko] 1. Fetching episode list for ID: ${internalAnimeId}`);
@@ -12353,11 +12394,14 @@ const anikotoEpisodeResolveInFlight = new Map(); // key -> Promise
 // turns out to matter in practice.
 const ANIKOTO_RESOLVE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-function resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTitle) {
+function resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTitle, malId) {
     // overrideSeasonTitle folded into the key too - a plain (title, season, episode) lookup and
     // an overridden one for the SAME triple must never share a cache slot, or whichever caller
     // happens to run first (the download-availability check has no override at all) permanently
-    // poisons the result for every other caller of that exact key.
+    // poisons the result for every other caller of that exact key. malId is deliberately NOT
+    // part of the key - it only changes HOW internalAnimeId gets found (fast local-map lookup
+    // vs. search), never what the correct result should be, so a caller with malId and one
+    // without still share the same cache slot for the same (title, season, episode).
     const key = `${String(rawTitle).toLowerCase().trim()}::${season}::${episode}::${overrideSeasonTitle || ''}`;
     const cached = anikotoEpisodeResolveCache.get(key);
     if (cached && (Date.now() - cached.resolvedAt) < ANIKOTO_RESOLVE_CACHE_TTL_MS) {
@@ -12367,7 +12411,7 @@ function resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTi
     if (anikotoEpisodeResolveInFlight.has(key)) {
         return anikotoEpisodeResolveInFlight.get(key);
     }
-    const p = resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTitle)
+    const p = resolveAnikotoEpisode(rawTitle, season, episode, overrideSeasonTitle, malId)
         .then(result => {
             anikotoEpisodeResolveCache.set(key, { result, resolvedAt: Date.now() });
             return result;
@@ -14775,7 +14819,7 @@ app.get('/api/anime-comments', async (req, res) => {
             jobs.push(
                 runAnimeCommentImportJob(malId, episodeNumber, async () => {
                     if (!rawTitle) return null; // joining an existing job - resolveIds won't run for it anyway
-                    const resolved = await resolveAnikotoEpisodeCached(rawTitle, season, episodeNumber);
+                    const resolved = await resolveAnikotoEpisodeCached(rawTitle, season, episodeNumber, undefined, malId);
                     if (!resolved.anikotoEpisodeId || !resolved.internalAnimeId) return null;
                     return { anikotoAnimeId: resolved.internalAnimeId, anikotoEpisodeId: resolved.anikotoEpisodeId };
                 }).catch(resolveErr => {
@@ -14937,6 +14981,93 @@ async function fetchAnikotoApiEpisodes(internalAnimeId) {
     if (!Array.isArray(episodes) || !episodes.length) throw new Error('anikotoapi.site returned no episodes for this series');
     anikotoApiSeriesCache.set(internalAnimeId, { episodes, resolvedAt: Date.now() });
     return episodes;
+}
+
+// --- anikoto_id_map: local mirror of anikotoapi.site's whole catalog (mal_id -> anikoto's own
+// internal id + slug) --------------------------------------------------------------------------
+// Every /recent-anime row already carries mal_id, ani_id, and the anikoto internal id/slug
+// together - crawling it once (paginated, ~90 requests at per_page=100 for the full ~8900-title
+// catalog) turns "find anikoto's id for this malId" from a live search+score+watch-page-scrape
+// into a single indexed SELECT. resolveAnikotoEpisode below tries this table FIRST and only
+// falls through to the existing search-based resolution on a miss (title not yet crawled, this
+// table empty on a fresh deployment, or anikotoapi.site itself unreachable) - never the only
+// path, purely a fast lane in front of the logic that already worked.
+const ANIKOTOAPI_CRAWL_PAGE_SIZE = 100;
+// Their own documented limit is 60 req/120s; spacing requests this far apart keeps a full
+// ~90-page crawl comfortably under that the whole way through instead of bursting into a 429
+// partway in (confirmed live: undocumented per_page=100 works despite the docs claiming a cap
+// of 30, cutting the crawl from ~298 pages to ~90 - still respects the same request-rate limit
+// either way, this only reduces how MANY requests that limit has to be spread across).
+const ANIKOTOAPI_CRAWL_DELAY_MS = 2100;
+const ANIKOTO_ID_MAP_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // matches FinishedShowAudit's own cadence
+let anikotoIdMapCrawlInFlight = null;
+
+async function crawlAnikotoIdMap() {
+    if (anikotoIdMapCrawlInFlight) return anikotoIdMapCrawlInFlight;
+    anikotoIdMapCrawlInFlight = (async () => {
+        const startedAt = Date.now();
+        let page = 1;
+        let upserted = 0;
+        let skippedNoMalId = 0;
+        for (;;) {
+            let res;
+            try {
+                res = await axios.get(`${ANIKOTOAPI_ORIGIN}/recent-anime`, {
+                    params: { page, per_page: ANIKOTOAPI_CRAWL_PAGE_SIZE },
+                    headers: { 'User-Agent': KINO_UA },
+                    timeout: 15000
+                });
+            } catch (err) {
+                logAnikotoDebug(`[AnikotoIdMap] crawl request failed on page ${page}, stopping this run`, { error: err.message || String(err) });
+                break;
+            }
+            const rows = Array.isArray(res.data?.data) ? res.data.data : [];
+            if (!rows.length) break;
+
+            const now = Date.now();
+            for (const row of rows) {
+                const malId = Number(row.mal_id);
+                const anikotoId = Number(row.id);
+                if (!Number.isFinite(malId) || malId <= 0 || !Number.isFinite(anikotoId) || !row.slug) {
+                    skippedNoMalId++;
+                    continue;
+                }
+                await new Promise((resolve, reject) => {
+                    animeCacheDb.run(
+                        `INSERT INTO anikoto_id_map (mal_id, anikoto_id, ani_id, slug, title, updated_at)
+                         VALUES (?, ?, ?, ?, ?, ?)
+                         ON CONFLICT(mal_id) DO UPDATE SET
+                            anikoto_id = excluded.anikoto_id,
+                            ani_id = excluded.ani_id,
+                            slug = excluded.slug,
+                            title = excluded.title,
+                            updated_at = excluded.updated_at`,
+                        [malId, anikotoId, Number(row.ani_id) || null, row.slug, row.title || null, now],
+                        (err) => err ? reject(err) : resolve()
+                    );
+                });
+                upserted++;
+            }
+
+            const totalPages = res.data?.pagination?.total_pages;
+            if (Number.isFinite(totalPages) && page >= totalPages) break;
+            page++;
+            await new Promise(r => setTimeout(r, ANIKOTOAPI_CRAWL_DELAY_MS));
+        }
+        logAnikotoDebug(`[AnikotoIdMap] Crawl finished: ${upserted} upserted, ${skippedNoMalId} skipped (no malId/slug), ${page} page(s), ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+        return { upserted, skippedNoMalId, pages: page };
+    })().finally(() => { anikotoIdMapCrawlInFlight = null; });
+    return anikotoIdMapCrawlInFlight;
+}
+
+function getAnikotoIdByMalId(malId) {
+    return new Promise((resolve, reject) => {
+        animeCacheDb.get(
+            `SELECT anikoto_id, slug FROM anikoto_id_map WHERE mal_id = ?`,
+            [Number(malId)],
+            (err, row) => err ? reject(err) : resolve(row || null)
+        );
+    });
 }
 
 async function fetchMegaplaySourcesViaAnikotoApi(internalAnimeId, episodeNumber, audio) {
@@ -15147,7 +15278,7 @@ app.get('/api/anime-neko-log', async (req, res) => {
         }
 
         const { internalAnimeId, anikotoEpisodeId, serverToken, mal, epSlug, timestamp, baseHeaders } =
-            await resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTitle);
+            await resolveAnikotoEpisodeCached(rawTitle, season, episode, overrideSeasonTitle, malId);
 
         // Fire-and-forget: pull Anikoto's comment section for this episode into our own
         // anime_comments table. Never blocks/breaks playback if it fails. (This is a bonus
@@ -20331,7 +20462,7 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
     if (server === 'neko') {
         const { title } = await getTmdbAnimeTitle(tmdbId);
         if (!title) throw new Error('could not resolve a title for Neko');
-        const epInfo = await resolveAnikotoEpisodeCached(title, season, episode);
+        const epInfo = await resolveAnikotoEpisodeCached(title, season, episode, undefined, malId);
         try {
             const sources = await resolveNekoStreamSources({
                 internalAnimeId: epInfo.internalAnimeId, episodeNumber: episode,
@@ -20596,4 +20727,20 @@ const server = app.listen(PORT, 'localhost', () => {
     console.log(`   Anime TMDB mapping audit: every ${ANIME_TMDB_MAPPING_AUDIT_INTERVAL_MS / 60000}min, ${ANIME_TMDB_MAPPING_AUDIT_BATCH_SIZE}/batch`);
     setInterval(() => runAnimeTmdbMappingAudit().catch(err => logHealthStatus(`[TmdbMappingAudit] FAILED: ${err.message}`)), ANIME_TMDB_MAPPING_AUDIT_INTERVAL_MS);
     runAnimeTmdbMappingAudit().catch(err => logHealthStatus(`[TmdbMappingAudit] FAILED: ${err.message}`));
+
+    // anikoto_id_map: recurring refresh every 24h, same cadence as FinishedShowAudit. On boot,
+    // only crawls if the table looks empty or stale (>24h old) rather than unconditionally -
+    // this runs often during dev restarts, and a ~90-request/3min crawl on every single restart
+    // would be wasteful when the last crawl from minutes ago is still perfectly fresh.
+    console.log(`   Anikoto id-map refresh: every ${ANIKOTO_ID_MAP_REFRESH_INTERVAL_MS / 3600000}h`);
+    setInterval(() => crawlAnikotoIdMap().catch(err => logHealthStatus(`[AnikotoIdMap] Refresh FAILED: ${err.message}`)), ANIKOTO_ID_MAP_REFRESH_INTERVAL_MS);
+    setTimeout(() => {
+        animeCacheDb.get(`SELECT COUNT(*) AS n, MAX(updated_at) AS lastUpdated FROM anikoto_id_map`, [], (err, row) => {
+            const isStale = err || !row || !row.n || (Date.now() - (row.lastUpdated || 0)) > ANIKOTO_ID_MAP_REFRESH_INTERVAL_MS;
+            if (isStale) {
+                logHealthStatus(`[AnikotoIdMap] Table empty/stale (${row?.n || 0} rows) - starting initial crawl`);
+                crawlAnikotoIdMap().catch(crawlErr => logHealthStatus(`[AnikotoIdMap] Initial crawl FAILED: ${crawlErr.message}`));
+            }
+        });
+    }, 20000);
 });
