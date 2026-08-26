@@ -2057,7 +2057,21 @@ document.addEventListener('DOMContentLoaded', function() {
                 return false;
             }
 
-            video.play().catch(() => {});
+            // Chrome only guarantees autoplay when either a user gesture is still "fresh"
+            // (transient activation, ~5s) or the video is muted. The click on the server button
+            // IS a real gesture, but everything between it and here (fetchWatchHistory, the
+            // provider's own resolve call - a real network round trip for e.g. T1M, which has no
+            // warm cache the first time) can burn through that window before this ever runs. When
+            // it does, the unmuted play() above is silently rejected (NotAllowedError) and used to
+            // just sit there fully buffered but paused forever - confirmed live on T1M/Venom
+            // (readyState 4, buffered end-to-end, currentTime stuck at 0) right after a T1M/
+            // Deadpool run that happened to still be within the gesture window worked fine. Retry
+            // muted, which Chrome always allows regardless of gesture freshness - better a silent
+            // start with the existing unmute control than a video that looks broken.
+            video.play().catch(() => {
+                video.muted = true;
+                video.play().catch(() => {});
+            });
             startEpisodePanelHeightSyncBurst();
             return true;
         }
