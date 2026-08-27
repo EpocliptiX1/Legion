@@ -1805,8 +1805,15 @@ const RESOLVE_NONCE_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
 const RESOLVE_BUDGET_WINDOW_MS = 15 * 60 * 1000;
 const MAX_RESOLVES_PER_SESSION = 90;
 const MAX_RESOLVES_PER_NETWORK = 240;
-const MAX_NONCES_PER_SESSION = 12;
-const MAX_NONCES_PER_NETWORK = 36;
+// The nonce is minted once per page load (moviePlayer.js caches it for the page's lifetime,
+// reused across every gated call on that page) - so MAX_NONCES_PER_SESSION is really "how many
+// movieInfo.html loads can one real viewer do in RESOLVE_BUDGET_WINDOW_MS". 12 was tuned purely
+// against a scripted resolver farm and turned out to also catch a real person just browsing
+// (channel-surfing a handful of titles, opening a few tabs) - confirmed live 2026-08-27. Raised
+// to 17; network cap raised proportionally (same ~3x session:network ratio) to keep the original
+// "many sessions behind one IP" allowance intact rather than accidentally tightening it.
+const MAX_NONCES_PER_SESSION = 17;
+const MAX_NONCES_PER_NETWORK = 51;
 const LEASE_ABUSE_COOLDOWN_MS = 15 * 60 * 1000;
 const resolveSessionBudgets = new Map();
 const resolveNetworkBudgets = new Map();
