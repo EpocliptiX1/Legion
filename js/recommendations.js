@@ -364,10 +364,13 @@ function goToMovieInfo(movieId, title, genre, releaseDate, rating) {
 
 // Utility functions
 function escapeHtml(text) {
+    // Was a textContent->innerHTML round-trip - escapes &<> but not quotes. This file already
+    // has escapeForAttribute() for attribute contexts and uses it correctly at every call site
+    // checked, but upgrading this one too removes the "must remember which helper applies where"
+    // fragility - matches every other escapeHtml() in this codebase, safe in both text-node and
+    // attribute contexts regardless of which one a future edit reaches for.
     if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
 
 function escapeForAttribute(text) {

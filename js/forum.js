@@ -87,7 +87,7 @@ function renderMoviesList() {
 
     container.innerHTML = forumMovies.map(movie => `
            <div class="movie-item ${currentMovieId === movie.movieId ? 'active' : ''}" 
-               onclick="selectMovie('${movie.movieId}', '${escapeHtml(movie.movieTitle)}', event)">
+               onclick="selectMovie('${movie.movieId}', '${escapeForInlineHandler(movie.movieTitle)}', event)">
             <img class="movie-item-poster" src="${movie.poster || '/img/LOGO_Short.png'}" alt="${escapeHtml(movie.movieTitle)}">
             <div class="movie-item-info">
                 <h4>${escapeHtml(movie.movieTitle)}</h4>
@@ -254,7 +254,7 @@ async function searchMoviesForForum() {
             }
 
             container.innerHTML = movies.slice(0, 8).map(movie => `
-                <div class="search-item-forum" onclick="selectMovieForForum(${movie.ID}, '${escapeHtml(movie['Movie Name'])}', '${movie.poster_full_url || ''}', '${escapeHtml(movie.Genre || '')}')">
+                <div class="search-item-forum" onclick="selectMovieForForum(${movie.ID}, '${escapeForInlineHandler(movie['Movie Name'])}', '${movie.poster_full_url || ''}', '${escapeForInlineHandler(movie.Genre || '')}')">
                     <img src="${movie.poster_full_url || '/img/LOGO_Short.png'}" 
                          alt="${escapeHtml(movie['Movie Name'])}"
                         onerror="this.src='/img/LOGO_Short.png'"
@@ -880,10 +880,29 @@ function setPendingForumNav(payload) {
 
 // Utility functions
 function escapeHtml(text) {
+    // Was a textContent->innerHTML round-trip, which only escapes &<> (the characters HTML
+    // parsing treats as special in a text node) - NOT quotes, since quotes have no special
+    // meaning there. This function's output is used in attribute contexts throughout this file
+    // too (onclick="...'${escapeHtml(x)}'...", alt="${escapeHtml(x)}") where an unescaped quote
+    // breaks out of the attribute entirely - a real, exploitable gap (e.g. a movie/thread title
+    // containing a single quote could inject arbitrary onclick JS). Matches the escaping every
+    // other escapeHtml() in this codebase already uses (movieLoading.js, moviePlayer.js, etc.),
+    // safe in both text-node and attribute-value contexts.
     if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
+// Inline event-handler attributes (onclick="selectMovie('${x}')") get HTML-decoded by the
+// browser BEFORE the resulting string is parsed as JS - so plain escapeHtml() alone isn't enough
+// here: a movie title like `X'); alert(1); //` survives HTML-entity-escaping (its quote becomes
+// &#x27;) but the decode step turns &#x27; right back into ' before JS ever sees it, closing the
+// string early and letting the rest run as real code. Escaping backslash/quote for the JS string
+// layer FIRST, then HTML-entity-escaping the result for the attribute layer, survives both decode
+// steps in the right order.
+function escapeForInlineHandler(text) {
+    if (!text) return '';
+    const jsEscaped = String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return escapeHtml(jsEscaped);
 }
 
 function truncate(text, length) {

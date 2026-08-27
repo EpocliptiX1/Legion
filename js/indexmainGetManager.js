@@ -59,12 +59,28 @@
             .replace(/'/g, '&#39;');
     }
 
+    // JS-string-escapes only - safe to embed inside a single-quoted onclick="fn('...')" call's
+    // *inner* JS string, but NOT safe as the whole thing dropped straight into the onclick=""
+    // attribute itself: a raw " in text (this function never touches double quotes) breaks out
+    // of the double-quoted attribute before any JS parsing even happens, letting an attacker add
+    // a whole new attribute (e.g. onmouseover=) to the element. Callers building an onclick value
+    // must wrap this function's output in safeHtmlText() too - see escapeForInlineHandler below
+    // for the combined, safe-by-default version.
     function escapeJsString(text) {
         return String(text || '')
             .replace(/\\/g, '\\\\')
             .replace(/'/g, "\\'")
             .replace(/\n/g, '\\n')
             .replace(/\r/g, '\\r');
+    }
+
+    // The one actually safe to drop straight into an onclick="...'${x}'..." attribute: JS-string-
+    // escapes first (protects the inline JS parse), then HTML-attribute-escapes the result
+    // (protects the attribute parse) - covers both the "raw quote breaks the attribute" case and
+    // the subtler "HTML entity survives escaping but gets decoded back to a live quote before JS
+    // parses it" case a single escapeJsString() or safeHtmlText() call alone would miss.
+    function escapeForInlineHandler(text) {
+        return safeHtmlText(escapeJsString(text));
     }
 
     async function resolveAniListItemTmdbId(item) {
@@ -99,7 +115,7 @@
         const num = String(index + 1).padStart(2, '0');
         const rankClass = index < 3 ? `rank-top-${index + 1}` : '';
         const safeTitle = safeHtmlText(title);
-        const safeTitleJs = escapeJsString(title);
+        const safeTitleJs = escapeForInlineHandler(title);
         const meta = `${year}${rating !== '--' ? ` · ★ ${rating}` : ''}`;
         // Some shows have no English title on AniList at all, and animego's own search
         // often only carries a Russian title + Japanese romaji (no English), so a plain

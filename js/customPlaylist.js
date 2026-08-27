@@ -519,10 +519,12 @@ async function renderMoviePicker(append = false) {
 }
 
 function escapeHtml(text) {
+    // Was a textContent->innerHTML round-trip - escapes &<> but not quotes, unsafe wherever this
+    // output lands inside an HTML attribute (onclick="...'${escapeHtml(x)}'...", alt="...").
+    // Matches every other escapeHtml() in this codebase, safe in both text-node and attribute
+    // contexts.
     if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
 
 async function searchMoviesForPlaylist() {

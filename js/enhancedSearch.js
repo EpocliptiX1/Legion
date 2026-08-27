@@ -2,6 +2,23 @@
    ENHANCED SEARCH WITH AUTOCOMPLETE
    ========================================= */
 
+// item.title below is movie/show title data (our own DB / TMDB), not literally user-typed text,
+// but was being dropped into innerHTML completely unescaped (both a raw alt="" attribute and,
+// worse, highlightQuery()'s <mark>-wrapped output) - a title containing a quote breaks the
+// attribute, and any HTML in title renders live. Same escaping every other escapeHtml() in this
+// codebase uses, safe in both text-node and attribute contexts.
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
+// The query itself is used to build a RegExp below - unescaped, a query like "(" or "a{99999}"
+// either throws (breaking the whole search) or drives redundant catastrophic-backtracking work.
+// Escaping regex metacharacters keeps it a literal, harmless match instead.
+function escapeRegExp(text) {
+    return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 const EnhancedSearch = {
     searchTimeout: null,
     currentQuery: '',
@@ -145,7 +162,7 @@ const EnhancedSearch = {
         
         resultsMenu.innerHTML = movies.map(item => `
             <div class="search-item" data-type="${item.type}" onclick="EnhancedSearch.selectMovie('${item.id}', '${item.type}')">
-                <img src="${item.poster || '/img/LOGO_Short.png'}" alt="${item.title}" onerror="this.src='/img/LOGO_Short.png'">
+                <img src="${item.poster || '/img/LOGO_Short.png'}" alt="${escapeHtml(item.title)}" onerror="this.src='/img/LOGO_Short.png'">
                 <div class="search-info">
                     <h5>${this.highlightQuery(item.title, query)}</h5>
                     <p>${item.year || 'N/A'} • ${item.type === 'tv' ? 'Series' : 'Movie'}</p>
@@ -154,11 +171,16 @@ const EnhancedSearch = {
         `).join('');
     },
     
-    // Highlight query in results
+    // Highlight query in results. Escapes text/query FIRST, then matches/wraps on the escaped
+    // string - the only raw HTML in the output is the <mark> tag this function itself writes,
+    // never anything from title or query (was matching+wrapping the raw, unescaped text before,
+    // rendering any HTML a title happened to contain straight into the page).
     highlightQuery(text, query) {
-        if (!text || !query) return text;
-        const regex = new RegExp(`(${query})`, 'gi');
-        return text.replace(regex, '<mark style="background: var(--accent-primary); color: white; padding: 2px 4px; border-radius: 2px;">$1</mark>');
+        if (!text) return '';
+        const safeText = escapeHtml(text);
+        if (!query) return safeText;
+        const regex = new RegExp(`(${escapeRegExp(escapeHtml(query))})`, 'gi');
+        return safeText.replace(regex, '<mark style="background: var(--accent-primary); color: white; padding: 2px 4px; border-radius: 2px;">$1</mark>');
     },
     
     // Get search suggestions

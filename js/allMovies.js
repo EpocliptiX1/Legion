@@ -1,3 +1,29 @@
+// Was `title.replace(/'/g, "\\'").replace(/"/g, '&quot;')` (or, in one spot, not even that) -
+// backslash-escaping a quote does nothing for HTML parsing (only JS string parsing cares about
+// backslashes), so a title containing < > or & rendered as live HTML in the text-node contexts
+// below (card-title-name, h4), and " alone still broke out of the alt="" attribute in the one
+// variant that didn't even escape that. Matches the escaping every other escapeHtml() in this
+// codebase uses, safe in text-node and attribute contexts - NOT safe on its own inside an inline
+// onclick="...'${x}'..." handler though, see escapeForInlineHandler below for why.
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
+// Inline event-handler attributes (onclick="toggleMyList('${x}')") get HTML-decoded by the
+// browser BEFORE the resulting string is parsed as JS - so plain escapeHtml() alone is NOT
+// enough here: a title like `X'); alert(1); //` survives HTML-entity-escaping (its quote becomes
+// &#x27;) but the decode step turns &#x27; right back into ' before JS ever sees it, closing the
+// string early and letting the rest execute as real code. Escaping backslash/quote for the JS
+// string layer FIRST, then HTML-entity-escaping the result for the attribute layer, survives both
+// decode steps in the right order - the JS parser sees \' (an escaped quote, not a terminator)
+// even after the outer &#x27; has already been decoded back to a literal quote.
+function escapeForInlineHandler(text) {
+    if (!text) return '';
+    const jsEscaped = String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return escapeHtml(jsEscaped);
+}
+
 let currentPage = 1;
 const limit = 50;
 let isLoading = false;
@@ -331,7 +357,8 @@ async function loadMovies() {
         items.forEach(item => {
             const id = item.id;
             const title = item.title || item.name || "Unknown Title";
-            const safeName = title.replace(/'/g, "\\'");
+            const safeName = escapeHtml(title);
+            const safeNameForHandler = escapeForInlineHandler(title);
             const posterPath = item.poster_path || item.poster;
             const posterUrl = posterPath ? (posterPath.startsWith('http') ? posterPath : `https://image.tmdb.org/t/p/w500${posterPath}`) : '/img/default_poster.png';
             
@@ -364,7 +391,7 @@ async function loadMovies() {
                 <div class="card-hover-info">
                     <div class="hover-btns">
                         <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${id}&type=${type}'">▶</button>
-                        <button class="hover-add" onclick="toggleMyList('${id}', '${safeName}')">
+                        <button class="hover-add" onclick="toggleMyList('${id}', '${safeNameForHandler}')">
                             ${plusIconSVG}
                         </button>
                     </div>
@@ -505,7 +532,8 @@ async function loadAnimeLibraryFromAniList(grid, filters, isFreshLoad) {
         results.forEach((media) => {
             const tmdbId = media.tmdbId;
             const title = media.title?.english || media.title?.romaji || 'Unknown';
-            const safeName = title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const safeName = escapeHtml(title);
+            const safeNameForHandler = escapeForInlineHandler(title);
             const posterUrl = media.coverImage?.extraLarge || media.coverImage?.large || '/img/default_poster.png';
             const year = media.startDate?.year || media.seasonYear || '';
             const inferredType = media.format === 'MOVIE' ? 'movie' : 'anime';
@@ -525,7 +553,7 @@ async function loadAnimeLibraryFromAniList(grid, filters, isFreshLoad) {
                 <div class="card-hover-info">
                     <div class="hover-btns">
                         <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'">▶</button>
-                        <button class="hover-add" onclick="toggleMyList('${tmdbId}', '${safeName}', '${inferredType}')">
+                        <button class="hover-add" onclick="toggleMyList('${tmdbId}', '${safeNameForHandler}', '${inferredType}')">
                             ${plusIconSVG}
                         </button>
                     </div>
@@ -603,7 +631,8 @@ async function loadAnimeLibraryDefault(grid) {
         results.forEach((media) => {
             const tmdbId = media.tmdbId;
             const title = media.title?.english || media.title?.romaji || 'Unknown';
-            const safeName = title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const safeName = escapeHtml(title);
+            const safeNameForHandler = escapeForInlineHandler(title);
             const posterUrl = media.coverImage?.extraLarge || media.coverImage?.large || '/img/default_poster.png';
             const year = media.startDate?.year || media.seasonYear || '';
             const inferredType = media.format === 'MOVIE' ? 'movie' : 'anime';
@@ -624,7 +653,7 @@ async function loadAnimeLibraryDefault(grid) {
                 <div class="card-hover-info">
                     <div class="hover-btns">
                         <button class="hover-play" onclick="window.location.href='movieInfo.html?id=${tmdbId}&type=${inferredType}'">▶</button>
-                        <button class="hover-add" onclick="toggleMyList('${tmdbId}', '${safeName}', '${inferredType}')">
+                        <button class="hover-add" onclick="toggleMyList('${tmdbId}', '${safeNameForHandler}', '${inferredType}')">
                             ${plusIconSVG}
                         </button>
                     </div>

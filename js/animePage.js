@@ -586,7 +586,7 @@
         const navTarget = tmdbId
             ? `/html/movieInfo.html?id=${tmdbId}&type=tv`
             : '#';
-        const fallbackTitle = escapeHtml(item.title?.romaji || item.title?.english || item.title?.native || '');
+        const fallbackTitle = escapeForInlineHandler(item.title?.romaji || item.title?.english || item.title?.native || '');
         // A handful of shows (usually obscure ones) are only listed on anikoto under
         // their Japanese romaji/native title with no English alias at all - if the
         // English title (used above) doesn't match anything, these get tried next.
@@ -615,10 +615,10 @@
                  data-type="tv"
                  onmouseenter="handleCardHover(this)"
                  onmouseleave="handleCardLeave(this)"
-                 onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle.replace(/'/g, "\\'")}');`}">
+                 onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle}');`}">
                 ${rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${rating}</span>` : ''}
                 ${tmdbId && window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title, altTitles: badgeAltTitles, tmdbId }) : ''}
-                <img src="${poster}" loading="lazy" alt="${title}" onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle.replace(/'/g, "\\'")}');`}" onerror="this.src='/img/LOGO_Short.png'">
+                <img src="${poster}" loading="lazy" alt="${title}" onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle}');`}" onerror="this.src='/img/LOGO_Short.png'">
                 <div class="card-title-label">
                     <div class="card-title-name">${title}</div>
                     <div class="card-title-tag">Anime</div>
@@ -638,8 +638,8 @@
                         </div>
                         <p class="hover-meta-desc">${plot}</p>
                         <div class="hover-meta-actions">
-                            <button class="hover-play" onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle.replace(/'/g, "\\'")}');`}">▶</button>
-                            <a class="hover-info" href="${navTarget}" ${tmdbId ? '' : `onclick="navigateToAnimeByTitle('${fallbackTitle.replace(/'/g, "\\'")}'); return false;"`}>More Info</a>
+                            <button class="hover-play" onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle}');`}">▶</button>
+                            <a class="hover-info" href="${navTarget}" ${tmdbId ? '' : `onclick="navigateToAnimeByTitle('${fallbackTitle}'); return false;"`}>More Info</a>
                         </div>
                     </div>
                 </div>
@@ -666,6 +666,22 @@
             '"': '&quot;',
             "'": '&#39;'
         }[char]));
+    }
+
+    // Inline event-handler attributes (onclick="navigateToAnimeByTitle('${x}')") get HTML-decoded
+    // by the browser BEFORE the resulting string is parsed as JS - so escapeHtml() alone isn't
+    // enough for a value embedded there: a title like `X'); alert(1); //` survives HTML-entity
+    // escaping (its quote becomes &#39;) but the decode step turns &#39; right back into ' before
+    // JS ever sees it, closing the string early and letting the rest run as real code. (This file
+    // used to additionally .replace(/'/g, "\\'") an already-escapeHtml'd fallbackTitle at each
+    // onclick call site, but by then the raw quote was already gone as an entity - the extra
+    // replace never matched anything and gave no real protection.) Escaping backslash/quote for
+    // the JS string layer FIRST, then HTML-entity-escaping the result for the attribute layer,
+    // survives both decode steps in the right order.
+    function escapeForInlineHandler(text) {
+        if (!text) return '';
+        const jsEscaped = String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        return escapeHtml(jsEscaped);
     }
 
     // ── Anime card HTML (matches grid-card structure) ─────────────
