@@ -1377,6 +1377,16 @@ document.addEventListener('DOMContentLoaded', function() {
                                     <option value="">Skip</option>
                                 </select>
                             </div>
+                            <div id="dlSpeedWrap" class="anime-download-panel__burn" style="display:none;">
+                                <div class="anime-download-panel__label">Burn Speed</div>
+                                <select id="dlBurnSpeed" class="download-subs-picker">
+                                    <option value="1">1x</option>
+                                    <option value="2" selected>2x</option>
+                                    <option value="3">3x</option>
+                                    <option value="4">4x</option>
+                                </select>
+                                <span class="anime-download-panel__hint" style="margin:4px 0 0;font-size:0.75rem;">Faster burn, funkier audio/video sync.</span>
+                            </div>
                             <div class="anime-download-panel__go">
                                 <button id="btnDownloadGo" class="audio-btn active anime-download-panel__go-btn">Download</button>
                                 <span id="dlStatusText" class="anime-download-panel__status"></span>
@@ -3781,6 +3791,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
         document.getElementById('dlBurnCheckbox')?.addEventListener('change', (e) => {
             const picker = document.getElementById('dlSubsPicker');
+            const speedWrap = document.getElementById('dlSpeedWrap');
+            if (speedWrap) speedWrap.style.display = e.target.checked ? '' : 'none';
             if (!picker) return;
             picker.disabled = !e.target.checked;
             if (e.target.checked) dlAutoPickSubsLanguage();
@@ -4030,8 +4042,13 @@ document.addEventListener('DOMContentLoaded', function() {
             // selection already matches what was chosen here.
             const dlBurnCheckbox = document.getElementById('dlBurnCheckbox');
             const dlSubsPicker = document.getElementById('dlSubsPicker');
+            const dlBurnSpeed = document.getElementById('dlBurnSpeed');
             const burnEnabled = dlBurnCheckbox?.checked === true && dlSubsPicker?.value !== '';
             if (burnEnabled) window.currentSubtitleTrackIndex = Number(dlSubsPicker.value || 0);
+            // Read regardless of burnEnabled - downloadKAAEpisode/downloadKinoEpisode only ever
+            // consult this when they've independently decided hasSubtitle is true, so there's no
+            // path where a stale value here does anything.
+            window.currentBurnSpeed = Number(dlBurnSpeed?.value) || 2;
             fn(parseInt(dlQuality, 10) || undefined);
             const modalCheckbox = document.getElementById('downloadIncludeSubs');
             const modalPicker = document.getElementById('downloadSubsPicker');

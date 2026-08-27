@@ -611,14 +611,22 @@ async function recordVideoWithCanvasSubtitles(sourceBlob, subtitleText, videoMet
     const correctedName = 'burn_corrected.mp4';
     try {
         await ffmpeg.writeFile(capturedName, new Uint8Array(await capturedBlob.arrayBuffer()));
-        // atempo only accepts 0.5-2.0 directly - fine for any speedMultiplier in that same range
-        // (2x asked for here); a multiplier outside it would need atempo filters chained, not
-        // needed for the 2x this is actually called with.
-        const atempoRate = (1 / speedMultiplier).toFixed(4);
+        // atempo only accepts a 0.5-2.0 ratio per instance - fine for the 2x default (a single
+        // atempo=0.5), but the panel now offers 3x/4x too, whose correction ratios (1/3, 1/4) are
+        // below that floor. Chain multiple atempo filters whose product hits the real target
+        // instead - e.g. 4x -> atempo=0.5,atempo=0.5 (0.5*0.5=0.25), 3x -> atempo=0.5,atempo=0.6667.
+        const atempoChain = [];
+        let remainingRate = 1 / speedMultiplier;
+        while (remainingRate < 0.5) {
+            atempoChain.push(0.5);
+            remainingRate /= 0.5;
+        }
+        atempoChain.push(remainingRate);
+        const atempoFilter = atempoChain.map(r => `atempo=${r.toFixed(4)}`).join(',');
         const ptsRate = speedMultiplier.toFixed(4);
         await ffmpeg.exec([
             '-i', capturedName,
-            '-filter_complex', `[0:v]setpts=${ptsRate}*PTS[v];[0:a]atempo=${atempoRate}[a]`,
+            '-filter_complex', `[0:v]setpts=${ptsRate}*PTS[v];[0:a]${atempoFilter}[a]`,
             '-map', '[v]', '-map', '[a]',
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
             '-c:a', 'aac', '-b:a', '160k',
@@ -1044,7 +1052,7 @@ async function downloadKAAEpisode(requestedHeight) {
                     setTaskSubtitleProgress(`Subtitle Burn: ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`, percent);
                     document.getElementById("downloadSizeText").textContent =
                         state?.cueText ? `Cue ${cueLabel}: ${state.cueText.slice(0, 64)}` : `Cue ${cueLabel}`;
-                }, ffmpeg);
+                }, ffmpeg, Number(window.currentBurnSpeed) || 2);
                 blob = canvasBlob;
                 downloadExt = canvasBlob.type.includes('mp4') ? "mp4" : "webm";
             } catch (canvasErr) {
@@ -1357,7 +1365,7 @@ async function downloadKinoEpisode(requestedHeight) {
                     const percent = state?.percent || 0;
                     setTaskStatus(`Rendering subtitles in browser canvas... ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`);
                     setTaskSubtitleProgress(`Subtitle Burn: ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`, percent);
-                }, ffmpeg);
+                }, ffmpeg, Number(window.currentBurnSpeed) || 2);
                 blob = canvasBlob;
                 downloadExt = canvasBlob.type.includes('mp4') ? 'mp4' : 'webm';
             } catch (canvasErr) {
