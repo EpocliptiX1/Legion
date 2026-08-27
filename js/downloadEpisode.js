@@ -442,12 +442,25 @@ function getActiveSubtitleCue(cues, currentTime) {
     return cues.find(cue => currentTime >= cue.start && currentTime <= cue.end) || null;
 }
 
-async function recordVideoWithCanvasSubtitles(sourceBlob, subtitleText, videoMeta = {}, onProgress = null) {
+// speedMultiplier: this whole function works by literally playing the source video and
+// recording the canvas it's drawn onto - captureStream()/MediaRecorder are inherently wall-
+// clock-bound (that's how they stay in sync at all), so a straight 1x pass here takes exactly
+// as long as the video's own runtime, confirmed live (a 23:37 episode = 23:37 to burn). Playing
+// the source at speedMultiplier>1 makes the capture pass itself finish in duration/speedMultiplier
+// real time instead - browsers pitch-correct playbackRate by default (preservesPitch), so the
+// captured audio comes out time-compressed in sync with the video, not chipmunked, but the
+// RESULTING file plays back at speedMultiplier - fine for the capture step, not for the actual
+// download. ffmpeg (if passed) runs one correction pass afterward - setpts stretches the video
+// back to normal pace, atempo does the same for audio - restoring normal playback speed. That
+// correction is real CPU-bound re-encode work, but it replaces wall-clock-bound capture time
+// with hardware-bound encode time, which is the whole point.
+async function recordVideoWithCanvasSubtitles(sourceBlob, subtitleText, videoMeta = {}, onProgress = null, ffmpeg = null, speedMultiplier = 2) {
     const cues = parseSubtitleCues(subtitleText);
     console.log('[CanvasBurn] starting', {
         cueCount: cues.length,
         sourceBytes: sourceBlob?.size || 0,
-        title: videoMeta.title || ''
+        title: videoMeta.title || '',
+        speedMultiplier
     });
 
     const sourceUrl = URL.createObjectURL(sourceBlob);
@@ -457,11 +470,19 @@ async function recordVideoWithCanvasSubtitles(sourceBlob, subtitleText, videoMet
     video.playsInline = true;
     video.crossOrigin = 'anonymous';
     video.preload = 'auto';
+    // Explicit, not just relying on the (near-universal but unstated-by-spec) default - a video
+    // played back silently to speakers but tapped live via captureStream() still needs correct
+    // pitch preservation for the CAPTURED audio track to sound right, muted or not.
+    video.preservesPitch = true;
+    video.webkitPreservesPitch = true;
+    video.mozPreservesPitch = true;
 
     await new Promise((resolve, reject) => {
         video.addEventListener('loadedmetadata', () => resolve(), { once: true });
         video.addEventListener('error', () => reject(new Error('Failed to load source video for canvas burn')));
     });
+
+    video.playbackRate = speedMultiplier;
 
     const width = video.videoWidth || 1280;
     const height = video.videoHeight || 720;
@@ -570,13 +591,57 @@ async function recordVideoWithCanvasSubtitles(sourceBlob, subtitleText, videoMet
 
     URL.revokeObjectURL(sourceUrl);
 
-    const outBlob = new Blob(chunks, { type: mimeType });
-    console.log('[CanvasBurn] finished', {
+    const capturedBlob = new Blob(chunks, { type: mimeType });
+    console.log('[CanvasBurn] capture finished (still at ' + speedMultiplier + 'x pace)', {
         mimeType,
         chunks: chunks.length,
-        size: outBlob.size
+        size: capturedBlob.size
     });
-    return outBlob;
+
+    if (!ffmpeg || speedMultiplier === 1) {
+        // No ffmpeg instance to run the correction pass with, or nothing to correct - return the
+        // capture as-is (matches this function's old, pre-speedup behavior exactly at 1x).
+        return capturedBlob;
+    }
+
+    onProgress?.({ phase: 'finalizing', currentTime: 0, duration: 0, percent: 100, cueIndex: cues.length, cueCount: cues.length, cueText: '' });
+    console.log('[CanvasBurn] running setpts/atempo correction pass to restore normal playback speed');
+
+    const capturedName = 'burn_captured' + (mimeType.includes('webm') ? '.webm' : '.mp4');
+    const correctedName = 'burn_corrected.mp4';
+    try {
+        await ffmpeg.writeFile(capturedName, new Uint8Array(await capturedBlob.arrayBuffer()));
+        // atempo only accepts 0.5-2.0 directly - fine for any speedMultiplier in that same range
+        // (2x asked for here); a multiplier outside it would need atempo filters chained, not
+        // needed for the 2x this is actually called with.
+        const atempoRate = (1 / speedMultiplier).toFixed(4);
+        const ptsRate = speedMultiplier.toFixed(4);
+        await ffmpeg.exec([
+            '-i', capturedName,
+            '-filter_complex', `[0:v]setpts=${ptsRate}*PTS[v];[0:a]atempo=${atempoRate}[a]`,
+            '-map', '[v]', '-map', '[a]',
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+            '-c:a', 'aac', '-b:a', '160k',
+            '-movflags', '+faststart',
+            correctedName
+        ]);
+        const correctedData = await ffmpeg.readFile(correctedName);
+        if (!correctedData || (correctedData.byteLength || correctedData.length || 0) === 0) {
+            throw new Error('setpts/atempo correction produced an empty file');
+        }
+        const outBlob = new Blob([correctedData.buffer], { type: 'video/mp4' });
+        console.log('[CanvasBurn] finished (corrected to normal speed)', { size: outBlob.size });
+        return outBlob;
+    } catch (err) {
+        // Better a working-but-2x-fast download than a failed one - the capture itself is fully
+        // valid media, just paced wrong. Surface this loudly so it's not mistaken for correct.
+        console.error('[CanvasBurn] speed-correction pass failed, falling back to the raw (still ' + speedMultiplier + 'x-speed) capture:', err);
+        return capturedBlob;
+    } finally {
+        for (const f of [capturedName, correctedName]) {
+            try { await ffmpeg.deleteFile(f); } catch (_) {}
+        }
+    }
 }
 
 function updateDownloadProgress() {
@@ -964,8 +1029,13 @@ async function downloadKAAEpisode(requestedHeight) {
         let downloadExt = "mp4";
         if (hasSubtitle) {
             try {
-                setTaskStatus("Rendering subtitles in browser canvas...");
+                setTaskStatus("Rendering subtitles in browser canvas (2x speed)...");
                 const canvasBlob = await recordVideoWithCanvasSubtitles(blob, subtitleText, video, (state) => {
+                    if (state?.phase === 'finalizing') {
+                        setTaskStatus("Finalizing burned video (restoring normal speed)...");
+                        setTaskSubtitleProgress("Finalizing (re-timing video/audio)...", 100);
+                        return;
+                    }
                     const current = state?.currentTime || 0;
                     const duration = state?.duration || 0;
                     const percent = state?.percent || 0;
@@ -974,9 +1044,9 @@ async function downloadKAAEpisode(requestedHeight) {
                     setTaskSubtitleProgress(`Subtitle Burn: ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`, percent);
                     document.getElementById("downloadSizeText").textContent =
                         state?.cueText ? `Cue ${cueLabel}: ${state.cueText.slice(0, 64)}` : `Cue ${cueLabel}`;
-                });
+                }, ffmpeg);
                 blob = canvasBlob;
-                downloadExt = "webm";
+                downloadExt = canvasBlob.type.includes('mp4') ? "mp4" : "webm";
             } catch (canvasErr) {
                 console.warn('[CanvasBurn] failed, falling back to plain MP4:', canvasErr);
                 setTaskStatus("Subtitle canvas render failed. Downloading video/audio only...");
@@ -1275,16 +1345,21 @@ async function downloadKinoEpisode(requestedHeight) {
 
         if (hasSubtitle) {
             try {
-                setTaskStatus('Rendering subtitles in browser canvas...');
+                setTaskStatus('Rendering subtitles in browser canvas (2x speed)...');
                 const canvasBlob = await recordVideoWithCanvasSubtitles(blob, subtitleText, video, (state) => {
+                    if (state?.phase === 'finalizing') {
+                        setTaskStatus('Finalizing burned video (restoring normal speed)...');
+                        setTaskSubtitleProgress('Finalizing (re-timing video/audio)...', 100);
+                        return;
+                    }
                     const current = state?.currentTime || 0;
                     const duration = state?.duration || 0;
                     const percent = state?.percent || 0;
                     setTaskStatus(`Rendering subtitles in browser canvas... ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`);
                     setTaskSubtitleProgress(`Subtitle Burn: ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`, percent);
-                });
+                }, ffmpeg);
                 blob = canvasBlob;
-                downloadExt = 'webm';
+                downloadExt = canvasBlob.type.includes('mp4') ? 'mp4' : 'webm';
             } catch (canvasErr) {
                 console.warn('[CanvasBurn][Kino] failed, falling back to plain MP4:', canvasErr);
                 setTaskStatus('Subtitle canvas render failed. Downloading video only...');
