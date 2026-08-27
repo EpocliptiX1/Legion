@@ -25,7 +25,8 @@
     const originalFetch = window.fetch.bind(window);
     window.fetch = async function (input, init) {
         const url = typeof input === 'string' ? input : (input && input.url) || '';
-        if (RESOLVE_GATED_PATHS.some(p => url.startsWith(p))) {
+        const isGated = RESOLVE_GATED_PATHS.some(p => url.startsWith(p));
+        if (isGated) {
             try {
                 const nonce = await ensureResolveNonce();
                 init = init ? { ...init } : {};
@@ -36,7 +37,27 @@
                 // entirely on a transient failure to mint one.
             }
         }
-        return originalFetch(input, init);
+        const response = await originalFetch(input, init);
+        // Was silent: a resolver-budget 429 (see Backend/server.js's spendResolveBudget) just
+        // looked identical to "this provider genuinely has nothing for this title" to the
+        // caller - every loader's own catch just prints its usual "Stream unavailable" message,
+        // so a real viewer who hit the per-session cap had no way to tell "wait a few minutes"
+        // apart from "this show/server is broken". Surface the real reason once, here, for every
+        // gated call at once instead of teaching each individual loader function about it.
+        if (isGated && response.status === 429 && typeof window.showLongToast === 'function') {
+            try {
+                const body = await response.clone().json().catch(() => null);
+                const retryAfterSec = parseInt(response.headers.get('Retry-After'), 10);
+                const waitText = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+                    ? (retryAfterSec >= 60 ? `${Math.ceil(retryAfterSec / 60)} min` : `${retryAfterSec}s`)
+                    : 'a few minutes';
+                window.showLongToast(
+                    `⏳ ${body?.error || 'Playback limit reached'} - try again in ~${waitText}.`,
+                    6000
+                );
+            } catch (_) {}
+        }
+        return response;
     };
 })();
 
@@ -1133,7 +1154,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 .server-btn.active { background:#ff8000; color:#fff; box-shadow:0 2px 12px #ff800055; }
                 .player-section-divider { width:100%; height:2px; background:#ff8000; margin:12px 0 8px 0; border-radius:2px; opacity:0.7; }
                 .player-report-btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-width:150px; margin:0; background:#1a1a1a; color:#ddd; border:none; border-radius:8px; padding:6px 12px; font-size:0.95rem; font-weight:700; cursor:pointer; transition:background 0.2s,color 0.2s; box-shadow:0 2px 8px #ff000033; }
-                .player-report-btn:hover { background:#241a10; color:#ff8000; }
                 .player-report-btn svg { width:16px; height:16px; flex-shrink:0; }
                 .player-block-actions { display:flex; flex-direction:row; align-items:center; flex-wrap:wrap; gap:16px; margin:10px 0; }
                 .player-block-report { margin:0; }
