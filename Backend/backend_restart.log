@@ -1,0 +1,54 @@
+[2026-08-27T08:24:18.752Z] [KAA DEBUG] logger ready {
+  "path": "C:\\Users\\Damir\\Desktop\\myhflixer\\CURRENT BACKUP\\Backend\\kaa-debug-log.txt",
+  "pid": 17888
+}
+✅ Connected to poster cache database
+✅ Connected to anime cache database
+✅ Connected to movie cache database
+✅ Connected to movies database
+✅ Connected to users database
+✅ Connected to anime cache database
+✅ Connected to activity database
+✅ Connected to footer forms database
+
+🔧 Backend API  →  http://localhost:4000  (internal only)
+📂 Reviews file location: C:\Users\Damir\Desktop\myhflixer\CURRENT BACKUP\Backend\backend\reviews.json
+   Secret header enforcement: enabled
+   Kino health check: every 10min
+   MAL health check: every 30min
+   Kinogo (RU-MV) health check: every 60min
+   Finished-show schedule audit: every 24h
+   Anime TMDB mapping audit: every 3min, 25/batch
+   Anikoto id-map refresh: every 24h
+REQ: GET /watch2gether/my-scheduled-sessions [Object: null prototype] {}
+REQ: POST /watch2gether/session/37/state [Object: null prototype] {}
+REQ: GET /watch2gether/session/37/state [Object: null prototype] {}
+[Kino] API path OK for movie/293660
+[2026-08-27T08:24:20.049Z] [Kino Health] OK (1184ms)
+REQ: POST /users/heartbeat [Object: null prototype] {}
+REQ: GET /watch2gether/my-scheduled-sessions [Object: null prototype] {}
+[2026-08-27T08:24:25.301Z] [MAL Health] OK (2409ms)
+REQ: GET /notifications [Object: null prototype] { userUID: '34' }
+REQ: GET /notifications [Object: null prototype] { userUID: '1' }
+[2026-08-27T08:24:29.839Z] [Kinogo Health] OK (2935ms)
+[2026-08-27T08:24:30.903Z] [FinishedShowAudit] Starting daily finished-show schedule audit...
+REQ: GET /api/anime-trailer-keys [Object: null prototype] { tmdbId: '85937', type: 'tv' }
+REQ: GET /notifications [Object: null prototype] { userUID: '34' }
+[2026-08-27T08:24:37.027Z] [TmdbMappingAudit] Checked 25 mapping(s), deleted 0 bad one(s)
+[2026-08-27T08:24:38.571Z] [FinishedShowAudit] widened with 221 far-future anime_schedule row(s) already cached from calendar browsing
+[2026-08-27T08:24:39.851Z] [FinishedShowAudit] Done. season-groups: 12 finished row(s) checked, 0 busted. native: 1298 finished row(s) checked, 0 busted.
+REQ: GET /notifications [Object: null prototype] { userUID: '1' }
+[2026-08-27T08:24:39.937Z] [AnikotoIdMap] Table empty/stale (8784 rows) - starting initial crawl
+REQ: GET /watch2gether/my-scheduled-sessions [Object: null prototype] {}
+REQ: GET /notifications [Object: null prototype] { userUID: '34' }
+REQ: GET /notifications [Object: null prototype] { userUID: '1' }
+REQ: GET /notifications [Object: null prototype] { userUID: '34' }
+REQ: GET /notifications [Object: null prototype] { userUID: '1' }
+REQ: GET /watch2gether/my-scheduled-sessions [Object: null prototype] {}
+REQ: GET /notifications [Object: null prototype] { userUID: '34' }
+REQ: GET /notifications [Object: null prototype] { userUID: '1' }
+REQ: GET /notifications [Object: null prototype] { userUID: '34' }
+REQ: GET /watch2gether/my-scheduled-sessions [Object: null prototype] {}
+REQ: POST /users/heartbeat [Object: null prototype] {}
+REQ: POST /watch2gether/session/37/state [Object: null prototype] {}
+REQ: GET /watch2gether/session/37/state [Object: null prototype] {}

@@ -2917,9 +2917,18 @@ function mergeUserActivityData(sourceUID, targetUID) {
                  ON CONFLICT(userUID, genre) DO UPDATE SET score = score + excluded.score`,
                 [targetUID, sourceUID]
             );
+            // No UNIQUE constraint on user_downloads (the same title can legitimately be
+            // downloaded more than once) - plain INSERT, not INSERT OR IGNORE, is correct here.
+            activityDb.run(
+                `INSERT INTO user_downloads (userUID, item_id, item_type, title, thumbnail, season, episode, audio, subs_burned, downloaded_at)
+                 SELECT ?, item_id, item_type, title, thumbnail, season, episode, audio, subs_burned, downloaded_at
+                 FROM user_downloads WHERE userUID = ?`,
+                [targetUID, sourceUID]
+            );
             activityDb.run(`DELETE FROM watch_history WHERE userUID = ?`, [sourceUID]);
             activityDb.run(`DELETE FROM user_list WHERE userUID = ?`, [sourceUID]);
             activityDb.run(`DELETE FROM genre_affinity WHERE userUID = ?`, [sourceUID]);
+            activityDb.run(`DELETE FROM user_downloads WHERE userUID = ?`, [sourceUID]);
             activityDb.run('COMMIT', (err) => err ? reject(err) : resolve());
         });
     });
@@ -3542,6 +3551,22 @@ activityDb.serialize(() => {
         added_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         UNIQUE(userUID, item_id)
     )`);
+    // Downloads-tracking (personalList.html's "My Downloads" section) - one row per completed
+    // client-side download (anime KAA/MegaPlay/Neko + movie/TV Kino/T1M/RU-MV all funnel here).
+    // audio (sub/dub) only means anything for anime - null for movie/TV rows.
+    activityDb.run(`CREATE TABLE IF NOT EXISTS user_downloads (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        userUID       TEXT    NOT NULL,
+        item_id       TEXT,
+        item_type     TEXT    NOT NULL DEFAULT 'movie',
+        title         TEXT,
+        thumbnail     TEXT,
+        season        TEXT,
+        episode       TEXT,
+        audio         TEXT,
+        subs_burned   INTEGER NOT NULL DEFAULT 0,
+        downloaded_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    )`);
     activityDb.run(`CREATE TABLE IF NOT EXISTS notifications (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         userUID     TEXT    NOT NULL,
@@ -4078,6 +4103,78 @@ app.post('/activity/list/remove', (req, res) => {
         [safeUID, safeId],
         (err) => {
             if (err) { console.error('[activity/list remove]', err.message); return res.status(500).json({ error: 'db error' }); }
+            res.json({ ok: true });
+        }
+    );
+});
+
+// GET /activity/downloads — fetch a user's download history for personalList.html's
+// "My Downloads" section, newest first. Capped at 200 - this is a history log, not something
+// meant to grow unbounded in the UI.
+app.get('/activity/downloads', (req, res) => {
+    const userUID = String(req.query.userUID || '').slice(0, 64);
+    if (!userUID) return res.json([]);
+    activityDb.all(
+        `SELECT id, item_id, item_type, title, thumbnail, season, episode, audio, subs_burned, downloaded_at
+         FROM user_downloads WHERE userUID = ? ORDER BY downloaded_at DESC LIMIT 200`,
+        [userUID],
+        (err, rows) => {
+            if (err) { console.error('[activity/downloads GET]', err.message); return res.json([]); }
+            res.json((rows || []).map(r => ({
+                id: r.id,
+                itemId: r.item_id,
+                type: r.item_type,
+                title: r.title,
+                thumbnail: r.thumbnail,
+                season: r.season,
+                episode: r.episode,
+                audio: r.audio,
+                subsBurned: !!r.subs_burned,
+                downloadedAt: r.downloaded_at
+            })));
+        }
+    );
+});
+
+// POST /activity/downloads/add — record one completed (or link-opened, for RU-MV) download.
+// Called from js/downloadEpisode.js (KAA/Kino/T1M) and js/moviePlayer.js (RU-MV quality menu).
+app.post('/activity/downloads/add', (req, res) => {
+    const { userUID, item_id, item_type, title, thumbnail, season, episode, audio, subsBurned } = req.body || {};
+    if (!userUID) return res.status(400).json({ error: 'userUID required' });
+    const safeUID = String(userUID).slice(0, 64);
+    activityDb.run(
+        `INSERT INTO user_downloads (userUID, item_id, item_type, title, thumbnail, season, episode, audio, subs_burned)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        [
+            safeUID,
+            item_id ? String(item_id).slice(0, 32) : null,
+            String(item_type || 'movie').slice(0, 16),
+            title ? String(title).slice(0, 200) : null,
+            thumbnail ? String(thumbnail).slice(0, 500) : null,
+            season != null ? String(season).slice(0, 16) : null,
+            episode != null ? String(episode).slice(0, 16) : null,
+            audio ? String(audio).slice(0, 16) : null,
+            subsBurned ? 1 : 0
+        ],
+        function (err) {
+            if (err) { console.error('[activity/downloads add]', err.message); return res.status(500).json({ error: 'db error' }); }
+            res.json({ ok: true, id: this.lastID });
+        }
+    );
+});
+
+// POST /activity/downloads/remove — delete one entry (by its row id, not item_id - unlike
+// user_list, the same title can legitimately appear many times here).
+app.post('/activity/downloads/remove', (req, res) => {
+    const { userUID, id } = req.body || {};
+    const safeUID = String(userUID || '').slice(0, 64);
+    const safeId = parseInt(id, 10);
+    if (!safeUID || !Number.isFinite(safeId)) return res.status(400).json({ error: 'userUID and id required' });
+    activityDb.run(
+        `DELETE FROM user_downloads WHERE userUID = ? AND id = ?`,
+        [safeUID, safeId],
+        (err) => {
+            if (err) { console.error('[activity/downloads remove]', err.message); return res.status(500).json({ error: 'db error' }); }
             res.json({ ok: true });
         }
     );
@@ -17247,6 +17344,39 @@ app.get('/api/kino-subtitle-vtt', async (req, res) => {
     }
 });
 
+// T1M's own subtitle files (from api.shows.st's response) are plain static VTT on a third-party
+// CDN, no auth of their own - fine for the DOWNLOAD panel's picker (it doesn't care about the
+// URL's origin), but showVideoPlayer's live-captions track-attaching code explicitly skips any
+// subtitle that isn't same-origin (see its isSameOriginSubtitle check), so raw external T1M
+// subtitle URLs silently never became a selectable caption in the actual player - confirmed live
+// (Plyr's settings menu had no Captions row at all for T1M, only Quality/Speed). Proxying them
+// through here, same pattern as /api/kino-subtitle-vtt above, fixes that.
+const ALLOWED_T1M_SUBTITLE_HOSTS = ['cache.vdrk.site'];
+function isAllowedT1mSubtitleUrl(value) {
+    try {
+        const parsed = new URL(String(value));
+        return parsed.protocol === 'https:' && ALLOWED_T1M_SUBTITLE_HOSTS.some(host =>
+            parsed.hostname === host || parsed.hostname.endsWith(`.${host}`)
+        );
+    } catch {
+        return false;
+    }
+}
+app.get('/api/t1m-subtitle-vtt', async (req, res) => {
+    const url = req.query.url;
+    if (!isAllowedT1mSubtitleUrl(url)) {
+        return res.status(400).send('Invalid subtitle link');
+    }
+    try {
+        const upstream = await axios.get(url, { responseType: 'text', timeout: 15000 });
+        res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+        return res.send(upstream.data);
+    } catch (err) {
+        console.error('[T1M Subtitle VTT] Error:', err.message);
+        return res.status(500).send('Failed to fetch subtitle');
+    }
+});
+
 // --- T1M (api.shows.st, English movies/TV) --------------------------------------------------
 // Discovered live via a manual DevTools capture of player.vidlove.cc's "Archer Queen" server -
 // unlike Kino's vidsrcme flow (encrypted stream_urls needing a WASM decrypt step), this API
@@ -17355,13 +17485,44 @@ app.get('/api/t1m-servers', async (req, res) => {
                 console.warn('[T1M] Failed to cache result:', err.message));
         }
 
+        // Proxied through /api/t1m-subtitle-vtt (not linked to s.file directly) so the live
+        // player's same-origin-only track-attaching code will actually pick these up - see that
+        // endpoint's comment for why raw external subtitle URLs were invisible in Plyr's
+        // captions menu even though the download panel's picker (which doesn't check origin)
+        // already showed them fine.
+        let tracks = subtitles.map(s => ({
+            url: `/api/t1m-subtitle-vtt?url=${encodeURIComponent(s.file)}`,
+            lang: s.label,
+            default: /^english/i.test(s.label || '')
+        }));
+
+        // T1M's own upstream (api.shows.st) doesn't have subtitles for every title - when it
+        // comes back empty, fall back to the exact same OpenSubtitles-via-IMDB pipeline Kino
+        // uses (getKinoImdbId + searchKinoSubtitles, both already independently cached), so a
+        // title T1M has no subs for still gets them the way Kino would find them. Best-effort:
+        // a failure here (e.g. vidsrcme has no IMDB mapping for this tmdbId) just leaves tracks
+        // empty rather than failing the whole stream response.
+        if (tracks.length === 0) {
+            try {
+                const imdbId = await getKinoImdbId(tmdbId, type);
+                const cacheKey = type === 'tv' ? `tv:${imdbId}:${season}:${episode}` : `movie:${imdbId}`;
+                const kinoTracks = await getKinoSubtitlesCached(cacheKey, () => searchKinoSubtitles(imdbId, season, episode));
+                tracks = kinoTracks.map(t => ({
+                    url: `/api/kino-subtitle-vtt?link=${encodeURIComponent(t.downloadLink)}&enc=${encodeURIComponent(t.encoding)}`,
+                    lang: t.lang,
+                    default: /^english/i.test(t.lang || '')
+                }));
+            } catch (subErr) {
+                console.warn('[T1M] Kino-subtitle fallback failed, shipping with no subtitles:', subErr.message);
+            }
+        }
+
         res.json({
             ok: true,
             stream: buildT1mMasterManifestUrl(manifest, req.sessionId),
-            // subtitle files are plain static VTT URLs on cache.vdrk.site, not behind any
-            // token/auth of their own (confirmed live) - no proxy/tokenizing needed, unlike
-            // every stream URL above.
-            tracks: subtitles.map(s => ({ url: s.file, lang: s.label, default: /^english/i.test(s.label || '') }))
+            // Both branches above already produce same-origin proxy URLs
+            // (/api/t1m-subtitle-vtt or /api/kino-subtitle-vtt) - directly fetchable as-is.
+            tracks
         });
     } catch (err) {
         console.error('[T1M] Error:', err.message);

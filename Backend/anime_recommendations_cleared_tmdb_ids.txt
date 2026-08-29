@@ -1,0 +1,47 @@
+tmdb_id=30984	anilist_id=269	mal_id=269	title=Bleach
+tmdb_id=16830	anilist_id=270	mal_id=270	title=Hellsing
+tmdb_id=45994	anilist_id=9062	mal_id=9062	title=The Kitchen
+tmdb_id=1429	anilist_id=16498	mal_id=16498	title=Attack on Titan
+tmdb_id=63926	anilist_id=21087	mal_id=30276	title=One-Punch Man
+tmdb_id=65942	anilist_id=21355	mal_id=31240	title=Re:ZERO -Starting Life in Another World-
+tmdb_id=48860	anilist_id=104096	mal_id=32750	title=The Tomorrow People
+tmdb_id=1639	anilist_id=102553	mal_id=33759	title=Heroes
+tmdb_id=82591	anilist_id=101165	mal_id=37349	title=Goblin Slayer
+tmdb_id=99618	anilist_id=103632	mal_id=37984	title=So I'm a Spider, So What?
+tmdb_id=85937	anilist_id=101922	mal_id=38000	title=Demon Slayer: Kimetsu no Yaiba
+tmdb_id=96402	anilist_id=106479	mal_id=38790	title=BOFURI: I Don't Want to Get Hurt, so I'll Max Out My Defense.
+tmdb_id=94664	anilist_id=108465	mal_id=39535	title=Mushoku Tensei: Jobless Reincarnation
+tmdb_id=97617	anilist_id=112301	mal_id=40496	title=The Misfit of Demon King Academy
+tmdb_id=99073	anilist_id=112608	mal_id=40586	title=I've Been Killing Slimes for 300 Years and Maxed Out My Level
+tmdb_id=101972	anilist_id=112667	mal_id=40595	title=Our Last Crusade or the Rise of a New World
+tmdb_id=95479	anilist_id=113415	mal_id=40748	title=JUJUTSU KAISEN
+tmdb_id=100565	anilist_id=116589	mal_id=41457	title=86 EIGHTY-SIX
+tmdb_id=110911	anilist_id=116673	mal_id=41468	title=BURN THE WITCH
+tmdb_id=118541	anilist_id=116741	mal_id=41488	title=The Slime Diaries
+tmdb_id=117884	anilist_id=129191	mal_id=47161	title=The Strongest Sage with the Weakest Crest
+tmdb_id=120155	anilist_id=130586	mal_id=48415	title=The Greatest Demon Lord Is Reborn as a Typical Nobody
+tmdb_id=197848	anilist_id=147642	mal_id=51648	title=The Unwanted Undead Adventurer
+tmdb_id=215799	anilist_id=158417	mal_id=53770	title=Go! Go! Loser Ranger!
+tmdb_id=249907	anilist_id=167152	mal_id=56009	title=Sentenced to Be a Hero
+tmdb_id=248951	anilist_id=173584	mal_id=57876	title=The Strongest Magician in the Demon Lord's Army Was a Human
+tmdb_id=135457	anilist_id=140382	mal_id=58219	title=The Call
+tmdb_id=258348	anilist_id=178869	mal_id=59205	title=Clevatess
+tmdb_id=270603	anilist_id=180136	mal_id=59741	title=The Exiled Heavy Knight Knows How to Game the System
+tmdb_id=280110	anilist_id=185736	mal_id=60593	title=My Hero Academia: Vigilantes
+tmdb_id=295366	anilist_id=195515	mal_id=61983	title=There Was a Cute Girl in the Hero's Party, So I Tried Confessing to Her
+tmdb_id=296437	anilist_id=196218	mal_id=62078	title=The Frontier Lord Begins with Zero Subjects
+tmdb_id=302051	anilist_id=199748	mal_id=62617	title=I Became a Legend After My 10 Year-Long Last Stand
+tmdb_id=314554	anilist_id=208044	mal_id=63508	title=From Overshadowed to Overpowered: Second Reincarnation of a Talentless Sage
+tmdb_id=60625	anilist_id=143287	mal_id=64009	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64010	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64011	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64012	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64013	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64014	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64015	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64016	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64017	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64018	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64019	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64020	title=Rick and Morty
+tmdb_id=60625	anilist_id=143287	mal_id=64021	title=Rick and Morty

@@ -1,0 +1,48 @@
+[2026-08-02T09:56:14.265Z] req.user={"userUID":1,"accountUID":"1","userEmail":"LegionCinemaAdmin@gmail.com","username":"admin","userTier":"Gold","isAdmin":true,"iat":1785664549,"exp":1786269349}
+[2026-08-02T09:56:14.266Z] profilePic present=true type=string len=1550446 startsOk=true
+[2026-08-02T09:56:24.827Z] req.user={"userUID":1,"accountUID":"1","userEmail":"LegionCinemaAdmin@gmail.com","username":"admin","userTier":"Gold","isAdmin":true,"iat":1785664549,"exp":1786269349}
+[2026-08-02T09:56:24.827Z] profilePic present=true type=string len=16474 startsOk=true
+[2026-08-02T09:56:24.827Z] uidNum=1
+[2026-08-02T09:56:24.836Z] UPDATE result err=undefined changes=1
+[2026-08-02T10:02:07.021Z] req.user={"userUID":1,"accountUID":"1","userEmail":"LegionCinemaAdmin@gmail.com","username":"admin","userTier":"Gold","isAdmin":true,"iat":1785664549,"exp":1786269349}
+[2026-08-02T10:02:07.022Z] profilePic present=true type=string len=349362 startsOk=true
+[2026-08-02T10:02:07.022Z] uidNum=1
+[2026-08-02T10:02:07.038Z] UPDATE result err=undefined changes=1
+[2026-08-02T10:03:13.415Z] req.user={"userUID":1,"accountUID":"1","userEmail":"LegionCinemaAdmin@gmail.com","username":"admin","userTier":"Gold","isAdmin":true,"iat":1785664549,"exp":1786269349}
+[2026-08-02T10:03:13.416Z] profilePic present=true type=string len=1550446 startsOk=true
+[2026-08-02T10:03:13.416Z] uidNum=1
+[2026-08-02T10:03:13.432Z] UPDATE result err=undefined changes=1
+[2026-08-02T17:12:18.316Z] req.user={"userUID":1,"accountUID":"1","userEmail":"LegionCinemaAdmin@gmail.com","username":"admin","userTier":"Gold","isAdmin":true,"iat":1785664549,"exp":1786269349}
+[2026-08-02T17:12:18.334Z] profilePic present=true type=string len=3085114 startsOk=true
+[2026-08-02T17:12:18.334Z] uidNum=1
+[2026-08-02T17:12:18.474Z] UPDATE result err=undefined changes=1
+[2026-08-02T17:15:17.562Z] req.user={"userUID":1,"accountUID":"1","userEmail":"LegionCinemaAdmin@gmail.com","username":"admin","userTier":"Gold","isAdmin":true,"iat":1785664549,"exp":1786269349}
+[2026-08-02T17:15:17.562Z] profilePic present=true type=string len=4810950 startsOk=true
+[2026-08-02T17:15:17.563Z] uidNum=1
+[2026-08-02T17:15:17.669Z] UPDATE result err=undefined changes=1
+[2026-08-02T17:15:29.765Z] req.user={"userUID":1,"accountUID":"1","userEmail":"LegionCinemaAdmin@gmail.com","username":"admin","userTier":"Gold","isAdmin":true,"iat":1785664549,"exp":1786269349}
+[2026-08-02T17:15:29.765Z] profilePic present=true type=string len=2966686 startsOk=true
+[2026-08-02T17:15:29.765Z] uidNum=1
+[2026-08-02T17:15:29.824Z] UPDATE result err=undefined changes=1
+[2026-08-17T18:50:25.806Z] req.user={"userUID":3999722570,"accountUID":"3999722570","userEmail":"claude_verify_test2@example.com","username":"claude_verify_test2","userTier":"Free","isAdmin":false,"iat":1786992586,"exp":1787597386}
+[2026-08-17T18:50:25.808Z] profilePic present=true type=string len=114 startsOk=true
+[2026-08-17T18:50:25.808Z] uidNum=3999722570
+[2026-08-17T18:50:25.814Z] UPDATE result err=undefined changes=1
+[2026-08-17T18:50:25.851Z] req.user={"userUID":3999722570,"accountUID":"3999722570","userEmail":"claude_verify_test2@example.com","username":"claude_verify_test2","userTier":"Free","isAdmin":false,"iat":1786992586,"exp":1787597386}
+[2026-08-17T18:50:25.852Z] profilePic present=true type=string len=122 startsOk=false
+[2026-08-17T18:57:26.277Z] req.user={"userUID":3999722573,"accountUID":"3999722573","userEmail":"pentest-d@example.invalid","username":"pentestD","userTier":"Free","isAdmin":false,"iat":1786992826,"exp":1787597626}
+[2026-08-17T18:57:26.277Z] profilePic present=false type=undefined len=undefined startsOk=false
+[2026-08-17T18:58:33.922Z] req.user={"userUID":3999722573,"accountUID":"3999722573","userEmail":"pentest-d@example.invalid","username":"pentestD","userTier":"Free","isAdmin":false,"iat":1786992826,"exp":1787597626}
+[2026-08-17T18:58:33.922Z] profilePic present=true type=string len=190 startsOk=true
+[2026-08-17T18:58:33.923Z] uidNum=3999722573
+[2026-08-17T18:58:33.928Z] UPDATE result err=undefined changes=1
+[2026-08-17T19:05:05.707Z] req.user={"userUID":3999722576,"accountUID":"3999722576","userEmail":"claude_xss_test@example.com","username":"claude_xss_test","userTier":"Free","isAdmin":false,"iat":1786993505,"exp":1787598305}
+[2026-08-17T19:05:05.709Z] profilePic present=true type=string len=165 startsOk=true
+[2026-08-17T19:05:05.748Z] req.user={"userUID":3999722576,"accountUID":"3999722576","userEmail":"claude_xss_test@example.com","username":"claude_xss_test","userTier":"Free","isAdmin":false,"iat":1786993505,"exp":1787598305}
+[2026-08-17T19:05:05.748Z] profilePic present=true type=string len=114 startsOk=true
+[2026-08-17T19:05:05.749Z] uidNum=3999722576
+[2026-08-17T19:05:05.754Z] UPDATE result err=undefined changes=1
+[2026-08-28T16:24:03.244Z] req.user={"userUID":3999939531,"accountUID":"g_d7bacbc8645de7b46dc90694","userEmail":"tanyashab14@gmail.com","username":"Tanya","userTier":"Free","isAdmin":false,"iat":1787934229,"exp":1788539029}
+[2026-08-28T16:24:03.245Z] profilePic present=true type=string len=849399 startsOk=true
+[2026-08-28T16:24:03.249Z] uidNum=3999939531
+[2026-08-28T16:24:03.259Z] UPDATE result err=undefined changes=1

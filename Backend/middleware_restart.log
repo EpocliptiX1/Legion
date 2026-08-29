@@ -1,0 +1,4 @@
+
+🔀 Middleware  →  https://localhost:3000
+   Proxying /api/*  →  http://localhost:4000
+   Secret header enforcement: enabled

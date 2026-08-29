@@ -1266,17 +1266,23 @@ document.addEventListener('DOMContentLoaded', function() {
                                                         </div>
                                                     </div>
                                                     <div id="movieDownloadWrap" style="display:none;">
-                                                        <div class="downloadTextNextoBtn" style="font-size:0.85rem;color:#ffb366;margin-bottom:6px;">Movie Downloads</div>
                                                         <div class="downloadButtonMovieInfoParent">
-                                                            <button id="btnDownloadRuMovie" class="audio-btn" style="margin:0;padding:6px 12px;">Download (RU - MV)</button>
-                                                            <button id="btnDownloadKino" class="audio-btn" style="margin:0;padding:6px 12px;">Download (Kino)</button>
+                                                            <button id="btnDownloadMovie" class="audio-btn dl-movietv-trigger" style="margin:0;padding:6px 12px;display:inline-flex;align-items:center;gap:6px;">
+                                                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:15px;height:15px;">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                                                </svg>
+                                                                Download Movie
+                                                            </button>
                                                         </div>
                                                     </div>
                                                     <div id="tvDownloadWrap" style="display:none;">
-                                                        <div class="downloadTextNextoBtn" style="font-size:0.85rem;color:#ffb366;margin-bottom:6px;">TV Downloads</div>
                                                         <div class="downloadButtonMovieInfoParent">
-                                                            <button id="btnDownloadRuTv" class="audio-btn" style="margin:0;padding:6px 12px;">Download Episode (RU - MV)</button>
-                                                            <button id="btnDownloadKinoTv" class="audio-btn" style="margin:0;padding:6px 12px;">Download Episode (Kino)</button>
+                                                            <button id="btnDownloadTv" class="audio-btn dl-movietv-trigger" style="margin:0;padding:6px 12px;display:inline-flex;align-items:center;gap:6px;">
+                                                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:15px;height:15px;">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                                                </svg>
+                                                                Download Episode
+                                                            </button>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -1377,23 +1383,65 @@ document.addEventListener('DOMContentLoaded', function() {
                                     <option value="">Skip</option>
                                 </select>
                             </div>
-                            <div id="dlSpeedWrap" class="anime-download-panel__burn" style="display:none;">
-                                <div class="anime-download-panel__label">Burn Speed</div>
-                                <select id="dlBurnSpeed" class="download-subs-picker">
-                                    <option value="1">1x</option>
-                                    <option value="2" selected>2x</option>
-                                    <option value="3">3x</option>
-                                    <option value="4">4x</option>
-                                </select>
-                                <span class="anime-download-panel__hint" style="margin:4px 0 0;font-size:0.75rem;">Faster burn, funkier audio/video sync.</span>
-                            </div>
                             <div class="anime-download-panel__go">
+                                <div class="anime-download-panel__label">Finalization</div>
                                 <button id="btnDownloadGo" class="audio-btn active anime-download-panel__go-btn">Download</button>
                                 <span id="dlStatusText" class="anime-download-panel__status"></span>
                             </div>
                         </div>
                         <div id="dlBurnHint" class="anime-download-panel__hint">
                             KAA / MegaPlay / NekoStream / RU-MV will switch the active server if needed before downloading. Kiwi links open a third-party download page in a new tab.
+                        </div>
+                    </div>
+                </div>
+                <div id="movieDownloadPanel" class="anime-download-panel">
+                    <div class="anime-download-panel__header">
+                        <span class="anime-download-panel__title">Download</span>
+                        <button id="btnCloseMovieDownloadPanel" class="anime-download-panel__close">✕</button>
+                    </div>
+                    <div class="anime-download-panel__body">
+                        <div class="anime-download-panel__row">
+                            <div>
+                                <div class="anime-download-panel__label">Servers for downloads</div>
+                                <div class="server-group anime-download-panel__group" id="mdlSourceRow">
+                                    <button class="audio-btn active" data-mdl-source="kino">Kino</button>
+                                    <button class="audio-btn" data-mdl-source="t1m">T1M</button>
+                                    <button class="audio-btn" data-mdl-source="rumv">RU-MV</button>
+                                </div>
+                            </div>
+                            <div id="mdlTypeWrap">
+                                <div class="anime-download-panel__label">Type</div>
+                                <div class="server-group anime-download-panel__group" id="mdlTypeRow">
+                                    <button class="audio-btn active" data-mdl-type="current">Current</button>
+                                    <button class="audio-btn" data-mdl-type="season" id="mdlTypeSeasonBtn">Entire Season (10 max)</button>
+                                </div>
+                            </div>
+                            <div id="mdlQualityWrap">
+                                <div class="anime-download-panel__label">Quality</div>
+                                <div class="server-group anime-download-panel__group" id="mdlQualityRow">
+                                    <button class="audio-btn active" data-mdl-quality="1080">1080p</button>
+                                    <button class="audio-btn" data-mdl-quality="720">720p</button>
+                                    <button class="audio-btn" data-mdl-quality="360">360p</button>
+                                </div>
+                            </div>
+                            <div id="mdlBurnWrap" class="anime-download-panel__burn">
+                                <div class="anime-download-panel__label">Subtitles (burn into mp4)</div>
+                                <label class="download-subs-choice anime-download-panel__burn-label">
+                                    <input type="checkbox" id="mdlBurnCheckbox" />
+                                    Burn subtitles
+                                </label>
+                                <select id="mdlSubsPicker" class="download-subs-picker" disabled>
+                                    <option value="">Skip</option>
+                                </select>
+                            </div>
+                            <div class="anime-download-panel__go">
+                                <div class="anime-download-panel__label">Finalization</div>
+                                <button id="btnMovieDownloadGo" class="audio-btn active anime-download-panel__go-btn">Download</button>
+                                <span id="mdlStatusText" class="anime-download-panel__status"></span>
+                            </div>
+                        </div>
+                        <div class="anime-download-panel__hint">
+                            RU-MV opens a direct download link per file (no burning available). Kino / T1M download and mux through your browser - "Entire Season" downloads the current episode plus up to 9 more after it, one at a time.
                         </div>
                     </div>
                 </div>
@@ -3261,7 +3309,7 @@ document.addEventListener('DOMContentLoaded', function() {
         function onRuQualityMenuEscape(e) {
             if (e.key === 'Escape') closeRuQualityMenu();
         }
-        function showRuQualityMenu(anchorBtn, links) {
+        function showRuQualityMenu(anchorBtn, links, meta = {}) {
             closeRuQualityMenu();
             const menu = document.createElement('div');
             menu.style.cssText = `
@@ -3284,6 +3332,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 item.addEventListener('mouseleave', () => { item.style.background = 'none'; });
                 item.addEventListener('click', () => {
                     window.open(link.url, '_blank', 'noopener,noreferrer');
+                    // RU-MV has no ffmpeg step at all - opening the link IS the download, there's
+                    // no separate "complete" event to hook like downloadEpisode.js's callers get.
+                    window.recordDownloadHistory?.({
+                        item_type: meta.itemType || (isSeries ? 'tv' : 'movie'),
+                        title: meta.title,
+                        thumbnail: meta.thumbnail,
+                        season: meta.season,
+                        episode: meta.episode,
+                        subsBurned: false
+                    });
                     closeRuQualityMenu();
                 });
                 menu.appendChild(item);
@@ -3331,7 +3389,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
 
                 // Links come back best-quality first (site's own ordering) - menu keeps that order.
-                showRuQualityMenu(btn, data.links);
+                showRuQualityMenu(btn, data.links, {
+                    itemType: 'movie',
+                    title,
+                    thumbnail: window.currentDownloadContext?.thumbnail
+                });
             } catch (err) {
                 console.error('[RU Movie Download] error:', err);
                 if (typeof window.showLimitToast === 'function') {
@@ -3457,7 +3519,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
 
-                showRuQualityMenu(btn, data.links);
+                showRuQualityMenu(btn, data.links, {
+                    itemType: 'tv',
+                    title,
+                    season: selectedSeason,
+                    episode,
+                    thumbnail: window.currentDownloadContext?.thumbnail
+                });
             } catch (err) {
                 console.error('[RU TV Download] error:', err);
                 if (typeof window.showLimitToast === 'function') {
@@ -3768,7 +3836,7 @@ document.addEventListener('DOMContentLoaded', function() {
             picker.innerHTML = '';
             const skipOpt = document.createElement('option');
             skipOpt.value = '';
-            skipOpt.textContent = tracks.length ? 'Skip' : 'No subtitles available';
+            skipOpt.textContent = tracks.length ? 'Skip' : (isActive ? 'No subtitles available' : 'Click Download to check this server’s subtitles');
             picker.appendChild(skipOpt);
             tracks.forEach((track, index) => {
                 const opt = document.createElement('option');
@@ -3791,8 +3859,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
         document.getElementById('dlBurnCheckbox')?.addEventListener('change', (e) => {
             const picker = document.getElementById('dlSubsPicker');
-            const speedWrap = document.getElementById('dlSpeedWrap');
-            if (speedWrap) speedWrap.style.display = e.target.checked ? '' : 'none';
             if (!picker) return;
             picker.disabled = !e.target.checked;
             if (e.target.checked) dlAutoPickSubsLanguage();
@@ -4042,14 +4108,15 @@ document.addEventListener('DOMContentLoaded', function() {
             // selection already matches what was chosen here.
             const dlBurnCheckbox = document.getElementById('dlBurnCheckbox');
             const dlSubsPicker = document.getElementById('dlSubsPicker');
-            const dlBurnSpeed = document.getElementById('dlBurnSpeed');
             const burnEnabled = dlBurnCheckbox?.checked === true && dlSubsPicker?.value !== '';
             if (burnEnabled) window.currentSubtitleTrackIndex = Number(dlSubsPicker.value || 0);
-            // Read regardless of burnEnabled - downloadKAAEpisode/downloadKinoEpisode only ever
-            // consult this when they've independently decided hasSubtitle is true, so there's no
-            // path where a stale value here does anything.
-            window.currentBurnSpeed = Number(dlBurnSpeed?.value) || 2;
             fn(parseInt(dlQuality, 10) || undefined);
+            // fn() (downloadKAAEpisode/downloadKinoEpisode) calls ensureDownloadModal() as one of
+            // its first synchronous steps, before its first await - so by the time control
+            // returns here the modal DOM already exists. Calling it again explicitly too costs
+            // nothing (it's a no-op once #downloadModal exists) and stops this from being a silent
+            // trap if that internal ordering ever changes - see the note in mdlApplyBurnChoiceToModal.
+            window.ensureDownloadModal?.();
             const modalCheckbox = document.getElementById('downloadIncludeSubs');
             const modalPicker = document.getElementById('downloadSubsPicker');
             if (modalCheckbox) {
@@ -4064,6 +4131,349 @@ document.addEventListener('DOMContentLoaded', function() {
             if (subsChoiceEl) subsChoiceEl.style.display = burnEnabled ? '' : 'none';
             if (burnSectionEl) burnSectionEl.style.display = burnEnabled ? '' : 'none';
             setStatus(burnEnabled ? 'Started - burning subtitles in, see the download dock.' : 'Started - see the download dock.');
+        });
+
+        // ── Download Movie/TV panel ─────────────────────────────────────────────
+        // Kino/T1M both go through the existing downloadKinoEpisode (client-side ffmpeg.wasm
+        // pipeline, same one MegaPlay/NekoStream's anime downloads already use - it just reads
+        // whatever's currently loaded in window.currentVideo, provider-agnostic). RU-MV has no
+        // burn/ffmpeg step at all - it's a server-side-resolved direct file link, same
+        // showRuQualityMenu flow downloadRuMovie/downloadRuTv already use standalone.
+        const mdlPanel = document.getElementById('movieDownloadPanel');
+        let mdlSource = 'kino', mdlType = 'current', mdlQuality = '1080';
+
+        // Kino uses a different provider string per type ('kino' for movies, 'kinotv' for TV -
+        // see loadKinoVideo/loadKinoTvVideo) even though T1M's loadT1mVideo uses one ('t1m')
+        // for both, so this can't be a single flat `provider` field like the anime map's.
+        const MDL_PROVIDER_MAP = {
+            kino: { movie: 'srvKino', tv: 'srvKinoTv', providerMovie: 'kino', providerTv: 'kinotv' },
+            t1m: { movie: 'srvT1mM', tv: 'srvT1mTV', providerMovie: 't1m', providerTv: 't1m' }
+        };
+        const mdlExpectedProvider = (info) => info && (isSeries ? info.providerTv : info.providerMovie);
+
+        // Cheap PREVIEW of what subtitles a title probably has, so the picker doesn't have to
+        // sit on "click Download to find out" for a row that isn't actually loaded yet - same
+        // idea as the anime panel's dlCheckAvailability, just reusing /api/kino-subtitles
+        // (an ungated, tmdbId-based OpenSubtitles lookup, not tied to any one provider) instead
+        // of building a separate check per source. This is a PREVIEW, not the authoritative
+        // list - once a row's real playback loads, mdlPopulateSubsPicker switches to that
+        // provider's actual window.currentVideo.subtitles instead (may differ, e.g. T1M's own
+        // native tracks vs this OpenSubtitles-based guess).
+        const mdlSubtitlePreviewCache = new Map();
+        let mdlSubtitlePreviewInFlight = null;
+        const mdlCurrentEpisodeKey = () => {
+            const seasonSelectEl = document.getElementById('seasonSelect');
+            const season = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || 1;
+            const episode = document.getElementById('episodeSelect')?.value
+                || document.getElementById('episodeNum')?.textContent || 1;
+            return { season, episode, key: `${tmdbId || ''}:${season}:${episode}` };
+        };
+        async function mdlFetchSubtitlePreview() {
+            const { season, episode, key } = mdlCurrentEpisodeKey();
+            if (mdlSubtitlePreviewCache.has(key)) return mdlSubtitlePreviewCache.get(key);
+            if (mdlSubtitlePreviewInFlight?.key === key) return mdlSubtitlePreviewInFlight.promise;
+            const promise = (async () => {
+                try {
+                    const query = new URLSearchParams({ tmdbId: tmdbId || '', mediaType: isSeries ? 'tv' : 'movie' });
+                    if (isSeries) { query.set('season', season); query.set('episode', episode); }
+                    const res = await fetch(`/api/kino-subtitles?${query.toString()}`);
+                    const data = await res.json().catch(() => ({}));
+                    const tracks = Array.isArray(data?.tracks) ? data.tracks : [];
+                    mdlSubtitlePreviewCache.set(key, tracks);
+                    return tracks;
+                } catch (err) {
+                    console.warn('[MdlSubtitlePreview] failed:', err);
+                    mdlSubtitlePreviewCache.set(key, []);
+                    return [];
+                }
+            })();
+            mdlSubtitlePreviewInFlight = { key, promise };
+            promise.finally(() => { if (mdlSubtitlePreviewInFlight?.key === key) mdlSubtitlePreviewInFlight = null; });
+            return promise;
+        }
+
+        function mdlRenderSubsPickerOptions(picker, tracks, skipLabel) {
+            picker.innerHTML = '';
+            const skipOpt = document.createElement('option');
+            skipOpt.value = '';
+            skipOpt.textContent = skipLabel;
+            picker.appendChild(skipOpt);
+            tracks.forEach((track, index) => {
+                const opt = document.createElement('option');
+                opt.value = String(index);
+                opt.textContent = track.lang || track.language || `Subtitle ${index + 1}`;
+                picker.appendChild(opt);
+            });
+        }
+
+        const mdlPopulateSubsPicker = () => {
+            const picker = document.getElementById('mdlSubsPicker');
+            const checkbox = document.getElementById('mdlBurnCheckbox');
+            if (!picker || !checkbox) return;
+            const info = MDL_PROVIDER_MAP[mdlSource];
+            const expectedServer = info && (isSeries ? info.tv : info.movie);
+            const isActive = info && window.currentServer === expectedServer && window.currentVideo?.provider === mdlExpectedProvider(info);
+            if (isActive) {
+                const tracks = Array.isArray(window.currentVideo?.subtitles)
+                    ? window.currentVideo.subtitles.filter(t => t?.url) : [];
+                mdlRenderSubsPickerOptions(picker, tracks, tracks.length ? 'Skip' : 'No subtitles available');
+                picker.disabled = !checkbox.checked;
+                return;
+            }
+            // Not actively loaded yet - show a preview from cache if we already have one for
+            // this episode, kick off a fetch if not (mdlPopulateSubsPicker gets called again by
+            // the panel's poll once it resolves, so this doesn't need its own re-render callback).
+            const { key } = mdlCurrentEpisodeKey();
+            if (mdlSubtitlePreviewCache.has(key)) {
+                const tracks = mdlSubtitlePreviewCache.get(key);
+                mdlRenderSubsPickerOptions(picker, tracks, tracks.length ? 'Skip' : 'No subtitles found for this title');
+            } else {
+                mdlRenderSubsPickerOptions(picker, [], 'Checking subtitles...');
+                mdlFetchSubtitlePreview();
+            }
+            picker.disabled = !checkbox.checked;
+        };
+
+        const mdlSyncRowsForSource = () => {
+            const isRumv = mdlSource === 'rumv';
+            const burnWrap = document.getElementById('mdlBurnWrap');
+            const typeWrap = document.getElementById('mdlTypeWrap');
+            if (burnWrap) burnWrap.style.display = isRumv ? 'none' : 'block';
+            // "Entire Season" batches sequential single-episode downloads - meaningless for a
+            // movie (one file, no season concept), so the whole Type row only applies to TV.
+            if (typeWrap) typeWrap.style.display = isSeries ? 'block' : 'none';
+            if (!isSeries) mdlType = 'current';
+            mdlPopulateSubsPicker();
+        };
+
+        // Opening this panel right after a page load / server switch can beat the player to the
+        // punch - window.currentVideo.subtitles isn't populated yet when mdlPopulateSubsPicker
+        // runs once at open time, so it renders "No subtitles available" and nothing ever
+        // rechecks it (confirmed: flipping the source row afterward re-runs the same populate
+        // call and it suddenly finds them, since the real load had finished by then). Poll while
+        // the panel's actually open instead of relying on the user to nudge it via a row click.
+        let mdlSubsPollTimer = null;
+        function startMdlSubsPoll() {
+            stopMdlSubsPoll();
+            mdlSubsPollTimer = setInterval(mdlPopulateSubsPicker, 1000);
+        }
+        function stopMdlSubsPoll() {
+            if (mdlSubsPollTimer) { clearInterval(mdlSubsPollTimer); mdlSubsPollTimer = null; }
+        }
+
+        function openMdlPanel() {
+            if (!mdlPanel) return;
+            const opening = mdlPanel.style.display === 'none' || !mdlPanel.style.display;
+            mdlPanel.style.display = opening ? 'block' : 'none';
+            if (opening) { mdlSyncRowsForSource(); startEpisodePanelHeightSyncBurst(); startMdlSubsPoll(); }
+            else stopMdlSubsPoll();
+        }
+        document.getElementById('btnDownloadMovie')?.addEventListener('click', openMdlPanel);
+        document.getElementById('btnDownloadTv')?.addEventListener('click', openMdlPanel);
+        document.getElementById('btnCloseMovieDownloadPanel')?.addEventListener('click', () => {
+            if (mdlPanel) mdlPanel.style.display = 'none';
+            stopMdlSubsPoll();
+        });
+
+        document.getElementById('mdlSourceRow')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-mdl-source]');
+            if (!btn) return;
+            mdlSource = btn.dataset.mdlSource;
+            document.querySelectorAll('#mdlSourceRow [data-mdl-source]').forEach(b => b.classList.toggle('active', b === btn));
+            mdlSyncRowsForSource();
+        });
+        document.getElementById('mdlTypeRow')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-mdl-type]');
+            if (!btn) return;
+            mdlType = btn.dataset.mdlType;
+            document.querySelectorAll('#mdlTypeRow [data-mdl-type]').forEach(b => b.classList.toggle('active', b === btn));
+        });
+        document.getElementById('mdlQualityRow')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-mdl-quality]');
+            if (!btn) return;
+            mdlQuality = btn.dataset.mdlQuality;
+            document.querySelectorAll('#mdlQualityRow [data-mdl-quality]').forEach(b => b.classList.toggle('active', b === btn));
+        });
+        document.getElementById('mdlBurnCheckbox')?.addEventListener('change', (e) => {
+            const picker = document.getElementById('mdlSubsPicker');
+            if (picker) picker.disabled = !e.target.checked;
+        });
+
+        // Same mirroring pattern the anime panel's btnDownloadGo handler uses just above -
+        // downloadKinoEpisode reads the shared #downloadIncludeSubs/#downloadSubsPicker modal,
+        // not this panel's own copies directly.
+        function mdlApplyBurnChoiceToModal() {
+            // This panel calls this BEFORE downloadKinoEpisode() (has to - it needs the burn
+            // choice mirrored in before the function starts reading it), unlike the anime panel
+            // below which happens to call fn() first. #downloadModal only gets built the first
+            // time ensureDownloadModal() runs, so without this, the very first download of the
+            // page load had no #downloadIncludeSubs to mirror into yet and silently dropped the
+            // burn choice (confirmed live: worked from the second download on, once the modal
+            // DOM already existed from the first run).
+            window.ensureDownloadModal?.();
+            const burnCheckbox = document.getElementById('mdlBurnCheckbox');
+            const subsPicker = document.getElementById('mdlSubsPicker');
+            const burnEnabled = burnCheckbox?.checked === true && subsPicker?.value !== '';
+            if (burnEnabled) window.currentSubtitleTrackIndex = Number(subsPicker.value || 0);
+            const modalCheckbox = document.getElementById('downloadIncludeSubs');
+            const modalPicker = document.getElementById('downloadSubsPicker');
+            if (modalCheckbox) {
+                modalCheckbox.checked = burnEnabled;
+                modalCheckbox.dispatchEvent(new Event('change'));
+            }
+            if (modalPicker && burnEnabled) modalPicker.value = String(window.currentSubtitleTrackIndex || 0);
+            return burnEnabled;
+        }
+
+        // waitForProvider alone isn't enough for a season batch - the provider string stays the
+        // same (e.g. 'kino') across an episode change on the same server, so it'd resolve true
+        // instantly against the PREVIOUS episode's still-loaded state instead of actually
+        // waiting for the new one to finish loading.
+        function waitForEpisodeReady(expectedProvider, targetSeason, targetEpisode, timeoutMs = 20000) {
+            return new Promise((resolve) => {
+                const startedAt = Date.now();
+                const check = () => {
+                    const cv = window.currentVideo;
+                    if (cv?.provider === expectedProvider &&
+                        String(cv?.season) === String(targetSeason) &&
+                        String(cv?.episode) === String(targetEpisode)) return resolve(true);
+                    if (Date.now() - startedAt > timeoutMs) return resolve(false);
+                    setTimeout(check, 300);
+                };
+                check();
+            });
+        }
+
+        // Switches to the target server/episode if needed (movies skip the season/episode
+        // dropdown dance entirely), waits for it to actually be the thing loaded, applies the
+        // burn choice, then awaits the real download - the await matters for the season-batch
+        // loop below, so two ffmpeg.wasm instances are never running against each other.
+        async function mdlDownloadOneEpisode(setStatus, season, episode) {
+            const info = MDL_PROVIDER_MAP[mdlSource];
+            if (!info) { setStatus('Unknown source.'); return false; }
+            const expectedServer = isSeries ? info.tv : info.movie;
+            const expectedProvider = mdlExpectedProvider(info);
+            const alreadyActive = window.currentServer === expectedServer &&
+                window.currentVideo?.provider === expectedProvider &&
+                (!isSeries || (String(window.currentVideo?.season) === String(season) && String(window.currentVideo?.episode) === String(episode)));
+            // If a language was picked while the row was still just a PREVIEW (see
+            // mdlFetchSubtitlePreview) its picker index means nothing once real tracks load -
+            // mdlPopulateSubsPicker rebuilds the <select> from scratch below, which resets the
+            // selection to index 0 regardless. Capture the picked LANGUAGE TEXT beforehand and
+            // re-match it by name against the real list after the switch, so the choice survives.
+            const subsPickerEl = document.getElementById('mdlSubsPicker');
+            const preSwitchLangText = (!alreadyActive && subsPickerEl?.selectedIndex > 0)
+                ? subsPickerEl.options[subsPickerEl.selectedIndex]?.textContent
+                : null;
+            if (!alreadyActive) {
+                setStatus(`Switching to ${mdlSource.toUpperCase()}${isSeries ? ` (S${season}E${episode})` : ''}...`);
+                if (isSeries) {
+                    const seasonSelectEl = document.getElementById('seasonSelect');
+                    if (seasonSelectEl && String(seasonSelectEl.value) !== String(season) && seasonSelectEl.value !== 'all') {
+                        seasonSelectEl.value = String(season);
+                        // populateEpisodes (seasonSelect's own onchange) rebuilds episodeSelect's
+                        // options asynchronously - give it a moment before touching episodeSelect.
+                        seasonSelectEl.dispatchEvent(new Event('change'));
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+                    const episodeSelectEl = document.getElementById('episodeSelect');
+                    // Set the value directly, no dispatched event - episodeSelect's own onchange
+                    // would call updateSource(currentServer) immediately with the WRONG (stale)
+                    // server if a switch is also happening this same call. The explicit
+                    // updateSource(expectedServer) below is the only load that should fire.
+                    if (episodeSelectEl) episodeSelectEl.value = String(episode);
+                }
+                updateSource(expectedServer);
+                const ready = isSeries
+                    ? await waitForEpisodeReady(expectedProvider, season, episode)
+                    : await waitForProvider(expectedProvider);
+                if (!ready) {
+                    setStatus(`${mdlSource.toUpperCase()} didn't load in time${isSeries ? ` for S${season}E${episode}` : ''} - stopping here.`);
+                    return false;
+                }
+                mdlPopulateSubsPicker();
+                if (preSwitchLangText && subsPickerEl) {
+                    const match = Array.from(subsPickerEl.options).find(o => o.textContent === preSwitchLangText);
+                    // No match just means this provider's real subtitles don't have that
+                    // language - stays on "Skip" rather than guessing at a different one.
+                    if (match) subsPickerEl.value = match.value;
+                }
+            }
+            mdlApplyBurnChoiceToModal();
+            await window.downloadKinoEpisode?.(parseInt(mdlQuality, 10) || undefined);
+            return true;
+        }
+
+        document.getElementById('btnMovieDownloadGo')?.addEventListener('click', async () => {
+            const statusEl = document.getElementById('mdlStatusText');
+            const setStatus = (t) => { if (statusEl) statusEl.textContent = t; };
+            const seasonSelectEl = document.getElementById('seasonSelect');
+            const currentSeason = (seasonSelectEl?.value === 'all' ? seasonSelectEl?.dataset?.playSeason : seasonSelectEl?.value) || 1;
+            const currentEpisode = document.getElementById('episodeSelect')?.value
+                || document.getElementById('episodeNum')?.textContent || 1;
+            const mdlGoBtn = document.getElementById('btnMovieDownloadGo');
+
+            if (mdlSource === 'rumv') {
+                if (mdlType === 'season' && isSeries) {
+                    // No burn/ffmpeg step for RU-MV - each episode is just a resolve + open-a-
+                    // link, so this moves faster than the Kino/T1M loop below. Still staggered,
+                    // so a burst of window.open calls doesn't read as popup spam to the browser.
+                    const episodeOptions = Array.from(document.getElementById('episodeSelect')?.options || [])
+                        .map(o => o.value).filter(Boolean);
+                    const startIdx = episodeOptions.indexOf(String(currentEpisode));
+                    const targets = (startIdx >= 0 ? episodeOptions.slice(startIdx) : [String(currentEpisode)]).slice(0, 10);
+                    setStatus(`Resolving ${targets.length} episode link(s)...`);
+                    const title = document.getElementById('title')?.textContent.trim() || '';
+                    let opened = 0;
+                    for (const ep of targets) {
+                        try {
+                            const query = new URLSearchParams({ tmdbId: tmdbId || '', title, season: currentSeason, episode: ep });
+                            const res = await fetch(`/api/tv-ru-download?${query.toString()}`);
+                            const data = await res.json().catch(() => ({}));
+                            const link = Array.isArray(data?.links) ? data.links[0] : null;
+                            if (res.ok && link?.url) {
+                                window.open(link.url, '_blank', 'noopener,noreferrer');
+                                window.recordDownloadHistory?.({
+                                    item_type: 'tv',
+                                    title,
+                                    thumbnail: window.currentDownloadContext?.thumbnail,
+                                    season: currentSeason,
+                                    episode: ep,
+                                    subsBurned: false
+                                });
+                                opened++;
+                            }
+                        } catch (_) { /* keep going - one bad episode shouldn't stop the rest */ }
+                        await new Promise(r => setTimeout(r, 600));
+                    }
+                    setStatus(`Opened ${opened}/${targets.length} download link(s) in new tabs.`);
+                    return;
+                }
+                // Single episode/movie - reuses the existing RU-MV flow exactly (its own quality
+                // menu, its own status/label handling on the button itself).
+                if (isSeries) window.downloadRuTv?.(mdlGoBtn);
+                else window.downloadRuMovie?.(mdlGoBtn);
+                return;
+            }
+
+            // Kino / T1M
+            if (mdlType === 'season' && isSeries) {
+                const episodeOptions = Array.from(document.getElementById('episodeSelect')?.options || [])
+                    .map(o => o.value).filter(Boolean);
+                const startIdx = episodeOptions.indexOf(String(currentEpisode));
+                const targets = (startIdx >= 0 ? episodeOptions.slice(startIdx) : [String(currentEpisode)]).slice(0, 10);
+                for (let i = 0; i < targets.length; i++) {
+                    setStatus(`Episode ${i + 1}/${targets.length} (E${targets[i]})...`);
+                    const ok = await mdlDownloadOneEpisode(setStatus, currentSeason, targets[i]);
+                    if (!ok) return;
+                }
+                setStatus(`Done - downloaded ${targets.length} episode(s).`);
+                return;
+            }
+
+            setStatus('Starting...');
+            const ok = await mdlDownloadOneEpisode(setStatus, currentSeason, currentEpisode);
+            setStatus(ok ? 'Started - see the download dock.' : 'Could not start the download.');
         });
 
         const back10 = document.getElementById('btnBack10');

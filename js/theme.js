@@ -10,7 +10,8 @@ const themes = {
         '--bg-primary': '#000000',
         '--bg-secondary': '#0a0a0a',
         '--bg-tertiary': '#1a1a1a',
-        '--bg-card': '#111111',
+        '--bg-card': '#090909',
+        // '--bg-card': '#111111',
         '--bg-hover': '#222222',
         
         // Text colors
@@ -24,7 +25,8 @@ const themes = {
         '--accent-hover': '#ff9d5c',
         
         // Border colors
-        '--border-color': 'rgba(43, 43, 43, 1)',
+        '--border-color': 'rgba(22, 22, 22, 1)',
+        // '--border-color': 'rgba(43, 43, 43, 1)',
         '--border-light': 'rgba(255, 255, 255, 0.1)',
         
         // Overlay colors

@@ -2603,13 +2603,30 @@ function safeReload() {
     location.reload();
 }
 
+// Safety net for any message that ends up much longer than a toast is meant for (e.g. one
+// that accidentally embeds a full URL/token) - truncates instead of letting an unbroken
+// string blow the toast's layout out across the page.
+function truncateToastMessage(message, maxLen = 160) {
+    const text = String(message ?? '');
+    return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
+}
+
+function escapeToastHtml(text) {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 window.showLimitToast = function(message) {
     const existing = document.querySelector('.limit-toast');
     if (existing) existing.remove();
-    
+
     const toast = document.createElement('div');
     toast.className = 'limit-toast';
-    toast.innerHTML = `<span>${message}</span><div class="toast-progress"></div>`;
+    toast.innerHTML = `<span>${escapeToastHtml(truncateToastMessage(message))}</span><div class="toast-progress"></div>`;
     document.body.appendChild(toast);
 
     const progressBar = toast.querySelector('.toast-progress');
@@ -2628,7 +2645,7 @@ window.showLongToast = function(message, durationMs = 8000) {
 
     const toast = document.createElement('div');
     toast.className = 'limit-toast';
-    toast.innerHTML = `<span>${message}</span><div class="toast-progress"></div>`;
+    toast.innerHTML = `<span>${escapeToastHtml(truncateToastMessage(message))}</span><div class="toast-progress"></div>`;
     document.body.appendChild(toast);
 
     const progressBar = toast.querySelector('.toast-progress');

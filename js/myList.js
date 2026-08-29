@@ -576,7 +576,93 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     await loadRecentPosts(userUID);
+    await renderMyDownloads();
 });
+
+// "My Downloads" section - populated from activity.db's user_downloads table, written to by
+// js/downloadEpisode.js (KAA/Kino/T1M, on completion) and js/moviePlayer.js (RU-MV, on link
+// open - it has no ffmpeg step/completion event to hook, opening the link IS the download).
+async function renderMyDownloads() {
+    const grid = document.getElementById('myDownloadsGrid');
+    if (!grid) return;
+    const activityUID = typeof getActivityUID === 'function' ? getActivityUID() : null;
+    if (!activityUID) {
+        grid.innerHTML = '<p style="color: var(--text-muted); padding: 20px; text-align: center;">Sign in to track your downloads.</p>';
+        return;
+    }
+    try {
+        const res = await fetch(`/activity/downloads?userUID=${encodeURIComponent(activityUID)}`);
+        const rows = await res.json();
+        if (!Array.isArray(rows) || rows.length === 0) {
+            grid.innerHTML = '<p style="color: var(--text-muted); padding: 20px; text-align: center;">No downloads yet.</p>';
+            return;
+        }
+        grid.innerHTML = '';
+        rows.forEach(row => grid.appendChild(buildDownloadRow(row)));
+    } catch (err) {
+        console.error('[MyDownloads] load error:', err);
+        grid.innerHTML = '<p style="color: var(--text-muted); padding: 20px; text-align: center;">Could not load downloads.</p>';
+    }
+}
+
+function buildDownloadRow(row) {
+    const el = document.createElement('div');
+    el.style.cssText = 'display:flex;align-items:center;gap:12px;padding:10px 12px;background:#090909;border-radius:8px;border:1px solid rgb(22 22 22);';
+
+    const thumb = document.createElement('img');
+    thumb.src = row.thumbnail || '/img/LOGO_Short.png';
+    thumb.onerror = () => { thumb.src = '/img/LOGO_Short.png'; };
+    thumb.style.cssText = 'width:52px;height:78px;border-radius:6px;object-fit:cover;flex-shrink:0;';
+    el.appendChild(thumb);
+
+    const info = document.createElement('div');
+    info.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;';
+
+    const titleLine = document.createElement('h4');
+    titleLine.style.cssText = 'margin:0;font-size:0.95rem;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    titleLine.textContent = row.title || 'Untitled';
+    info.appendChild(titleLine);
+
+    const metaBits = [];
+    if (row.season != null && row.episode != null) metaBits.push(`S${row.season}E${row.episode}`);
+    else if (row.type === 'movie') metaBits.push('Movie');
+    if (row.type === 'anime' && row.audio) metaBits.push(row.audio.toUpperCase());
+    if (row.subsBurned) metaBits.push('Subs burned in');
+    if (row.downloadedAt) {
+        metaBits.push(new Date(row.downloadedAt * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }));
+    }
+    const metaLine = document.createElement('span');
+    metaLine.style.cssText = 'font-size:0.8rem;color:var(--text-muted);';
+    metaLine.textContent = metaBits.join(' · ');
+    info.appendChild(metaLine);
+
+    el.appendChild(info);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.title = 'Remove from history';
+    removeBtn.style.cssText = 'background:none;border:none;color:var(--text-muted);cursor:pointer;padding:6px;flex-shrink:0;';
+    removeBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>';
+    removeBtn.addEventListener('click', async () => {
+        const activityUID = typeof getActivityUID === 'function' ? getActivityUID() : null;
+        if (!activityUID) return;
+        removeBtn.disabled = true;
+        try {
+            await fetch('/activity/downloads/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userUID: activityUID, id: row.id })
+            });
+            el.remove();
+        } catch (err) {
+            console.error('[MyDownloads] remove error:', err);
+            removeBtn.disabled = false;
+        }
+    });
+    el.appendChild(removeBtn);
+
+    return el;
+}
 
 // Your Comments (anime/movie switch) -- was "Recent Posts", pulling from the
 // forum via an N+1 fetch (every forum movie, then every one of ITS threads,

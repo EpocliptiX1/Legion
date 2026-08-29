@@ -429,17 +429,26 @@
     "userPassword": "$2b$10$cNEPvsPkiIiwzSqw1A.qEutpmYK..DtbImPv.xz/VOMzMNMN/xf3a"
   },
   {
-    "username": "obsidianhaze",
     "userUID": 34,
-    "userEmail": "obsidianhaze@mailbox.com",
-    "userTier": "Premium",
+    "username": "w2gplaytester25",
+    "userEmail": "w2gplaytester25@example.com",
+    "userTier": "Free",
     "userLanguage": "en",
-    "searchCount": 35,
-    "viewCount": 9,
+    "searchCount": 0,
+    "viewCount": 0,
     "allUIDs": [
-      34
+      "g_0359bc9a4850b8b649de7ff9",
+      "34"
     ],
-    "userPassword": "$2b$10$cNEPvsPkiIiwzSqw1A.qEutpmYK..DtbImPv.xz/VOMzMNMN/xf3a"
+    "userPassword": "$2b$10$ybEsv6aiOl7YK.Red1iRR.ZOqCzgfljYRt.Ks81XCYM1hgy4E7tlW",
+    "accountUID": "g_0359bc9a4850b8b649de7ff9",
+    "is_guest": 0,
+    "login_code": "9562823928",
+    "login_code_expires_at": 2100099309,
+    "created_at": 1784739309,
+    "last_seen": 1787600513,
+    "profile_pic": null,
+    "watch2gether_code": "8QSZ596D"
   },
   {
     "username": "lostbutlearning",
@@ -1350,5 +1359,557 @@
       104
     ],
     "userPassword": "$2b$10$cNEPvsPkiIiwzSqw1A.qEutpmYK..DtbImPv.xz/VOMzMNMN/xf3a"
+  },
+  {
+    "userUID": 612983,
+    "username": "LegionCinemaAdmin@gmail.com",
+    "userEmail": "watch3gether@gmail.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "g_0d8ba031bd9f8fe3244c76c6",
+      "612983"
+    ],
+    "userPassword": "$2b$10$FqZ8AJqo1xRxX.1IaL9I3uIkZ6vYbW.35VB/h/lMTUiUghwi61Vxe",
+    "accountUID": "g_0d8ba031bd9f8fe3244c76c6",
+    "is_guest": 0,
+    "login_code": "6241087460",
+    "login_code_expires_at": 2101481570,
+    "created_at": 1786121570,
+    "last_seen": 1786121601,
+    "profile_pic": null,
+    "watch2gether_code": null
+  },
+  {
+    "userUID": 612984,
+    "username": "guestaccountbutnotrlly@gmail.com",
+    "userEmail": "guestaccountbutnotrlly@gmail.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "g_7df3d8eb9bbd17dddd2196eb",
+      "612984"
+    ],
+    "userPassword": "$2b$10$xZhwiUBLp8rP2Yc3NSKO6ugRFzPvLUeXkFu9e5rZwor8iWmid0ebK",
+    "accountUID": "g_7df3d8eb9bbd17dddd2196eb",
+    "is_guest": 0,
+    "login_code": "3127751893",
+    "login_code_expires_at": 2101481803,
+    "created_at": 1786121803,
+    "last_seen": 1786121851,
+    "profile_pic": null,
+    "watch2gether_code": null
+  },
+  {
+    "userUID": 632489,
+    "username": "Family",
+    "userEmail": "tanyashab@yahoo.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "g_08d693a859631315841dba65",
+      "632489"
+    ],
+    "userPassword": "$2b$10$3zDe8lszVSpC5nXuxyoAxesZcXx5C5Tcg77ZnuHISgZyBqaS6DEQK",
+    "accountUID": "g_08d693a859631315841dba65",
+    "is_guest": 0,
+    "login_code": "8305183165",
+    "login_code_expires_at": 2102055594,
+    "created_at": 1786695594,
+    "last_seen": 1786695673,
+    "profile_pic": null,
+    "watch2gether_code": null
+  },
+  {
+    "username": "pentestA",
+    "userUID": 3999722566,
+    "accountUID": "3999722566",
+    "userEmail": "pentest-a-test@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722566"
+    ],
+    "userPassword": "$2b$10$CTdUzE5ZT3TdWg4zHvhc4OlKkq3DdazkW3MhBNB3TVWApveWWVfze",
+    "is_guest": 0,
+    "created_at": 1786990403,
+    "last_seen": 1786990403
+  },
+  {
+    "username": "pentestB",
+    "userUID": 3999722567,
+    "accountUID": "3999722567",
+    "userEmail": "pentest-b-victim@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722567"
+    ],
+    "userPassword": "$2b$10$dfPJuz2tM8zDJvLzUg69MO1QxcrerOlvVn8mIBF83R1TH6RnCXHvO",
+    "is_guest": 0,
+    "created_at": 1786990404,
+    "last_seen": 1786990404
+  },
+  {
+    "username": "claude_verify_test",
+    "userUID": 3999722568,
+    "accountUID": "3999722568",
+    "userEmail": "claude_verify_test@example.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722568"
+    ],
+    "userPassword": "$2b$10$f.FyTa5PgiyKusUZUsz1HODrbSbYLOef0bThU0gJO44aWexeyuHVW",
+    "is_guest": 0,
+    "created_at": 1786991223,
+    "last_seen": 1786991223
+  },
+  {
+    "username": "pentestC",
+    "userUID": 3999722569,
+    "accountUID": "3999722569",
+    "userEmail": "pentest-c-check@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722569"
+    ],
+    "userPassword": "$2b$10$FS8uSD0fTlo4SDTbjoXVc.6Z8pWE6BBOlkBAuiih2mikHccGqqf9W",
+    "is_guest": 0,
+    "created_at": 1786991598,
+    "last_seen": 1786991598
+  },
+  {
+    "username": "claude_verify_test2",
+    "userUID": 3999722570,
+    "accountUID": "3999722570",
+    "userEmail": "claude_verify_test2@example.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722570"
+    ],
+    "userPassword": "$2b$10$hZQkSccPhzfDsSKgexuWBu6oCpXZ7bzAY8a.ZfXSx3rAqZF.f4q2q",
+    "is_guest": 0,
+    "created_at": 1786992586,
+    "last_seen": 1786992586
+  },
+  {
+    "username": "claude_merge_A",
+    "userUID": 3999722571,
+    "accountUID": "3999722571",
+    "userEmail": "claude_merge_a@example.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722571"
+    ],
+    "userPassword": "$2b$10$VeRMHf.i2Y4fxreBU6xN3OgT0xmkvN0aY3NiLe3tyOQJhTDKONn1y",
+    "is_guest": 0,
+    "created_at": 1786992648,
+    "last_seen": 1786992648
+  },
+  {
+    "username": "claude_merge_B",
+    "userUID": 3999722572,
+    "accountUID": "3999722572",
+    "userEmail": "claude_merge_b@example.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722572"
+    ],
+    "userPassword": "$2b$10$yE3l4s8faIvToRYIz03ZieJBR5/hnZ8Jzgl3/1HLhfThh4h0anySu",
+    "is_guest": 0,
+    "created_at": 1786992648,
+    "last_seen": 1786992648
+  },
+  {
+    "username": "claude_final_sweep",
+    "userUID": 3999722572,
+    "accountUID": "3999722572",
+    "userEmail": "claude_final_sweep@example.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722572"
+    ],
+    "userPassword": "$2b$10$d48wBt6.kI4rvX3.BsofOuGCx66NOJrA5.CwenQ8K6Yq0z0PuI0WW",
+    "is_guest": 0,
+    "created_at": 1786992733,
+    "last_seen": 1786992733
+  },
+  {
+    "username": "pentestD",
+    "userUID": 3999722573,
+    "accountUID": "3999722573",
+    "userEmail": "pentest-d@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722573"
+    ],
+    "userPassword": "$2b$10$DjXZscglOkxSM24X1rlvF.diybNbQjVIoxHzt18qwOeInpcuyIfti",
+    "is_guest": 0,
+    "created_at": 1786992826,
+    "last_seen": 1786992826
+  },
+  {
+    "username": "pentestE",
+    "userUID": 3999722574,
+    "accountUID": "3999722574",
+    "userEmail": "pentest-e@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722574"
+    ],
+    "userPassword": "$2b$10$5dcsyUm.V1FVHj2.FARkW.gQslklFC43RxpQLepUdiqXCvFY5wptm",
+    "is_guest": 0,
+    "created_at": 1786992826,
+    "last_seen": 1786992826
+  },
+  {
+    "username": "pentestF",
+    "userUID": 3999722574,
+    "accountUID": "3999722574",
+    "userEmail": "pentest-f@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722574"
+    ],
+    "userPassword": "$2b$10$aTAmLjHrCSqyf6wwjqTV0.mL/nwslbTdAcCuTrB6zL1f4EeoH4IYe",
+    "is_guest": 0,
+    "created_at": 1786992903,
+    "last_seen": 1786992903
+  },
+  {
+    "username": "pentestG",
+    "userUID": 3999722575,
+    "accountUID": "3999722575",
+    "userEmail": "pentest-g@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722575"
+    ],
+    "userPassword": "$2b$10$qqhneaThlr2vDTZoFgcsI.xPgQph4LPYtxgKjPObYkoqXRmstO1wK",
+    "is_guest": 0,
+    "created_at": 1786992903,
+    "last_seen": 1786992903
+  },
+  {
+    "username": "claude_xss_test",
+    "userUID": 3999722576,
+    "accountUID": "3999722576",
+    "userEmail": "claude_xss_test@example.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722576"
+    ],
+    "userPassword": "$2b$10$YG6vOTcntg6ilBm7cNfO6OdkwEV.KTtyzg7J1tE5GXXq31M/Ca.JC",
+    "is_guest": 0,
+    "created_at": 1786993505,
+    "last_seen": 1786993505
+  },
+  {
+    "username": "weakpw1",
+    "userUID": 3999722577,
+    "accountUID": "3999722577",
+    "userEmail": "weakpw1@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722577"
+    ],
+    "userPassword": "$2b$10$8ujCf8qRowUeS9BUso2vEekObBaajKGe3DdyLyQPsMWeNj7bFV.QW",
+    "is_guest": 0,
+    "created_at": 1786993763,
+    "last_seen": 1786993763
+  },
+  {
+    "username": "weakpw2",
+    "userUID": 3999722578,
+    "accountUID": "3999722578",
+    "userEmail": "weakpw2@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722578"
+    ],
+    "userPassword": "$2b$10$97VR5fLL7dDsYm4IQZ7s9egLLqwPhExp0hEjYwOAslq.JpfgVuIsK",
+    "is_guest": 0,
+    "created_at": 1786993763,
+    "last_seen": 1786993763
+  },
+  {
+    "username": "port4000test1",
+    "userUID": 3999722579,
+    "accountUID": "3999722579",
+    "userEmail": "port4000test1@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722579"
+    ],
+    "userPassword": "$2b$10$Mo6MxqnlQ0QbYQxUQQeD.OYcBfEirMInOM35Tw2EdCKNw.E47zN52",
+    "is_guest": 0,
+    "created_at": 1787038445,
+    "last_seen": 1787038445
+  },
+  {
+    "username": "port4000test2",
+    "userUID": 3999722580,
+    "accountUID": "3999722580",
+    "userEmail": "port4000test2@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722580"
+    ],
+    "userPassword": "$2b$10$5v.CKOytX3qLa.1AWEFr0e2wSNqRvmsbgpTLbXrlF2hyS8YbScTRm",
+    "is_guest": 0,
+    "created_at": 1787038445,
+    "last_seen": 1787038445
+  },
+  {
+    "username": "port4000test3",
+    "userUID": 3999722581,
+    "accountUID": "3999722581",
+    "userEmail": "port4000test3@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722581"
+    ],
+    "userPassword": "$2b$10$4wrn8J7vLlQMaTkd8/dGeu9XWdqBdzU/sGw7G2UKVu7Yn2eTroffm",
+    "is_guest": 0,
+    "created_at": 1787038445,
+    "last_seen": 1787038445
+  },
+  {
+    "username": "port4000test4",
+    "userUID": 3999722582,
+    "accountUID": "3999722582",
+    "userEmail": "port4000test4@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722582"
+    ],
+    "userPassword": "$2b$10$wBG7Uxp9S6bEza2rfy.Ri.f1oUgF59Bym9mTf.AEdwjLCsPsUtZFu",
+    "is_guest": 0,
+    "created_at": 1787038445,
+    "last_seen": 1787038445
+  },
+  {
+    "username": "port4000test5",
+    "userUID": 3999722583,
+    "accountUID": "3999722583",
+    "userEmail": "port4000test5@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722583"
+    ],
+    "userPassword": "$2b$10$AOFIPN6lvg1EYvM8aSqUI..QoMbHVICJKXMY3m6hiu98ZkaGYBKXy",
+    "is_guest": 0,
+    "created_at": 1787038445,
+    "last_seen": 1787038445
+  },
+  {
+    "username": "port4000test6",
+    "userUID": 3999722584,
+    "accountUID": "3999722584",
+    "userEmail": "port4000test6@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722584"
+    ],
+    "userPassword": "$2b$10$tq9oDwikmf8ztoqYtRN43OKLBhQtF0GZyzZQtzdj.akPELnOTaazm",
+    "is_guest": 0,
+    "created_at": 1787038445,
+    "last_seen": 1787038445
+  },
+  {
+    "username": "port4000test7",
+    "userUID": 3999722585,
+    "accountUID": "3999722585",
+    "userEmail": "port4000test7@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722585"
+    ],
+    "userPassword": "$2b$10$8dL5IfMxgTxHTdTA2NbwleVjxNaGQ6YeZiwDmB2T7xlq5W1uD0qe.",
+    "is_guest": 0,
+    "created_at": 1787038446,
+    "last_seen": 1787038446
+  },
+  {
+    "username": "port4000test8",
+    "userUID": 3999722586,
+    "accountUID": "3999722586",
+    "userEmail": "port4000test8@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722586"
+    ],
+    "userPassword": "$2b$10$tTtHq4weFGPZEIZnsllTyuCv0aGz6oKzBUjHBByNe2oYiWi5Koypu",
+    "is_guest": 0,
+    "created_at": 1787038446,
+    "last_seen": 1787038446
+  },
+  {
+    "username": "port4000test9",
+    "userUID": 3999722587,
+    "accountUID": "3999722587",
+    "userEmail": "port4000test9@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722587"
+    ],
+    "userPassword": "$2b$10$QxGY9DkhbEdPzMNZW9J3bOPmxX7P91Ky9qUyG34J6568x5uGDFBDu",
+    "is_guest": 0,
+    "created_at": 1787038446,
+    "last_seen": 1787038446
+  },
+  {
+    "username": "port4000test10",
+    "userUID": 3999722588,
+    "accountUID": "3999722588",
+    "userEmail": "port4000test10@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722588"
+    ],
+    "userPassword": "$2b$10$uCJ7bPW0g5rQo.md02HlA.BwWyYT3xKd1wbHA3kh5hzVjUS4CfmnC",
+    "is_guest": 0,
+    "created_at": 1787038446,
+    "last_seen": 1787038446
+  },
+  {
+    "username": "port4kuser",
+    "userUID": 3999722589,
+    "accountUID": "3999722589",
+    "userEmail": "port4kuser@example.invalid",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "3999722589"
+    ],
+    "userPassword": "$2b$10$R6jSW.K9CD1jyp5qB0cRzefc.GKFH6x68eKVHKNd2SsLEc9nvXj76",
+    "is_guest": 0,
+    "created_at": 1787038471,
+    "last_seen": 1787038471
+  },
+  {
+    "userUID": 3999760668,
+    "username": "dwdw",
+    "userEmail": "dwd@gmail.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "g_928400a422108accd1abbb00",
+      "3999760668"
+    ],
+    "userPassword": "$2b$10$L2gqWRjBp3kQHoQudHcYKuant6KhW2aTQdJJDL6POeRSIBJZ2Ti5K",
+    "accountUID": "g_928400a422108accd1abbb00",
+    "is_guest": 0,
+    "login_code": "5139958651",
+    "login_code_expires_at": 2102960441,
+    "created_at": 1787600440,
+    "last_seen": 1787600455,
+    "profile_pic": null,
+    "watch2gether_code": null
+  },
+  {
+    "userUID": 3999939531,
+    "username": "Tanya",
+    "userEmail": "tanyashab14@gmail.com",
+    "userTier": "Free",
+    "userLanguage": "en",
+    "searchCount": 0,
+    "viewCount": 0,
+    "allUIDs": [
+      "g_d7bacbc8645de7b46dc90694",
+      "3999939531"
+    ],
+    "userPassword": "$2b$10$gtc8S2YakyBOovLqpLxwt.7zz3K6uudxWMenx4dtfk/FS3in3TmH.",
+    "accountUID": "g_d7bacbc8645de7b46dc90694",
+    "is_guest": 0,
+    "login_code": "1506340196",
+    "login_code_expires_at": 2103294170,
+    "created_at": 1787934170,
+    "last_seen": 1787934229,
+    "profile_pic": null,
+    "watch2gether_code": null
   }
 ]

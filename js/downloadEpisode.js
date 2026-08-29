@@ -5,6 +5,23 @@ function escapeHtml(text) {
     return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
 
+// Records one completed download into personalList.html's "My Downloads" section
+// (activity.db's user_downloads table). Best-effort - a failed write here should never surface
+// as a download error, since the actual file already saved successfully by the time this runs.
+window.recordDownloadHistory = function(entry) {
+    try {
+        const userUID = typeof window.getActivityUID === 'function' ? window.getActivityUID() : null;
+        if (!userUID) return;
+        fetch('/activity/downloads/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userUID, ...entry })
+        }).catch(err => console.warn('[DownloadHistory] failed to record:', err));
+    } catch (err) {
+        console.warn('[DownloadHistory] failed to record:', err);
+    }
+};
+
 let totalSegments = 0;
 let completedSegments = 0;
 let downloadedBytes = 0;
@@ -442,25 +459,17 @@ function getActiveSubtitleCue(cues, currentTime) {
     return cues.find(cue => currentTime >= cue.start && currentTime <= cue.end) || null;
 }
 
-// speedMultiplier: this whole function works by literally playing the source video and
-// recording the canvas it's drawn onto - captureStream()/MediaRecorder are inherently wall-
-// clock-bound (that's how they stay in sync at all), so a straight 1x pass here takes exactly
-// as long as the video's own runtime, confirmed live (a 23:37 episode = 23:37 to burn). Playing
-// the source at speedMultiplier>1 makes the capture pass itself finish in duration/speedMultiplier
-// real time instead - browsers pitch-correct playbackRate by default (preservesPitch), so the
-// captured audio comes out time-compressed in sync with the video, not chipmunked, but the
-// RESULTING file plays back at speedMultiplier - fine for the capture step, not for the actual
-// download. ffmpeg (if passed) runs one correction pass afterward - setpts stretches the video
-// back to normal pace, atempo does the same for audio - restoring normal playback speed. That
-// correction is real CPU-bound re-encode work, but it replaces wall-clock-bound capture time
-// with hardware-bound encode time, which is the whole point.
-async function recordVideoWithCanvasSubtitles(sourceBlob, subtitleText, videoMeta = {}, onProgress = null, ffmpeg = null, speedMultiplier = 2) {
+// Plays the source video and records the canvas it's drawn onto - captureStream()/MediaRecorder
+// are inherently wall-clock-bound (that's how they stay in sync at all), so this takes exactly
+// as long as the video's own runtime (confirmed live: a 23:37 episode = 23:37 to burn). A
+// separate (adjustable) playback-speed feature used to live here too; removed - see git history
+// around 2026-08-27 if it's ever wanted back, along with why it kept causing problems.
+async function recordVideoWithCanvasSubtitles(sourceBlob, subtitleText, videoMeta = {}, onProgress = null, ffmpeg = null) {
     const cues = parseSubtitleCues(subtitleText);
     console.log('[CanvasBurn] starting', {
         cueCount: cues.length,
         sourceBytes: sourceBlob?.size || 0,
-        title: videoMeta.title || '',
-        speedMultiplier
+        title: videoMeta.title || ''
     });
 
     const sourceUrl = URL.createObjectURL(sourceBlob);
@@ -481,8 +490,6 @@ async function recordVideoWithCanvasSubtitles(sourceBlob, subtitleText, videoMet
         video.addEventListener('loadedmetadata', () => resolve(), { once: true });
         video.addEventListener('error', () => reject(new Error('Failed to load source video for canvas burn')));
     });
-
-    video.playbackRate = speedMultiplier;
 
     const width = video.videoWidth || 1280;
     const height = video.videoHeight || 720;
@@ -592,61 +599,36 @@ async function recordVideoWithCanvasSubtitles(sourceBlob, subtitleText, videoMet
     URL.revokeObjectURL(sourceUrl);
 
     const capturedBlob = new Blob(chunks, { type: mimeType });
-    console.log('[CanvasBurn] capture finished (still at ' + speedMultiplier + 'x pace)', {
+    console.log('[CanvasBurn] capture finished', {
         mimeType,
         chunks: chunks.length,
         size: capturedBlob.size
     });
 
-    if (!ffmpeg || speedMultiplier === 1) {
-        // No ffmpeg instance to run the correction pass with, or nothing to correct - return the
-        // capture as-is (matches this function's old, pre-speedup behavior exactly at 1x).
-        return capturedBlob;
-    }
-
-    onProgress?.({ phase: 'finalizing', currentTime: 0, duration: 0, percent: 100, cueIndex: cues.length, cueCount: cues.length, cueText: '' });
-    console.log('[CanvasBurn] running setpts/atempo correction pass to restore normal playback speed');
-
-    const capturedName = 'burn_captured' + (mimeType.includes('webm') ? '.webm' : '.mp4');
-    const correctedName = 'burn_corrected.mp4';
+    // MediaRecorder only outputs webm/vp9, never mp4 - transcode container/codec to hand back a
+    // real .mp4. No timestamp manipulation involved, just a flat 1:1 frame transcode.
+    if (!ffmpeg) return capturedBlob;
+    const mp4Name = 'burn_captured' + (mimeType.includes('webm') ? '.webm' : '.mp4');
+    const mp4OutName = 'burn_output.mp4';
     try {
-        await ffmpeg.writeFile(capturedName, new Uint8Array(await capturedBlob.arrayBuffer()));
-        // atempo only accepts a 0.5-2.0 ratio per instance - fine for the 2x default (a single
-        // atempo=0.5), but the panel now offers 3x/4x too, whose correction ratios (1/3, 1/4) are
-        // below that floor. Chain multiple atempo filters whose product hits the real target
-        // instead - e.g. 4x -> atempo=0.5,atempo=0.5 (0.5*0.5=0.25), 3x -> atempo=0.5,atempo=0.6667.
-        const atempoChain = [];
-        let remainingRate = 1 / speedMultiplier;
-        while (remainingRate < 0.5) {
-            atempoChain.push(0.5);
-            remainingRate /= 0.5;
-        }
-        atempoChain.push(remainingRate);
-        const atempoFilter = atempoChain.map(r => `atempo=${r.toFixed(4)}`).join(',');
-        const ptsRate = speedMultiplier.toFixed(4);
+        await ffmpeg.writeFile(mp4Name, new Uint8Array(await capturedBlob.arrayBuffer()));
         await ffmpeg.exec([
-            '-i', capturedName,
-            '-filter_complex', `[0:v]setpts=${ptsRate}*PTS[v];[0:a]${atempoFilter}[a]`,
-            '-map', '[v]', '-map', '[a]',
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+            '-i', mp4Name,
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
             '-c:a', 'aac', '-b:a', '160k',
             '-movflags', '+faststart',
-            correctedName
+            mp4OutName
         ]);
-        const correctedData = await ffmpeg.readFile(correctedName);
-        if (!correctedData || (correctedData.byteLength || correctedData.length || 0) === 0) {
-            throw new Error('setpts/atempo correction produced an empty file');
+        const mp4Data = await ffmpeg.readFile(mp4OutName);
+        if (!mp4Data || (mp4Data.byteLength || mp4Data.length || 0) === 0) {
+            throw new Error('webm-to-mp4 transcode produced an empty file');
         }
-        const outBlob = new Blob([correctedData.buffer], { type: 'video/mp4' });
-        console.log('[CanvasBurn] finished (corrected to normal speed)', { size: outBlob.size });
-        return outBlob;
+        return new Blob([mp4Data.buffer], { type: 'video/mp4' });
     } catch (err) {
-        // Better a working-but-2x-fast download than a failed one - the capture itself is fully
-        // valid media, just paced wrong. Surface this loudly so it's not mistaken for correct.
-        console.error('[CanvasBurn] speed-correction pass failed, falling back to the raw (still ' + speedMultiplier + 'x-speed) capture:', err);
+        console.error('[CanvasBurn] webm-to-mp4 transcode failed, shipping the raw webm capture instead:', err);
         return capturedBlob;
     } finally {
-        for (const f of [capturedName, correctedName]) {
+        for (const f of [mp4Name, mp4OutName]) {
             try { await ffmpeg.deleteFile(f); } catch (_) {}
         }
     }
@@ -771,7 +753,10 @@ async function downloadKAAEpisode(requestedHeight) {
 
         const masterRes = await fetch(video.playlist);
         console.log('[Download][2/8] master playlist fetch', { status: masterRes.status, ok: masterRes.ok, url: video.playlist });
-        if (!masterRes.ok) throw new Error(`Master playlist fetch failed (HTTP ${masterRes.status}) for ${video.playlist}`);
+        // Deliberately not including video.playlist here - it's a tokenized proxy URL carrying
+        // this browser's session token, and this message can end up user-visible (toast/status
+        // text) or in a screenshot. The status code is enough to diagnose from.
+        if (!masterRes.ok) throw new Error(`Master playlist fetch failed (HTTP ${masterRes.status})`);
         const playlist = await masterRes.text();
         console.log('[Download] master playlist body:\n', playlist);
         const master = parseMasterPlaylist(playlist);
@@ -1037,13 +1022,8 @@ async function downloadKAAEpisode(requestedHeight) {
         let downloadExt = "mp4";
         if (hasSubtitle) {
             try {
-                setTaskStatus("Rendering subtitles in browser canvas (2x speed)...");
+                setTaskStatus("Rendering subtitles in browser canvas...");
                 const canvasBlob = await recordVideoWithCanvasSubtitles(blob, subtitleText, video, (state) => {
-                    if (state?.phase === 'finalizing') {
-                        setTaskStatus("Finalizing burned video (restoring normal speed)...");
-                        setTaskSubtitleProgress("Finalizing (re-timing video/audio)...", 100);
-                        return;
-                    }
                     const current = state?.currentTime || 0;
                     const duration = state?.duration || 0;
                     const percent = state?.percent || 0;
@@ -1052,9 +1032,9 @@ async function downloadKAAEpisode(requestedHeight) {
                     setTaskSubtitleProgress(`Subtitle Burn: ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`, percent);
                     document.getElementById("downloadSizeText").textContent =
                         state?.cueText ? `Cue ${cueLabel}: ${state.cueText.slice(0, 64)}` : `Cue ${cueLabel}`;
-                }, ffmpeg, Number(window.currentBurnSpeed) || 2);
+                }, ffmpeg);
                 blob = canvasBlob;
-                downloadExt = canvasBlob.type.includes('mp4') ? "mp4" : "webm";
+                downloadExt = "mp4";
             } catch (canvasErr) {
                 console.warn('[CanvasBurn] failed, falling back to plain MP4:', canvasErr);
                 setTaskStatus("Subtitle canvas render failed. Downloading video/audio only...");
@@ -1066,7 +1046,7 @@ async function downloadKAAEpisode(requestedHeight) {
         a.href = url;
         a.download = `${video.title} - S${video.season}E${video.episode}.${downloadExt}`;
         document.body.appendChild(a);
-        
+
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
@@ -1076,6 +1056,17 @@ async function downloadKAAEpisode(requestedHeight) {
         downloadInProgress = false;
         task.finish(true);
         notifyDownloadCompleteForEpisode(video);
+        // downloadKAAEpisode only ever handles anime sources (KAA/MegaPlay/Neko/RU-MV) - see
+        // DL_SOURCE_INFO in moviePlayer.js.
+        window.recordDownloadHistory({
+            item_type: 'anime',
+            title: video.title,
+            thumbnail: window.currentDownloadContext?.thumbnail,
+            season: video.season,
+            episode: video.episode,
+            audio: video.audio,
+            subsBurned: hasSubtitle
+        });
         setTimeout(() => {
             hideDownloadModal();
         }, 1000);
@@ -1249,7 +1240,10 @@ async function downloadKinoEpisode(requestedHeight) {
         console.log('[Download][Kino][1/6] start', { provider: video?.provider, playlistUrl: video?.playlist });
 
         const masterRes = await fetch(video.playlist);
-        if (!masterRes.ok) throw new Error(`Master playlist fetch failed (HTTP ${masterRes.status}) for ${video.playlist}`);
+        // Deliberately not including video.playlist here - it's a tokenized proxy URL carrying
+        // this browser's session token, and this message can end up user-visible (toast/status
+        // text) or in a screenshot. The status code is enough to diagnose from.
+        if (!masterRes.ok) throw new Error(`Master playlist fetch failed (HTTP ${masterRes.status})`);
         const playlist = await masterRes.text();
         const master = parseMasterPlaylist(playlist);
         console.log('[Download][Kino][2/6] parsed master', { videoVariants: master.videos.length, videos: master.videos });
@@ -1353,21 +1347,16 @@ async function downloadKinoEpisode(requestedHeight) {
 
         if (hasSubtitle) {
             try {
-                setTaskStatus('Rendering subtitles in browser canvas (2x speed)...');
+                setTaskStatus('Rendering subtitles in browser canvas...');
                 const canvasBlob = await recordVideoWithCanvasSubtitles(blob, subtitleText, video, (state) => {
-                    if (state?.phase === 'finalizing') {
-                        setTaskStatus('Finalizing burned video (restoring normal speed)...');
-                        setTaskSubtitleProgress('Finalizing (re-timing video/audio)...', 100);
-                        return;
-                    }
                     const current = state?.currentTime || 0;
                     const duration = state?.duration || 0;
                     const percent = state?.percent || 0;
                     setTaskStatus(`Rendering subtitles in browser canvas... ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`);
                     setTaskSubtitleProgress(`Subtitle Burn: ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`, percent);
-                }, ffmpeg, Number(window.currentBurnSpeed) || 2);
+                }, ffmpeg);
                 blob = canvasBlob;
-                downloadExt = canvasBlob.type.includes('mp4') ? 'mp4' : 'webm';
+                downloadExt = 'mp4';
             } catch (canvasErr) {
                 console.warn('[CanvasBurn][Kino] failed, falling back to plain MP4:', canvasErr);
                 setTaskStatus('Subtitle canvas render failed. Downloading video only...');
@@ -1387,6 +1376,16 @@ async function downloadKinoEpisode(requestedHeight) {
         downloadInProgress = false;
         task.finish(true);
         notifyDownloadCompleteForEpisode(video);
+        // downloadKinoEpisode handles Kino/T1M - both movie and TV. No episode number means it
+        // was a movie (see the filename line above using the same check).
+        window.recordDownloadHistory({
+            item_type: video.episode ? 'tv' : 'movie',
+            title: video.title,
+            thumbnail: window.currentDownloadContext?.thumbnail,
+            season: video.season,
+            episode: video.episode,
+            subsBurned: hasSubtitle
+        });
         setTimeout(() => { hideDownloadModal(); }, 1000);
 
     } catch (err) {
@@ -1425,4 +1424,12 @@ function mergeSegments(segments) {
 // Global exposes
 window.downloadKAAEpisode = downloadKAAEpisode;
 window.downloadKinoEpisode = downloadKinoEpisode;
+// The anime/movie/TV download panels mirror their own burn-checkbox state into this modal's
+// #downloadIncludeSubs BEFORE calling the download function (see dlApplyBurnChoiceToModal /
+// mdlApplyBurnChoiceToModal in moviePlayer.js) - but ensureDownloadModal() only builds that
+// element the first time a download modal is shown, so on someone's very first download this
+// ever ran on the page, the checkbox didn't exist yet to mirror into and the burn choice was
+// silently dropped (worked fine from the second download on, once the modal DOM already
+// existed). Exposed so the panel can build the modal DOM before mirroring into it.
+window.ensureDownloadModal = ensureDownloadModal;
 window.updateDownloadButtons = updateDownloadButtons;
