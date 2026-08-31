@@ -273,7 +273,7 @@ function formatRemainingTime(seconds) {
     return minutes ? `${minutes}m ${remainder}s left` : `${remainder}s left`;
 }
 
-function createCompressionProgressHandler({ durationSeconds, setStatus, setProgress }) {
+function createCompressionProgressHandler({ durationSeconds, setStatus, setProgress, phaseLabel = 'Compression' }) {
     let startedAt = null;
     let lastUpdatedAt = 0;
     return (progress) => {
@@ -293,7 +293,7 @@ function createCompressionProgressHandler({ durationSeconds, setStatus, setProgr
             ? elapsedSeconds * ((100 - percent) / percent)
             : NaN;
         const eta = formatRemainingTime(etaSeconds);
-        const label = `Compression: ${percent.toFixed(0)}%${eta ? ` · ${eta}` : ''}`;
+        const label = `${phaseLabel}: ${percent.toFixed(0)}%${eta ? ` · ${eta}` : ''}`;
         setStatus(label);
         setProgress(label, percent);
         const mainBar = document.getElementById('downloadProgressBar');
@@ -844,13 +844,20 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
 
         // 2. Download files with tracking callback
         console.log('[Download][6/8] downloading segments', { videoSegmentCount: videoSegments.length, audioSegmentCount: audioSegments.length });
+        const skipTracker = { count: 0, segmentNumbers: [] };
+        const reportSkippedSegment = ({ segmentNumber, skippedCount, maxSkippedSegments }) => {
+            const message = `Skipped unavailable segment ${segmentNumber} (${skippedCount}/${maxSkippedSegments})`;
+            task.setSubline(`${message} · the video may have a brief gap`);
+            console.warn(`[Download] ${message}`);
+        };
         const downloadedVideo = await downloadSegments(
             videoSegments,
             () => {
                 const percent = totalSegments === 0 ? 0 : (completedSegments / totalSegments) * 100;
                 updateDownloadProgress();
                 setTaskCombinedProgress(percent);
-            }
+            },
+            { skipTracker, onSegmentSkipped: reportSkippedSegment }
         );
         console.log('[Download] video segments downloaded', { count: downloadedVideo.length, totalBytes: downloadedVideo.reduce((s, b) => s + (b?.byteLength || 0), 0) });
 
@@ -860,7 +867,8 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
                 const percent = totalSegments === 0 ? 0 : (completedSegments / totalSegments) * 100;
                 updateDownloadProgress();
                 setTaskCombinedProgress(percent);
-            }
+            },
+            { skipTracker, onSegmentSkipped: reportSkippedSegment }
         );
         console.log('[Download] audio segments downloaded', { count: downloadedAudio.length, totalBytes: downloadedAudio.reduce((s, b) => s + (b?.byteLength || 0), 0) });
 
@@ -901,11 +909,15 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
         // A native subtitle burn is an FFmpeg encode too.  Unlike the old canvas recorder it
         // processes frames as fast as the device can encode them, so give it the same real ETA
         // reporting as compact output.
+        const encodePhaseLabel = hasSubtitle
+            ? (compactOutput ? 'Subtitle burn + compression' : 'Subtitle burn')
+            : 'Compression';
         const updateCompressionProgress = (compactOutput || hasSubtitle)
             ? createCompressionProgressHandler({
                 durationSeconds: mediaDurationSeconds,
                 setStatus: setTaskStatus,
-                setProgress: setTaskSubtitleProgress
+                setProgress: setTaskSubtitleProgress,
+                phaseLabel: encodePhaseLabel
             })
             : null;
         ffmpeg.on?.('progress', (progress) => {
@@ -1160,6 +1172,7 @@ function parseMediaPlaylist(text) {
 
 const SEGMENT_FETCH_ATTEMPTS = 4;
 const NEKO_SEGMENT_FETCH_ATTEMPTS = 6;
+const MAX_SKIPPED_DOWNLOAD_SEGMENTS = 3;
 
 function waitForDownloadRetry(delayMs) {
     return new Promise(resolve => setTimeout(resolve, delayMs));
@@ -1192,7 +1205,14 @@ async function fetchDownloadSegment(url, segmentNumber, maxAttempts = SEGMENT_FE
     throw new Error(`Failed segment ${segmentNumber} after ${maxAttempts} attempts (${lastFailure})`);
 }
 
-async function downloadSegments(segments, progressCallback, { concurrency = 2, maxAttempts = SEGMENT_FETCH_ATTEMPTS, retryDelayMs = 350 } = {}) {
+async function downloadSegments(segments, progressCallback, {
+    concurrency = 2,
+    maxAttempts = SEGMENT_FETCH_ATTEMPTS,
+    retryDelayMs = 350,
+    skipTracker = { count: 0, segmentNumbers: [] },
+    maxSkippedSegments = MAX_SKIPPED_DOWNLOAD_SEGMENTS,
+    onSegmentSkipped = null
+} = {}) {
     const downloaded = new Array(segments.length);
     const safeConcurrency = Math.max(1, Number(concurrency) || 1);
 
@@ -1202,13 +1222,25 @@ async function downloadSegments(segments, progressCallback, { concurrency = 2, m
         await Promise.all(
             batch.map(async (url, index) => {
                 const segmentNumber = i + index;
-                const data = await fetchDownloadSegment(url, segmentNumber, maxAttempts, retryDelayMs);
+                try {
+                    const data = await fetchDownloadSegment(url, segmentNumber, maxAttempts, retryDelayMs);
+                    downloaded[segmentNumber] = data;
+                    downloadedBytes += data.byteLength;
+                } catch (err) {
+                    skipTracker.count++;
+                    skipTracker.segmentNumbers.push(segmentNumber + 1);
+                    if (skipTracker.count > maxSkippedSegments) {
+                        throw new Error(`Stopped download after ${skipTracker.count} unavailable segments (maximum ${maxSkippedSegments} can be skipped). Last failure: ${err.message}`);
+                    }
+                    // A missing HLS chunk means a very short gap, but it is preferable to
+                    // discarding an otherwise complete episode because one CDN segment died.
+                    // mergeSegments() below deliberately ignores these empty slots while
+                    // preserving the surrounding chunks' order.
+                    console.warn(`[Download] Skipping unavailable segment ${segmentNumber + 1} (${skipTracker.count}/${maxSkippedSegments} allowed)`, err.message);
+                    onSegmentSkipped?.({ segmentNumber: segmentNumber + 1, skippedCount: skipTracker.count, maxSkippedSegments });
+                }
 
-                downloaded[segmentNumber] = data;
-
-                downloadedBytes += data.byteLength;
                 completedSegments++;
-
                 progressCallback?.();
             })
         );
@@ -1319,11 +1351,23 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
         // parallel. The player only needs one chunk at a time; mirror that safer pattern for
         // downloads and leave the other providers on the normal two-request pipeline.
         const nekoDownload = video?.provider === 'nekostream';
+        const skipTracker = { count: 0, segmentNumbers: [] };
+        const reportSkippedSegment = ({ segmentNumber, skippedCount, maxSkippedSegments }) => {
+            const message = `Skipped unavailable segment ${segmentNumber} (${skippedCount}/${maxSkippedSegments})`;
+            task.setSubline(`${message} · the video may have a brief gap`);
+            console.warn(`[Download][Kino] ${message}`);
+        };
         const downloadedVideo = await downloadSegments(videoSegments, () => {
             const percent = totalSegments === 0 ? 0 : (completedSegments / totalSegments) * 100;
             updateDownloadProgress();
             setTaskCombinedProgress(percent);
-        }, nekoDownload ? { concurrency: 1, maxAttempts: NEKO_SEGMENT_FETCH_ATTEMPTS, retryDelayMs: 1000 } : undefined);
+        }, {
+            concurrency: nekoDownload ? 1 : 2,
+            maxAttempts: nekoDownload ? NEKO_SEGMENT_FETCH_ATTEMPTS : SEGMENT_FETCH_ATTEMPTS,
+            retryDelayMs: nekoDownload ? 1000 : 350,
+            skipTracker,
+            onSegmentSkipped: reportSkippedSegment
+        });
 
         if (videoInitUrl) {
             const initRes = await fetch(videoInitUrl);
@@ -1338,11 +1382,15 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
         setTaskStatus('Loading FFmpeg...');
         const ffmpeg = new FFmpeg();
         ffmpeg.on?.('log', ({ message }) => { if (message) console.log('[FFmpeg][log]', message); });
+        const encodePhaseLabel = hasSubtitle
+            ? (compactOutput ? 'Subtitle burn + compression' : 'Subtitle burn')
+            : 'Compression';
         const updateCompressionProgress = (compactOutput || hasSubtitle)
             ? createCompressionProgressHandler({
                 durationSeconds: mediaDurationSeconds,
                 setStatus: setTaskStatus,
-                setProgress: setTaskSubtitleProgress
+                setProgress: setTaskSubtitleProgress,
+                phaseLabel: encodePhaseLabel
             })
             : null;
         if (updateCompressionProgress) ffmpeg.on?.('progress', updateCompressionProgress);
@@ -1451,14 +1499,16 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
 }
 
 function mergeSegments(segments) {
+    const validSegments = segments.filter(segment => segment && Number.isFinite(segment.byteLength) && segment.byteLength > 0);
+    if (!validSegments.length) throw new Error('No media segments could be downloaded');
     let totalLength = 0;
-    for (const segment of segments) {
+    for (const segment of validSegments) {
         totalLength += segment.byteLength;
     }
 
     const merged = new Uint8Array(totalLength);
     let offset = 0;
-    for (const segment of segments) {
+    for (const segment of validSegments) {
         merged.set(segment, offset);
         offset += segment.byteLength;
     }
