@@ -359,7 +359,7 @@ window.openMovie = function(movie, type) {
                     </div>
                     <div class="action-buttons">
                         <button id="watchNowBtn" class="btn-watch" data-type="movie" onclick="handleWatchNowClick(event)">▶ Watch Now</button>
-                        <button id="watchVidsrcBtn" class="btn-watch" style="margin-right:8px; border:1px solid #f96d00;">▶ Watch Trailer</button>
+                        <button id="watchVidsrcBtn" class="btn-watch btn-secondary-action" style="margin-right:8px;">▶ Watch Trailer</button>
                         <script>
                             function handleWatchNowClick(e) {
                                 const urlParams = new URLSearchParams(window.location.search);
@@ -375,10 +375,10 @@ window.openMovie = function(movie, type) {
                                 // Let the player script pick up the correct type
                             }                            
                         </script>
-                        <button id="infoListBtn" class="btn-watch btn-list" onclick="handleInfoAdd()">
+                        <button id="infoListBtn" class="btn-watch btn-list btn-secondary-action" onclick="handleInfoAdd()">
                             + Add to List
                         </button>
-                        <button id="addToPlaylistBtn" class="btn-watch btn-list" onclick="openAddToPlaylistDialog()">
+                        <button id="addToPlaylistBtn" class="btn-watch btn-list btn-secondary-action" onclick="openAddToPlaylistDialog()">
                             + Add to Playlist
                         </button>
                     </div>

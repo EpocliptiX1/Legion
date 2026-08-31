@@ -1121,6 +1121,17 @@ document.addEventListener('DOMContentLoaded', function() {
         let isSeries = false;
         let animeTitle = '';
         let currentHls = null;
+        // Every source replacement reuses the same <video>. Keep stale event listeners and
+        // delayed Plyr fallbacks from an older episode from mutating the new playback session.
+        let playerRenderGeneration = 0;
+        let currentVideoTimeupdateHandler = null;
+        // The visual episode list restores history while it is being populated.  Playback used
+        // to be allowed to start before that async restore had settled, which meant the list
+        // could correctly highlight S1E6 while the first player request had already locked in
+        // the default S1E1.  Gate only the very first source load; after that, a user's explicit
+        // episode choice must always win.
+        let initialPlaybackSelectionReady = false;
+        let initialPlaybackSelectionPromise = null;
 
         const genreText = document.getElementById('genre')?.innerText.toLowerCase() || "";
         let isAnime = requestedType === 'anime' || genreText.includes('anime');
@@ -1172,6 +1183,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 .episode-search-wrap { margin:0 14px 10px 14px; }
                 .episode-search-input { width:100%; box-sizing:border-box; background:#161616; color:#f5f5f5; border:1px solid #2d2d2d; border-radius:8px; padding:8px 10px; font-size:0.9rem; outline:none; }
                 .episode-search-input:focus { border-color:#ff8000; }
+                .episode-tag-filter { position:relative; margin:0 14px 10px; }
+                .episode-tag-filter-trigger { width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; background:#161616; color:#e7e7e7; border:1px solid #2d2d2d; border-radius:8px; padding:8px 10px; font-size:0.82rem; cursor:pointer; text-align:left; }
+                .episode-tag-filter-trigger:hover, .episode-tag-filter.is-open .episode-tag-filter-trigger { border-color:#ff8000; }
+                .episode-tag-filter-menu { display:none; position:absolute; z-index:60; top:calc(100% + 5px); left:0; right:0; background:#151515; border:1px solid #303030; border-radius:8px; box-shadow:0 10px 24px #000c; padding:7px; }
+                .episode-tag-filter.is-open .episode-tag-filter-menu { display:block; }
+                .episode-tag-filter-option { display:flex; align-items:center; justify-content:space-between; gap:10px; color:#d4d4d4; padding:6px 4px; font-size:0.78rem; cursor:pointer; }
+                .episode-tag-filter-option input { appearance:none; width:14px; height:14px; margin:0 7px 0 0; border:1px solid #454545; border-radius:3px; background:#1d1d1d; vertical-align:-2px; cursor:pointer; }
+                .episode-tag-filter-option input:checked { background:#ff8000; border-color:#ff8000; }
+                .episode-tag-filter-option input:checked::after { content:'✓'; display:block; color:#1a1a1a; font-size:12px; font-weight:900; line-height:12px; text-align:center; }
+                .episode-tag-filter-count { color:#ff9a36; font-variant-numeric:tabular-nums; }
                 .episode-list { list-style:none; padding:0; margin:0; flex:1; min-height:0; overflow-y: auto; }
                 .episode-list-item { display:flex; align-items:center; gap:10px; padding:8px 12px; font-size:0.94rem; color:#fff; border-bottom:1px solid #1f1f1f; background:#080808; transition:background 0.2s; cursor:pointer; position:relative; z-index:26; pointer-events:auto; }
                 .episode-list-item.active { background:#ff8000 !important; color:#fff !important; font-weight:700 !important; box-shadow:0 0 16px #ff800099, inset 0 0 8px #00000055 !important; border-left:4px solid #00ff00 !important; }
@@ -1187,6 +1208,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 .episode-list-item.watched { background:#1a1a1a; color:#666; font-weight:400; border-left:3px solid #444; }
                 .episode-list-item.watched .episode-num { color:#666; }
                 .episode-list-item.hidden-by-search { display:none; }
+                .episode-list-item.hidden-by-tag-filter { display:none; }
                 /* Filler/canon corner ribbon: a small square rotated 45deg and anchored just
                    outside the top-left corner, clipped by the item's own overflow so only the
                    triangular half that falls inside the card shows through as a diagonal flag.
@@ -1332,7 +1354,6 @@ document.addEventListener('DOMContentLoaded', function() {
                                 RU - MV <img src="https://upload.wikimedia.org/wikipedia/commons/f/f3/Flag_of_Russia.svg" alt="RU" style="width:16px;height:11px;vertical-align:middle;margin-left:2px;">
                             </button>
                             <button id="srvMega1" class="server-btn">MegaVid</button>
-                            <button id="srvSpd1" class="server-btn">SPD1</button>
                         </div>
                         <div id="subDubToggleRow" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                             <button id="btnSub" class="audio-btn active">SUB</button>
@@ -1351,11 +1372,11 @@ document.addEventListener('DOMContentLoaded', function() {
                             <div>
                                 <div class="anime-download-panel__label">Servers for downloads</div>
                                 <div class="server-group anime-download-panel__group" id="dlSourceRow">
-                                    <button class="audio-btn active" data-dl-source="kaa">KAA</button>
+                                    <button class="audio-btn active" data-dl-source="neko">NekoStream</button>
+                                    <button class="audio-btn" data-dl-source="kaa">KAA</button>
                                     <button class="audio-btn" data-dl-source="megaplay">MegaPlay</button>
-                                    <button class="audio-btn" data-dl-source="neko">NekoStream</button>
                                     <button class="audio-btn" data-dl-source="rumv">RU-MV</button>
-                                    <button class="audio-btn" data-dl-source="external">Kiwi / SPD1 (Direct MP4)</button>
+                                    <button class="audio-btn" data-dl-source="external">Kiwi (Direct MP4)</button>
                                 </div>
                             </div>
                             <div id="dlLanguageWrap">
@@ -1374,6 +1395,13 @@ document.addEventListener('DOMContentLoaded', function() {
                                     <button class="audio-btn" data-dl-quality="360p">360p</button>
                                 </div>
                             </div>
+                            <div id="dlCompressionWrap" class="anime-download-panel__burn">
+                                <div class="anime-download-panel__label">Compression</div>
+                                <label class="download-subs-choice anime-download-panel__burn-label" title="Re-encodes the chosen quality on this device to reduce the final file size.">
+                                    <input type="checkbox" id="dlCompressCheckbox" />
+                                    Compress file size, takes longer (-40% in size)
+                                </label>
+                            </div>
                             <div id="dlBurnWrap" class="anime-download-panel__burn">
                                 <div class="anime-download-panel__label">Subtitles (burn into mp4)</div>
                                 <label class="download-subs-choice anime-download-panel__burn-label">
@@ -1391,7 +1419,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             </div>
                         </div>
                         <div id="dlBurnHint" class="anime-download-panel__hint">
-                            KAA / MegaPlay / NekoStream / RU-MV switch active server if needed. Kiwi / SPD1 downloads direct MP4 without client re-encoding.
+                            KAA / MegaPlay / NekoStream / RU-MV switch active server if needed. Compression runs in this browser and uses more time, battery and memory.
                         </div>
                     </div>
                 </div>
@@ -1493,6 +1521,16 @@ document.addEventListener('DOMContentLoaded', function() {
                         </div>
                         <div class="episode-search-wrap">
                             <input id="episodeSearchInput" class="episode-search-input" type="text" placeholder="Search episode...">
+                        </div>
+                        <div id="episodeTagFilter" class="episode-tag-filter" style="display:none;">
+                            <button id="episodeTagFilterTrigger" class="episode-tag-filter-trigger" type="button" aria-expanded="false">Filter tags <span>⌄</span></button>
+                            <div class="episode-tag-filter-menu">
+                                <label class="episode-tag-filter-option"><span><input type="checkbox" value="Manga Canon">Manga Canon</span><span class="episode-tag-filter-count" data-filler-count="Manga Canon">0</span></label>
+                                <label class="episode-tag-filter-option"><span><input type="checkbox" value="Filler">Filler</span><span class="episode-tag-filter-count" data-filler-count="Filler">0</span></label>
+                                <label class="episode-tag-filter-option"><span><input type="checkbox" value="Mixed Canon/Filler">Mixed Canon/Filler</span><span class="episode-tag-filter-count" data-filler-count="Mixed Canon/Filler">0</span></label>
+                                <label class="episode-tag-filter-option"><span><input type="checkbox" value="Anime Canon">Anime Canon</span><span class="episode-tag-filter-count" data-filler-count="Anime Canon">0</span></label>
+                                <label class="episode-tag-filter-option"><span><input type="checkbox" value="Unknown">Mix (Manga, Novel, Unknown)</span><span class="episode-tag-filter-count" data-filler-count="Unknown">0</span></label>
+                            </div>
                         </div>
                         <div id="fillerLegend" class="filler-legend" style="display:none;">
                             <span class="filler-legend-item"><span class="filler-legend-swatch" data-filler-type="Manga Canon"></span>Manga Canon</span>
@@ -1712,8 +1750,7 @@ document.addEventListener('DOMContentLoaded', function() {
             srv111Movies: '111Movies: Extra Source',
             srvMoviesApiM: 'MoviesAPI: Extra Source',
             srv111MoviesM: '111Movies: Extra Source',
-            srvMega1: 'MegaPlay: Anime MAL-based stream',
-            srvSpd1: 'SPD1: AnimePahe direct source'
+            srvMega1: 'MegaPlay: Anime MAL-based stream'
         };
         // function showLimitToast2(message) {
         //     const existing = document.querySelector('.limit-toast');
@@ -1745,7 +1782,7 @@ document.addEventListener('DOMContentLoaded', function() {
         function updateKaaControlsVisibility() {
             const isDirectVideoServer =
                 currentServer === 'srvPahe1' || currentServer === 'srvMega1' ||
-                currentServer === 'srvNeko1' || currentServer === 'srvNew1' || currentServer === 'srvSpd1';
+                currentServer === 'srvNeko1' || currentServer === 'srvNew1';
 
             document.getElementById('btnBack10').style.display =
                 isDirectVideoServer ? 'block' : 'none';
@@ -1805,6 +1842,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         function resetSharedVideoPlayer() {
+            playerRenderGeneration += 1;
             releasePlaybackLease(window.currentVideo?.playlist);
             destroyCurrentHls();
             if (window.plyrInstance) {
@@ -1818,6 +1856,10 @@ document.addEventListener('DOMContentLoaded', function() {
             const video = document.getElementById('moviePlayerVideo');
 
             if (video) {
+                if (currentVideoTimeupdateHandler) {
+                    video.removeEventListener('timeupdate', currentVideoTimeupdateHandler);
+                    currentVideoTimeupdateHandler = null;
+                }
                 try {
                     video.pause();
                     video.removeAttribute('src');
@@ -1877,6 +1919,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             hidePlayerLoadingOverlay();
             resetSharedVideoPlayer();
+            const renderGeneration = playerRenderGeneration;
 
             const frame = document.getElementById('moviePlayerFrame');
             const video = document.getElementById('moviePlayerVideo');
@@ -1991,8 +2034,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 // it, instead of guessing.
                 let plyrBuilt = false;
                 function buildPlyrPlayer(qualityOptions) {
+                    // The old episode's 8-second fallback timer can fire after the user has
+                    // changed episode/server. Never let it create a second Plyr instance around
+                    // the new stream (that produced black video while audio continued).
+                    if (renderGeneration !== playerRenderGeneration) return;
                     if (plyrBuilt) return;
                     plyrBuilt = true;
+                    const sourceQualityOptions = Array.isArray(metadata.sourceQualityOptions)
+                        ? metadata.sourceQualityOptions.filter(Number.isFinite)
+                        : null;
+                    const useSourceQualitySelector = sourceQualityOptions?.length && typeof metadata.onSourceQualityChange === 'function';
                     window.plyrInstance = new Plyr(video, {
                         controls: [
                             'rewind',
@@ -2010,10 +2061,17 @@ document.addEventListener('DOMContentLoaded', function() {
                         ],
                         settings: ['captions', 'quality', 'speed'],
                         quality: {
-                            default: 0,
-                            options: qualityOptions,
+                            default: useSourceQualitySelector ? metadata.selectedSourceQuality : 0,
+                            options: useSourceQualitySelector ? sourceQualityOptions : qualityOptions,
                             forced: true,
                             onChange: (newQuality) => {
+                                if (useSourceQualitySelector) {
+                                    const selectedQuality = Number(newQuality);
+                                    if (selectedQuality !== Number(metadata.selectedSourceQuality)) {
+                                        metadata.onSourceQualityChange(selectedQuality);
+                                    }
+                                    return;
+                                }
                                 if (!currentHls) return;
                                 if (newQuality === 0) {
                                     currentHls.currentLevel = -1;
@@ -2049,7 +2107,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 // player *some* controls instead of leaving it with none at all.
                 setTimeout(() => buildPlyrPlayer([0, 1080, 720, 360]), 8000);
 
-                video.addEventListener('timeupdate', () => {
+                let nextEpisodePreloadRequested = false;
+                currentVideoTimeupdateHandler = () => {
                     updateKaaSkipOverlay();
                     // Once past 80% of this episode, warm the next one's sources across all
                     // three anime providers ahead of time - same {season, ep, audioType,
@@ -2058,10 +2117,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     // (isFreshSourcePreload), so switching to the next episode consumes a warm
                     // cache instead of paying the full resolve chain live. Anime only - a
                     // "next episode" concept doesn't apply to movies.
-                    if (isAnime && video.duration && video.currentTime / video.duration >= 0.8) {
+                    if (!nextEpisodePreloadRequested && isAnime && video.duration && video.currentTime / video.duration >= 0.8) {
+                        nextEpisodePreloadRequested = true;
                         preloadNextEpisodeSources(metadata.season, (parseInt(metadata.episode, 10) || 0) + 1, metadata.audio || currentAudioMode);
                     }
-                });
+                };
+                video.addEventListener('timeupdate', currentVideoTimeupdateHandler);
                 video.addEventListener('loadedmetadata', () => {
                     console.log('[KAA SKIP] loadedmetadata fired, duration=', video.duration);
                     refreshKaaSkipSegments();
@@ -2541,8 +2602,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 preloadedMegaEp.audioType === audioType;
 
             try {
+                let res = null;
                 if (!hasMatchingMegaPreload) {
-                    const res = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(megaplayFrameOverride.localEpisode)}/${encodeURIComponent(audioType)}`);
+                    res = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(megaplayFrameOverride.localEpisode)}/${encodeURIComponent(audioType)}`);
                     if (!res.ok) {
                         if (myGen !== playbackRequestGen) return false;
                         console.log('[Fallback] MegaPlay health check failed, falling to KAA');
@@ -2626,7 +2688,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.warn('[MegaPlay] native extraction failed, falling back to iframe:', exErr?.message || exErr);
                 }
 
-                const data = await res.json();
+                const data = res ? await res.json().catch(() => ({})) : await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(megaplayFrameOverride.localEpisode)}/${encodeURIComponent(audioType)}`).then(r => r.json()).catch(() => ({}));
                 if (!data?.embedUrl) {
                     if (myGen !== playbackRequestGen) return false;
                     console.log('[Fallback] MegaPlay had no embed URL, falling to KAA');
@@ -2767,6 +2829,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     console.log('[Fallback] Neko had no sources, falling to MegaPlay');
                     return await fallbackFromNekoToMega(episode, audioType);
                 }
+                // A previous episode/server resolve can finish after a newer request. Neko
+                // previously guarded only its error paths, letting stale E1 data overwrite the
+                // correctly selected resume episode (e.g. UI on E6 while the video was E1).
+                if (myGen !== playbackRequestGen) return false;
                 // Same skip-intro/outro data as KAA - /api/anime-neko-log now returns it too
                 // (keyed by title/season/episode on anime-skip.com's side, not by provider).
                 // Everything downstream (overlay render, timeupdate wiring, 10s auto-hide) is
@@ -2957,9 +3023,14 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
-        async function loadSpdVideo(episode, audioType, season) {
+        /* SPD1 is disabled: retain this loader for later, but do not ship or invoke it.
+        async function loadSpdVideo(episode, audioType, season, requestedQuality = window.currentSpdQuality || '1080p') {
             const myGen = playbackRequestGen;
             window.currentAudioType = audioType;
+            const spdQuality = ['1080p', '720p', '360p'].includes(String(requestedQuality).toLowerCase())
+                ? String(requestedQuality).toLowerCase()
+                : '1080p';
+            window.currentSpdQuality = spdQuality;
             const infoDiv = document.getElementById('serverInfoText');
             const selectedSeason = parseInt(season || 1, 10);
             const audio = audioType === 'dub' ? 'dub' : 'sub';
@@ -2973,20 +3044,49 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 if (infoDiv) infoDiv.textContent = 'SPD1: Loading stream...';
 
-                const rawTitle = animeTitle || document.getElementById('title')?.textContent.trim() || '';
-                const malParam = malId ? `&malId=${encodeURIComponent(malId)}` : '';
-                const tmdbParam = tmdbId ? `&tmdbId=${encodeURIComponent(tmdbId)}` : '';
-                const titleParam = rawTitle ? `&title=${encodeURIComponent(rawTitle)}` : '';
+                if (!watchHistoryCache && typeof window.getActivityUID === 'function') {
+                    const activityUID = window.getActivityUID();
+                    await fetchWatchHistory(activityUID, tmdbId).then(setWatchHistoryCache);
+                }
 
-                const res = await fetch(`/api/anime-spd-log?episode=${encodeURIComponent(episode)}&season=${encodeURIComponent(selectedSeason)}&audio=${encodeURIComponent(audio)}${malParam}${tmdbParam}${titleParam}`);
-                const data = await res.json();
+                const frame = document.getElementById('moviePlayerFrame');
+                const video = document.getElementById('moviePlayerVideo');
+                if (frame) {
+                    frame.src = 'about:blank';
+                    frame.style.display = 'none';
+                }
+                if (video) {
+                    try {
+                        video.pause();
+                        video.removeAttribute('src');
+                        video.load();
+                    } catch (e) {}
+                    video.style.display = 'none';
+                }
+
+                const rawTitle = animeTitle || document.getElementById('title')?.textContent.trim() || '';
+                const spdOverride = resolveEpisodeSourceOverride(selectedSeason, episode);
+                const query = new URLSearchParams({
+                    malId: spdOverride.malId || malId || '',
+                    tmdbId: tmdbId || '',
+                    title: rawTitle,
+                    type: audio,
+                    quality: spdQuality,
+                    season: selectedSeason || 1,
+                    ep: episode || 1,
+                    localEp: spdOverride.localEpisode || episode || 1
+                });
+
+                const res = await fetch(`/api/anime-spd-log?${query.toString()}`);
+                const data = await res.json().catch(() => ({}));
+
+                if (!res.ok || !data?.stream) {
+                    if (myGen !== playbackRequestGen) return false;
+                    console.log('[Fallback] SPD1 had no stream, falling to MegaPlay:', data?.error);
+                    return await fallbackFromNekoToMega(episode, audioType);
+                }
 
                 if (myGen !== playbackRequestGen) return false;
-
-                if (!data?.ok || !data?.embedUrl) {
-                    if (infoDiv) infoDiv.textContent = 'SPD1: No source found for this episode. Try another server.';
-                    return false;
-                }
 
                 currentKaaSkipMarkers = Array.isArray(data.skipSegments) ? data.skipSegments : [];
                 currentKaaSkipSegments = buildKaaPlaybackSegments(currentKaaSkipMarkers, 0);
@@ -2994,16 +3094,69 @@ document.addEventListener('DOMContentLoaded', function() {
                 renderKaaSkipSegments();
                 updateKaaSkipOverlay();
 
-                showIframePlayer(data.embedUrl);
-                if (infoDiv) infoDiv.textContent = `SPD1: Loaded [${audio.toUpperCase()}]`;
-                return true;
+                let borrowedSubtitles = Array.isArray(data.tracks) && data.tracks.length ? data.tracks : [];
+                if (!borrowedSubtitles.length) {
+                    borrowedSubtitles = await fetchKaaSubtitlesForEpisode(episode, audio, selectedSeason);
+                }
+
+                const proxiedStreamUrl = data.stream;
+                const ok = showVideoPlayer(
+                    proxiedStreamUrl,
+                    borrowedSubtitles,
+                    {
+                        provider: 'spd1',
+                        title: rawTitle || 'Unknown Anime',
+                        season: selectedSeason,
+                        episode,
+                        audio,
+                        // Kwik supplies a distinct source for each quality rather than one
+                        // adaptive master playlist. Re-resolve SPD1 when Plyr's quality menu
+                        // changes so the selected rendition is what actually gets loaded.
+                        sourceQualityOptions: data.streamProvider === 'kwik'
+                            ? [...new Set([Number.parseInt(data.quality, 10), 1080, 720, 360].filter(Number.isFinite))]
+                                .sort((a, b) => b - a)
+                            : null,
+                        selectedSourceQuality: Number.parseInt(data.quality, 10) || Number.parseInt(spdQuality, 10),
+                        onSourceQualityChange: data.streamProvider === 'kwik'
+                            ? quality => loadSpdVideo(episode, audioType, selectedSeason, `${quality}p`)
+                            : null
+                    }
+                );
+
+                if (ok) {
+                    window.updateDownloadButtons(proxiedStreamUrl);
+                    const episodeKey = buildEpisodeKey(selectedSeason, episode);
+                    const videoEl = document.getElementById('moviePlayerVideo');
+                    if (videoEl) {
+                        const resumeSeconds = getWatchHistoryResumeSeconds(episodeKey);
+                        if (Number.isFinite(resumeSeconds) && resumeSeconds > 5) {
+                            showKaaResumeOverlay(episodeKey, resumeSeconds, () => applyResumeToVideo(videoEl, resumeSeconds), () => {});
+                        }
+                        const activityUID = typeof window.getActivityUID === 'function' ? window.getActivityUID() : null;
+                        startKaaContinueWatching(videoEl, {
+                            episodeKey,
+                            userUID: activityUID,
+                            movieId: tmdbId
+                        });
+                    }
+                }
+
+                if (infoDiv) {
+                    infoDiv.textContent = ok
+                        ? `SPD1: Loaded [${audio.toUpperCase()}]`
+                        : 'SPD1: Playback is not supported in this browser.';
+                }
+
+                return ok;
             } catch (err) {
                 console.error('[SPD1] playback error:', err);
                 if (myGen !== playbackRequestGen) return false;
-                if (infoDiv) infoDiv.textContent = 'SPD1: Failed to load. Try another server.';
-                return false;
+                console.log('[Fallback] SPD1 threw, falling to MegaPlay:', err?.message || err);
+                return await fallbackFromNekoToMega(episode, audioType);
             }
         }
+
+        */
 
         // RU Movie (kinogo.mu/cinemar.cc) -- movies only, single Russian dub track,
         // same "ignore sub/dub" deal as the anime RU server.
@@ -3590,11 +3743,43 @@ document.addEventListener('DOMContentLoaded', function() {
         window.downloadRuTv = downloadRuTv;
 
         // 4. Update Source Logic
-        function updateSource(server) {
-            playbackRequestGen++;
+        async function updateSource(server) {
+            const requestGen = ++playbackRequestGen;
             showPlayerLoadingOverlay();
             currentServer = server;
             window.currentServer = server;
+            if (!initialPlaybackSelectionReady) {
+                if (!initialPlaybackSelectionPromise) {
+                    initialPlaybackSelectionPromise = (async () => {
+                        try {
+                            let historyRow = watchHistoryCache;
+                            if (!historyRow && typeof window.getActivityUID === 'function') {
+                                historyRow = await fetchWatchHistory(window.getActivityUID(), tmdbId);
+                                setWatchHistoryCache(historyRow);
+                            }
+                            const match = String(historyRow?.continue_from || '').match(/S(\d+)E(\d+)/);
+                            if (!match) return;
+                            const seasonEl = document.getElementById('seasonSelect');
+                            const episodeEl = document.getElementById('episodeSelect');
+                            if (!seasonEl || !episodeEl) return;
+                            // "All eps" stays selected for the list, while playSeason tells the
+                            // providers which actual season the selected local episode belongs to.
+                            seasonEl.dataset.playSeason = match[1];
+                            episodeEl.value = match[2];
+                            window.__continueFromSeason = Number(match[1]);
+                            window.__continueFromEpisode = Number(match[2]);
+                            console.log('[Resume] Initial playback locked to saved episode', `S${match[1]}E${match[2]}`);
+                        } catch (err) {
+                            console.warn('[Resume] Initial history lookup failed:', err);
+                        } finally {
+                            initialPlaybackSelectionReady = true;
+                        }
+                    })();
+                }
+                await initialPlaybackSelectionPromise;
+                // A newer click/request arrived while history was resolving. It owns playback.
+                if (requestGen !== playbackRequestGen) return false;
+            }
             // hsub exists on NekoStream only - switching to any other server while it's the
             // active mode would otherwise silently request an audio type that server can't
             // serve, so fall back to plain sub and keep the button row honest.
@@ -3659,6 +3844,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     item.classList.remove('active');
                 }
             });
+            /* SPD1 is disabled.
             if (server === 'srvSpd1') {
                 document.querySelectorAll('.server-btn').forEach(btn => {
                     btn.classList.toggle('active', btn.id === server);
@@ -3671,6 +3857,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 );
                 return;
             }
+            */
             if (server === 'srvNeko1') {
                 document.querySelectorAll('.server-btn').forEach(btn => {
                     btn.classList.toggle('active', btn.id === server);
@@ -3842,11 +4029,9 @@ document.addEventListener('DOMContentLoaded', function() {
         });
 
         // ── Download Anime panel ────────────────────────────────────────────────
-        // One button opens a picker: which server, and sub/dub/hsub. Real subtitle BURNING
-        // (picking a language, or skipping) is NOT built here - it's the existing modal
-        // (ensureDownloadModal/#downloadSubsPicker in downloadEpisode.js) that already pops up
-        // automatically once a download actually starts via downloadKAAEpisode/
-        // downloadKinoEpisode, reading whatever's active in window.currentVideo.subtitles.
+        // One button opens a picker: which server, sub/dub/hsub, and optional subtitle burn.
+        // The progress modal opens only after the download starts and does not duplicate these
+        // choices, so its status cannot change the requested output.
         //
         // KAA / MegaPlay / NekoStream / RU-MV all go through THAT existing client-side
         // ffmpeg.wasm pipeline (burn-capable, no server bandwidth) - but it only ever operates
@@ -3868,7 +4053,40 @@ document.addEventListener('DOMContentLoaded', function() {
         };
 
         const dlPanel = document.getElementById('animeDownloadPanel');
-        let dlSource = 'kaa', dlLang = 'sub', dlQuality = '1080p';
+        let dlSource = 'neko', dlLang = 'sub', dlQuality = '1080p';
+        // Most anime sources use KAA's subtitle set directly or as their fallback. Fetch that
+        // lightweight track list while the panel is open, rather than making the user start one
+        // download merely to discover the languages they could have selected first.
+        const dlSubtitlePreviewCache = new Map();
+        let dlSubtitlePreviewInFlight = null;
+
+        const dlCurrentSubtitleKey = () => {
+            const { season, episode } = dlCurrentEpisodeKey();
+            return `${malId || ''}:${season}:${episode}`;
+        };
+
+        async function dlFetchSubtitlePreview() {
+            const { season, episode } = dlCurrentEpisodeKey();
+            const key = dlCurrentSubtitleKey();
+            if (dlSubtitlePreviewCache.has(key)) return dlSubtitlePreviewCache.get(key);
+            if (dlSubtitlePreviewInFlight?.key === key) return dlSubtitlePreviewInFlight.promise;
+            const promise = fetchKaaSubtitlesForEpisode(episode, dlLang, season)
+                .catch((err) => {
+                    console.warn('[AnimeDownloadSubtitlePreview] failed:', err);
+                    return [];
+                })
+                .then((tracks) => {
+                    const safeTracks = Array.isArray(tracks) ? tracks.filter(track => track?.url) : [];
+                    dlSubtitlePreviewCache.set(key, safeTracks);
+                    return safeTracks;
+                });
+            dlSubtitlePreviewInFlight = { key, promise };
+            promise.finally(() => {
+                if (dlSubtitlePreviewInFlight?.key === key) dlSubtitlePreviewInFlight = null;
+                if (dlPanel?.style.display !== 'none') dlPopulateSubsPicker();
+            });
+            return promise;
+        }
 
         // Checking the box with the picker still on "Skip" silently downgrades "burn
         // subtitles" back into a no-op (burnEnabled requires a real value, not '') -
@@ -3882,24 +4100,31 @@ document.addEventListener('DOMContentLoaded', function() {
             if (pick) picker.value = pick.value;
         };
 
-        // The burn checkbox+picker mirror what ensureDownloadModal()'s own
-        // #downloadIncludeSubs/#downloadSubsPicker do inside the progress dialog - duplicated
-        // here so the choice can be made up-front in the panel instead of after the download
-        // (and, for a source that isn't loaded yet, after switching) has already started.
+        // These controls define the subtitle-burn choice before the source switch and download
+        // begin. They are passed to the downloader as per-download options.
         // Only reflects real options once the picked source is actually the one loaded, since
         // window.currentVideo.subtitles belongs to whatever's currently playing.
         const dlPopulateSubsPicker = () => {
             const picker = document.getElementById('dlSubsPicker');
             const checkbox = document.getElementById('dlBurnCheckbox');
             if (!picker || !checkbox) return;
+            const previousLanguage = picker.value !== ''
+                ? picker.options[picker.selectedIndex]?.textContent?.trim()
+                : null;
             const info = DL_SOURCE_INFO[dlSource];
             const isActive = info && window.currentServer === info.server && window.currentVideo?.provider === info.provider;
+            const previewKey = dlCurrentSubtitleKey();
+            const hasPreview = dlSubtitlePreviewCache.has(previewKey);
+            const previewTracks = dlSubtitlePreviewCache.get(previewKey);
             const tracks = isActive && Array.isArray(window.currentVideo?.subtitles)
-                ? window.currentVideo.subtitles.filter(t => t?.url) : [];
+                ? window.currentVideo.subtitles.filter(t => t?.url)
+                : (previewTracks || []);
             picker.innerHTML = '';
             const skipOpt = document.createElement('option');
             skipOpt.value = '';
-            skipOpt.textContent = tracks.length ? 'Skip' : (isActive ? 'No subtitles available' : 'Click Download to check this server’s subtitles');
+            skipOpt.textContent = tracks.length
+                ? 'Skip'
+                : (isActive ? 'No subtitles available' : (hasPreview ? 'No subtitles found' : 'Checking subtitles...'));
             picker.appendChild(skipOpt);
             tracks.forEach((track, index) => {
                 const opt = document.createElement('option');
@@ -3907,6 +4132,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 opt.textContent = track.lang || track.language || `Subtitle ${index + 1}`;
                 picker.appendChild(opt);
             });
+            if (previousLanguage) {
+                const matchingOption = Array.from(picker.options).find(option => option.textContent.trim() === previousLanguage);
+                if (matchingOption) picker.value = matchingOption.value;
+            }
             // The checkbox itself stays enabled even with nothing to pick yet (e.g. the panel
             // just opened and the chosen source hasn't been switched to) - disabling it here
             // made it unclickable until a source happened to already be active with subtitles,
@@ -3918,6 +4147,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // before switching servers - re-apply the same auto-pick so that choice survives
             // the repopulate that happens after the panel's own source switch.
             if (checkbox.checked) dlAutoPickSubsLanguage();
+            if (!isActive && !hasPreview) dlFetchSubtitlePreview();
         };
 
         document.getElementById('dlBurnCheckbox')?.addEventListener('change', (e) => {
@@ -4059,7 +4289,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
         document.getElementById('btnDownloadAnime')?.addEventListener('click', () => {
             if (!dlPanel) return;
-            const opening = dlPanel.style.display === 'none';
+            // The initial hidden state comes from CSS, so style.display is empty on the first
+            // click. Check the computed value instead of treating that empty inline value as
+            // visible, which previously made the first click hide the panel once more.
+            const opening = window.getComputedStyle(dlPanel).display === 'none';
             dlPanel.style.display = opening ? 'block' : 'none';
             if (opening) { dlSyncRowsForSource(); dlCheckAvailability(); startEpisodePanelHeightSyncBurst(); }
         });
@@ -4118,7 +4351,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const dlSeason = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || 1;
             const dlEpisode = document.getElementById('episodeSelect')?.value
                 || document.getElementById('episodeNum')?.textContent || 1;
-
+            const compressFile = document.getElementById('dlCompressCheckbox')?.checked === true;
             if (dlSource === 'external') {
                 if (!malId) { setStatus('MAL ID unavailable for this title.'); return; }
                 setStatus('Looking up link...');
@@ -4162,37 +4395,17 @@ document.addEventListener('DOMContentLoaded', function() {
             const fn = window[info.fn];
             if (typeof fn !== 'function') { setStatus('Download function unavailable.'); return; }
 
-            // downloadKAAEpisode/downloadKinoEpisode read the picker inside their OWN progress
-            // modal (#downloadIncludeSubs/#downloadSubsPicker), not this panel's copies - the
-            // panel's picker is what the user actually set, so hand it off. window.currentSubtitleTrackIndex
-            // is read as the fallback default the very first time the progress modal is built
-            // for this page load, which is also what the modal's own populateSubtitlePicker()
-            // uses to pick an initial selection - setting it before fn() means that initial
-            // selection already matches what was chosen here.
+            // The panel owns subtitle-burn choices. Pass them into this individual download so
+            // the progress modal stays status-only and never changes a later download's choice.
             const dlBurnCheckbox = document.getElementById('dlBurnCheckbox');
             const dlSubsPicker = document.getElementById('dlSubsPicker');
             const burnEnabled = dlBurnCheckbox?.checked === true && dlSubsPicker?.value !== '';
             if (burnEnabled) window.currentSubtitleTrackIndex = Number(dlSubsPicker.value || 0);
-            fn(parseInt(dlQuality, 10) || undefined);
-            // fn() (downloadKAAEpisode/downloadKinoEpisode) calls ensureDownloadModal() as one of
-            // its first synchronous steps, before its first await - so by the time control
-            // returns here the modal DOM already exists. Calling it again explicitly too costs
-            // nothing (it's a no-op once #downloadModal exists) and stops this from being a silent
-            // trap if that internal ordering ever changes - see the note in mdlApplyBurnChoiceToModal.
-            window.ensureDownloadModal?.();
-            const modalCheckbox = document.getElementById('downloadIncludeSubs');
-            const modalPicker = document.getElementById('downloadSubsPicker');
-            if (modalCheckbox) {
-                modalCheckbox.checked = burnEnabled;
-                modalCheckbox.dispatchEvent(new Event('change'));
-            }
-            if (modalPicker && burnEnabled) modalPicker.value = String(window.currentSubtitleTrackIndex || 0);
-            // downloadKAAEpisode and downloadKinoEpisode both read the same
-            // #downloadIncludeSubs/#downloadSubsPicker now, so this applies to either path.
-            const subsChoiceEl = document.getElementById('downloadSubsChoice');
-            const burnSectionEl = document.getElementById('downloadSubtitleBurnSection');
-            if (subsChoiceEl) subsChoiceEl.style.display = burnEnabled ? '' : 'none';
-            if (burnSectionEl) burnSectionEl.style.display = burnEnabled ? '' : 'none';
+            fn(parseInt(dlQuality, 10) || undefined, {
+                compress: compressFile,
+                burnSubtitles: burnEnabled,
+                subtitleTrackIndex: burnEnabled ? window.currentSubtitleTrackIndex : undefined
+            });
             setStatus(burnEnabled ? 'Started - burning subtitles in, see the download dock.' : 'Started - see the download dock.');
         });
 
@@ -4362,30 +4575,15 @@ document.addEventListener('DOMContentLoaded', function() {
             if (picker) picker.disabled = !e.target.checked;
         });
 
-        // Same mirroring pattern the anime panel's btnDownloadGo handler uses just above -
-        // downloadKinoEpisode reads the shared #downloadIncludeSubs/#downloadSubsPicker modal,
-        // not this panel's own copies directly.
-        function mdlApplyBurnChoiceToModal() {
-            // This panel calls this BEFORE downloadKinoEpisode() (has to - it needs the burn
-            // choice mirrored in before the function starts reading it), unlike the anime panel
-            // below which happens to call fn() first. #downloadModal only gets built the first
-            // time ensureDownloadModal() runs, so without this, the very first download of the
-            // page load had no #downloadIncludeSubs to mirror into yet and silently dropped the
-            // burn choice (confirmed live: worked from the second download on, once the modal
-            // DOM already existed from the first run).
-            window.ensureDownloadModal?.();
+        function mdlGetBurnOptions() {
             const burnCheckbox = document.getElementById('mdlBurnCheckbox');
             const subsPicker = document.getElementById('mdlSubsPicker');
             const burnEnabled = burnCheckbox?.checked === true && subsPicker?.value !== '';
             if (burnEnabled) window.currentSubtitleTrackIndex = Number(subsPicker.value || 0);
-            const modalCheckbox = document.getElementById('downloadIncludeSubs');
-            const modalPicker = document.getElementById('downloadSubsPicker');
-            if (modalCheckbox) {
-                modalCheckbox.checked = burnEnabled;
-                modalCheckbox.dispatchEvent(new Event('change'));
-            }
-            if (modalPicker && burnEnabled) modalPicker.value = String(window.currentSubtitleTrackIndex || 0);
-            return burnEnabled;
+            return {
+                burnSubtitles: burnEnabled,
+                subtitleTrackIndex: burnEnabled ? window.currentSubtitleTrackIndex : undefined
+            };
         }
 
         // waitForProvider alone isn't enough for a season batch - the provider string stays the
@@ -4462,8 +4660,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (match) subsPickerEl.value = match.value;
                 }
             }
-            mdlApplyBurnChoiceToModal();
-            await window.downloadKinoEpisode?.(parseInt(mdlQuality, 10) || undefined);
+            await window.downloadKinoEpisode?.(parseInt(mdlQuality, 10) || undefined, mdlGetBurnOptions());
             return true;
         }
 
@@ -4662,11 +4859,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvRuMovie', 'srvKino', 'srvT1mM']);
         const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvT1mTV']);
-        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1', 'srvSpd1']);
+        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1']);
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',
             animeTV: 'ⓘ Currently supports nearly all series and animes. Sub/dub switching may be unstable for most anime titles.',
-            animeDub: 'ⓘ Currently supports anime streaming via MegaPlay, KickAssAnime, NekoStream and SPD1 (AnimePahe).'
+            animeDub: 'ⓘ Currently supports anime streaming via MegaPlay, KickAssAnime and NekoStream.'
         };
 
         [...moviesBtns, ...animeTVBtns, ...animeDubBtns].forEach(id => {
@@ -4905,18 +5102,54 @@ document.addEventListener('DOMContentLoaded', function() {
                     const episodeListContainer = document.getElementById('episodeListContainer');
                     const episodeSearchInput = document.getElementById('episodeSearchInput');
                     const seasonPickerWrap = document.getElementById('seasonPickerWrap');
+                    const episodeTagFilter = document.getElementById('episodeTagFilter');
+                    const episodeTagFilterTrigger = document.getElementById('episodeTagFilterTrigger');
+
+                    const applyEpisodeFilters = () => {
+                        const query = (episodeSearchInput?.value || '').toLowerCase().trim();
+                        const selectedTags = new Set(Array.from(episodeTagFilter?.querySelectorAll('input:checked') || []).map(input => input.value));
+                        const items = Array.from(episodeListContainer?.querySelectorAll('.episode-list-item') || []);
+
+                        items.forEach(item => {
+                            const matchesSearch = !query || (item.textContent || '').toLowerCase().includes(query);
+                            const matchesTag = !selectedTags.size || selectedTags.has(item.dataset.fillerType || '');
+                            item.classList.toggle('hidden-by-search', !matchesSearch);
+                            item.classList.toggle('hidden-by-tag-filter', !matchesTag);
+                        });
+
+                        episodeTagFilter?.querySelectorAll('[data-filler-count]').forEach(countEl => {
+                            const tag = countEl.dataset.fillerCount;
+                            countEl.textContent = items.filter(item => item.dataset.fillerType === tag).length;
+                        });
+
+                        if (episodeTagFilterTrigger) {
+                            episodeTagFilterTrigger.firstChild.textContent = selectedTags.size
+                                ? `Filter tags · ${selectedTags.size} selected `
+                                : 'Filter tags ';
+                        }
+                    };
 
                     const wireEpisodeSearch = () => {
                         if (!episodeSearchInput || episodeSearchInput.dataset.wired === '1') return;
                         episodeSearchInput.dataset.wired = '1';
-                        episodeSearchInput.addEventListener('input', () => {
-                            const q = (episodeSearchInput.value || '').toLowerCase().trim();
-                            document.querySelectorAll('.episode-list-item').forEach(item => {
-                                const txt = (item.textContent || '').toLowerCase();
-                                item.classList.toggle('hidden-by-search', !!q && !txt.includes(q));
-                            });
-                        });
+                        episodeSearchInput.addEventListener('input', applyEpisodeFilters);
                     };
+
+                    if (episodeTagFilter && episodeTagFilter.dataset.wired !== '1') {
+                        episodeTagFilter.dataset.wired = '1';
+                        episodeTagFilterTrigger?.addEventListener('click', () => {
+                            const opening = !episodeTagFilter.classList.contains('is-open');
+                            episodeTagFilter.classList.toggle('is-open', opening);
+                            episodeTagFilterTrigger.setAttribute('aria-expanded', String(opening));
+                        });
+                        episodeTagFilter.addEventListener('change', applyEpisodeFilters);
+                        document.addEventListener('click', event => {
+                            if (!episodeTagFilter.contains(event.target)) {
+                                episodeTagFilter.classList.remove('is-open');
+                                episodeTagFilterTrigger?.setAttribute('aria-expanded', 'false');
+                            }
+                        });
+                    }
 
                     let seasonEntries = data.seasons.filter(s => s.season_number > 0).sort((a, b) => a.season_number - b.season_number);
                     let resolvedSeasonGroups = null;
@@ -5083,6 +5316,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 let fillerSeasonOffsets = {};
                                 const fillerLegendEl = document.getElementById('fillerLegend');
                                 if (fillerLegendEl) fillerLegendEl.style.display = isAnime ? 'flex' : 'none';
+                                if (episodeTagFilter) episodeTagFilter.style.display = isAnime ? 'block' : 'none';
                                 if (isAnime) {
                                     let running = 0;
                                     if (resolvedSeasonGroups && resolvedSeasonGroups.length > 0) {
@@ -5179,6 +5413,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 episodeListContainer.innerHTML = listHTML;
                                 window.currentEpisodeThumb = firstThumb || animePosterThumb;
                                 window.currentAnimePosterThumb = animePosterThumb;
+                                applyEpisodeFilters();
 
                                 // Apply .active class to continue_from episode AFTER DOM is rendered
                                 requestAnimationFrame(() => {

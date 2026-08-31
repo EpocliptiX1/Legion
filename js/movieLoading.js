@@ -35,22 +35,21 @@ function tmdbImgUrl(imgPath, normalSize, slowSize) {
     return `https://image.tmdb.org/t/p/${size}${imgPath}`;
 }
 
-// AniList-sourced recommendation cards (genre row) carry an anilistId, and a TMDB id only
-// when the backend already had that mapping cached (a free local lookup - it no longer does a
-// live reverse-search per card, which used to mean up to ~26 sequential lookups before the row
-// could even render). If we already have knownTmdbId, navigate instantly; only hit
-// /api/anime-tmdb-id (one lookup, live search allowed there) for the specific card someone
-// actually clicked when it wasn't pre-cached.
-async function navigateToAnimeRecommendation(cardEl, anilistId, displayName, knownTmdbId) {
-    if (knownTmdbId) {
-        window.location.href = `movieInfo.html?id=${knownTmdbId}&type=tv`;
-        return;
-    }
+// AniList recommendation cards are presentation data only. movieInfo.html accepts TMDB ids,
+// so resolve and validate the AniList -> TMDB mapping at click time instead of treating a stale
+// cache value as a safe navigation target.
+async function navigateToAnimeRecommendation(cardEl, anilistId, displayName, malId) {
     if (!anilistId) return;
     const original = cardEl?.style.opacity;
     if (cardEl) cardEl.style.opacity = '0.5';
     try {
-        const res = await fetch(`/api/anime-tmdb-id?anilistId=${encodeURIComponent(anilistId)}&title=${encodeURIComponent(displayName || '')}`);
+        const query = new URLSearchParams({
+            anilistId: String(anilistId),
+            title: displayName || '',
+            force: '1'
+        });
+        if (malId) query.set('malId', String(malId));
+        const res = await fetch(`/api/anime-tmdb-id?${query.toString()}`);
         if (!res.ok) throw new Error('not found');
         const data = await res.json();
         if (!data.tmdb_id) throw new Error('no tmdb_id in response');
@@ -891,7 +890,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                                     <p style="color:#f96d00; font-size:11px; font-weight:bold; margin-top:5px;">AniList Recommendations</p>
                                 </div>
                             `;
-                            card.onclick = () => navigateToAnimeRecommendation(card, item.anilistId, displayName, item.ID);
+                            card.onclick = () => navigateToAnimeRecommendation(card, item.anilistId, displayName, item.malId);
                             genreRow.appendChild(card);
                             cards.push(card.outerHTML);
                         });
@@ -901,7 +900,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                             Array.from(genreRowClone.querySelectorAll('.mini-card')).forEach((el, idx) => {
                                 el.onclick = () => {
                                     const item = mappedItems[idx];
-                                    if (item) navigateToAnimeRecommendation(el, item.anilistId, item['Movie Name'], item.ID);
+                                    if (item) navigateToAnimeRecommendation(el, item.anilistId, item['Movie Name'], item.malId);
                                 };
                             });
                         }
@@ -2137,6 +2136,58 @@ function renderOneComment(c, isReply) {
     `;
 }
 
+// Rendering a huge thread in one innerHTML assignment starts every avatar/background-image
+// request at once and creates thousands of DOM nodes before the rest of the page can settle.
+// Keep the fetched comment data in memory, but mount only one small batch and append later
+// when the reader actually approaches the end of it.
+const COMMENT_RENDER_BATCH_SIZE = 20;
+let commentsRenderObserver = null;
+
+function renderCommentsInBatches(container, comments, renderComment) {
+    commentsRenderObserver?.disconnect();
+    commentsRenderObserver = null;
+    container.innerHTML = '';
+
+    let nextIndex = 0;
+    const sentinel = document.createElement('div');
+    sentinel.className = 'comments-batch-sentinel';
+    sentinel.style.cssText = 'min-height:1px;text-align:center;color:#777;padding:12px 0;font-size:.85rem;';
+
+    const appendNextBatch = () => {
+        const batch = comments.slice(nextIndex, nextIndex + COMMENT_RENDER_BATCH_SIZE);
+        if (!batch.length) {
+            sentinel.remove();
+            commentsRenderObserver?.disconnect();
+            commentsRenderObserver = null;
+            return;
+        }
+        const fragment = document.createDocumentFragment();
+        const holder = document.createElement('div');
+        holder.innerHTML = batch.map(c => renderComment(c)).join('');
+        while (holder.firstChild) fragment.appendChild(holder.firstChild);
+        container.insertBefore(fragment, sentinel);
+        nextIndex += batch.length;
+
+        if (nextIndex >= comments.length) {
+            sentinel.remove();
+            commentsRenderObserver?.disconnect();
+            commentsRenderObserver = null;
+        } else {
+            sentinel.textContent = 'Scroll for more comments';
+        }
+    };
+
+    container.appendChild(sentinel);
+    appendNextBatch();
+    if (!sentinel.isConnected) return;
+
+    commentsRenderObserver = new IntersectionObserver(entries => {
+        if (!entries.some(entry => entry.isIntersecting)) return;
+        appendNextBatch();
+    }, { rootMargin: '300px 0px' });
+    commentsRenderObserver.observe(sentinel);
+}
+
 window.loadComments = async function () {
     // Anime pages show imported Anikoto comments instead once malId/episode are known
     // (set by moviePlayer.js after Watch Now is clicked - see anime-episode-changed listener
@@ -2178,7 +2229,7 @@ window.loadComments = async function () {
             return;
         }
 
-        container.innerHTML = comments.map(c => renderOneComment(c, false)).join('');
+        renderCommentsInBatches(container, comments, c => renderOneComment(c, false));
     } catch (err) {
         console.error('Failed to load comments:', err);
         container.innerHTML = `<p class="setting-hint">Could not load comments.</p>`;
@@ -2289,7 +2340,7 @@ window.loadAnimeComments = async function (forceReload) {
             container.innerHTML = `<p class="setting-hint">No comments yet. Be the first to share your thoughts!</p>`;
             return;
         }
-        container.innerHTML = comments.map(c => renderAnikotoComment(c, false)).join('');
+        renderCommentsInBatches(container, comments, c => renderAnikotoComment(c, false));
     };
 
     // The overlay lives in #commentsBody now, a separate element from #commentsList, so

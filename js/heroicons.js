@@ -63,8 +63,13 @@
     }
 
     function replaceEmoji(root) {
+        // A mutation may be delivered after its text node has been detached.
+        // TreeWalker only accepts a live DOM Node as its root.
+        if (!root || !(root instanceof Node)) return;
+
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
             acceptNode(node) {
+                emojiPattern.lastIndex = 0;
                 if (!node.nodeValue || !emojiPattern.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
                 emojiPattern.lastIndex = 0;
                 const parent = node.parentElement;
@@ -94,7 +99,7 @@
     document.addEventListener('DOMContentLoaded', () => {
         replaceEmoji(document.body);
         new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => {
-            if (node.nodeType === Node.TEXT_NODE) replaceEmoji(node.parentElement);
+            if (node.nodeType === Node.TEXT_NODE && node.parentElement) replaceEmoji(node.parentElement);
             else if (node.nodeType === Node.ELEMENT_NODE && !node.matches('.heroicon, .heroicon-wrap')) replaceEmoji(node);
         }))).observe(document.body, { childList: true, subtree: true });
     });

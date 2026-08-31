@@ -198,27 +198,13 @@ function ensureDownloadModal() {
                             Downloaded: 0 MB
                         </div>
 
-                        <label id="downloadSubsChoice" class="download-subs-choice">
-                            <input id="downloadIncludeSubs" type="checkbox" />
-                            Burn subtitles into video
-                        </label>
-
-                        <div id="downloadSubsPickerWrap" class="download-subs-picker-wrap" style="display:none;">
-                            <div class="download-modal-subheading" style="margin-top:10px;">Subtitle Language</div>
-                            <select id="downloadSubsPicker" class="download-subs-picker"></select>
-                        </div>
-
-                        <div id="downloadSubsHint" class="download-modal-text download-subs-hint" style="display:none;">
-                            Warning: this will re-encode the video and can take a long time.
-                        </div>
-
                         <div class="download-modal-subheading">Video + Audio</div>
                         <div class="download-progress-track">
                             <div id="downloadProgressBar" class="download-progress-fill"></div>
                         </div>
 
-                        <div id="downloadSubtitleBurnSection">
-                            <div class="download-modal-subheading">Subtitle Burn</div>
+                        <div id="downloadProcessingSection">
+                            <div id="downloadProcessingHeading" class="download-modal-subheading">Processing</div>
                             <div class="download-progress-track">
                                 <div id="downloadSubtitleProgressBar" class="download-progress-fill download-progress-fill-secondary"></div>
                             </div>
@@ -240,15 +226,6 @@ function showDownloadModal() {
         modal.classList.remove('collapsed');
         modal.style.display = "flex";
     }
-    // Reset to visible on every call - the download panel hides these afterward when its own
-    // burn choice was "no" (see moviePlayer.js), but that hide is per-call, not permanent: a
-    // plain movie/TV download through the non-panel buttons never runs that step and would
-    // otherwise be stuck with whatever an earlier anime-panel download last left this shared
-    // modal showing.
-    const subsChoiceReset = document.getElementById('downloadSubsChoice');
-    const burnSectionReset = document.getElementById('downloadSubtitleBurnSection');
-    if (subsChoiceReset) subsChoiceReset.style.display = '';
-    if (burnSectionReset) burnSectionReset.style.display = '';
     bindDownloadBeforeUnload();
     if (modal && !modal.dataset.bound) {
         modal.dataset.bound = '1';
@@ -262,53 +239,6 @@ function showDownloadModal() {
             );
         });
     }
-    const checkbox = document.getElementById('downloadIncludeSubs');
-    const hint = document.getElementById('downloadSubsHint');
-    const pickerWrap = document.getElementById('downloadSubsPickerWrap');
-    const picker = document.getElementById('downloadSubsPicker');
-
-    const populateSubtitlePicker = () => {
-        if (!picker) return;
-        const tracks = Array.isArray(window.currentVideo?.subtitles) ? window.currentVideo.subtitles.filter(track => track?.url) : [];
-        picker.innerHTML = '';
-        if (!tracks.length) {
-            picker.innerHTML = '<option value="">No subtitles available</option>';
-            picker.disabled = true;
-            return;
-        }
-        picker.disabled = false;
-        tracks.forEach((track, index) => {
-            const opt = document.createElement('option');
-            opt.value = String(index);
-            opt.textContent = `${track.lang || track.language || `Subtitle ${index + 1}`}`;
-            picker.appendChild(opt);
-        });
-        const preferredIndex = Math.max(0, Math.min(tracks.length - 1, Number(window.currentSubtitleTrackIndex || 0)));
-        picker.value = String(preferredIndex);
-    };
-
-    if (checkbox && !checkbox.dataset.bound) {
-        checkbox.dataset.bound = '1';
-        checkbox.addEventListener('change', () => {
-            const enabled = checkbox.checked === true;
-            if (hint) hint.style.display = enabled ? 'block' : 'none';
-            if (pickerWrap) pickerWrap.style.display = enabled ? 'block' : 'none';
-            if (enabled) populateSubtitlePicker();
-            if (enabled) {
-                window.showLongToast?.(
-                    'Warning: burning subtitles will re-encode the video and may take a long time.',
-                    12000
-                );
-            }
-        });
-    }
-    if (picker && !picker.dataset.bound) {
-        picker.dataset.bound = '1';
-        picker.addEventListener('change', () => {
-            window.currentSubtitleTrackIndex = Number(picker.value || 0);
-        });
-    }
-    populateSubtitlePicker();
 }
 
 function hideDownloadModal() {
@@ -328,6 +258,47 @@ function setSubtitleProgress(label, percent) {
     if (bar) bar.style.width = `${Math.max(0, Math.min(100, percent || 0))}%`;
     const segmentText = document.getElementById('downloadSegmentText');
     if (segmentText && label) segmentText.textContent = label;
+}
+
+function setDownloadProcessingHeading(text) {
+    const heading = document.getElementById('downloadProcessingHeading');
+    if (heading) heading.textContent = text;
+}
+
+function formatRemainingTime(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 1) return '';
+    const rounded = Math.ceil(seconds);
+    const minutes = Math.floor(rounded / 60);
+    const remainder = rounded % 60;
+    return minutes ? `${minutes}m ${remainder}s left` : `${remainder}s left`;
+}
+
+function createCompressionProgressHandler({ durationSeconds, setStatus, setProgress }) {
+    let startedAt = null;
+    let lastUpdatedAt = 0;
+    return (progress) => {
+        const processedSeconds = Number(progress?.time) / 1000000;
+        if (!Number.isFinite(processedSeconds) || !Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
+        const now = performance.now();
+        // The worker can spend a while loading and accepting its input before it encodes the
+        // first frame. Do not include that setup delay in the encoding-speed estimate.
+        if (startedAt == null) startedAt = now;
+        if (now - lastUpdatedAt < 350 && processedSeconds < durationSeconds) return;
+        lastUpdatedAt = now;
+        const percent = Math.max(0, Math.min(100, (processedSeconds / durationSeconds) * 100));
+        const elapsedSeconds = (now - startedAt) / 1000;
+        // A fraction of one percent is too noisy to extrapolate. Show the counter first, then
+        // estimate once the encoder has produced a meaningful sample.
+        const etaSeconds = percent >= 1 && elapsedSeconds >= 2
+            ? elapsedSeconds * ((100 - percent) / percent)
+            : NaN;
+        const eta = formatRemainingTime(etaSeconds);
+        const label = `Compression: ${percent.toFixed(0)}%${eta ? ` · ${eta}` : ''}`;
+        setStatus(label);
+        setProgress(label, percent);
+        const mainBar = document.getElementById('downloadProgressBar');
+        if (mainBar) mainBar.style.width = `${percent}%`;
+    };
 }
 
 function normalizeSubtitlePayload(text) {
@@ -708,7 +679,7 @@ function notifyDownloadCompleteForEpisode(video) {
     }).catch(err => console.warn('[Download] notification create failed:', err.message));
 }
 
-async function downloadKAAEpisode(requestedHeight) {
+async function downloadKAAEpisode(requestedHeight, options = {}) {
     // downloadInProgress was only ever set here, never checked -- a second call
     // (double-click, stray repeat event) would race a second FFmpeg() instance
     // against the first's segment fetches/FS writes, which is a plausible source
@@ -720,6 +691,7 @@ async function downloadKAAEpisode(requestedHeight) {
         return;
     }
     downloadedBytes = 0;
+    const compactOutput = options.compress === true;
     downloadInProgress = true;
     const video = window.currentVideo;
     const downloadContext = window.currentDownloadContext || {};
@@ -814,14 +786,15 @@ async function downloadKAAEpisode(requestedHeight) {
         console.log('[Download][4/8] video media playlist fetch', { status: videoPlaylistRes.status, ok: videoPlaylistRes.ok, url: selectedVideo.url });
         if (!videoPlaylistRes.ok) throw new Error(`Video media playlist fetch failed (HTTP ${videoPlaylistRes.status})`);
         const videoPlaylist = await videoPlaylistRes.text();
-        const { segments: videoSegments, initSegmentUrl: videoInitUrl } = parseMediaPlaylist(videoPlaylist);
+        const { segments: videoSegments, initSegmentUrl: videoInitUrl, durationSeconds: videoDurationSeconds } = parseMediaPlaylist(videoPlaylist);
         console.log('[Download] video segments parsed', { count: videoSegments.length, initSegmentUrl: videoInitUrl, firstSegment: videoSegments[0] });
 
         const audioPlaylistRes = await fetch(selectedAudio.url);
         console.log('[Download][5/8] audio media playlist fetch', { status: audioPlaylistRes.status, ok: audioPlaylistRes.ok, url: selectedAudio.url });
         if (!audioPlaylistRes.ok) throw new Error(`Audio media playlist fetch failed (HTTP ${audioPlaylistRes.status})`);
         const audioPlaylist = await audioPlaylistRes.text();
-        const { segments: audioSegments, initSegmentUrl: audioInitUrl } = parseMediaPlaylist(audioPlaylist);
+        const { segments: audioSegments, initSegmentUrl: audioInitUrl, durationSeconds: audioDurationSeconds } = parseMediaPlaylist(audioPlaylist);
+        const mediaDurationSeconds = Math.max(videoDurationSeconds, audioDurationSeconds);
         console.log('[Download] audio segments parsed', { count: audioSegments.length, initSegmentUrl: audioInitUrl, firstSegment: audioSegments[0] });
 
         const isFmp4 = Boolean(videoInitUrl || audioInitUrl);
@@ -830,7 +803,7 @@ async function downloadKAAEpisode(requestedHeight) {
         const subtitleTracks = Array.isArray(video.subtitles)
             ? video.subtitles.filter(track => track?.url)
             : [];
-        const subtitleIndex = Math.max(0, Math.min(subtitleTracks.length - 1, Number(document.getElementById('downloadSubsPicker')?.value || window.currentSubtitleTrackIndex || 0)));
+        const subtitleIndex = Math.max(0, Math.min(subtitleTracks.length - 1, Number(options.subtitleTrackIndex ?? window.currentSubtitleTrackIndex ?? 0)));
         const subtitleTrack = subtitleTracks[subtitleIndex] || subtitleTracks[0] || null;
         let subtitleText = '';
         let subtitleFilename = '';
@@ -924,6 +897,13 @@ async function downloadKAAEpisode(requestedHeight) {
             if (!message) return;
             console.log('[FFmpeg][log]', message);
         });
+        const updateCompressionProgress = compactOutput
+            ? createCompressionProgressHandler({
+                durationSeconds: mediaDurationSeconds,
+                setStatus: setTaskStatus,
+                setProgress: setTaskSubtitleProgress
+            })
+            : null;
         ffmpeg.on?.('progress', (progress) => {
             if (!progress) return;
             const ratio = typeof progress.ratio === 'number' ? progress.ratio : null;
@@ -932,6 +912,7 @@ async function downloadKAAEpisode(requestedHeight) {
                 ratio: ratio != null ? Number(ratio.toFixed(3)) : null,
                 time
             });
+            updateCompressionProgress?.(progress);
         });
         await ffmpeg.load({
             coreURL: "/node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.js",
@@ -970,15 +951,24 @@ async function downloadKAAEpisode(requestedHeight) {
         }
 
         // 4. Muxing
-        const hasSubtitle = Boolean(subtitleText && subtitleFilename) && document.getElementById('downloadIncludeSubs')?.checked === true;
-        setTaskStatus(hasSubtitle ? "Rendering subtitles on canvas..." : "Muxing video and audio...");
-        document.getElementById("downloadProgressBar").style.width = "100%";
-        setTaskSubtitleProgress('Subtitle Burn: queued', 0);
+        const hasSubtitle = Boolean(subtitleText && subtitleFilename) && options.burnSubtitles === true;
+        setTaskStatus(compactOutput ? 'Compressing file size...' : (hasSubtitle ? "Rendering subtitles on canvas..." : "Muxing video and audio..."));
+        document.getElementById("downloadProgressBar").style.width = compactOutput ? "0%" : "100%";
+        setDownloadProcessingHeading(compactOutput ? 'Compression' : (hasSubtitle ? 'Subtitle burn' : 'Finalizing'));
+        setTaskSubtitleProgress(compactOutput ? 'Compression: preparing...' : (hasSubtitle ? 'Subtitle burn: queued' : 'Finalizing: queued'), 0);
 
         const outputFilename = "output.mp4";
         const muxArgs = ["-i", videoInputName, "-i", audioInputName];
 
-        if (hasSubtitle) {
+        if (compactOutput) {
+            // Keep the quality the viewer selected; CRF controls size/visual trade-off without
+            // any global player state or server-side behavior.
+            muxArgs.push(
+                '-map', '0:v:0', '-map', '1:a:0',
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '29',
+                '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart'
+            );
+        } else if (hasSubtitle) {
             muxArgs.push("-c:v", "copy");
             muxArgs.push("-c:a", "copy");
             muxArgs.push("-movflags", "+faststart");
@@ -1015,7 +1005,7 @@ async function downloadKAAEpisode(requestedHeight) {
         }
 
         // 5. Build Download
-        setDownloadStatus(hasSubtitle ? "Finalizing subtitle-enabled download..." : "Preparing download...");
+        setDownloadStatus(compactOutput ? 'Finalizing compact download...' : (hasSubtitle ? "Finalizing subtitle-enabled download..." : "Preparing download..."));
         const data = await ffmpeg.readFile(finalOutput);
         console.log('[Download] final output file read:', {
             finalOutput,
@@ -1153,9 +1143,16 @@ function pickVideoByHeight(videos, requestedHeight) {
 function parseMediaPlaylist(text) {
     const segments = [];
     let initSegmentUrl = null;
+    let durationSeconds = 0;
+    let pendingDuration = null;
     for (const line of text.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed) continue;
+        if (trimmed.startsWith('#EXTINF:')) {
+            const parsed = Number.parseFloat(trimmed.slice('#EXTINF:'.length).split(',')[0]);
+            pendingDuration = Number.isFinite(parsed) ? parsed : null;
+            continue;
+        }
         if (trimmed.startsWith('#EXT-X-MAP:')) {
             const m = trimmed.match(/URI="([^"]+)"/);
             if (m) initSegmentUrl = m[1];
@@ -1163,8 +1160,10 @@ function parseMediaPlaylist(text) {
         }
         if (trimmed.startsWith("#")) continue;
         segments.push(trimmed);
+        if (pendingDuration != null) durationSeconds += pendingDuration;
+        pendingDuration = null;
     }
-    return { segments, initSegmentUrl };
+    return { segments, initSegmentUrl, durationSeconds };
 }
 
 // Added progressCallback to signature
@@ -1205,11 +1204,9 @@ async function downloadSegments(segments, progressCallback) {
 //     downloadKAAEpisode would throw "No matching audio playlist found" here)
 //   - quality: optional requestedHeight, same pickVideoByHeight() helper KAA's downloader
 //     uses - omit it and this keeps defaulting to videos[0] (the best available), same as before
-//   - subtitle burning: same #downloadIncludeSubs/#downloadSubsPicker mechanism as
-//     downloadKAAEpisode now (used to just burn whatever caption track Plyr happened to have
-//     active live in the player, which meant MegaPlay/NekoStream downloads effectively never
-//     burned anything - Plyr's active track isn't wired the same way there)
-async function downloadKinoEpisode(requestedHeight) {
+//   - subtitle burning: accepts the panel's per-download options, so the status modal remains
+//     a read-only progress surface rather than a second source of download settings.
+async function downloadKinoEpisode(requestedHeight, options = {}) {
     if (downloadInProgress) {
         if (typeof window.showLimitToast === 'function') {
             window.showLimitToast('A download is already in progress. Please wait for it to finish.');
@@ -1217,6 +1214,7 @@ async function downloadKinoEpisode(requestedHeight) {
         return;
     }
     downloadedBytes = 0;
+    const compactOutput = options.compress === true;
     downloadInProgress = true;
     const video = window.currentVideo;
     const downloadContext = window.currentDownloadContext || {};
@@ -1261,13 +1259,13 @@ async function downloadKinoEpisode(requestedHeight) {
         const videoPlaylistRes = await fetch(selectedVideo.url);
         if (!videoPlaylistRes.ok) throw new Error(`Video media playlist fetch failed (HTTP ${videoPlaylistRes.status})`);
         const videoPlaylist = await videoPlaylistRes.text();
-        const { segments: videoSegments, initSegmentUrl: videoInitUrl } = parseMediaPlaylist(videoPlaylist);
+        const { segments: videoSegments, initSegmentUrl: videoInitUrl, durationSeconds: mediaDurationSeconds } = parseMediaPlaylist(videoPlaylist);
         console.log('[Download][Kino] video segments parsed', { count: videoSegments.length, initSegmentUrl: videoInitUrl });
 
         const isFmp4 = Boolean(videoInitUrl);
 
         const subtitleTracks = Array.isArray(video?.subtitles) ? video.subtitles.filter(t => t?.url) : [];
-        const subtitleIndex = Math.max(0, Math.min(subtitleTracks.length - 1, Number(document.getElementById('downloadSubsPicker')?.value || window.currentSubtitleTrackIndex || 0)));
+        const subtitleIndex = Math.max(0, Math.min(subtitleTracks.length - 1, Number(options.subtitleTrackIndex ?? window.currentSubtitleTrackIndex ?? 0)));
         const subtitleTrack = subtitleTracks[subtitleIndex] || null;
         let subtitleText = '';
         let subtitleFilename = '';
@@ -1313,6 +1311,14 @@ async function downloadKinoEpisode(requestedHeight) {
         setTaskStatus('Loading FFmpeg...');
         const ffmpeg = new FFmpeg();
         ffmpeg.on?.('log', ({ message }) => { if (message) console.log('[FFmpeg][log]', message); });
+        const updateCompressionProgress = compactOutput
+            ? createCompressionProgressHandler({
+                durationSeconds: mediaDurationSeconds,
+                setStatus: setTaskStatus,
+                setProgress: setTaskSubtitleProgress
+            })
+            : null;
+        if (updateCompressionProgress) ffmpeg.on?.('progress', updateCompressionProgress);
 
         await ffmpeg.load({
             coreURL: '/node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.js',
@@ -1331,15 +1337,22 @@ async function downloadKinoEpisode(requestedHeight) {
         // Audio's already muxed into the video segments -- this is just a
         // container remux (e.g. fMP4 fragments -> a standalone playable MP4),
         // not a real audio+video combine like KAA needs.
-        const hasSubtitle = Boolean(subtitleText && subtitleFilename) && document.getElementById('downloadIncludeSubs')?.checked === true;
-        setTaskStatus(hasSubtitle ? 'Rendering subtitles on canvas...' : 'Remuxing video...');
-        document.getElementById('downloadProgressBar').style.width = '100%';
-        setTaskSubtitleProgress('Subtitle Burn: queued', 0);
+        const hasSubtitle = Boolean(subtitleText && subtitleFilename) && options.burnSubtitles === true;
+        setTaskStatus(compactOutput ? 'Compressing file size...' : (hasSubtitle ? 'Rendering subtitles on canvas...' : 'Remuxing video...'));
+        document.getElementById('downloadProgressBar').style.width = compactOutput ? '0%' : '100%';
+        setDownloadProcessingHeading(compactOutput ? 'Compression' : (hasSubtitle ? 'Subtitle burn' : 'Finalizing'));
+        setTaskSubtitleProgress(compactOutput ? 'Compression: preparing...' : (hasSubtitle ? 'Subtitle burn: queued' : 'Finalizing: queued'), 0);
 
         const outputFilename = 'output.mp4';
-        const muxArgs = hasSubtitle
-            ? ['-i', videoInputName, '-c', 'copy', '-movflags', '+faststart', outputFilename]
-            : ['-i', videoInputName, '-c', 'copy', outputFilename];
+        const muxArgs = compactOutput
+            ? [
+                '-i', videoInputName,
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '29',
+                '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', outputFilename
+            ]
+            : (hasSubtitle
+                ? ['-i', videoInputName, '-c', 'copy', '-movflags', '+faststart', outputFilename]
+                : ['-i', videoInputName, '-c', 'copy', outputFilename]);
 
         console.log('[Download][Kino][5/6] running ffmpeg remux', muxArgs);
         await ffmpeg.exec(muxArgs);
@@ -1430,12 +1443,6 @@ function mergeSegments(segments) {
 // Global exposes
 window.downloadKAAEpisode = downloadKAAEpisode;
 window.downloadKinoEpisode = downloadKinoEpisode;
-// The anime/movie/TV download panels mirror their own burn-checkbox state into this modal's
-// #downloadIncludeSubs BEFORE calling the download function (see dlApplyBurnChoiceToModal /
-// mdlApplyBurnChoiceToModal in moviePlayer.js) - but ensureDownloadModal() only builds that
-// element the first time a download modal is shown, so on someone's very first download this
-// ever ran on the page, the checkbox didn't exist yet to mirror into and the burn choice was
-// silently dropped (worked fine from the second download on, once the modal DOM already
-// existed). Exposed so the panel can build the modal DOM before mirroring into it.
+// Exposed for callers that need a status modal before starting a download.
 window.ensureDownloadModal = ensureDownloadModal;
 window.updateDownloadButtons = updateDownloadButtons;

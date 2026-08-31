@@ -131,7 +131,7 @@ const embedLimiter = rateLimit({
 // (server.js) - the nonce raises the bar per-request, this caps how much even a working script
 // can pull before getting throttled.
 const RESOLVE_GATED_PATHS = [
-    '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log', '/api/anime-spd-log',
+    '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
     '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
     '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download'
 ];

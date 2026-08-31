@@ -1045,7 +1045,7 @@ body {
 
 .search-results-menu.search-results-modal {
     position: fixed;
-    top: 90px;
+    top: 57px;
     left: 0;
     right: 0;
     /* width: min(720px, 92vw); */
@@ -6152,6 +6152,14 @@ body.personal-list-page .schedule-cards-row .disc-card-num {
         0 0 0 2.5px #ffb34755;
     filter: brightness(1.08) drop-shadow(0 0 10px #ffb34755);
 }
+/* Keep Watch Now as the primary orange action. The secondary movie actions should be quiet
+   neutral controls rather than carrying the same orange outline/glow. */
+.action-buttons .btn-secondary-action,
+.action-buttons .btn-secondary-action:hover {
+    border: none;
+    box-shadow: none;
+    filter: none;
+}
 
 .tech-specs-container {
     display: flex;
@@ -9545,9 +9553,28 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     cursor: pointer;
 }
 .download-subs-choice input {
-    accent-color: #ff8000;
     width: 18px;
     height: 18px;
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-grid;
+    place-content: center;
+    margin: 0;
+    border: 1px solid #4a4a4a;
+    border-radius: 3px;
+    background: #252525;
+    cursor: pointer;
+}
+.download-subs-choice input:checked {
+    background: #ff8000;
+    border-color: #ff9b38;
+}
+.download-subs-choice input:checked::after {
+    content: "✓";
+    color: #171717;
+    font-size: 14px;
+    font-weight: 900;
+    line-height: 1;
 }
 .download-subs-hint {
     margin: 2px 0 10px;
@@ -9628,6 +9655,27 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     align-items: flex-start;
     gap: 24px;
 }
+/* The anime panel has six independent download controls. On desktop, make them a real grid
+   so the final column uses the available player width instead of leaving a dead strip empty. */
+#animeDownloadPanel .anime-download-panel__row {
+    display: grid;
+    grid-template-columns: minmax(145px, 1.25fr) minmax(70px, 0.65fr) minmax(70px, 0.65fr) minmax(180px, 1.35fr) minmax(155px, 1.2fr) minmax(105px, 0.9fr);
+    gap: 16px;
+}
+#animeDownloadPanel .anime-download-panel__row > * {
+    min-width: 0;
+}
+#animeDownloadPanel .anime-download-panel__burn {
+    min-width: 0;
+    max-width: none;
+}
+#animeDownloadPanel .anime-download-panel__go {
+    min-width: 0;
+    align-items: stretch;
+}
+#animeDownloadPanel .anime-download-panel__go-btn {
+    width: 100%;
+}
 .anime-download-panel__label {
     font-size: 0.78rem;
     color: #999;
@@ -9691,6 +9739,15 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
 .kaa-download-btn-top svg {
     width: 20px;
     height: 20px;
+}
+@media (max-width: 850px) {
+    #animeDownloadPanel .anime-download-panel__row {
+        display: flex;
+        gap: 16px;
+    }
+    #animeDownloadPanel .anime-download-panel__burn {
+        min-width: 180px;
+    }
 }
 .kaa-download-menu {
     position: absolute;

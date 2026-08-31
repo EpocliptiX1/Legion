@@ -124,6 +124,11 @@ app.get('/api/tmdb/search', async (req, res) => {
             poster: item.poster_path ? `${TMDB_IMAGE_BASE}${item.poster_path}` : '',
             year: (item.release_date || item.first_air_date || '').slice(0, 4),
             type: item.media_type,
+            // Match movieInfo's anime detection using the fields available on TMDB's
+            // multi-search payload. This lets search cards use real sub/dub/total badges
+            // instead of treating every TV result as generic television.
+            isAnime: item.media_type === 'tv' && item.original_language === 'ja' &&
+                Array.isArray(item.genre_ids) && item.genre_ids.includes(16),
             overview: item.overview || ''
         }));
         res.json(normalized);
@@ -1911,7 +1916,7 @@ function requireResolveNonce(req, res, next) {
 // aren't gated - nothing sensitive to protect there, and gating them would just add friction
 // with no security benefit.
 const RESOLVE_GATED_PATHS = [
-    '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log', '/api/anime-spd-log',
+    '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
     '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
     '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
     '/api/t1m-servers'
@@ -8871,6 +8876,19 @@ function animeTmdbMappingGetByAniListId(anilistId) {
     });
 }
 
+function animeTmdbMappingDeleteByAniListId(anilistId) {
+    return new Promise((resolve, reject) => {
+        animeCacheDb.run(
+            `DELETE FROM anime_tmdb_mapping WHERE anilist_id = ?`,
+            [anilistId],
+            function (err) {
+                if (err) return reject(err);
+                resolve(this.changes || 0);
+            }
+        );
+    });
+}
+
 function animeTmdbMappingGetByMalId(malId) {
     return new Promise((resolve, reject) => {
         animeCacheDb.get(
@@ -9314,12 +9332,17 @@ app.get('/api/anime-tmdb-id', async (req, res) => {
     const titleRomaji = req.query.titleRomaji ? String(req.query.titleRomaji) : null;
     const titleNative = req.query.titleNative ? String(req.query.titleNative) : null;
     const malId = req.query.malId ? String(req.query.malId) : null;
+    const forceRefresh = req.query.force === '1';
 
     if (!anilistId) {
         return res.status(400).json({ error: 'Missing anilistId' });
     }
 
     try {
+        // Recommendation clicks request a one-title repair. A mapping can point at a real
+        // Japanese TMDB entry and still be the wrong anime because old fuzzy matches and the
+        // separate TV/movie id spaces can collide.
+        if (forceRefresh) await animeTmdbMappingDeleteByAniListId(anilistId);
         const tmdbId = await getTmdbIdForAniList(anilistId, title, malId, titleEnglish, titleRomaji, titleNative);
         if (!tmdbId) {
             return res.status(404).json({ error: 'TMDB id not found for aniListId' });
@@ -17724,7 +17747,7 @@ const ANIME_DL_CACHE_TTL_MS = 60 * 60 * 1000; // mapper reports ~1-2h of its own
 async function resolvePaheShortlink(url) {
     if (!url || typeof url !== 'string') return url;
     try {
-        const m = url.match(/pahe\.nekostream\.site\/([a-zA-Z0-9_-]+)/);
+        const m = url.match(/(?:pahe\.nekostream\.site|pahe\.win)\/([a-zA-Z0-9_-]+)/);
         if (m && m[1]) {
             const workerUrl = `https://proud-dew-d754.download992.workers.dev/${m[1]}`;
             const res = await axios.get(workerUrl, {
@@ -17741,11 +17764,44 @@ async function resolvePaheShortlink(url) {
     return url;
 }
 
+/* SPD1 direct-stream resolver is disabled for now. The Pahe/Kwik short-link resolver above
+   stays active because /api/anime-download-links needs it for Kiwi downloads.
+const KWIK_EXTRACTOR_WORKER_URL = process.env.KWIK_EXTRACTOR_WORKER_URL || 'https://proud-dew-d754.download992.workers.dev';
+
+async function extractKwikStreamViaWorker(tokenOrUrl) {
+    if (!tokenOrUrl) return null;
+    const token = tokenOrUrl.includes('/') ? tokenOrUrl.split('/').filter(Boolean).pop() : tokenOrUrl;
+    try {
+        const res = await axios.get(`${KWIK_EXTRACTOR_WORKER_URL}/${encodeURIComponent(token)}`, {
+            timeout: 8000,
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            validateStatus: status => status >= 200 && status < 400
+        });
+        if (res.data?.streamUrl || res.data?.directMp4Url) {
+            return {
+                streamUrl: res.data.streamUrl || res.data.directMp4Url,
+                isM3u8: !!res.data.isM3u8
+            };
+        }
+        console.warn('[SPD1] Kwik extractor returned no playable stream', {
+            status: res.status,
+            responseType: typeof res.data,
+            responseKeys: res.data && typeof res.data === 'object' ? Object.keys(res.data) : []
+        });
+    } catch (e) {
+        console.warn('[SPD1] Kwik extractor request failed:', e.message);
+    }
+    return null;
+}
+
 app.get('/api/anime-spd-log', async (req, res) => {
     const malId = String(req.query.malId || '').trim();
     const episode = String(req.query.episode || req.query.ep || '1').trim();
     const season = parseInt(req.query.season || req.query.s || '1', 10);
-    const audio = String(req.query.audio || req.query.type || 'sub').toLowerCase();
+    const audio = String(req.query.audio || req.query.type || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
+    const requestedQuality = ['1080p', '720p', '360p'].includes(String(req.query.quality || '').toLowerCase())
+        ? String(req.query.quality).toLowerCase()
+        : '1080p';
     const rawTitle = String(req.query.title || '').trim();
 
     if (!malId) return res.status(400).json({ ok: false, error: 'malId is required' });
@@ -17759,6 +17815,13 @@ app.get('/api/anime-spd-log', async (req, res) => {
         }
     }
 
+    let resolvedKwikUrl = null;
+    let embedUrl = null;
+    let directKwikStream = null;
+    // Kept outside the mapper try block because the successful direct-stream response below
+    // needs to report the rendition it resolved.
+    let selectedQuality = requestedQuality;
+
     try {
         const r = await axios.get(`${ANIME_DL_MAPPER_ORIGIN}/api/mal/${encodeURIComponent(malId)}/${encodeURIComponent(episode)}/1`, {
             headers: {
@@ -17767,7 +17830,7 @@ app.get('/api/anime-spd-log', async (req, res) => {
                 'Referer': 'https://anikoto.cz/',
                 'X-Requested-With': 'XMLHttpRequest'
             },
-            timeout: 15000
+            timeout: 10000
         });
 
         const data = r.data || {};
@@ -17775,25 +17838,89 @@ app.get('/api/anime-spd-log', async (req, res) => {
         const audioData = (audio === 'dub' ? kiwi.dub : kiwi.sub) || kiwi.sub || kiwi.dub || {};
         const downloads = audioData.download || {};
 
-        const bestUrl = downloads['1080p'] || downloads['720p'] || downloads['360p'] || Object.values(downloads)[0];
-        if (!bestUrl) {
-            return res.status(404).json({ ok: false, error: 'No SPD1 source found for this episode' });
+        // Kwik exposes one source per quality. Pick the player's requested rendition first,
+        // then fall back only when this episode genuinely does not have that rendition.
+        selectedQuality = downloads[requestedQuality]
+            ? requestedQuality
+            : (downloads['1080p'] ? '1080p' : downloads['720p'] ? '720p' : downloads['360p'] ? '360p' : Object.keys(downloads)[0]);
+        const bestUrl = selectedQuality ? downloads[selectedQuality] : null;
+        if (bestUrl) {
+            resolvedKwikUrl = await resolvePaheShortlink(bestUrl);
+            if (resolvedKwikUrl) embedUrl = resolvedKwikUrl.replace('/f/', '/e/');
+            // The mapper hands us a Pahe short link, while the extractor needs the resolved
+            // Kwik URL/token. The previous `bestUrl || resolvedKwikUrl` always chose bestUrl,
+            // so the resolved Kwik value was unreachable.
+            directKwikStream = await extractKwikStreamViaWorker(resolvedKwikUrl || bestUrl);
+        }
+    } catch (mapperErr) {
+        console.warn('[SPD1 Log] Mapper lookup warning:', mapperErr.message);
+    }
+
+    // 1. If direct Kwik edge extraction succeeded, play the true Kwik stream directly
+    if (directKwikStream?.streamUrl) {
+        return res.json({
+            ok: true,
+            provider: 'spd1',
+            streamProvider: 'kwik',
+            quality: selectedQuality,
+            stream: buildM3u8ProxyUrl(directKwikStream.streamUrl, 'https://kwik.cx/', req.sessionId),
+            directUrl: resolvedKwikUrl,
+            embedUrl,
+            tracks: [],
+            skipSegments: Array.isArray(skipSegments) ? skipSegments : []
+        });
+    }
+
+    // 2. High-speed cached stream resolution for native player playback
+    try {
+        let streamData = null;
+        try {
+            streamData = await resolveMegaplaySourcesCached(malId, episode, audio);
+        } catch (mpErr) {
+            if (rawTitle) {
+                const kaaRaw = await resolveKickAssAnimeSources({
+                    malId,
+                    episodeNumber: episode,
+                    audioType: audio,
+                    frontendTitle: rawTitle,
+                    season
+                });
+                const kaaTokenized = tokenizeKaaResult(kaaRaw, req.sessionId);
+                return res.json({
+                    ok: true,
+                    provider: 'spd1',
+                    streamProvider: 'kaa',
+                    stream: kaaTokenized.stream || (kaaRaw.sources && kaaRaw.sources[0]?.file) || null,
+                    directUrl: resolvedKwikUrl,
+                    embedUrl,
+                    tracks: kaaTokenized.subtitles || [],
+                    skipSegments: Array.isArray(skipSegments) ? skipSegments : []
+                });
+            }
+            throw mpErr;
         }
 
-        const resolvedKwikUrl = await resolvePaheShortlink(bestUrl);
-        const embedUrl = resolvedKwikUrl.replace('/f/', '/e/');
+        if (!streamData?.stream) {
+            throw new Error('No stream found for SPD1');
+        }
 
         res.json({
             ok: true,
-            embedUrl,
+            provider: 'spd1',
+            streamProvider: 'megaplay',
+            stream: buildM3u8ProxyUrl(streamData.stream, streamData.proxyRef || null, req.sessionId),
             directUrl: resolvedKwikUrl,
+            embedUrl,
+            tracks: tokenizeMegaplayTracks(streamData.tracks, req.sessionId),
             skipSegments: Array.isArray(skipSegments) ? skipSegments : []
         });
     } catch (err) {
-        console.error('[SPD1 Log] Error:', err.message);
+        console.error('[SPD1 Log] Stream error:', err.message);
         res.status(500).json({ ok: false, error: err.message });
     }
 });
+
+*/
 
 app.get('/api/anime-download-links', async (req, res) => {
     const malId = String(req.query.malId || '').trim();
