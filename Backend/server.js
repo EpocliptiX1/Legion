@@ -15327,10 +15327,10 @@ app.get('/api/anime-neko-log', async (req, res) => {
         // individual chunks well before the general 24-hour episode-cache lifetime. Reusing a
         // several-hour-old manifest is exactly how playback can begin normally but a sequential
         // download dies around a later segment with `Proxy failed`. Keep the expensive Anikoto
-        // identity lookup cached separately, but refresh this actual stream URL within 30 min.
+        // identity lookup cached separately, but refresh this actual stream URL within one hour.
         if (tmdbId) {
             const cached = await episodeLoadCacheGet(
-                parseInt(tmdbId), season, episode, audio, 'neko', 30 * 60 * 1000
+                parseInt(tmdbId), season, episode, audio, 'neko', 60 * 60 * 1000
             );
             if (cached && cached.sources) {
                 logNekoDebug(`[Cache HIT] Neko S${season}E${episode} ${audio}`);
