@@ -2205,10 +2205,21 @@ function claimPlaybackLease(req, decoded, { isPlaybackRequest = true, countAsMed
         };
         playbackLeases.set(decoded.leaseId, lease);
     } else {
-        if (lease.sessionId !== req.sessionId || lease.ipPrefix !== ipPrefix || lease.uaHash !== uaHash) {
+        // `verifyProxySession()` already proved that this encrypted token belongs to this
+        // browser's signed session. A second IP/UA equality requirement is brittle locally:
+        // Chrome, the HTTPS middleware and local security/proxy software can legitimately
+        // present different loopback address forms or User-Agent headers between the player
+        // request and a long-running downloader fetch. That was surfacing as 429 "lease is no
+        // longer valid" despite a valid session-bound token. Keep the meaningful session
+        // boundary and refresh these diagnostic attributes when they change.
+        if (lease.sessionId !== req.sessionId) {
             const err = new Error('Playback lease does not belong to this browser context');
             err.leaseMismatch = true;
             throw err;
+        }
+        if (lease.ipPrefix !== ipPrefix || lease.uaHash !== uaHash) {
+            lease.ipPrefix = ipPrefix;
+            lease.uaHash = uaHash;
         }
         if (now - lease.createdAt > PLAYBACK_LEASE_MAX_AGE_MS || now - lease.lastSeenAt > PLAYBACK_LEASE_IDLE_MS) {
             // The encrypted proxy token is still independently expiry-checked above and is
