@@ -1132,6 +1132,8 @@ document.addEventListener('DOMContentLoaded', function() {
         // episode choice must always win.
         let initialPlaybackSelectionReady = false;
         let initialPlaybackSelectionPromise = null;
+        let startupPlaybackLoadStarted = false;
+        let startupResumeReloadQueued = false;
 
         const genreText = document.getElementById('genre')?.innerText.toLowerCase() || "";
         let isAnime = requestedType === 'anime' || genreText.includes('anime');
@@ -3780,6 +3782,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 // A newer click/request arrived while history was resolving. It owns playback.
                 if (requestGen !== playbackRequestGen) return false;
             }
+            startupPlaybackLoadStarted = true;
             // hsub exists on NekoStream only - switching to any other server while it's the
             // active mode would otherwise silently request an audio type that server can't
             // serve, so fall back to plain sub and keep the button row honest.
@@ -5297,6 +5300,19 @@ document.addEventListener('DOMContentLoaded', function() {
                                                 window.__continueFromSeason = parseInt(contMatch[1]);
                                                 window.__continueFromEpisode = parseInt(contMatch[2]);
                                                 console.log('[WatchHistory] Set continue_from:', { season: contMatch[1], episode: contMatch[2] });
+                                                // A separate startup path can begin playback before this
+                                                // history request returns. Previously that path stayed on
+                                                // the default E1 while this code only repainted E7 as
+                                                // selected in the list. Make this restored episode the
+                                                // newest source request so the generation guard cancels
+                                                // the stale E1 resolver instead of leaving UI/video split.
+                                                if (startupPlaybackLoadStarted && !startupResumeReloadQueued) {
+                                                    startupResumeReloadQueued = true;
+                                                    queueMicrotask(() => {
+                                                        startupResumeReloadQueued = false;
+                                                        updateSource(currentServer);
+                                                    });
+                                                }
                                             }
                                         } else {
                                             console.log('[WatchHistory] No continue_from field');
