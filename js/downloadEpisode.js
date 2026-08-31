@@ -834,6 +834,7 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
         } else {
             console.warn('[Download] no subtitle track was found on window.currentVideo');
         }
+        const hasSubtitle = Boolean(subtitleText && subtitleFilename) && options.burnSubtitles === true;
 
         // 1. Initialize global tracking before starting downloads
         totalSegments = videoSegments.length + audioSegments.length;
@@ -897,7 +898,10 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
             if (!message) return;
             console.log('[FFmpeg][log]', message);
         });
-        const updateCompressionProgress = compactOutput
+        // A native subtitle burn is an FFmpeg encode too.  Unlike the old canvas recorder it
+        // processes frames as fast as the device can encode them, so give it the same real ETA
+        // reporting as compact output.
+        const updateCompressionProgress = (compactOutput || hasSubtitle)
             ? createCompressionProgressHandler({
                 durationSeconds: mediaDurationSeconds,
                 setStatus: setTaskStatus,
@@ -951,16 +955,26 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
         }
 
         // 4. Muxing
-        const hasSubtitle = Boolean(subtitleText && subtitleFilename) && options.burnSubtitles === true;
-        setTaskStatus(compactOutput ? 'Compressing file size...' : (hasSubtitle ? "Rendering subtitles on canvas..." : "Muxing video and audio..."));
-        document.getElementById("downloadProgressBar").style.width = compactOutput ? "0%" : "100%";
-        setDownloadProcessingHeading(compactOutput ? 'Compression' : (hasSubtitle ? 'Subtitle burn' : 'Finalizing'));
-        setTaskSubtitleProgress(compactOutput ? 'Compression: preparing...' : (hasSubtitle ? 'Subtitle burn: queued' : 'Finalizing: queued'), 0);
+        setTaskStatus(hasSubtitle ? 'Burning subtitles into video...' : (compactOutput ? 'Compressing file size...' : 'Muxing video and audio...'));
+        document.getElementById("downloadProgressBar").style.width = (compactOutput || hasSubtitle) ? "0%" : "100%";
+        setDownloadProcessingHeading(hasSubtitle ? 'Subtitle burn' : (compactOutput ? 'Compression' : 'Finalizing'));
+        setTaskSubtitleProgress(hasSubtitle ? 'Subtitle burn: preparing...' : (compactOutput ? 'Compression: preparing...' : 'Finalizing: queued'), 0);
 
         const outputFilename = "output.mp4";
         const muxArgs = ["-i", videoInputName, "-i", audioInputName];
 
-        if (compactOutput) {
+        if (hasSubtitle) {
+            // `subtitles` is libass running inside the existing FFmpeg.wasm core.  This is one
+            // encode pass—not a real-time <canvas>/MediaRecorder capture followed by a second
+            // WebM-to-MP4 transcode.  Keep audio copied unless compression was explicitly chosen.
+            muxArgs.push(
+                '-map', '0:v:0', '-map', '1:a:0',
+                '-vf', `subtitles=${subtitleFilename}`,
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', compactOutput ? '29' : '22',
+                ...(compactOutput ? ['-c:a', 'aac', '-b:a', '96k'] : ['-c:a', 'copy']),
+                '-movflags', '+faststart'
+            );
+        } else if (compactOutput) {
             // Keep the quality the viewer selected; CRF controls size/visual trade-off without
             // any global player state or server-side behavior.
             muxArgs.push(
@@ -968,10 +982,6 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
                 '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '29',
                 '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart'
             );
-        } else if (hasSubtitle) {
-            muxArgs.push("-c:v", "copy");
-            muxArgs.push("-c:a", "copy");
-            muxArgs.push("-movflags", "+faststart");
         } else {
             muxArgs.push("-c", "copy");
         }
@@ -992,10 +1002,12 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
         } catch (muxError) {
             console.error('[Download] primary mux failed', { muxArgs, name: muxError?.name, message: muxError?.message, stack: muxError?.stack });
             if (hasSubtitle) {
-                console.warn('Subtitle burn-in failed, falling back to audio/video-only MP4:', muxError);
-                setDownloadStatus("Subtitle burn-in failed. Downloading video/audio only...");
+                console.warn('Native subtitle burn failed, falling back to video/audio-only MP4:', muxError);
+                setDownloadStatus("Subtitle burn failed. Downloading video/audio only...");
                 finalOutput = "output.mp4";
-                const fallbackArgs = ["-i", videoInputName, "-i", audioInputName, "-c", "copy", finalOutput];
+                const fallbackArgs = compactOutput
+                    ? ["-i", videoInputName, "-i", audioInputName, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '29', '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', finalOutput]
+                    : ["-i", videoInputName, "-i", audioInputName, "-c", "copy", finalOutput];
                 console.log('[Download] running ffmpeg fallback mux', fallbackArgs);
                 await ffmpeg.exec(fallbackArgs);
                 console.log('[Download] ffmpeg fallback mux complete for', finalOutput);
@@ -1005,7 +1017,7 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
         }
 
         // 5. Build Download
-        setDownloadStatus(compactOutput ? 'Finalizing compact download...' : (hasSubtitle ? "Finalizing subtitle-enabled download..." : "Preparing download..."));
+        setDownloadStatus(hasSubtitle ? 'Finalizing subtitle-burned download...' : (compactOutput ? 'Finalizing compact download...' : "Preparing download..."));
         const data = await ffmpeg.readFile(finalOutput);
         console.log('[Download] final output file read:', {
             finalOutput,
@@ -1015,27 +1027,7 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
             console.error('[Download] final output file is EMPTY -- mux silently produced nothing readable', { finalOutput, muxArgs, isFmp4, videoInputName, audioInputName });
         }
         let blob = new Blob([data.buffer], { type: "video/mp4" });
-        let downloadExt = "mp4";
-        if (hasSubtitle) {
-            try {
-                setTaskStatus("Rendering subtitles in browser canvas...");
-                const canvasBlob = await recordVideoWithCanvasSubtitles(blob, subtitleText, video, (state) => {
-                    const current = state?.currentTime || 0;
-                    const duration = state?.duration || 0;
-                    const percent = state?.percent || 0;
-                    const cueLabel = state?.cueIndex ? `${state.cueIndex}/${state.cueCount}` : '0/0';
-                    setTaskStatus(`Rendering subtitles in browser canvas... ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%) cue ${cueLabel}`);
-                    setTaskSubtitleProgress(`Subtitle Burn: ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`, percent);
-                    document.getElementById("downloadSizeText").textContent =
-                        state?.cueText ? `Cue ${cueLabel}: ${state.cueText.slice(0, 64)}` : `Cue ${cueLabel}`;
-                }, ffmpeg);
-                blob = canvasBlob;
-                downloadExt = "mp4";
-            } catch (canvasErr) {
-                console.warn('[CanvasBurn] failed, falling back to plain MP4:', canvasErr);
-                setTaskStatus("Subtitle canvas render failed. Downloading video/audio only...");
-            }
-        }
+        const downloadExt = "mp4";
 
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -1285,6 +1277,7 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
         } else {
             console.log('[Download][Kino] no matching subtitle track -- downloading without subtitles');
         }
+        const hasSubtitle = Boolean(subtitleText && subtitleFilename) && options.burnSubtitles === true;
 
         totalSegments = videoSegments.length;
         completedSegments = 0;
@@ -1311,7 +1304,7 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
         setTaskStatus('Loading FFmpeg...');
         const ffmpeg = new FFmpeg();
         ffmpeg.on?.('log', ({ message }) => { if (message) console.log('[FFmpeg][log]', message); });
-        const updateCompressionProgress = compactOutput
+        const updateCompressionProgress = (compactOutput || hasSubtitle)
             ? createCompressionProgressHandler({
                 durationSeconds: mediaDurationSeconds,
                 setStatus: setTaskStatus,
@@ -1337,50 +1330,48 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
         // Audio's already muxed into the video segments -- this is just a
         // container remux (e.g. fMP4 fragments -> a standalone playable MP4),
         // not a real audio+video combine like KAA needs.
-        const hasSubtitle = Boolean(subtitleText && subtitleFilename) && options.burnSubtitles === true;
-        setTaskStatus(compactOutput ? 'Compressing file size...' : (hasSubtitle ? 'Rendering subtitles on canvas...' : 'Remuxing video...'));
-        document.getElementById('downloadProgressBar').style.width = compactOutput ? '0%' : '100%';
-        setDownloadProcessingHeading(compactOutput ? 'Compression' : (hasSubtitle ? 'Subtitle burn' : 'Finalizing'));
-        setTaskSubtitleProgress(compactOutput ? 'Compression: preparing...' : (hasSubtitle ? 'Subtitle burn: queued' : 'Finalizing: queued'), 0);
+        setTaskStatus(hasSubtitle ? 'Burning subtitles into video...' : (compactOutput ? 'Compressing file size...' : 'Remuxing video...'));
+        document.getElementById('downloadProgressBar').style.width = (compactOutput || hasSubtitle) ? '0%' : '100%';
+        setDownloadProcessingHeading(hasSubtitle ? 'Subtitle burn' : (compactOutput ? 'Compression' : 'Finalizing'));
+        setTaskSubtitleProgress(hasSubtitle ? 'Subtitle burn: preparing...' : (compactOutput ? 'Compression: preparing...' : 'Finalizing: queued'), 0);
 
         const outputFilename = 'output.mp4';
-        const muxArgs = compactOutput
+        const muxArgs = hasSubtitle
             ? [
                 '-i', videoInputName,
-                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '29',
-                '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', outputFilename
+                '-map', '0:v:0', '-map', '0:a?',
+                '-vf', `subtitles=${subtitleFilename}`,
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', compactOutput ? '29' : '22',
+                ...(compactOutput ? ['-c:a', 'aac', '-b:a', '96k'] : ['-c:a', 'copy']),
+                '-movflags', '+faststart', outputFilename
             ]
-            : (hasSubtitle
-                ? ['-i', videoInputName, '-c', 'copy', '-movflags', '+faststart', outputFilename]
+            : (compactOutput
+                ? [
+                    '-i', videoInputName,
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '29',
+                    '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', outputFilename
+                ]
                 : ['-i', videoInputName, '-c', 'copy', outputFilename]);
 
         console.log('[Download][Kino][5/6] running ffmpeg remux', muxArgs);
-        await ffmpeg.exec(muxArgs);
+        try {
+            await ffmpeg.exec(muxArgs);
+        } catch (muxError) {
+            if (!hasSubtitle) throw muxError;
+            console.warn('[Download][Kino] native subtitle burn failed, falling back to video-only output:', muxError);
+            setTaskStatus('Subtitle burn failed. Downloading video only...');
+            const fallbackArgs = compactOutput
+                ? ['-i', videoInputName, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '29', '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', outputFilename]
+                : ['-i', videoInputName, '-c', 'copy', '-movflags', '+faststart', outputFilename];
+            await ffmpeg.exec(fallbackArgs);
+        }
 
         const data = await ffmpeg.readFile(outputFilename);
         if (!data || (data.byteLength || data.length || 0) === 0) {
             console.error('[Download][Kino] final output file is EMPTY', { muxArgs, isFmp4 });
         }
         let blob = new Blob([data.buffer], { type: 'video/mp4' });
-        let downloadExt = 'mp4';
-
-        if (hasSubtitle) {
-            try {
-                setTaskStatus('Rendering subtitles in browser canvas...');
-                const canvasBlob = await recordVideoWithCanvasSubtitles(blob, subtitleText, video, (state) => {
-                    const current = state?.currentTime || 0;
-                    const duration = state?.duration || 0;
-                    const percent = state?.percent || 0;
-                    setTaskStatus(`Rendering subtitles in browser canvas... ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`);
-                    setTaskSubtitleProgress(`Subtitle Burn: ${current.toFixed(0)}s / ${duration.toFixed(0)}s (${percent.toFixed(1)}%)`, percent);
-                }, ffmpeg);
-                blob = canvasBlob;
-                downloadExt = 'mp4';
-            } catch (canvasErr) {
-                console.warn('[CanvasBurn][Kino] failed, falling back to plain MP4:', canvasErr);
-                setTaskStatus('Subtitle canvas render failed. Downloading video only...');
-            }
-        }
+        const downloadExt = 'mp4';
 
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
