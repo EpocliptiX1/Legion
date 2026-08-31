@@ -15323,9 +15323,15 @@ app.get('/api/anime-neko-log', async (req, res) => {
     skipSegments = Array.isArray(skipSegments) ? skipSegments : [];
 
     try {
-        // Check episode load cache first
+        // Neko/VidTube HLS URLs look static but their backing CDN grants can stop serving
+        // individual chunks well before the general 24-hour episode-cache lifetime. Reusing a
+        // several-hour-old manifest is exactly how playback can begin normally but a sequential
+        // download dies around a later segment with `Proxy failed`. Keep the expensive Anikoto
+        // identity lookup cached separately, but refresh this actual stream URL within 30 min.
         if (tmdbId) {
-            const cached = await episodeLoadCacheGet(parseInt(tmdbId), season, episode, audio, 'neko');
+            const cached = await episodeLoadCacheGet(
+                parseInt(tmdbId), season, episode, audio, 'neko', 30 * 60 * 1000
+            );
             if (cached && cached.sources) {
                 logNekoDebug(`[Cache HIT] Neko S${season}E${episode} ${audio}`);
                 // __proxyRef/__tracks are bundled into the same cached blob as `downloads`
