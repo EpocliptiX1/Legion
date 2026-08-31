@@ -1159,6 +1159,7 @@ function parseMediaPlaylist(text) {
 }
 
 const SEGMENT_FETCH_ATTEMPTS = 4;
+const NEKO_SEGMENT_FETCH_ATTEMPTS = 6;
 
 function waitForDownloadRetry(delayMs) {
     return new Promise(resolve => setTimeout(resolve, delayMs));
@@ -1168,9 +1169,9 @@ function waitForDownloadRetry(delayMs) {
 // surrounding playlist remains healthy. A bulk download must not die at (say) 85/178 because of
 // that one transient response. Keep concurrency deliberately low, but retry each failed segment
 // with a short increasing pause before reporting a useful final error.
-async function fetchDownloadSegment(url, segmentNumber) {
+async function fetchDownloadSegment(url, segmentNumber, maxAttempts = SEGMENT_FETCH_ATTEMPTS, retryDelayMs = 350) {
     let lastFailure = 'network error';
-    for (let attempt = 1; attempt <= SEGMENT_FETCH_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
             const res = await fetch(url, { cache: 'no-store' });
             if (res.ok) return new Uint8Array(await res.arrayBuffer());
@@ -1179,29 +1180,29 @@ async function fetchDownloadSegment(url, segmentNumber) {
             // 4xx/5xx bodies from our proxy contain the actual reason (lease limit, expired
             // token, upstream issue). Keep it in the console, never surface a tokenized URL.
             const detail = await res.text().catch(() => '');
-            console.warn(`[Download] Segment ${segmentNumber} attempt ${attempt}/${SEGMENT_FETCH_ATTEMPTS} failed: ${lastFailure}`, detail.slice(0, 180));
+            console.warn(`[Download] Segment ${segmentNumber} attempt ${attempt}/${maxAttempts} failed: ${lastFailure}`, detail.slice(0, 180));
         } catch (err) {
             lastFailure = err?.message || 'network error';
-            console.warn(`[Download] Segment ${segmentNumber} attempt ${attempt}/${SEGMENT_FETCH_ATTEMPTS} failed:`, err);
+            console.warn(`[Download] Segment ${segmentNumber} attempt ${attempt}/${maxAttempts} failed:`, err);
         }
-        if (attempt < SEGMENT_FETCH_ATTEMPTS) {
-            await waitForDownloadRetry(350 * attempt);
+        if (attempt < maxAttempts) {
+            await waitForDownloadRetry(retryDelayMs * attempt);
         }
     }
-    throw new Error(`Failed segment ${segmentNumber} after ${SEGMENT_FETCH_ATTEMPTS} attempts (${lastFailure})`);
+    throw new Error(`Failed segment ${segmentNumber} after ${maxAttempts} attempts (${lastFailure})`);
 }
 
-async function downloadSegments(segments, progressCallback) {
+async function downloadSegments(segments, progressCallback, { concurrency = 2, maxAttempts = SEGMENT_FETCH_ATTEMPTS, retryDelayMs = 350 } = {}) {
     const downloaded = new Array(segments.length);
-    const CONCURRENCY = 2;
+    const safeConcurrency = Math.max(1, Number(concurrency) || 1);
 
-    for (let i = 0; i < segments.length; i += CONCURRENCY) {
-        const batch = segments.slice(i, i + CONCURRENCY);
+    for (let i = 0; i < segments.length; i += safeConcurrency) {
+        const batch = segments.slice(i, i + safeConcurrency);
 
         await Promise.all(
             batch.map(async (url, index) => {
                 const segmentNumber = i + index;
-                const data = await fetchDownloadSegment(url, segmentNumber);
+                const data = await fetchDownloadSegment(url, segmentNumber, maxAttempts, retryDelayMs);
 
                 downloaded[segmentNumber] = data;
 
@@ -1314,11 +1315,15 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
         updateDownloadProgress();
 
         console.log('[Download][Kino][3/6] downloading segments', { videoSegmentCount: videoSegments.length });
+        // Neko's relay/CDN will intermittently 500 if a bulk download requests chunks in
+        // parallel. The player only needs one chunk at a time; mirror that safer pattern for
+        // downloads and leave the other providers on the normal two-request pipeline.
+        const nekoDownload = video?.provider === 'nekostream';
         const downloadedVideo = await downloadSegments(videoSegments, () => {
             const percent = totalSegments === 0 ? 0 : (completedSegments / totalSegments) * 100;
             updateDownloadProgress();
             setTaskCombinedProgress(percent);
-        });
+        }, nekoDownload ? { concurrency: 1, maxAttempts: NEKO_SEGMENT_FETCH_ATTEMPTS, retryDelayMs: 1000 } : undefined);
 
         if (videoInitUrl) {
             const initRes = await fetch(videoInitUrl);

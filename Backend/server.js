@@ -11281,21 +11281,42 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         // 1. If it's a media chunk (.ts, .m4s, etc.) or playlist (.m3u8)
         const isM3u8 = forcePlaylist || targetUrl.includes('.m3u8');
 
-        const response = await axios({
-            method: 'GET',
-            url: targetUrl,
-            // Keep media segments streaming. Buffering an untrusted segment in an ArrayBuffer
-            // lets a relay turn a few requests into a memory spike; playlists remain small text.
-            responseType: isM3u8 ? 'text' : 'stream',
-            headers: {
-                'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': refererBase,
-                'Origin': originBase,
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {})
+        // VidTube/Neko occasionally returns a transient 429/5xx for an individual HLS
+        // chunk even though the exact same URL succeeds moments later. Retrying here is more
+        // useful than only retrying in the browser: every browser retry used to create one more
+        // fresh, immediately-failing upstream request. Do not retry 4xx denials such as an
+        // expired token or a bad Referer; those are permanent for this stream.
+        let response;
+        let upstreamFailure;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                response = await axios({
+                    method: 'GET',
+                    url: targetUrl,
+                    // Keep media segments streaming. Buffering an untrusted segment in an ArrayBuffer
+                    // lets a relay turn a few requests into a memory spike; playlists remain small text.
+                    responseType: isM3u8 ? 'text' : 'stream',
+                    timeout: 20000,
+                    headers: {
+                        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Referer': refererBase,
+                        'Origin': originBase,
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {})
+                    }
+                });
+                break;
+            } catch (err) {
+                upstreamFailure = err;
+                const status = err.response?.status;
+                const retryable = !status || status === 429 || status >= 500;
+                if (!retryable || attempt === 3) throw err;
+                console.warn(`[Proxy] transient upstream ${status || err.code || 'failure'}; retrying chunk (${attempt}/3)`);
+                await new Promise(resolve => setTimeout(resolve, 500 * attempt));
             }
-        });
+        }
+        if (!response) throw upstreamFailure || new Error('Upstream proxy request failed');
 
         // Handle Master / Media Playlists (.m3u8)
         if (isM3u8) {
