@@ -11382,8 +11382,24 @@ app.get('/api/m3u8-proxy', async (req, res) => {
 
     } catch (err) {
         releaseLease();
-        console.error('[Proxy Error]', err.message, '| URL:', targetUrl);
-        return res.status(500).send('Proxy failed');
+        // Do not collapse an upstream refusal into an opaque local 500. That made a CDN 429,
+        // 5xx or connection reset indistinguishable from a bug in this relay and hid the only
+        // information needed to diagnose intermittent HLS chunks. Keep upstream URLs out of
+        // logs/response bodies, but preserve the host, status and transport code.
+        const upstreamStatus = Number(err.response?.status) || null;
+        let upstreamHost = 'unknown';
+        try { upstreamHost = new URL(targetUrl).hostname; } catch (_) {}
+        console.error('[Proxy Error]', {
+            host: upstreamHost,
+            upstreamStatus,
+            code: err.code || null,
+            message: err.message,
+            resource: isM3u8 ? 'playlist' : 'media segment'
+        });
+        const detail = upstreamStatus
+            ? `Upstream media server responded HTTP ${upstreamStatus}`
+            : 'Upstream media request failed';
+        return res.status(502).send(detail);
     }
 });
 async function resolveExactWatchUrl(title, targetSeason = '1', overrideSeasonTitle) {

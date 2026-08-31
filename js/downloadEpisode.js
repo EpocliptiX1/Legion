@@ -709,10 +709,13 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
         task.setStatus(text);
         setDownloadStatus(text);
     };
-    const setTaskSubtitleProgress = (label, percent) => {
+const setTaskSubtitleProgress = (label, percent) => {
         task.setCombinedProgress(percent);
         task.setSubline(label);
-        setSubtitleProgress(label, percent);
+        // The main modal already uses `setTaskStatus(label)` for the live encode label.
+        // Keep this line as the completed segment counter instead of echoing the exact same
+        // “Subtitle burn: …” text underneath it.
+        setSubtitleProgress('', percent);
     };
     const setTaskCombinedProgress = (percent) => {
         task.setCombinedProgress(percent);
@@ -1288,7 +1291,8 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
     const setTaskSubtitleProgress = (label, percent) => {
         task.setCombinedProgress(percent);
         task.setSubline(label);
-        setSubtitleProgress(label, percent);
+        // Avoid duplicating the active encode label in the modal's old segment-counter line.
+        setSubtitleProgress('', percent);
     };
 
     ensureDownloadModal();
