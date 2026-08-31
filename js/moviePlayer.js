@@ -4068,7 +4068,10 @@ document.addEventListener('DOMContentLoaded', function() {
         };
 
         const dlPanel = document.getElementById('animeDownloadPanel');
-        let dlSource = 'neko', dlLang = 'sub', dlQuality = '1080p';
+        // Start the panel on the track currently playing. A downloader can still choose a
+        // different type deliberately, but it must never *look* like SUB while silently using
+        // the already-loaded DUB stream.
+        let dlSource = 'neko', dlLang = ['sub', 'dub', 'hsub'].includes(currentAudioMode) ? currentAudioMode : 'sub', dlQuality = '1080p';
         // Most anime sources use KAA's subtitle set directly or as their fallback. Fetch that
         // lightweight track list while the panel is open, rather than making the user start one
         // download merely to discover the languages they could have selected first.
@@ -4302,6 +4305,11 @@ document.addEventListener('DOMContentLoaded', function() {
             dlPopulateSubsPicker();
         };
 
+        const dlRenderLanguageSelection = () => {
+            document.querySelectorAll('#dlLanguageRow [data-dl-lang]').forEach(button =>
+                button.classList.toggle('active', button.dataset.dlLang === dlLang));
+        };
+
         document.getElementById('btnDownloadAnime')?.addEventListener('click', () => {
             if (!dlPanel) return;
             // The initial hidden state comes from CSS, so style.display is empty on the first
@@ -4309,7 +4317,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // visible, which previously made the first click hide the panel once more.
             const opening = window.getComputedStyle(dlPanel).display === 'none';
             dlPanel.style.display = opening ? 'block' : 'none';
-            if (opening) { dlSyncRowsForSource(); dlCheckAvailability(); startEpisodePanelHeightSyncBurst(); }
+            if (opening) { dlRenderLanguageSelection(); dlSyncRowsForSource(); dlCheckAvailability(); startEpisodePanelHeightSyncBurst(); }
         });
         document.getElementById('btnCloseDownloadPanel')?.addEventListener('click', () => {
             if (dlPanel) dlPanel.style.display = 'none';
@@ -4347,11 +4355,13 @@ document.addEventListener('DOMContentLoaded', function() {
         // flips to match) rather than firing the downloader against whatever was there before -
         // updateSource() itself returns immediately, the real work happens in its async load*()
         // call, and playbackRequestGen (see above) already guards against a stale one winning.
-        function waitForProvider(expectedProvider, timeoutMs = 20000) {
+        function waitForProvider(expectedProvider, expectedAudio = null, timeoutMs = 20000) {
             return new Promise((resolve) => {
                 const startedAt = Date.now();
                 const check = () => {
-                    if (window.currentVideo?.provider === expectedProvider) return resolve(true);
+                    const providerReady = window.currentVideo?.provider === expectedProvider;
+                    const audioReady = !expectedAudio || window.currentVideo?.audio === expectedAudio;
+                    if (providerReady && audioReady) return resolve(true);
                     if (Date.now() - startedAt > timeoutMs) return resolve(false);
                     setTimeout(check, 300);
                 };
@@ -4390,7 +4400,12 @@ document.addEventListener('DOMContentLoaded', function() {
             const info = DL_SOURCE_INFO[dlSource];
             if (!info) return;
 
-            const alreadyActive = window.currentServer === info.server && window.currentVideo?.provider === info.provider;
+            // A source is only actually ready when its audio matches too. Previously a Neko
+            // DUB episode with SUB selected here passed this provider-only check and the
+            // downloader consumed the existing dub playlist while the panel said "SUB".
+            const alreadyActive = window.currentServer === info.server &&
+                window.currentVideo?.provider === info.provider &&
+                (dlSource === 'rumv' || window.currentVideo?.audio === dlLang);
             if (!alreadyActive) {
                 setStatus(`Switching to ${dlSource === 'rumv' ? 'RU-MV' : dlSource.toUpperCase()}...`);
                 if (dlSource !== 'rumv') {
@@ -4399,7 +4414,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     applyAudioButtonState(dlLang);
                 }
                 updateSource(info.server);
-                const ready = await waitForProvider(info.provider);
+                const ready = await waitForProvider(info.provider, dlSource === 'rumv' ? null : dlLang);
                 if (!ready) {
                     setStatus(`${dlSource.toUpperCase()} didn't load in time - try again or pick another source.`);
                     return;
