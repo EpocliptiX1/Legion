@@ -2211,10 +2211,16 @@ function claimPlaybackLease(req, decoded, { isPlaybackRequest = true, countAsMed
             throw err;
         }
         if (now - lease.createdAt > PLAYBACK_LEASE_MAX_AGE_MS || now - lease.lastSeenAt > PLAYBACK_LEASE_IDLE_MS) {
-            playbackLeases.delete(decoded.leaseId);
-            const err = new Error('Playback lease expired');
-            err.leaseExpired = true;
-            throw err;
+            // The encrypted proxy token is still independently expiry-checked above and is
+            // session-bound. Do not reject a legitimate user merely because its *in-memory*
+            // counter went idle while they chose download after watching/pausing an episode.
+            // Reinitialize only after the same session/IP/UA verification just performed;
+            // this resets accounting, not authorization, and the token itself still cannot
+            // outlive PROXY_TOKEN_TTL_MS.
+            lease.createdAt = now;
+            lease.lastSeenAt = now;
+            lease.inFlight = 0;
+            lease.bytesSent = 0;
         }
         lease.lastSeenAt = now;
     }
