@@ -29,6 +29,7 @@
     <title>Movie Details - AniKino</title>
     <link rel="stylesheet" href="/css/theme-enhancements.css">
     <link rel="stylesheet" href="/css/style.css">
+    <script src="/js/heroicons.js" defer></script>
     <link rel="stylesheet" href="/css/actor-blocks.css">
     <script src="/js/theme.js"></script>
     <script src="/js/i18n.js"></script>
@@ -393,8 +394,9 @@ window.openMovie = function(movie, type) {
                         function updatePlayerInfoText() {
                             var info = document.querySelector('.player-info');
                             if (!info) return;
-                            if (window.innerWidth <= 730) {
-                                info.innerHTML = `If current server doesn't work<br>please try other servers beside.<br><span style="color:#ff8000;font-weight:600;">Tip:</span><strong>Close all the AD windows the iframe opens.</strong>`;
+                            if (window.innerWidth <= 1200) {
+                                info.innerHTML = `Our servers: Kino, KAA, Neko, RU - MV, MegaVid
+The rest we have no control over, just close whatever opens up.`;
                             } else {
                                 // Optionally restore original text if needed
                             }

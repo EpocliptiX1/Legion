@@ -66557,3 +66557,40 @@ TMDB result count: 2
 2. id=209867 title="Frieren: Beyond Journey's End" first_air_date="2023-09-29"
 
 SUCCESSFULLY FOUND TMDB EQUIVALENT
+==============================
+AniList 182255
+Original title: Frieren: Beyond Journey’s End Season 2
+Starting fallback search from: Sousou no Frieren 2nd Season
+Attempt count: 7
+
+Query: "sousou no frieren 2nd" type=tv
+TMDB chosen_id: none
+TMDB result count: 0
+
+Query: "sousou no frieren 2nd" type=movie
+TMDB chosen_id: none
+TMDB result count: 0
+
+Query: "sousou no frieren" type=tv
+TMDB chosen_id: none
+TMDB result count: 0
+
+Query: "sousou no frieren" type=movie
+TMDB chosen_id: none
+TMDB result count: 0
+
+Query: "sousou no" type=tv
+TMDB chosen_id: none
+TMDB result count: 0
+
+Query: "sousou no" type=movie
+TMDB chosen_id: none
+TMDB result count: 0
+
+Query: "sousou" type=tv
+TMDB chosen_id: 102122
+TMDB result count: 2
+1. id=102122 title="Madame Sousou" first_air_date="1986-05-04"
+2. id=209867 title="Frieren: Beyond Journey's End" first_air_date="2023-09-29"
+
+SUCCESSFULLY FOUND TMDB EQUIVALENT

@@ -327787,3 +327787,1195 @@
   "path": "C:\\Users\\Damir\\Desktop\\myhflixer\\CURRENT BACKUP\\backend\\kaa-debug-log.txt",
   "pid": 22452
 }
+[2026-08-31T09:44:52.251Z] [KAA DEBUG] logger ready {
+  "path": "C:\\Users\\Damir\\Desktop\\myhflixer\\CURRENT BACKUP\\backend\\kaa-debug-log.txt",
+  "pid": 62900
+}
+[2026-08-31T09:45:39.328Z] [Search Resolver] Querying anikoto grid search {
+  "title": "Solo Leveling",
+  "targetSeason": 1
+}
+[2026-08-31T09:45:39.344Z] [KAA Resolve] start {
+  "malId": 52299,
+  "episodeNumber": "1",
+  "audioType": "sub",
+  "frontendTitle": "Solo Leveling",
+  "season": 1,
+  "searchTitles": [
+    "Ore dake Level Up na Ken",
+    "Solo Leveling"
+  ],
+  "cacheEntry": {
+    "english_title": "Solo Leveling",
+    "romaji_title": "Ore dake Level Up na Ken",
+    "native_title": "俺だけレベルアップな件",
+    "format": "TV",
+    "episodes": 12
+  }
+}
+[2026-08-31T09:45:39.346Z] [KAA Resolve] start {
+  "malId": 52299,
+  "episodeNumber": "1",
+  "audioType": "dub",
+  "frontendTitle": "Solo Leveling",
+  "season": 1,
+  "searchTitles": [
+    "Ore dake Level Up na Ken",
+    "Solo Leveling"
+  ],
+  "cacheEntry": {
+    "english_title": "Solo Leveling",
+    "romaji_title": "Ore dake Level Up na Ken",
+    "native_title": "俺だけレベルアップな件",
+    "format": "TV",
+    "episodes": 12
+  }
+}
+[2026-08-31T09:45:39.620Z] --- ANIKOTO GRID SEARCH RESULTS ---
+[2026-08-31T09:45:39.620Z]    [1] Solo Leveling Season 2: Arise from the Shadow -> https://anikoto.cz/watch/solo-leveling-season-2-arise-from-the-shadow-3eukp/ep-1
+[2026-08-31T09:45:39.621Z]    [2] Solo Leveling -> https://anikoto.cz/watch/solo-leveling-ilh08/ep-1
+[2026-08-31T09:45:39.621Z]    [3] Solo Leveling: Specials -> https://anikoto.cz/watch/solo-leveling-specials-701ip/ep-1
+[2026-08-31T09:45:39.621Z]    [4] Solo Leveling: ReAwakening -> https://anikoto.cz/watch/solo-leveling-reawakening-funr1/ep-1
+[2026-08-31T09:45:39.622Z]    [5] Solo Camping for Two -> https://anikoto.cz/watch/solo-camping-for-two-stsir/ep-1
+[2026-08-31T09:45:39.622Z]    [6] I May Be a Guild Receptionist, but I'll Solo Any Boss to Clock Out on Time -> https://anikoto.cz/watch/i-may-be-a-guild-receptionist-but-i-ll-solo-any-boss-to-clock-out-on-time-vxmbv/ep-1
+[2026-08-31T09:45:39.622Z]    [7] Fate/Grand Order: Shuukyoku Tokuiten - Kani Jikan Shinden Solomon -> https://anikoto.cz/watch/fate-grand-order-shuukyoku-tokuiten-kani-jikan-shinden-solomon-wdfsz/ep-1
+[2026-08-31T09:45:39.623Z]    [8] Leveling up in a Fantasy World -> https://anikoto.cz/watch/leveling-up-in-a-fantasy-world-nekb5/ep-1
+[2026-08-31T09:45:39.623Z] -----------------------------------
+[2026-08-31T09:45:39.624Z] [Search Resolver] Ranked results [
+  {
+    "title": "Solo Leveling",
+    "url": "https://anikoto.cz/watch/solo-leveling-ilh08/ep-1",
+    "score": 1040
+  },
+  {
+    "title": "Solo Leveling Season 2: Arise from the Shadow",
+    "url": "https://anikoto.cz/watch/solo-leveling-season-2-arise-from-the-shadow-3eukp/ep-1",
+    "score": 290
+  },
+  {
+    "title": "Solo Leveling: ReAwakening",
+    "url": "https://anikoto.cz/watch/solo-leveling-reawakening-funr1/ep-1",
+    "score": 290
+  },
+  {
+    "title": "Solo Leveling: Specials",
+    "url": "https://anikoto.cz/watch/solo-leveling-specials-701ip/ep-1",
+    "score": 250
+  },
+  {
+    "title": "Solo Camping for Two",
+    "url": "https://anikoto.cz/watch/solo-camping-for-two-stsir/ep-1",
+    "score": -45
+  },
+  {
+    "title": "I May Be a Guild Receptionist, but I'll Solo Any Boss to Clock Out on Time",
+    "url": "https://anikoto.cz/watch/i-may-be-a-guild-receptionist-but-i-ll-solo-any-boss-to-clock-out-on-time-vxmbv/ep-1",
+    "score": -45
+  },
+  {
+    "title": "Leveling up in a Fantasy World",
+    "url": "https://anikoto.cz/watch/leveling-up-in-a-fantasy-world-nekb5/ep-1",
+    "score": -45
+  },
+  {
+    "title": "Fate/Grand Order: Shuukyoku Tokuiten - Kani Jikan Shinden Solomon",
+    "url": "https://anikoto.cz/watch/fate-grand-order-shuukyoku-tokuiten-kani-jikan-shinden-solomon-wdfsz/ep-1",
+    "score": -80
+  }
+]
+[2026-08-31T09:45:39.624Z] [Search Resolver] Selected Match {
+  "title": "Solo Leveling",
+  "url": "https://anikoto.cz/watch/solo-leveling-ilh08/ep-1",
+  "seasonNum": 1
+}
+[2026-08-31T09:45:40.092Z] [KAA Resolve] search attempt {
+  "query": "Ore dake Level Up na Ken",
+  "resultCount": 3,
+  "resultPreview": [
+    {
+      "title": "Ore dake Level Up na Ken",
+      "audio": "dub",
+      "id": "solo-leveling-da47"
+    },
+    {
+      "title": "Ore dake Level Up na Ken: How to Get Stronger",
+      "audio": "sub",
+      "id": "solo-leveling-how-to-get-stronger-ba7f"
+    },
+    {
+      "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+      "audio": "dub",
+      "id": "solo-leveling-season-2-arise-from-the-shadow-9825"
+    }
+  ]
+}
+[2026-08-31T09:45:40.092Z] [KAA Resolve] search title chosen Ore dake Level Up na Ken
+[2026-08-31T09:45:40.093Z] [KAA Resolve] raw search results [
+  {
+    "title": "Ore dake Level Up na Ken",
+    "audio": "dub",
+    "id": "solo-leveling-da47"
+  },
+  {
+    "title": "Ore dake Level Up na Ken: How to Get Stronger",
+    "audio": "sub",
+    "id": "solo-leveling-how-to-get-stronger-ba7f"
+  },
+  {
+    "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+    "audio": "dub",
+    "id": "solo-leveling-season-2-arise-from-the-shadow-9825"
+  }
+]
+[2026-08-31T09:45:40.093Z] [KAA Resolve] starting enhanced search {
+  "baseTitle": "Ore dake Level Up na Ken",
+  "initialResultCount": 3,
+  "initialResultTitles": [
+    "Ore dake Level Up na Ken",
+    "Ore dake Level Up na Ken: How to Get Stronger",
+    "Ore dake Level Up na Ken Season 2: Arise from the Shadow"
+  ]
+}
+[2026-08-31T09:45:40.093Z] [KAA Resolve] season searches to try {
+  "searches": [
+    "Ore dake Level Up na Ken Season 2 Part 1",
+    "Ore dake Level Up na Ken Season 2 Part 2",
+    "Ore dake Level Up na Ken Season 3 Part 1",
+    "Ore dake Level Up na Ken Season 3 Part 2",
+    "Ore dake Level Up na Ken Season 4 Part 1",
+    "Ore dake Level Up na Ken Season 4 Part 2"
+  ]
+}
+[2026-08-31T09:45:40.094Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 2 Part 1"
+}
+[2026-08-31T09:45:40.095Z] [KAA Resolve] search attempt {
+  "query": "Ore dake Level Up na Ken",
+  "resultCount": 3,
+  "resultPreview": [
+    {
+      "title": "Ore dake Level Up na Ken",
+      "audio": "dub",
+      "id": "solo-leveling-da47"
+    },
+    {
+      "title": "Ore dake Level Up na Ken: How to Get Stronger",
+      "audio": "sub",
+      "id": "solo-leveling-how-to-get-stronger-ba7f"
+    },
+    {
+      "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+      "audio": "dub",
+      "id": "solo-leveling-season-2-arise-from-the-shadow-9825"
+    }
+  ]
+}
+[2026-08-31T09:45:40.095Z] [KAA Resolve] search title chosen Ore dake Level Up na Ken
+[2026-08-31T09:45:40.096Z] [KAA Resolve] raw search results [
+  {
+    "title": "Ore dake Level Up na Ken",
+    "audio": "dub",
+    "id": "solo-leveling-da47"
+  },
+  {
+    "title": "Ore dake Level Up na Ken: How to Get Stronger",
+    "audio": "sub",
+    "id": "solo-leveling-how-to-get-stronger-ba7f"
+  },
+  {
+    "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+    "audio": "dub",
+    "id": "solo-leveling-season-2-arise-from-the-shadow-9825"
+  }
+]
+[2026-08-31T09:45:40.096Z] [KAA Resolve] starting enhanced search {
+  "baseTitle": "Ore dake Level Up na Ken",
+  "initialResultCount": 3,
+  "initialResultTitles": [
+    "Ore dake Level Up na Ken",
+    "Ore dake Level Up na Ken: How to Get Stronger",
+    "Ore dake Level Up na Ken Season 2: Arise from the Shadow"
+  ]
+}
+[2026-08-31T09:45:40.096Z] [KAA Resolve] season searches to try {
+  "searches": [
+    "Ore dake Level Up na Ken Season 2 Part 1",
+    "Ore dake Level Up na Ken Season 2 Part 2",
+    "Ore dake Level Up na Ken Season 3 Part 1",
+    "Ore dake Level Up na Ken Season 3 Part 2",
+    "Ore dake Level Up na Ken Season 4 Part 1",
+    "Ore dake Level Up na Ken Season 4 Part 2"
+  ]
+}
+[2026-08-31T09:45:40.096Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 2 Part 1"
+}
+[2026-08-31T09:45:40.522Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 2 Part 1",
+  "count": 0
+}
+[2026-08-31T09:45:40.522Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 2 Part 2"
+}
+[2026-08-31T09:45:40.544Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 2 Part 1",
+  "count": 0
+}
+[2026-08-31T09:45:40.545Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 2 Part 2"
+}
+[2026-08-31T09:45:40.827Z] [KAA Resolve] start {
+  "malId": 52299,
+  "episodeNumber": "1",
+  "audioType": "sub",
+  "frontendTitle": "Solo Leveling",
+  "season": 1,
+  "searchTitles": [
+    "Ore dake Level Up na Ken",
+    "Solo Leveling"
+  ],
+  "cacheEntry": {
+    "english_title": "Solo Leveling",
+    "romaji_title": "Ore dake Level Up na Ken",
+    "native_title": "俺だけレベルアップな件",
+    "format": "TV",
+    "episodes": 12
+  }
+}
+[2026-08-31T09:45:40.948Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 2 Part 2",
+  "count": 0
+}
+[2026-08-31T09:45:40.949Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 3 Part 1"
+}
+[2026-08-31T09:45:40.957Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 2 Part 2",
+  "count": 0
+}
+[2026-08-31T09:45:40.958Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 3 Part 1"
+}
+[2026-08-31T09:45:41.363Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 3 Part 1",
+  "count": 0
+}
+[2026-08-31T09:45:41.363Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 3 Part 2"
+}
+[2026-08-31T09:45:41.365Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 3 Part 1",
+  "count": 0
+}
+[2026-08-31T09:45:41.365Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 3 Part 2"
+}
+[2026-08-31T09:45:41.380Z] [KAA Resolve] search attempt {
+  "query": "Ore dake Level Up na Ken",
+  "resultCount": 3,
+  "resultPreview": [
+    {
+      "title": "Ore dake Level Up na Ken",
+      "audio": "dub",
+      "id": "solo-leveling-da47"
+    },
+    {
+      "title": "Ore dake Level Up na Ken: How to Get Stronger",
+      "audio": "sub",
+      "id": "solo-leveling-how-to-get-stronger-ba7f"
+    },
+    {
+      "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+      "audio": "dub",
+      "id": "solo-leveling-season-2-arise-from-the-shadow-9825"
+    }
+  ]
+}
+[2026-08-31T09:45:41.381Z] [KAA Resolve] search title chosen Ore dake Level Up na Ken
+[2026-08-31T09:45:41.381Z] [KAA Resolve] raw search results [
+  {
+    "title": "Ore dake Level Up na Ken",
+    "audio": "dub",
+    "id": "solo-leveling-da47"
+  },
+  {
+    "title": "Ore dake Level Up na Ken: How to Get Stronger",
+    "audio": "sub",
+    "id": "solo-leveling-how-to-get-stronger-ba7f"
+  },
+  {
+    "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+    "audio": "dub",
+    "id": "solo-leveling-season-2-arise-from-the-shadow-9825"
+  }
+]
+[2026-08-31T09:45:41.381Z] [KAA Resolve] starting enhanced search {
+  "baseTitle": "Ore dake Level Up na Ken",
+  "initialResultCount": 3,
+  "initialResultTitles": [
+    "Ore dake Level Up na Ken",
+    "Ore dake Level Up na Ken: How to Get Stronger",
+    "Ore dake Level Up na Ken Season 2: Arise from the Shadow"
+  ]
+}
+[2026-08-31T09:45:41.382Z] [KAA Resolve] season searches to try {
+  "searches": [
+    "Ore dake Level Up na Ken Season 2 Part 1",
+    "Ore dake Level Up na Ken Season 2 Part 2",
+    "Ore dake Level Up na Ken Season 3 Part 1",
+    "Ore dake Level Up na Ken Season 3 Part 2",
+    "Ore dake Level Up na Ken Season 4 Part 1",
+    "Ore dake Level Up na Ken Season 4 Part 2"
+  ]
+}
+[2026-08-31T09:45:41.382Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 2 Part 1"
+}
+[2026-08-31T09:45:41.781Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 3 Part 2",
+  "count": 0
+}
+[2026-08-31T09:45:41.782Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 4 Part 1"
+}
+[2026-08-31T09:45:41.783Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 3 Part 2",
+  "count": 0
+}
+[2026-08-31T09:45:41.783Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 4 Part 1"
+}
+[2026-08-31T09:45:41.791Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 2 Part 1",
+  "count": 0
+}
+[2026-08-31T09:45:41.792Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 2 Part 2"
+}
+[2026-08-31T09:45:42.188Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 4 Part 1",
+  "count": 0
+}
+[2026-08-31T09:45:42.188Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 4 Part 2"
+}
+[2026-08-31T09:45:42.190Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 4 Part 1",
+  "count": 0
+}
+[2026-08-31T09:45:42.190Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 4 Part 2"
+}
+[2026-08-31T09:45:42.202Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 2 Part 2",
+  "count": 0
+}
+[2026-08-31T09:45:42.203Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 3 Part 1"
+}
+[2026-08-31T09:45:42.604Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 4 Part 2",
+  "count": 0
+}
+[2026-08-31T09:45:42.605Z] [KAA Resolve] enhanced search complete {
+  "newResultsAdded": 0,
+  "totalResults": 3,
+  "allResultTitles": [
+    "Ore dake Level Up na Ken",
+    "Ore dake Level Up na Ken: How to Get Stronger",
+    "Ore dake Level Up na Ken Season 2: Arise from the Shadow"
+  ]
+}
+[2026-08-31T09:45:42.606Z] [KAA Resolve] ranked results [
+  {
+    "title": "Ore dake Level Up na Ken",
+    "audio": "dub",
+    "score": 1600,
+    "id": "solo-leveling-da47"
+  },
+  {
+    "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+    "audio": "dub",
+    "score": 400,
+    "id": "solo-leveling-season-2-arise-from-the-shadow-9825"
+  },
+  {
+    "title": "Ore dake Level Up na Ken: How to Get Stronger",
+    "audio": "sub",
+    "score": 350,
+    "id": "solo-leveling-how-to-get-stronger-ba7f"
+  }
+]
+[2026-08-31T09:45:42.607Z] [KAA Resolve] requested audio type dub
+[2026-08-31T09:45:42.607Z] [KAA Resolve] wanted season 1
+[2026-08-31T09:45:42.608Z] [KAA Resolve] fetching top candidates in parallel {
+  "count": 3
+}
+[2026-08-31T09:45:42.610Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 3 Part 1",
+  "count": 0
+}
+[2026-08-31T09:45:42.610Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 3 Part 2"
+}
+[2026-08-31T09:45:42.614Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 4 Part 2",
+  "count": 0
+}
+[2026-08-31T09:45:42.614Z] [KAA Resolve] enhanced search complete {
+  "newResultsAdded": 0,
+  "totalResults": 3,
+  "allResultTitles": [
+    "Ore dake Level Up na Ken",
+    "Ore dake Level Up na Ken: How to Get Stronger",
+    "Ore dake Level Up na Ken Season 2: Arise from the Shadow"
+  ]
+}
+[2026-08-31T09:45:42.615Z] [KAA Resolve] ranked results [
+  {
+    "title": "Ore dake Level Up na Ken",
+    "audio": "dub",
+    "score": 1400,
+    "id": "solo-leveling-da47"
+  },
+  {
+    "title": "Ore dake Level Up na Ken: How to Get Stronger",
+    "audio": "sub",
+    "score": 550,
+    "id": "solo-leveling-how-to-get-stronger-ba7f"
+  },
+  {
+    "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+    "audio": "dub",
+    "score": 200,
+    "id": "solo-leveling-season-2-arise-from-the-shadow-9825"
+  }
+]
+[2026-08-31T09:45:42.615Z] [KAA Resolve] requested audio type sub
+[2026-08-31T09:45:42.615Z] [KAA Resolve] wanted season 1
+[2026-08-31T09:45:42.616Z] [KAA Resolve] fetching top candidates in parallel {
+  "count": 3
+}
+[2026-08-31T09:45:43.023Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 3 Part 2",
+  "count": 0
+}
+[2026-08-31T09:45:43.024Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 4 Part 1"
+}
+[2026-08-31T09:45:43.432Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 4 Part 1",
+  "count": 0
+}
+[2026-08-31T09:45:43.432Z] [KAA Resolve] searching for season part {
+  "query": "Ore dake Level Up na Ken Season 4 Part 2"
+}
+[2026-08-31T09:45:43.526Z] [KAA Resolve] candidate fetch error {
+  "title": "Ore dake Level Up na Ken: How to Get Stronger",
+  "error": "KickAssAnime returned no episode list for \"solo-leveling-how-to-get-stronger-ba7f\"."
+}
+[2026-08-31T09:45:43.539Z] [KAA Resolve] candidate fetch error {
+  "title": "Ore dake Level Up na Ken: How to Get Stronger",
+  "error": "KickAssAnime returned no episode list for \"solo-leveling-how-to-get-stronger-ba7f\"."
+}
+[2026-08-31T09:45:43.765Z] [KAA Resolve] season disambiguation signals {
+  "wantedSeason": 1,
+  "expectedEpisodeCount": 12,
+  "seasonTitleVariants": [
+    "ore dake level up na ken",
+    "solo leveling"
+  ]
+}
+[2026-08-31T09:45:43.766Z] [KAA Resolve] sorting candidate {
+  "titleA": "Ore dake Level Up na Ken: How to Get Stronger",
+  "titleB": "Ore dake Level Up na Ken",
+  "seasonA": 1,
+  "seasonB": 1,
+  "partNumA": 1,
+  "partNumB": 1
+}
+[2026-08-31T09:45:43.766Z] [KAA Resolve] sorting candidate {
+  "titleA": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+  "titleB": "Ore dake Level Up na Ken: How to Get Stronger",
+  "seasonA": 2,
+  "seasonB": 1,
+  "partNumA": 1,
+  "partNumB": 1
+}
+[2026-08-31T09:45:43.767Z] [KAA Resolve] sorted candidates order {
+  "order": [
+    {
+      "title": "Ore dake Level Up na Ken",
+      "season": 1
+    },
+    {
+      "title": "Ore dake Level Up na Ken: How to Get Stronger",
+      "season": 1
+    },
+    {
+      "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+      "season": 2
+    }
+  ]
+}
+[2026-08-31T09:45:43.767Z] [KAA Resolve] trying candidate {
+  "title": "Ore dake Level Up na Ken",
+  "episodeCount": 13,
+  "expectedRange": "1-13",
+  "requestedEpisode": 1
+}
+[2026-08-31T09:45:43.768Z] [KAA Resolve] episode matched in candidate {
+  "title": "Ore dake Level Up na Ken",
+  "globalEpisode": 1,
+  "localEpisode": 1,
+  "episodeTitle": "I'm Used to It"
+}
+[2026-08-31T09:45:43.768Z] [KAA Resolve] selected anime {
+  "selectedAudio": "dub",
+  "animeId": "solo-leveling-da47",
+  "animeTitle": "Ore dake Level Up na Ken",
+  "score": 1400,
+  "wantedSeason": 1
+}
+[2026-08-31T09:45:43.768Z] [KAA Resolve] anime info summary {
+  "title": "Solo Leveling",
+  "episodeCount": 13,
+  "episodes": [
+    {
+      "number": 1,
+      "title": "I'm Used to It",
+      "id": "solo-leveling-da47/episode/ep-1-58ad18"
+    },
+    {
+      "number": 2,
+      "title": "If I Had One More Chance",
+      "id": "solo-leveling-da47/episode/ep-2-dd991c"
+    },
+    {
+      "number": 3,
+      "title": "It's Like a Game",
+      "id": "solo-leveling-da47/episode/ep-3-fa5dba"
+    },
+    {
+      "number": 4,
+      "title": "I've Gotta Get Stronger",
+      "id": "solo-leveling-da47/episode/ep-4-ab11cd"
+    },
+    {
+      "number": 5,
+      "title": "A Pretty Good Deal",
+      "id": "solo-leveling-da47/episode/ep-5-adc6bd"
+    },
+    {
+      "number": 6,
+      "title": "The Real Hunt Begins",
+      "id": "solo-leveling-da47/episode/ep-6-deb8ed"
+    },
+    {
+      "number": 7,
+      "title": "Let's See How Far I Can Go",
+      "id": "solo-leveling-da47/episode/ep-7-0569c6"
+    },
+    {
+      "number": 7,
+      "title": "How to Get Stronger",
+      "id": "solo-leveling-da47/episode/ep-7-c00048"
+    },
+    {
+      "number": 8,
+      "title": "This Is Frustrating",
+      "id": "solo-leveling-da47/episode/ep-8-3b0edf"
+    },
+    {
+      "number": 9,
+      "title": "You've Been Hiding Your Skills",
+      "id": "solo-leveling-da47/episode/ep-9-f27a76"
+    },
+    {
+      "number": 10,
+      "title": "What Is This, a Picnic?",
+      "id": "solo-leveling-da47/episode/ep-10-de1991"
+    },
+    {
+      "number": 11,
+      "title": "A Knight Who Defends an Empty Throne",
+      "id": "solo-leveling-da47/episode/ep-11-e26aaf"
+    },
+    {
+      "number": 12,
+      "title": "Arise",
+      "id": "solo-leveling-da47/episode/ep-12-4b800f"
+    }
+  ]
+}
+[2026-08-31T09:45:43.768Z] [KAA Resolve] matched episode {
+  "requestedEpisodeNumber": "1",
+  "matched": {
+    "number": 1,
+    "title": "I'm Used to It",
+    "id": "solo-leveling-da47/episode/ep-1-58ad18"
+  }
+}
+[2026-08-31T09:45:43.844Z] [KAA Resolve] season search got results {
+  "query": "Ore dake Level Up na Ken Season 4 Part 2",
+  "count": 0
+}
+[2026-08-31T09:45:43.845Z] [KAA Resolve] enhanced search complete {
+  "newResultsAdded": 0,
+  "totalResults": 3,
+  "allResultTitles": [
+    "Ore dake Level Up na Ken",
+    "Ore dake Level Up na Ken: How to Get Stronger",
+    "Ore dake Level Up na Ken Season 2: Arise from the Shadow"
+  ]
+}
+[2026-08-31T09:45:43.845Z] [KAA Resolve] ranked results [
+  {
+    "title": "Ore dake Level Up na Ken",
+    "audio": "dub",
+    "score": 1400,
+    "id": "solo-leveling-da47"
+  },
+  {
+    "title": "Ore dake Level Up na Ken: How to Get Stronger",
+    "audio": "sub",
+    "score": 550,
+    "id": "solo-leveling-how-to-get-stronger-ba7f"
+  },
+  {
+    "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+    "audio": "dub",
+    "score": 200,
+    "id": "solo-leveling-season-2-arise-from-the-shadow-9825"
+  }
+]
+[2026-08-31T09:45:43.846Z] [KAA Resolve] requested audio type sub
+[2026-08-31T09:45:43.846Z] [KAA Resolve] wanted season 1
+[2026-08-31T09:45:43.846Z] [KAA Resolve] fetching top candidates in parallel {
+  "count": 3
+}
+[2026-08-31T09:45:43.948Z] [KAA Resolve] season disambiguation signals {
+  "wantedSeason": 1,
+  "expectedEpisodeCount": 12,
+  "seasonTitleVariants": [
+    "ore dake level up na ken",
+    "solo leveling"
+  ]
+}
+[2026-08-31T09:45:43.949Z] [KAA Resolve] sorting candidate {
+  "titleA": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+  "titleB": "Ore dake Level Up na Ken",
+  "seasonA": 2,
+  "seasonB": 1,
+  "partNumA": 1,
+  "partNumB": 1
+}
+[2026-08-31T09:45:43.949Z] [KAA Resolve] sorting candidate {
+  "titleA": "Ore dake Level Up na Ken: How to Get Stronger",
+  "titleB": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+  "seasonA": 1,
+  "seasonB": 2,
+  "partNumA": 1,
+  "partNumB": 1
+}
+[2026-08-31T09:45:43.950Z] [KAA Resolve] sorting candidate {
+  "titleA": "Ore dake Level Up na Ken: How to Get Stronger",
+  "titleB": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+  "seasonA": 1,
+  "seasonB": 2,
+  "partNumA": 1,
+  "partNumB": 1
+}
+[2026-08-31T09:45:43.950Z] [KAA Resolve] sorting candidate {
+  "titleA": "Ore dake Level Up na Ken: How to Get Stronger",
+  "titleB": "Ore dake Level Up na Ken",
+  "seasonA": 1,
+  "seasonB": 1,
+  "partNumA": 1,
+  "partNumB": 1
+}
+[2026-08-31T09:45:43.950Z] [KAA Resolve] sorted candidates order {
+  "order": [
+    {
+      "title": "Ore dake Level Up na Ken",
+      "season": 1
+    },
+    {
+      "title": "Ore dake Level Up na Ken: How to Get Stronger",
+      "season": 1
+    },
+    {
+      "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+      "season": 2
+    }
+  ]
+}
+[2026-08-31T09:45:43.951Z] [KAA Resolve] trying candidate {
+  "title": "Ore dake Level Up na Ken",
+  "episodeCount": 12,
+  "expectedRange": "1-12",
+  "requestedEpisode": 1
+}
+[2026-08-31T09:45:43.951Z] [KAA Resolve] episode matched in candidate {
+  "title": "Ore dake Level Up na Ken",
+  "globalEpisode": 1,
+  "localEpisode": 1,
+  "episodeTitle": "I'm Used to It"
+}
+[2026-08-31T09:45:43.951Z] [KAA Resolve] selected anime {
+  "selectedAudio": "dub",
+  "animeId": "solo-leveling-da47",
+  "animeTitle": "Ore dake Level Up na Ken",
+  "score": 1600,
+  "wantedSeason": 1
+}
+[2026-08-31T09:45:43.951Z] [KAA Resolve] anime info summary {
+  "title": "Solo Leveling",
+  "episodeCount": 12,
+  "episodes": [
+    {
+      "number": 1,
+      "title": "I'm Used to It",
+      "id": "solo-leveling-da47/episode/ep-1-0b53cf"
+    },
+    {
+      "number": 2,
+      "title": "If I Had One More Chance",
+      "id": "solo-leveling-da47/episode/ep-2-30c68f"
+    },
+    {
+      "number": 3,
+      "title": "It's Like a Game",
+      "id": "solo-leveling-da47/episode/ep-3-b085b6"
+    },
+    {
+      "number": 4,
+      "title": "I've Gotta Get Stronger",
+      "id": "solo-leveling-da47/episode/ep-4-a60a27"
+    },
+    {
+      "number": 5,
+      "title": "A Pretty Good Deal",
+      "id": "solo-leveling-da47/episode/ep-5-dcb0b1"
+    },
+    {
+      "number": 6,
+      "title": "The Real Hunt Begins",
+      "id": "solo-leveling-da47/episode/ep-6-2e13b9"
+    },
+    {
+      "number": 7,
+      "title": "Let's See How Far I Can Go",
+      "id": "solo-leveling-da47/episode/ep-7-cc2b73"
+    },
+    {
+      "number": 8,
+      "title": "This Is Frustrating",
+      "id": "solo-leveling-da47/episode/ep-8-32ba9c"
+    },
+    {
+      "number": 9,
+      "title": "You've Been Hiding Your Skills",
+      "id": "solo-leveling-da47/episode/ep-9-9cc5fe"
+    },
+    {
+      "number": 10,
+      "title": "What Is This, a Picnic?",
+      "id": "solo-leveling-da47/episode/ep-10-c95910"
+    },
+    {
+      "number": 11,
+      "title": "A Knight Who Defends an Empty Throne",
+      "id": "solo-leveling-da47/episode/ep-11-f0cd29"
+    },
+    {
+      "number": 12,
+      "title": "Arise",
+      "id": "solo-leveling-da47/episode/ep-12-bd5136"
+    }
+  ]
+}
+[2026-08-31T09:45:43.952Z] [KAA Resolve] matched episode {
+  "requestedEpisodeNumber": "1",
+  "matched": {
+    "number": 1,
+    "title": "I'm Used to It",
+    "id": "solo-leveling-da47/episode/ep-1-0b53cf"
+  }
+}
+[2026-08-31T09:45:44.570Z] [KAA Resolve] candidate fetch error {
+  "title": "Ore dake Level Up na Ken: How to Get Stronger",
+  "error": "KickAssAnime returned no episode list for \"solo-leveling-how-to-get-stronger-ba7f\"."
+}
+[2026-08-31T09:45:44.796Z] [KAA Resolve] season disambiguation signals {
+  "wantedSeason": 1,
+  "expectedEpisodeCount": 12,
+  "seasonTitleVariants": [
+    "ore dake level up na ken",
+    "solo leveling"
+  ]
+}
+[2026-08-31T09:45:44.796Z] [KAA Resolve] sorting candidate {
+  "titleA": "Ore dake Level Up na Ken: How to Get Stronger",
+  "titleB": "Ore dake Level Up na Ken",
+  "seasonA": 1,
+  "seasonB": 1,
+  "partNumA": 1,
+  "partNumB": 1
+}
+[2026-08-31T09:45:44.797Z] [KAA Resolve] sorting candidate {
+  "titleA": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+  "titleB": "Ore dake Level Up na Ken: How to Get Stronger",
+  "seasonA": 2,
+  "seasonB": 1,
+  "partNumA": 1,
+  "partNumB": 1
+}
+[2026-08-31T09:45:44.797Z] [KAA Resolve] sorted candidates order {
+  "order": [
+    {
+      "title": "Ore dake Level Up na Ken",
+      "season": 1
+    },
+    {
+      "title": "Ore dake Level Up na Ken: How to Get Stronger",
+      "season": 1
+    },
+    {
+      "title": "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+      "season": 2
+    }
+  ]
+}
+[2026-08-31T09:45:44.798Z] [KAA Resolve] trying candidate {
+  "title": "Ore dake Level Up na Ken",
+  "episodeCount": 13,
+  "expectedRange": "1-13",
+  "requestedEpisode": 1
+}
+[2026-08-31T09:45:44.798Z] [KAA Resolve] episode matched in candidate {
+  "title": "Ore dake Level Up na Ken",
+  "globalEpisode": 1,
+  "localEpisode": 1,
+  "episodeTitle": "I'm Used to It"
+}
+[2026-08-31T09:45:44.798Z] [KAA Resolve] selected anime {
+  "selectedAudio": "dub",
+  "animeId": "solo-leveling-da47",
+  "animeTitle": "Ore dake Level Up na Ken",
+  "score": 1400,
+  "wantedSeason": 1
+}
+[2026-08-31T09:45:44.799Z] [KAA Resolve] anime info summary {
+  "title": "Solo Leveling",
+  "episodeCount": 13,
+  "episodes": [
+    {
+      "number": 1,
+      "title": "I'm Used to It",
+      "id": "solo-leveling-da47/episode/ep-1-58ad18"
+    },
+    {
+      "number": 2,
+      "title": "If I Had One More Chance",
+      "id": "solo-leveling-da47/episode/ep-2-dd991c"
+    },
+    {
+      "number": 3,
+      "title": "It's Like a Game",
+      "id": "solo-leveling-da47/episode/ep-3-fa5dba"
+    },
+    {
+      "number": 4,
+      "title": "I've Gotta Get Stronger",
+      "id": "solo-leveling-da47/episode/ep-4-ab11cd"
+    },
+    {
+      "number": 5,
+      "title": "A Pretty Good Deal",
+      "id": "solo-leveling-da47/episode/ep-5-adc6bd"
+    },
+    {
+      "number": 6,
+      "title": "The Real Hunt Begins",
+      "id": "solo-leveling-da47/episode/ep-6-deb8ed"
+    },
+    {
+      "number": 7,
+      "title": "Let's See How Far I Can Go",
+      "id": "solo-leveling-da47/episode/ep-7-0569c6"
+    },
+    {
+      "number": 7,
+      "title": "How to Get Stronger",
+      "id": "solo-leveling-da47/episode/ep-7-c00048"
+    },
+    {
+      "number": 8,
+      "title": "This Is Frustrating",
+      "id": "solo-leveling-da47/episode/ep-8-3b0edf"
+    },
+    {
+      "number": 9,
+      "title": "You've Been Hiding Your Skills",
+      "id": "solo-leveling-da47/episode/ep-9-f27a76"
+    },
+    {
+      "number": 10,
+      "title": "What Is This, a Picnic?",
+      "id": "solo-leveling-da47/episode/ep-10-de1991"
+    },
+    {
+      "number": 11,
+      "title": "A Knight Who Defends an Empty Throne",
+      "id": "solo-leveling-da47/episode/ep-11-e26aaf"
+    },
+    {
+      "number": 12,
+      "title": "Arise",
+      "id": "solo-leveling-da47/episode/ep-12-4b800f"
+    }
+  ]
+}
+[2026-08-31T09:45:44.799Z] [KAA Resolve] matched episode {
+  "requestedEpisodeNumber": "1",
+  "matched": {
+    "number": 1,
+    "title": "I'm Used to It",
+    "id": "solo-leveling-da47/episode/ep-1-58ad18"
+  }
+}
+[2026-08-31T09:45:45.390Z] [KAA Resolve] episode sources payload {
+  "requestedAudioType": "dub",
+  "animeMatch": "Ore dake Level Up na Ken",
+  "episodeId": "solo-leveling-da47/episode/ep-1-0b53cf",
+  "sources": [
+    {
+      "index": 0,
+      "url": "https://hls.krussdomi.com/manifest/65fe310cb97399e0e1b6e5b1/master.m3u8",
+      "quality": "1080p",
+      "isM3U8": true
+    }
+  ],
+  "subtitles": []
+}
+[2026-08-31T09:45:46.238Z] [KAA Resolve] episode sources payload {
+  "requestedAudioType": "sub",
+  "animeMatch": "Ore dake Level Up na Ken",
+  "episodeId": "solo-leveling-da47/episode/ep-1-58ad18",
+  "sources": [
+    {
+      "index": 0,
+      "url": "https://hls.krussdomi.com/manifest/659b678faff966ab77af743a/master.m3u8",
+      "quality": "1080p",
+      "isM3U8": true
+    },
+    {
+      "index": 1,
+      "url": "https:////bl.krussdomi.com/mpd/13079919/master.mpd",
+      "quality": "1080p"
+    }
+  ],
+  "subtitles": [
+    {
+      "index": 0,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6790aa7f411bfded3431.vtt",
+      "lang": "Thai"
+    },
+    {
+      "index": 1,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6791aa7f411bfded343f.vtt",
+      "lang": "Vietnamese"
+    },
+    {
+      "index": 2,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6791aa7f411bfded3445.vtt",
+      "lang": "Indonesian"
+    },
+    {
+      "index": 3,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6791aa7f411bfded3451.vtt",
+      "lang": "English"
+    },
+    {
+      "index": 4,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6792aa7f411bfded3460.vtt",
+      "lang": "Spanish"
+    },
+    {
+      "index": 5,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6792aa7f411bfded3466.vtt",
+      "lang": "Portuguese"
+    },
+    {
+      "index": 6,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6793aa7f411bfded3470.vtt",
+      "lang": "French"
+    },
+    {
+      "index": 7,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6793aa7f411bfded3476.vtt",
+      "lang": "German"
+    },
+    {
+      "index": 8,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6793aa7f411bfded3480.vtt",
+      "lang": "Arabic"
+    },
+    {
+      "index": 9,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6793aa7f411bfded3486.vtt",
+      "lang": "Italian"
+    },
+    {
+      "index": 10,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6794aa7f411bfded3490.vtt",
+      "lang": "Russian"
+    },
+    {
+      "index": 11,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6794aa7f411bfded349c.vtt",
+      "lang": "Malay"
+    },
+    {
+      "index": 12,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_en.vtt",
+      "lang": "English"
+    },
+    {
+      "index": 13,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_th.vtt",
+      "lang": "ภาษาไทย"
+    },
+    {
+      "index": 14,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_vi.vtt",
+      "lang": "Tiếng Việt"
+    },
+    {
+      "index": 15,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_id.vtt",
+      "lang": "Bahasa Indonesia"
+    },
+    {
+      "index": 16,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_zh_hans.vtt",
+      "lang": "中文（简体）"
+    },
+    {
+      "index": 17,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_zh_hant.vtt",
+      "lang": "中文（繁体）"
+    }
+  ]
+}
+[2026-08-31T09:45:46.783Z] [KAA Resolve] episode sources payload {
+  "requestedAudioType": "sub",
+  "animeMatch": "Ore dake Level Up na Ken",
+  "episodeId": "solo-leveling-da47/episode/ep-1-58ad18",
+  "sources": [
+    {
+      "index": 0,
+      "url": "https://hls.krussdomi.com/manifest/659b678faff966ab77af743a/master.m3u8",
+      "quality": "1080p",
+      "isM3U8": true
+    },
+    {
+      "index": 1,
+      "url": "https:////bl.krussdomi.com/mpd/13079919/master.mpd",
+      "quality": "1080p"
+    }
+  ],
+  "subtitles": [
+    {
+      "index": 0,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6790aa7f411bfded3431.vtt",
+      "lang": "Thai"
+    },
+    {
+      "index": 1,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6791aa7f411bfded343f.vtt",
+      "lang": "Vietnamese"
+    },
+    {
+      "index": 2,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6791aa7f411bfded3445.vtt",
+      "lang": "Indonesian"
+    },
+    {
+      "index": 3,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6791aa7f411bfded3451.vtt",
+      "lang": "English"
+    },
+    {
+      "index": 4,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6792aa7f411bfded3460.vtt",
+      "lang": "Spanish"
+    },
+    {
+      "index": 5,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6792aa7f411bfded3466.vtt",
+      "lang": "Portuguese"
+    },
+    {
+      "index": 6,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6793aa7f411bfded3470.vtt",
+      "lang": "French"
+    },
+    {
+      "index": 7,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6793aa7f411bfded3476.vtt",
+      "lang": "German"
+    },
+    {
+      "index": 8,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6793aa7f411bfded3480.vtt",
+      "lang": "Arabic"
+    },
+    {
+      "index": 9,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6793aa7f411bfded3486.vtt",
+      "lang": "Italian"
+    },
+    {
+      "index": 10,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6794aa7f411bfded3490.vtt",
+      "lang": "Russian"
+    },
+    {
+      "index": 11,
+      "url": "https://subst.krussdomi.com/659b678faff966ab77af743a/659b6794aa7f411bfded349c.vtt",
+      "lang": "Malay"
+    },
+    {
+      "index": 12,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_en.vtt",
+      "lang": "English"
+    },
+    {
+      "index": 13,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_th.vtt",
+      "lang": "ภาษาไทย"
+    },
+    {
+      "index": 14,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_vi.vtt",
+      "lang": "Tiếng Việt"
+    },
+    {
+      "index": 15,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_id.vtt",
+      "lang": "Bahasa Indonesia"
+    },
+    {
+      "index": 16,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_zh_hans.vtt",
+      "lang": "中文（简体）"
+    },
+    {
+      "index": 17,
+      "url": "https://krussdomi.com/pinky-assets/subtitles/45a4b398_zh_hant.vtt",
+      "lang": "中文（繁体）"
+    }
+  ]
+}

@@ -1,0 +1,180 @@
+====================================================================
+CURL RECIPES — a cheat sheet, not a manual
+Companion to proxy-security.txt. Organized by "what am I trying to do"
+rather than alphabetically, since that's how you'll actually reach for it.
+====================================================================
+
+THE 10 FLAGS THAT COVER ~ALL OF IT
+------------------------------------
+  -H "Header: value"     add any request header (repeatable — use -H
+                          multiple times for multiple headers)
+  -d '...'                send this as the request body (auto-switches
+                          method to POST unless you also pass -X)
+  -X METHOD               force a specific HTTP method (GET/POST/PUT/
+                          DELETE/PATCH/...)
+  -c file.txt              SAVE any Set-Cookie response headers into this
+                          file
+  -b file.txt              SEND whatever cookies are in this file
+  -s                       silent — no progress bar noise
+  -k                       ignore invalid/self-signed TLS certs (local
+                          dev servers only — never use against something
+                          you don't control)
+  -o file                  write the response BODY to this file instead
+                          of stdout
+  -D -                     dump response HEADERS to stdout (the trailing
+                          "-" means "print them", not "save to a file
+                          literally named -")
+  -w "text %{code} more"   print extra info AFTER the request. Useful
+                          codes: %{http_code} %{size_download} %{time_total}
+
+
+------------------------------------
+RECIPE: plain GET, see everything
+------------------------------------
+curl -s -D - https://target/path
+
+  -D - shows status line + all response headers, then the body prints
+  right after (since no -o was given). This is your default "just show
+  me what happened" command.
+
+
+------------------------------------
+RECIPE: GET with custom headers (auth, forged origin, anything)
+------------------------------------
+curl -s \
+  -H "Authorization: Bearer eyJhbGc..." \
+  -H "Referer: https://the-site-itself.example/some/page" \
+  -H "Origin: https://the-site-itself.example" \
+  https://target/api/thing
+
+  Stack as many -H as you need. Order doesn't matter.
+
+
+------------------------------------
+RECIPE: POST JSON
+------------------------------------
+curl -s -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"field":"value","otherField":123}' \
+  https://target/api/thing
+
+  NOTE: -d alone implies POST, so -X POST is technically redundant here —
+  but keep it anyway, it makes the intent obvious when you re-read this
+  file in six months.
+
+
+------------------------------------
+RECIPE: maintain a logged-in session across multiple requests
+------------------------------------
+# request 1: this is where you actually log in / get a session cookie
+curl -s -c cookies.txt -b cookies.txt -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"userEmail":"you@example.com","userPassword":"..."}' \
+  https://target/users/auth
+
+# every request after: just -b (send), keep -c too so any REFRESHED
+# cookie also gets captured
+curl -s -c cookies.txt -b cookies.txt https://target/some/protected/thing
+
+  Using -c AND -b pointed at the SAME file every time means: "send
+  whatever cookies I've collected so far, and also save any new ones
+  I get back." This is how you stay "logged in" across a whole sequence
+  of curl calls.
+
+
+------------------------------------
+RECIPE: check just the status code, nothing else
+------------------------------------
+curl -s -o /dev/null -w "%{http_code}\n" https://target/path
+
+  -o /dev/null throws the body away, -w prints only the code. Good for
+  quickly probing a list of paths (see next recipe).
+
+
+------------------------------------
+RECIPE: probe a list of paths for what exists
+------------------------------------
+for p in "/admin" "/debug" "/health" "/.env" "/backup.zip"; do
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://target$p")
+  echo "$CODE  $p"
+done
+
+  This exact loop shape is how the static-file-exposure sweep (round 3)
+  and the port-4000 route probing (round 6) both worked. Swap the list
+  for whatever paths make sense to guess for the target app.
+
+
+------------------------------------
+RECIPE: save the body to inspect it separately
+------------------------------------
+curl -s -o response.json https://target/api/thing
+cat response.json | head -c 500       # or open it in an editor
+
+  Useful when the response is huge (like a full HTML page or a big JSON
+  blob) and you don't want it dumped straight into your terminal.
+
+
+------------------------------------
+RECIPE: DELETE / PUT / PATCH a specific resource
+------------------------------------
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" https://target/comments/123
+curl -s -X PATCH  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"field":"newValue"}' \
+  https://target/api/thing/456
+
+
+------------------------------------
+RECIPE: hammer an endpoint N times, watch for rate limiting
+------------------------------------
+for i in $(seq 1 20); do
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "Content-Type: application/json" \
+    -d "{\"userEmail\":\"target@example.com\",\"userPassword\":\"guess$i\"}" \
+    -X POST https://target/users/auth)
+  echo "attempt $i: HTTP $CODE"
+done
+
+  Watch for the code changing from 401 (wrong password, request was
+  processed normally) to 429 (Too Many Requests — the limiter kicked in).
+  Note WHICH attempt number it changes at — that's your actual threshold.
+
+
+------------------------------------
+RECIPE: full round-trip debug (headers in, headers out, body, timing)
+------------------------------------
+curl -s -D - -o response_body.txt -w "\n---\ntime_total: %{time_total}s\nsize: %{size_download} bytes\n" \
+  -H "Authorization: Bearer $TOKEN" \
+  https://target/api/thing
+cat response_body.txt
+
+  This is the "give me everything" version — headers print immediately
+  (via -D -), body goes to a file you can inspect after, and timing/size
+  stats print at the very end.
+
+
+------------------------------------
+A NOTE ON VARIABLES IN BASH
+------------------------------------
+Storing a token/cookie in a shell variable so you're not retyping a huge
+string every time:
+
+  TOKEN="eyJhbGciOiJIUzI1NiIs..."
+  curl -H "Authorization: Bearer $TOKEN" https://target/api/thing
+
+Double-quote the variable when you use it ("$TOKEN" not $TOKEN bare) —
+protects against weird characters in the value breaking the command.
+
+
+------------------------------------
+WHAT CURL CANNOT DO (so you know when to reach for something else)
+------------------------------------
+- Run JavaScript. If a page builds its real request via client-side JS
+  (React state, a click handler, etc.), curl can't discover that request
+  FOR you — you find the shape of it by watching the browser Network tab
+  first, then replicate it in curl.
+- Enforce browser-only security rules (SameSite cookie behavior, CORS
+  preflight, Content-Security-Policy). This is a feature for testing, not
+  a bug — it lets you check whether the SERVER enforces something, since
+  curl won't politely enforce it FOR the server the way a browser would.
+- Maintain complex multi-tab / multi-origin state easily. For that, the
+  browser + devtools is still the right tool.

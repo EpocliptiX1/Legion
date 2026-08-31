@@ -780,7 +780,13 @@ async function downloadKAAEpisode(requestedHeight) {
                     (x.length > 2 && lang.includes(x))
                 );
             })
-            : master.audios.find(a => {
+            : window.currentAudioType === "ru"
+                ? master.audios.find(a => {
+                    const lang = `${a.language || ''} ${a.name || ''}`.toLowerCase();
+                    return ['russian', 'rus', 'ru', 'русский'].some(x =>
+                        lang === x || lang.startsWith(x + '-') || lang.includes(x));
+                })
+                : master.audios.find(a => {
                 const lang = a.language.toLowerCase();
                 return [
                     "japanese", "nihongo", "nihon",

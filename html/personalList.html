@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My List | AniKino</title>
     <link rel="stylesheet" href="/css/style.css">
+    <script src="/js/heroicons.js" defer></script>
     <link rel="stylesheet" href="/css/theme-enhancements.css">
     <script src="/js/theme.js"></script>
     <script src="/js/i18n.js"></script>
@@ -354,6 +355,16 @@
                 <div id="recentPostsContainer" style="display: flex; flex-direction: column; gap: 12px;">
                     <!-- Comments will be loaded here -->
                 </div>
+            </div>
+        </div>
+
+        <!-- My Downloads - full width, below Playlists/Comments -->
+        <div class="downloads-column" style="background: #0a0a0a; padding: 25px; border-radius: 12px; box-shadow: var(--shadow-md); margin-top: 30px;">
+            <h2 class="list-title" style="margin: 0 0 20px 0; font-size: 1.6rem; color: var(--text-primary); border-bottom: 2px solid var(--accent-primary); padding-bottom: 10px;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:0.85em;height:0.85em;vertical-align:-0.1em;color:var(--accent-primary);"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg> My Downloads
+            </h2>
+            <div id="myDownloadsGrid" style="display: flex; flex-direction: column; gap: 10px;">
+                <p style="color: var(--text-muted); padding: 20px; text-align: center;">Loading your downloads...</p>
             </div>
         </div>
     </div>

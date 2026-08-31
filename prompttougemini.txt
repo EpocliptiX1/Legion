@@ -1,0 +1,36 @@
+https://localhost:3000/html/movieInfo.html?id=127532&type=tv
+
+(press watch now to have the.js inject the players and relevant info)
+
+
+
+now there is smth i want as well
+
+we have a download option in 'anime-download-panel\_\_body  '
+
+called kiwi (third party, ads)
+
+firstly, our downloads work with ffmpeg as the 'brain' its great , for devices that are ,moderatly good, and higher , however if somone is using a sammsung j8 or smmth it might lag a lot and heat their device up,. this is where the kiwi comes in
+
+HOWEVER , kiwi, well, there is a problem, clkicking it in solo leveling ep 1 opens:
+
+[https://pahe.nekostream.site/oXweW](https://pahe.nekostream.site/oXweW)
+
+which is a fake downlaod site where u need to click the downlaod button a few times while it also runs a bunch of ads taht open in hidden tabs, not ideal, after goign thru:
+
+it oopens:
+
+[https://kwik.cx/f/3ClewpT27L2z](https://kwik.cx/f/3ClewpT27L2z)
+
+and my oh my EVEN THERE, there are ads.
+
+
+
+now , my site will be completery free of ads and malware, aand i dont want my users to blame me for something that happens in kwik
+
+i want u to ivnestigate and find a way to take the downlaod mp4&#x20;
+
+&#x20;in the \<video> with the id kwikPlayer  and like show it on OUR site, rather than MY users getting siphoned to their ad hole . u up for such a task? 
+
+
+basically i  already have a fuck ton of servers to use from and becoming fully independant from external shit with this being the last one would be neat

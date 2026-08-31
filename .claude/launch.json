@@ -1,0 +1,22 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["Backend/server.js"],
+      "port": 4000
+    },
+    {
+      "name": "middleware",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["Backend/middleware.js"],
+      "port": 3000,
+      "url": "https://localhost:3000"
+    },
+    {
+      "name": "middleware-attach",
+      "url": "https://localhost:3000"
+    }
+  ]
+}

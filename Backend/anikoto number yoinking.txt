@@ -64158,3 +64158,20 @@
 [2026-08-27T16:46:17.617Z] GET anikoto.cz/filter?keyword=Solo Leveling
 [2026-08-27T16:46:17.922Z] ✓ "Solo Leveling" -> 8 result(s)
 [2026-08-28T16:24:05.637Z] [AnikotoIdMap] Crawl finished: 8802 upserted, 133 skipped (no malId/slug), 90 page(s), 254.1s
+[2026-08-31T09:45:22.596Z] GET anikoto.cz/filter?keyword=Solo Leveling
+[2026-08-31T09:45:22.930Z] ✓ "Solo Leveling" -> 8 result(s)
+[2026-08-31T09:45:22.930Z] MATCH "Solo Leveling" -> "Solo Leveling" (sub:12 dub:12 total:12)
+[2026-08-31T09:45:22.931Z] [Native] anikoto primary hit for "Solo Leveling" {
+  "anikotoResult": {
+    "title": "Solo Leveling",
+    "sub": 12,
+    "dub": 12,
+    "total": 12,
+    "mediaType": "TV",
+    "href": "https://anikoto.cz/watch/solo-leveling-ilh08/ep-1"
+  }
+}
+[2026-08-31T09:45:39.329Z] GET anikoto.cz/filter?keyword=Solo Leveling
+[2026-08-31T09:45:39.620Z] ✓ "Solo Leveling" -> 8 result(s)
+[2026-08-31T09:47:52.869Z] [TmdbMappingAudit] Deleted bad mapping for tmdb_id 102122 - no longer resolves to Japanese-origin content in either namespace
+[2026-08-31T09:49:14.558Z] [AnikotoIdMap] Crawl finished: 8804 upserted, 134 skipped (no malId/slug), 90 page(s), 242.2s

@@ -1,0 +1,17 @@
+directories:
+  output: dist
+  buildResources: build
+appId: com.anikino.app
+productName: AniKino
+files:
+  - filter:
+      - electron/**/*
+      - img/LOGO_Short.png
+      - package.json
+win:
+  target: nsis
+  icon: img/LOGO_Short.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+electronVersion: 43.4.0

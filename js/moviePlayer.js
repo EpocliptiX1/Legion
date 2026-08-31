@@ -1332,6 +1332,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 RU - MV <img src="https://upload.wikimedia.org/wikipedia/commons/f/f3/Flag_of_Russia.svg" alt="RU" style="width:16px;height:11px;vertical-align:middle;margin-left:2px;">
                             </button>
                             <button id="srvMega1" class="server-btn">MegaVid</button>
+                            <button id="srvSpd1" class="server-btn">SPD1</button>
                         </div>
                         <div id="subDubToggleRow" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                             <button id="btnSub" class="audio-btn active">SUB</button>
@@ -1354,7 +1355,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     <button class="audio-btn" data-dl-source="megaplay">MegaPlay</button>
                                     <button class="audio-btn" data-dl-source="neko">NekoStream</button>
                                     <button class="audio-btn" data-dl-source="rumv">RU-MV</button>
-                                    <button class="audio-btn" data-dl-source="external">Kiwi (third party, ads)</button>
+                                    <button class="audio-btn" data-dl-source="external">Kiwi / SPD1 (Direct MP4)</button>
                                 </div>
                             </div>
                             <div id="dlLanguageWrap">
@@ -1390,7 +1391,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             </div>
                         </div>
                         <div id="dlBurnHint" class="anime-download-panel__hint">
-                            KAA / MegaPlay / NekoStream / RU-MV will switch the active server if needed before downloading. Kiwi links open a third-party download page in a new tab.
+                            KAA / MegaPlay / NekoStream / RU-MV switch active server if needed. Kiwi / SPD1 downloads direct MP4 without client re-encoding.
                         </div>
                     </div>
                 </div>
@@ -1711,7 +1712,8 @@ document.addEventListener('DOMContentLoaded', function() {
             srv111Movies: '111Movies: Extra Source',
             srvMoviesApiM: 'MoviesAPI: Extra Source',
             srv111MoviesM: '111Movies: Extra Source',
-            srvMega1: 'MegaPlay: Anime MAL-based stream'
+            srvMega1: 'MegaPlay: Anime MAL-based stream',
+            srvSpd1: 'SPD1: AnimePahe direct source'
         };
         // function showLimitToast2(message) {
         //     const existing = document.querySelector('.limit-toast');
@@ -1735,14 +1737,15 @@ document.addEventListener('DOMContentLoaded', function() {
         function showServerInfo(serverKey) {
             let info = serverInfo[serverKey] || '';
             if (isAnime && currentAudioMode === 'dub') {
-                info += ' | Note: Click the 🎧/⚙️ icon in the player to switch audio to Dub if available.';
+                info += ' | Note: Click the Dub / Hsub / Sub buttons to switch audio or video.';
             }
             const infoTextDiv = document.getElementById('serverInfoText');
             if (infoTextDiv) infoTextDiv.textContent = info;
         }
         function updateKaaControlsVisibility() {
             const isDirectVideoServer =
-                currentServer === 'srvPahe1';
+                currentServer === 'srvPahe1' || currentServer === 'srvMega1' ||
+                currentServer === 'srvNeko1' || currentServer === 'srvNew1' || currentServer === 'srvSpd1';
 
             document.getElementById('btnBack10').style.display =
                 isDirectVideoServer ? 'block' : 'none';
@@ -2954,6 +2957,54 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
+        async function loadSpdVideo(episode, audioType, season) {
+            const myGen = playbackRequestGen;
+            window.currentAudioType = audioType;
+            const infoDiv = document.getElementById('serverInfoText');
+            const selectedSeason = parseInt(season || 1, 10);
+            const audio = audioType === 'dub' ? 'dub' : 'sub';
+
+            try {
+                stopKaaContinueWatching();
+                currentKaaSkipMarkers = [];
+                currentKaaSkipSegments = [];
+                renderKaaSkipSegments();
+                updateKaaSkipOverlay();
+
+                if (infoDiv) infoDiv.textContent = 'SPD1: Loading stream...';
+
+                const rawTitle = animeTitle || document.getElementById('title')?.textContent.trim() || '';
+                const malParam = malId ? `&malId=${encodeURIComponent(malId)}` : '';
+                const tmdbParam = tmdbId ? `&tmdbId=${encodeURIComponent(tmdbId)}` : '';
+                const titleParam = rawTitle ? `&title=${encodeURIComponent(rawTitle)}` : '';
+
+                const res = await fetch(`/api/anime-spd-log?episode=${encodeURIComponent(episode)}&season=${encodeURIComponent(selectedSeason)}&audio=${encodeURIComponent(audio)}${malParam}${tmdbParam}${titleParam}`);
+                const data = await res.json();
+
+                if (myGen !== playbackRequestGen) return false;
+
+                if (!data?.ok || !data?.embedUrl) {
+                    if (infoDiv) infoDiv.textContent = 'SPD1: No source found for this episode. Try another server.';
+                    return false;
+                }
+
+                currentKaaSkipMarkers = Array.isArray(data.skipSegments) ? data.skipSegments : [];
+                currentKaaSkipSegments = buildKaaPlaybackSegments(currentKaaSkipMarkers, 0);
+                window.currentKaaSkipSegments = currentKaaSkipSegments;
+                renderKaaSkipSegments();
+                updateKaaSkipOverlay();
+
+                showIframePlayer(data.embedUrl);
+                if (infoDiv) infoDiv.textContent = `SPD1: Loaded [${audio.toUpperCase()}]`;
+                return true;
+            } catch (err) {
+                console.error('[SPD1] playback error:', err);
+                if (myGen !== playbackRequestGen) return false;
+                if (infoDiv) infoDiv.textContent = 'SPD1: Failed to load. Try another server.';
+                return false;
+            }
+        }
+
         // RU Movie (kinogo.mu/cinemar.cc) -- movies only, single Russian dub track,
         // same "ignore sub/dub" deal as the anime RU server.
         async function loadRuMovieVideo() {
@@ -3608,6 +3659,18 @@ document.addEventListener('DOMContentLoaded', function() {
                     item.classList.remove('active');
                 }
             });
+            if (server === 'srvSpd1') {
+                document.querySelectorAll('.server-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.id === server);
+                });
+                showServerInfo(server);
+                loadSpdVideo(
+                    e,
+                    currentAudioMode,
+                    s
+                );
+                return;
+            }
             if (server === 'srvNeko1') {
                 document.querySelectorAll('.server-btn').forEach(btn => {
                     btn.classList.toggle('active', btn.id === server);
@@ -4599,11 +4662,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvRuMovie', 'srvKino', 'srvT1mM']);
         const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvT1mTV']);
-        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1']);
+        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1', 'srvSpd1']);
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',
             animeTV: 'ⓘ Currently supports nearly all series and animes. Sub/dub switching may be unstable for most anime titles.',
-            animeDub: 'ⓘ Currently supports anime streaming via MegaPlay, KickAssAnime and NekoStream. (KickAssAnime is primarily for Sub/Jap)'
+            animeDub: 'ⓘ Currently supports anime streaming via MegaPlay, KickAssAnime, NekoStream and SPD1 (AnimePahe).'
         };
 
         [...moviesBtns, ...animeTVBtns, ...animeDubBtns].forEach(id => {

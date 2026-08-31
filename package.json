@@ -1,9 +1,39 @@
 {
+  "name": "anikino",
+  "productName": "AniKino",
+  "version": "1.0.0",
+  "main": "electron/main.js",
+  "scripts": {
+    "electron": "electron .",
+    "dist": "electron-builder && node -e \"require('fs').rmSync('dist/win-unpacked', { recursive: true, force: true })\""
+  },
   "dependencies": {
     "@ffmpeg.wasm/core-mt": "^0.13.2",
     "@ffmpeg.wasm/main": "^0.13.1",
     "axios": "^1.19.0",
     "cheerio": "^1.2.0",
+    "disable-devtool": "^0.3.9",
     "plyr": "^3.8.4"
+  },
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.anikino.app",
+    "productName": "AniKino",
+    "files": [
+      "electron/**/*",
+      "img/LOGO_Short.png",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "img/LOGO_Short.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

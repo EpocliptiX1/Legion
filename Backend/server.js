@@ -1911,7 +1911,7 @@ function requireResolveNonce(req, res, next) {
 // aren't gated - nothing sensitive to protect there, and gating them would just add friction
 // with no security benefit.
 const RESOLVE_GATED_PATHS = [
-    '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
+    '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log', '/api/anime-spd-log',
     '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
     '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
     '/api/t1m-servers'
@@ -7289,7 +7289,7 @@ let proxyDebugPrinted = false;
 // hosts are Cloudflare-protected and therefore must remain browser redirects. Cinemap's RU-MV
 // files are fetched server-side through /api/download-proxy so their raw provider URLs never
 // reach the browser.
-const ALLOWED_DOWNLOAD_REDIRECT_HOSTS = ['nekostream.site'];
+const ALLOWED_DOWNLOAD_REDIRECT_HOSTS = ['nekostream.site', 'kwik.cx', 'download992.workers.dev', 'workers.dev'];
 const ALLOWED_DOWNLOAD_PROXY_HOSTS = ['cinemap.cc'];
 
 app.get('/api/download-redirect', (req, res) => {
@@ -17721,6 +17721,80 @@ const ANIME_DL_MAPPER_ORIGIN = 'https://mapper.nekostream.site';
 const animeDownloadLinkCache = new Map(); // `${mal}:${ep}` -> { data, resolvedAt }
 const ANIME_DL_CACHE_TTL_MS = 60 * 60 * 1000; // mapper reports ~1-2h of its own cache anyway
 
+async function resolvePaheShortlink(url) {
+    if (!url || typeof url !== 'string') return url;
+    try {
+        const m = url.match(/pahe\.nekostream\.site\/([a-zA-Z0-9_-]+)/);
+        if (m && m[1]) {
+            const workerUrl = `https://proud-dew-d754.download992.workers.dev/${m[1]}`;
+            const res = await axios.get(workerUrl, {
+                maxRedirects: 0,
+                validateStatus: status => status >= 200 && status < 400,
+                headers: { 'User-Agent': 'Mozilla/5.0' },
+                timeout: 5000
+            });
+            if (res.headers.location) {
+                return res.headers.location;
+            }
+        }
+    } catch (e) {}
+    return url;
+}
+
+app.get('/api/anime-spd-log', async (req, res) => {
+    const malId = String(req.query.malId || '').trim();
+    const episode = String(req.query.episode || req.query.ep || '1').trim();
+    const season = parseInt(req.query.season || req.query.s || '1', 10);
+    const audio = String(req.query.audio || req.query.type || 'sub').toLowerCase();
+    const rawTitle = String(req.query.title || '').trim();
+
+    if (!malId) return res.status(400).json({ ok: false, error: 'malId is required' });
+
+    let skipSegments = [];
+    if (rawTitle) {
+        try {
+            skipSegments = await getAnimeSkipTimestamps({ title: rawTitle, season, episode: parseInt(episode, 10) || 1 });
+        } catch (skipErr) {
+            skipSegments = [];
+        }
+    }
+
+    try {
+        const r = await axios.get(`${ANIME_DL_MAPPER_ORIGIN}/api/mal/${encodeURIComponent(malId)}/${encodeURIComponent(episode)}/1`, {
+            headers: {
+                'User-Agent': KINO_UA,
+                'Origin': 'https://anikoto.cz',
+                'Referer': 'https://anikoto.cz/',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            timeout: 15000
+        });
+
+        const data = r.data || {};
+        const kiwi = data.Kiwi || data.animepahe || {};
+        const audioData = (audio === 'dub' ? kiwi.dub : kiwi.sub) || kiwi.sub || kiwi.dub || {};
+        const downloads = audioData.download || {};
+
+        const bestUrl = downloads['1080p'] || downloads['720p'] || downloads['360p'] || Object.values(downloads)[0];
+        if (!bestUrl) {
+            return res.status(404).json({ ok: false, error: 'No SPD1 source found for this episode' });
+        }
+
+        const resolvedKwikUrl = await resolvePaheShortlink(bestUrl);
+        const embedUrl = resolvedKwikUrl.replace('/f/', '/e/');
+
+        res.json({
+            ok: true,
+            embedUrl,
+            directUrl: resolvedKwikUrl,
+            skipSegments: Array.isArray(skipSegments) ? skipSegments : []
+        });
+    } catch (err) {
+        console.error('[SPD1 Log] Error:', err.message);
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
 app.get('/api/anime-download-links', async (req, res) => {
     const malId = String(req.query.malId || '').trim();
     const episode = String(req.query.episode || req.query.ep || '1').trim();
@@ -17740,7 +17814,7 @@ app.get('/api/anime-download-links', async (req, res) => {
     const proxyQuality = (obj) => {
         const out = {};
         for (const [quality, url] of Object.entries(obj || {})) {
-            out[quality] = buildDownloadRedirectUrl(url, 'https://nekostream.site/', req.sessionId);
+            out[quality] = buildDownloadRedirectUrl(url, 'https://kwik.cx/', req.sessionId);
         }
         return out;
     };
@@ -17792,7 +17866,8 @@ app.get('/api/anime-download-links', async (req, res) => {
                     // that already caused a bug in the existing Neko code path.
                     for (const [quality, url] of Object.entries(dl)) {
                         if (typeof url === 'string' && url && !merged[audio][quality]) {
-                            merged[audio][quality] = url;
+                            const cleanUrl = await resolvePaheShortlink(url);
+                            merged[audio][quality] = cleanUrl;
                         }
                     }
                 }
