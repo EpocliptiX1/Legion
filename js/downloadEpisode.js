@@ -1158,7 +1158,39 @@ function parseMediaPlaylist(text) {
     return { segments, initSegmentUrl, durationSeconds };
 }
 
-// Added progressCallback to signature
+const SEGMENT_FETCH_ATTEMPTS = 4;
+
+function waitForDownloadRetry(delayMs) {
+    return new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
+// HLS CDNs and the local relay occasionally reject or time out one individual chunk while the
+// surrounding playlist remains healthy. A bulk download must not die at (say) 85/178 because of
+// that one transient response. Keep concurrency deliberately low, but retry each failed segment
+// with a short increasing pause before reporting a useful final error.
+async function fetchDownloadSegment(url, segmentNumber) {
+    let lastFailure = 'network error';
+    for (let attempt = 1; attempt <= SEGMENT_FETCH_ATTEMPTS; attempt++) {
+        try {
+            const res = await fetch(url, { cache: 'no-store' });
+            if (res.ok) return new Uint8Array(await res.arrayBuffer());
+
+            lastFailure = `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}`;
+            // 4xx/5xx bodies from our proxy contain the actual reason (lease limit, expired
+            // token, upstream issue). Keep it in the console, never surface a tokenized URL.
+            const detail = await res.text().catch(() => '');
+            console.warn(`[Download] Segment ${segmentNumber} attempt ${attempt}/${SEGMENT_FETCH_ATTEMPTS} failed: ${lastFailure}`, detail.slice(0, 180));
+        } catch (err) {
+            lastFailure = err?.message || 'network error';
+            console.warn(`[Download] Segment ${segmentNumber} attempt ${attempt}/${SEGMENT_FETCH_ATTEMPTS} failed:`, err);
+        }
+        if (attempt < SEGMENT_FETCH_ATTEMPTS) {
+            await waitForDownloadRetry(350 * attempt);
+        }
+    }
+    throw new Error(`Failed segment ${segmentNumber} after ${SEGMENT_FETCH_ATTEMPTS} attempts (${lastFailure})`);
+}
+
 async function downloadSegments(segments, progressCallback) {
     const downloaded = new Array(segments.length);
     const CONCURRENCY = 2;
@@ -1168,13 +1200,10 @@ async function downloadSegments(segments, progressCallback) {
 
         await Promise.all(
             batch.map(async (url, index) => {
-                const res = await fetch(url);
-                if (!res.ok)
-                    throw new Error(`Failed segment ${i + index}`);
+                const segmentNumber = i + index;
+                const data = await fetchDownloadSegment(url, segmentNumber);
 
-                const data = new Uint8Array(await res.arrayBuffer());
-
-                downloaded[i + index] = data;
+                downloaded[segmentNumber] = data;
 
                 downloadedBytes += data.byteLength;
                 completedSegments++;
