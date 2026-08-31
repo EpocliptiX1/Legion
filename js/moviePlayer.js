@@ -1133,7 +1133,7 @@ document.addEventListener('DOMContentLoaded', function() {
         let initialPlaybackSelectionReady = false;
         let initialPlaybackSelectionPromise = null;
         let startupPlaybackLoadStarted = false;
-        let startupResumeReloadQueued = false;
+        let startupResumeSourceSyncPending = false;
 
         const genreText = document.getElementById('genre')?.innerText.toLowerCase() || "";
         let isAnime = requestedType === 'anime' || genreText.includes('anime');
@@ -3811,6 +3811,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 ? (seasonSelectEl?.dataset.playSeason || 1)
                 : selectedSeason;
             let e = document.getElementById('episodeSelect')?.value || 1;
+            // The episode picker is intentionally hidden in the all-episodes UI. Its value can
+            // briefly still be the default E1 while the visible list has already restored or
+            // clicked another episode. The active list row is what the user can actually see and
+            // select, so it wins over that stale hidden control for playback.
+            const activeEpisodeItem = document.querySelector('.episode-list-item.active[data-ep]');
+            if (activeEpisodeItem) {
+                e = activeEpisodeItem.getAttribute('data-ep') || e;
+                s = activeEpisodeItem.getAttribute('data-season') || s;
+                if (seasonSelectEl) seasonSelectEl.dataset.playSeason = String(s);
+                const episodeSelectEl = document.getElementById('episodeSelect');
+                if (episodeSelectEl) episodeSelectEl.value = String(e);
+            }
             let url = '';
 
             // Update the UI Episode number box
@@ -5306,13 +5318,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                                 // selected in the list. Make this restored episode the
                                                 // newest source request so the generation guard cancels
                                                 // the stale E1 resolver instead of leaving UI/video split.
-                                                if (startupPlaybackLoadStarted && !startupResumeReloadQueued) {
-                                                    startupResumeReloadQueued = true;
-                                                    queueMicrotask(() => {
-                                                        startupResumeReloadQueued = false;
-                                                        updateSource(currentServer);
-                                                    });
-                                                }
+                                                if (startupPlaybackLoadStarted) startupResumeSourceSyncPending = true;
                                             }
                                         } else {
                                             console.log('[WatchHistory] No continue_from field');
@@ -5446,6 +5452,16 @@ document.addEventListener('DOMContentLoaded', function() {
                                         }
                                     } else {
                                         console.log(`[Episode List] continue_from not set when applying .active`);
+                                    }
+
+                                    // The history value and the hidden <select> can settle on
+                                    // separate microtasks. Once the actual active list row exists,
+                                    // issue one authoritative source update from that row. This
+                                    // prevents an earlier default-E1 request from surviving while
+                                    // the UI correctly shows the restored E7 selection.
+                                    if (startupResumeSourceSyncPending) {
+                                        startupResumeSourceSyncPending = false;
+                                        updateSource(currentServer);
                                     }
                                 });
 
