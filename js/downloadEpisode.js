@@ -383,6 +383,40 @@ function normalizeSubtitlePayload(text) {
     return { text: cleaned ? cleaned + '\n\n' : '', filename: 'subs.srt' };
 }
 
+// libass is compiled into our FFmpeg.wasm core, but unlike desktop FFmpeg it does not inherit
+// Windows/macOS font folders. Without a font in its virtual filesystem libass can complete an
+// encode while drawing no glyphs at all. This Apache-2.0 Roboto file is CORS-enabled and kept in
+// memory after the first burn; each fresh FFmpeg worker receives its own local copy.
+const SUBTITLE_FONT_URL = 'https://cdn.jsdelivr.net/gh/googlefonts/roboto@main/src/hinted/Roboto-Regular.ttf';
+let subtitleFontBytesPromise = null;
+
+async function prepareSubtitleBurnFilter(ffmpeg, subtitleFilename) {
+    if (!subtitleFontBytesPromise) {
+        subtitleFontBytesPromise = fetch(SUBTITLE_FONT_URL, { cache: 'force-cache' })
+            .then(async (response) => {
+                if (!response.ok) throw new Error(`subtitle font request returned HTTP ${response.status}`);
+                return new Uint8Array(await response.arrayBuffer());
+            })
+            .catch((error) => {
+                // Do not cache a transient offline/CDN failure forever; a later download may
+                // succeed after the connection recovers.
+                subtitleFontBytesPromise = null;
+                throw error;
+            });
+    }
+
+    const fontBytes = await subtitleFontBytesPromise;
+    try {
+        await ffmpeg.createDir?.('/fonts');
+    } catch (_) {
+        // EEXIST is expected if a future worker implementation pre-creates this directory.
+    }
+    await ffmpeg.writeFile('/fonts/Roboto-Regular.ttf', fontBytes);
+    // Force the supplied font as well as exposing its directory.  A generic fallback name
+    // can otherwise resolve to nothing in FFmpeg.wasm even though the filter itself loads.
+    return `subtitles=filename=${subtitleFilename}:fontsdir=/fonts:force_style=FontName=Roboto`;
+}
+
 function triggerBrowserDownload(filename, text, mimeType = 'text/plain;charset=utf-8') {
     const blob = new Blob([text], { type: mimeType });
     const url = URL.createObjectURL(blob);
@@ -969,6 +1003,13 @@ const setTaskSubtitleProgress = (label, percent) => {
             });
         }
 
+        let subtitleBurnFilter = null;
+        if (hasSubtitle) {
+            setTaskStatus('Preparing subtitle font...');
+            subtitleBurnFilter = await prepareSubtitleBurnFilter(ffmpeg, subtitleFilename);
+            console.log('[Download] subtitle burn filter ready', { subtitleBurnFilter });
+        }
+
         // 4. Muxing
         setTaskStatus(hasSubtitle ? 'Burning subtitles into video...' : (compactOutput ? 'Compressing file size...' : 'Muxing video and audio...'));
         document.getElementById("downloadProgressBar").style.width = (compactOutput || hasSubtitle) ? "0%" : "100%";
@@ -984,7 +1025,7 @@ const setTaskSubtitleProgress = (label, percent) => {
             // WebM-to-MP4 transcode.  Keep audio copied unless compression was explicitly chosen.
             muxArgs.push(
                 '-map', '0:v:0', '-map', '1:a:0',
-                '-vf', `subtitles=${subtitleFilename}`,
+                '-vf', subtitleBurnFilter,
                 '-c:v', 'libx264', '-preset', 'veryfast', '-crf', compactOutput ? '29' : '22',
                 ...(compactOutput ? ['-c:a', 'aac', '-b:a', '96k'] : ['-c:a', 'copy']),
                 '-movflags', '+faststart'
@@ -1017,18 +1058,9 @@ const setTaskSubtitleProgress = (label, percent) => {
         } catch (muxError) {
             console.error('[Download] primary mux failed', { muxArgs, name: muxError?.name, message: muxError?.message, stack: muxError?.stack });
             if (hasSubtitle) {
-                console.warn('Native subtitle burn failed, falling back to video/audio-only MP4:', muxError);
-                setDownloadStatus("Subtitle burn failed. Downloading video/audio only...");
-                finalOutput = "output.mp4";
-                const fallbackArgs = compactOutput
-                    ? ["-i", videoInputName, "-i", audioInputName, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '29', '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', finalOutput]
-                    : ["-i", videoInputName, "-i", audioInputName, "-c", "copy", finalOutput];
-                console.log('[Download] running ffmpeg fallback mux', fallbackArgs);
-                await ffmpeg.exec(fallbackArgs);
-                console.log('[Download] ffmpeg fallback mux complete for', finalOutput);
-            } else {
-                throw muxError;
+                throw new Error(`Subtitle burn failed: ${muxError?.message || 'FFmpeg rejected the subtitle filter'}. No unburned fallback was created.`);
             }
+            throw muxError;
         }
 
         // 5. Build Download
@@ -1413,6 +1445,13 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
             await ffmpeg.writeFile(subtitleFilename, new TextEncoder().encode(subtitleText));
         }
 
+        let subtitleBurnFilter = null;
+        if (hasSubtitle) {
+            setTaskStatus('Preparing subtitle font...');
+            subtitleBurnFilter = await prepareSubtitleBurnFilter(ffmpeg, subtitleFilename);
+            console.log('[Download][Kino] subtitle burn filter ready', { subtitleBurnFilter });
+        }
+
         // Audio's already muxed into the video segments -- this is just a
         // container remux (e.g. fMP4 fragments -> a standalone playable MP4),
         // not a real audio+video combine like KAA needs.
@@ -1426,7 +1465,7 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
             ? [
                 '-i', videoInputName,
                 '-map', '0:v:0', '-map', '0:a?',
-                '-vf', `subtitles=${subtitleFilename}`,
+                '-vf', subtitleBurnFilter,
                 '-c:v', 'libx264', '-preset', 'veryfast', '-crf', compactOutput ? '29' : '22',
                 ...(compactOutput ? ['-c:a', 'aac', '-b:a', '96k'] : ['-c:a', 'copy']),
                 '-movflags', '+faststart', outputFilename
@@ -1443,13 +1482,10 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
         try {
             await ffmpeg.exec(muxArgs);
         } catch (muxError) {
-            if (!hasSubtitle) throw muxError;
-            console.warn('[Download][Kino] native subtitle burn failed, falling back to video-only output:', muxError);
-            setTaskStatus('Subtitle burn failed. Downloading video only...');
-            const fallbackArgs = compactOutput
-                ? ['-i', videoInputName, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '29', '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', outputFilename]
-                : ['-i', videoInputName, '-c', 'copy', '-movflags', '+faststart', outputFilename];
-            await ffmpeg.exec(fallbackArgs);
+            if (hasSubtitle) {
+                throw new Error(`Subtitle burn failed: ${muxError?.message || 'FFmpeg rejected the subtitle filter'}. No unburned fallback was created.`);
+            }
+            throw muxError;
         }
 
         const data = await ffmpeg.readFile(outputFilename);
