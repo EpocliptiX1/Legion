@@ -578,7 +578,7 @@
 
     function renderAniListGridCard(item, tmdbId) {
         const title = escapeHtml(item.title?.english || item.title?.romaji || item.title?.native || 'Unknown');
-        const poster = escapeHtml(item.coverImage?.extraLarge || '/img/LOGO_Short.png');
+        const poster = escapeHtml(item.coverImage?.extraLarge || '/img/LOGO_Short.svg');
         const backdrop = escapeHtml(item.bannerImage || item.coverImage?.extraLarge || '');
         const year = item.startDate?.year ? String(item.startDate.year) : '----';
         const rating = item.averageScore != null ? (item.averageScore / 10).toFixed(1) : '--';
@@ -618,7 +618,7 @@
                  onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle}');`}">
                 ${rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${rating}</span>` : ''}
                 ${tmdbId && window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title, altTitles: badgeAltTitles, tmdbId }) : ''}
-                <img src="${poster}" loading="lazy" alt="${title}" onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle}');`}" onerror="this.src='/img/LOGO_Short.png'">
+                <img src="${poster}" loading="lazy" alt="${title}" onclick="${tmdbId ? `window.location.href='${navTarget}'` : `navigateToAnimeByTitle('${fallbackTitle}');`}" onerror="this.src='/img/LOGO_Short.svg'">
                 <div class="card-title-label">
                     <div class="card-title-name">${title}</div>
                     <div class="card-title-tag">Anime</div>
@@ -690,7 +690,7 @@
         const year = (show.first_air_date || show.release_date || '----').slice(0, 4);
         const rating = show.vote_average ? show.vote_average.toFixed(1) : '--';
         const plot = (show.overview || 'No plot summary available.').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-        const poster = show.poster_path ? `${TMDB_IMG}${show.poster_path}` : '/img/LOGO_Short.png';
+        const poster = show.poster_path ? `${TMDB_IMG}${show.poster_path}` : '/img/LOGO_Short.svg';
         const backdrop = show.backdrop_path
             ? `${TMDB_BG}${show.backdrop_path}`
             : (show.poster_path ? `${TMDB_BG}${show.poster_path}` : poster);
@@ -712,7 +712,7 @@
                 ${window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: 'anime', title: show.name || show.title || show.original_name || '', tmdbId: show.id }) : ''}
                 <img src="${poster}" loading="lazy"
                      onclick="window.location.href='${href}'"
-                     onerror="this.src='/img/LOGO_Short.png'">
+                     onerror="this.src='/img/LOGO_Short.svg'">
                 <div class="card-title-label">
                     <div class="card-title-name">${title}</div>
                     <div class="card-title-tag">${type === 'movie' ? 'Anime Film' : 'Anime'}</div>
@@ -1879,7 +1879,7 @@
         const rating = anime.score ? anime.score.toFixed(1) : '--';
         const episodes = anime.episodes ? `${anime.episodes} eps` : 'TV Series';
         const synopsis = (anime.synopsis || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-        const poster = anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url || '/img/LOGO_Short.png';
+        const poster = anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url || '/img/LOGO_Short.svg';
         // Normalise Jikan type: "TV" → "Anime", "Movie" stays "Movie", rest as-is
         const rawType = (anime.type || '').toUpperCase();
         const typeLabel = rawType === 'MOVIE' ? 'Movie' : 'Anime';
@@ -1904,7 +1904,7 @@
                 ].filter(t => t && t !== (anime.title_english || anime.title)) }) : ''}
                 <img id="${uid}" src="${poster}" loading="lazy"
                      onclick="navigateToAnimeByTitle(this.closest('.grid-card').dataset.title)"
-                     onerror="this.src='/img/LOGO_Short.png'">
+                     onerror="this.src='/img/LOGO_Short.svg'">
                 <div class="card-title-label">
                     <div class="card-title-name">${title}</div>
                     <div class="card-title-tag">${typeLabel}</div>

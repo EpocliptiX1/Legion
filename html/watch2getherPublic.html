@@ -30,7 +30,7 @@
     <div class="left-sidebar bottom-sidebar" id="leftSidebar">
         <div class="sidebar-logo-wrap">
             <a href="/html/indexMain.html" class="logo-link">
-                <img src="/img/LOGO_Short.png" alt="Logo" class="logo-img sidebar-logo-img">
+                <img src="/img/LOGO_Short.svg" alt="Logo" class="logo-img sidebar-logo-img">
             </a>
             <a href="/html/indexMain.html" class="sidebar-brand-mark">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="20 0 500 120" width="100%" height="100%">
@@ -1052,7 +1052,7 @@
             }
             resultsEl.innerHTML = items.slice(0, 6).map(item => `
                 <div class="w2g-media-result" data-id="${escapeHtml(String(item.id))}" data-type="${escapeHtml(item.type)}" data-title="${escapeHtml(item.title)}" data-poster="${escapeHtml(item.poster || '')}">
-                    <img src="${escapeHtml(item.poster || '/img/LOGO_Short.png')}" alt="" onerror="this.src='/img/LOGO_Short.png'">
+                    <img src="${escapeHtml(item.poster || '/img/LOGO_Short.svg')}" alt="" onerror="this.src='/img/LOGO_Short.svg'">
                     <div class="w2g-media-result-info">
                         <span class="w2g-media-result-title">${escapeHtml(item.title)}</span>
                         <span class="w2g-media-result-year">${escapeHtml(item.year || '')}${item.year ? ' · ' : ''}${item.type === 'tv' ? 'TV' : 'Movie'}</span>
@@ -1072,7 +1072,7 @@
         document.getElementById('w2gCreateMediaSearch').value = '';
         const chip = document.getElementById('w2gCreateMediaChip');
         chip.style.display = 'flex';
-        chip.innerHTML = `<img src="${escapeHtml(item.dataset.poster || '/img/LOGO_Short.png')}" alt="" onerror="this.src='/img/LOGO_Short.png'"><span>${escapeHtml(item.dataset.title)}</span><button type="button" onclick="clearW2gCreateMedia()">&times;</button>`;
+        chip.innerHTML = `<img src="${escapeHtml(item.dataset.poster || '/img/LOGO_Short.svg')}" alt="" onerror="this.src='/img/LOGO_Short.svg'"><span>${escapeHtml(item.dataset.title)}</span><button type="button" onclick="clearW2gCreateMedia()">&times;</button>`;
     });
 
     window.clearW2gCreateMedia = function() {

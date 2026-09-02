@@ -1942,7 +1942,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 title: metadata.title || document.getElementById("title")?.textContent.trim() || "Unknown Anime",
                 season: metadata.season,
                 episode: metadata.episode,
-                thumbnail: window.currentAnimePosterThumb || '/img/LOGO_Short.png'
+                thumbnail: window.currentAnimePosterThumb || '/img/LOGO_Short.svg'
             };
             window.updateDownloadButtons(streamUrl);  
             if (!video) return false;
@@ -4984,7 +4984,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (isRussianSeries) {
                     currentServer = 'srvRuTv';
                 }
-                const animePosterThumb = data.poster_path ? `https://image.tmdb.org/t/p/w342${data.poster_path}` : '/img/LOGO_Short.png';
+                const animePosterThumb = data.poster_path ? `https://image.tmdb.org/t/p/w342${data.poster_path}` : '/img/LOGO_Short.svg';
                 window.currentAnimePosterThumb = animePosterThumb;
                 const animeNotReleasedYet = !!(data.first_air_date && new Date(data.first_air_date) > new Date());
                 const setReleaseStatusLine = (showData) => {
@@ -5438,7 +5438,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     listHTML += `
                                         <li class="episode-list-item${isWatched}${isContinueFrom}" data-season="${seasonNum}" data-ep="${ep.episode_number}" data-filler-type="${fillerType}" onclick="window.__handleEpisodeItemClick && window.__handleEpisodeItemClick(this)">
                                             <span class="episode-num">${ep.episode_number}</span>
-                                            <img class="episode-thumb" src="${thumb}" alt="Episode ${ep.episode_number}" loading="lazy" decoding="async" onerror="this.src='/img/LOGO_Short.png'">
+                                            <img class="episode-thumb" src="${thumb}" alt="Episode ${ep.episode_number}" loading="lazy" decoding="async" onerror="this.src='/img/LOGO_Short.svg'">
                                             <div class="episode-text">
                                                 <span class="episode-title">S${seasonNum} · ${epName}</span>
                                                 <span class="episode-meta">${airDate}</span>

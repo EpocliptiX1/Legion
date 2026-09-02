@@ -112,7 +112,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             data: {
                                 ID: item.id,
                                 'Movie Name': tv.name || tv.title || 'Unknown',
-                                poster_full_url: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.png',
+                                poster_full_url: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.svg',
                                 Rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--'
                             },
                             type: item.type,
@@ -169,11 +169,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             playlistsGrid.innerHTML = '<p style="color: var(--text-muted); padding: 20px; text-align: center;">No playlists yet. Create one to get started!</p>';
         } else {
             const html = owned.map(p => {
-                const poster = (p.movies && p.movies[0] && p.movies[0].poster) ? p.movies[0].poster : '/img/LOGO_Short.png';
+                const poster = (p.movies && p.movies[0] && p.movies[0].poster) ? p.movies[0].poster : '/img/LOGO_Short.svg';
                 const count = (p.movies || []).length;
                 return `
                     <div class="playlist-item" onclick="window.location.href='customPlaylists.html'" style="display: flex; gap: 12px; padding: 12px; background: var(--bg-tertiary); border-radius: 8px; cursor: pointer; transition: all 0.3s ease; border: 1px solid var(--border-color);">
-                        <img src="${poster}" onerror="this.src='/img/LOGO_Short.png'" style="width: 60px; height: 90px; border-radius: 6px; object-fit: cover;">
+                        <img src="${poster}" onerror="this.src='/img/LOGO_Short.svg'" style="width: 60px; height: 90px; border-radius: 6px; object-fit: cover;">
                         <div style="flex: 1; display: flex; flex-direction: column; justify-content: center;">
                             <h4 style="margin: 0 0 5px 0; font-size: 1rem; color: var(--text-primary);">${p.name}</h4>
                             <span style="font-size: 0.85rem; color: var(--text-muted);">${count} movies</span>
@@ -217,7 +217,7 @@ async function loadMyHistoryRow() {
         return `
             <div class="grid-card" onmouseenter="console.log('Hover on history card:', '${safeName}')">
                 ${m.Rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${m.Rating}</span>` : ''}
-                <img src="${m.poster_full_url || '/img/LOGO_Short.png'}" onerror="this.src='/img/LOGO_Short.png'" onclick="window.location.href='movieInfo.html?id=${m.ID}&type=${type}'">
+                <img src="${m.poster_full_url || '/img/LOGO_Short.svg'}" onerror="this.src='/img/LOGO_Short.svg'" onclick="window.location.href='movieInfo.html?id=${m.ID}&type=${type}'">
                 
                 <div class="card-title-label">
                     <div class="card-title-name">${m['Movie Name'] || 'Unknown'}</div>
@@ -252,7 +252,7 @@ async function loadMyHistoryRow() {
                 const m = {
                     ID: h.movie_id,
                     'Movie Name': tv.name || tv.title,
-                    poster_full_url: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.png',
+                    poster_full_url: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.svg',
                     Rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--',
                     Genre: (tv.genres || []).map(g => g.name).join(', '),
                     Year: (tv.first_air_date || '').slice(0, 4),

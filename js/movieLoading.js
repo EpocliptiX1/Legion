@@ -30,7 +30,7 @@ console.log('[movieLoading.js] Slow connection detected:', window.__isSlowConnec
 // fixed at its normal size everywhere it's set (not routed through this) - only secondary
 // images (backdrop, cast thumbnails, recommendation row posters) get dialed down.
 function tmdbImgUrl(imgPath, normalSize, slowSize) {
-    if (!imgPath) return '/img/LOGO_Short.png';
+    if (!imgPath) return '/img/LOGO_Short.svg';
     const size = window.__isSlowConnection ? slowSize : normalSize;
     return `https://image.tmdb.org/t/p/${size}${imgPath}`;
 }
@@ -669,7 +669,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             // 2. Define fullTvCast using the massive aggregate list
             const fullTvCast = movie.aggregate_credits?.cast || movie.credits?.cast || [];
             
-            const posterUrl = movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : '/img/LOGO_Short.png';
+            const posterUrl = movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : '/img/LOGO_Short.svg';
             movieYear = movie.first_air_date ? parseInt(movie.first_air_date.split('-')[0]) : null;
             if(document.getElementById('posterImg')) document.getElementById('posterImg').src = posterUrl;
             if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${tmdbImgUrl(movie.poster_path, 'w500', 'w300')}')`; // heavily blurred anyway (30px), low-res is invisible here
@@ -878,7 +878,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                         mappedItems.forEach(item => {
                             const displayName = item['Movie Name'] || 'Unknown';
                             const year = item.Year || 'N/A';
-                            const poster = item.poster_full_url || '/img/LOGO_Short.png';
+                            const poster = item.poster_full_url || '/img/LOGO_Short.svg';
                             const card = document.createElement('div');
                             card.className = 'mini-card';
                             card.dataset.anilistId = item.anilistId;
@@ -1160,7 +1160,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
                             if (seen.has(key)) continue;
                             seen.add(key);
 
-                            const poster = item?.coverImage?.extraLarge || item?.coverImage?.large || '/img/LOGO_Short.png';
+                            const poster = item?.coverImage?.extraLarge || item?.coverImage?.large || '/img/LOGO_Short.svg';
                             const year = item?.startDate?.year || 'N/A';
                             const tmdbId = item?.tmdbId || null;
                             if (!tmdbId) continue;
@@ -1206,7 +1206,7 @@ async function applyAnimeMalDetailsIfAvailable(tmdbItem, tmdbId) {
             movie['Movie Name'] = movie.title || movie.original_title || '';
 
             // 1. Set Background and Poster
-            const posterUrl = movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : '/img/LOGO_Short.png';
+            const posterUrl = movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : '/img/LOGO_Short.svg';
             if(document.getElementById('posterImg')) document.getElementById('posterImg').src = posterUrl;
             if(document.getElementById('bgBackdrop')) document.getElementById('bgBackdrop').style.backgroundImage = `url('${tmdbImgUrl(movie.poster_path, 'w500', 'w300')}')`; // heavily blurred anyway (30px), low-res is invisible here
             
@@ -1433,7 +1433,7 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
         const year = dateStr.split('-')[0] || '';
         return {
             ID: m.id,
-            poster_full_url: m.poster_path ? tmdbImgUrl(m.poster_path, 'w500', 'w300') : '/img/LOGO_Short.png',
+            poster_full_url: m.poster_path ? tmdbImgUrl(m.poster_path, 'w500', 'w300') : '/img/LOGO_Short.svg',
             'Movie Name': title,
             Rating: m.vote_average || 'N/A',
             Votes: m.vote_count || 0,
@@ -1500,7 +1500,7 @@ async function initRecommendations(movie, movieYear, firstDirector, starsList) {
             const safeId = m.ID || '';
             const year = m.Year ? `<span style='font-size:11px;color:#aaa;'>${m.Year}</span>` : '';
             return `<div class="mini-card" onclick="window.location.href='movieInfo.html?id=${encodeURIComponent(safeId)}&type=${type}'">
-                <img src="${m.poster_full_url}" onerror="this.src='/img/LOGO_Short.png'">
+                <img src="${m.poster_full_url}" onerror="this.src='/img/LOGO_Short.svg'">
                 <div class="mini-info">
                     <h4>${m['Movie Name']}</h4>
                     <p>⭐ ${m.Rating || m.imdb_rating} (${m.Votes || 0}) ${year}</p>

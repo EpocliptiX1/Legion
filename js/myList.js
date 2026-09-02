@@ -277,13 +277,13 @@ function createDiscoveryCardHTML(record, index, kind) {
     const removeTitle = kind === 'list' ? 'Remove from list' : 'Remove from history';
     const number = String(index + 1).padStart(2, '0');
     const metaText = escapeHtml(cardMetaText(record, kind));
-    const poster = record.poster || '/img/LOGO_Short.png';
+    const poster = record.poster || '/img/LOGO_Short.svg';
     const safeId = escapeQuotes(record.id);
     const navId = encodeURIComponent(record.id);
 
     return `
         <div class="disc-card personal-disc-card" data-item-id="${safeId}" onclick="window.location.href='movieInfo.html?id=${navId}&type=${navType}'">
-            <img class="disc-card-img" src="${poster}" alt="${safeTitleAttr}" loading="lazy" onerror="this.src='/img/LOGO_Short.png'">
+            <img class="disc-card-img" src="${poster}" alt="${safeTitleAttr}" loading="lazy" onerror="this.src='/img/LOGO_Short.svg'">
             <span class="disc-card-num">${number}</span>
             <button class="disc-card-remove-btn hover-delete-btn" title="${removeTitle}" onclick="event.stopPropagation(); ${removeFn}('${safeId}', event)"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
   <g transform="translate(3.6 3.6) scale(0.7)">
@@ -374,7 +374,7 @@ async function resolveTvOrAnimeRow(item) {
                 type: item.type,
                 isAnime: true,
                 title: cached.title || 'Unknown',
-                poster: cached.thumbnail || '/img/LOGO_Short.png',
+                poster: cached.thumbnail || '/img/LOGO_Short.svg',
                 rating: cached.rating || '--',
                 year: cached.year ? String(cached.year) : ''
             };
@@ -395,7 +395,7 @@ async function resolveTvOrAnimeRow(item) {
                 type: item.type,
                 isAnime,
                 title: tv.name || tv.title || 'Unknown',
-                poster: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.png',
+                poster: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.svg',
                 rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--',
                 year: toYear(tv.first_air_date)
             };
@@ -428,7 +428,7 @@ async function resolveMyListRecords(savedItems) {
                     id: String(m.ID),
                     type: 'movie',
                     title: m['Movie Name'] || 'Unknown',
-                    poster: m.poster_full_url || '/img/LOGO_Short.png',
+                    poster: m.poster_full_url || '/img/LOGO_Short.svg',
                     rating: m.Rating || '--',
                     year: toYear(m.Year || m.release_date)
                 });
@@ -469,7 +469,7 @@ async function resolveHistoryRecords(historyRows) {
                     id,
                     type: typeMap[id] || 'movie',
                     title: m['Movie Name'] || 'Unknown',
-                    poster: m.poster_full_url || '/img/LOGO_Short.png',
+                    poster: m.poster_full_url || '/img/LOGO_Short.svg',
                     rating: m.Rating || '--',
                     year: toYear(m.Year || m.release_date),
                     watchedAt: row?.watched_at || ''
@@ -555,11 +555,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             playlistsGrid.innerHTML = '<p style="color: var(--text-muted); padding: 20px; text-align: center;">No playlists yet. Create one to get started!</p>';
         } else {
             const html = owned.map(p => {
-                const poster = (p.movies && p.movies[0] && p.movies[0].poster) ? p.movies[0].poster : '/img/LOGO_Short.png';
+                const poster = (p.movies && p.movies[0] && p.movies[0].poster) ? p.movies[0].poster : '/img/LOGO_Short.svg';
                 const count = (p.movies || []).length;
                 return `
                     <div class="playlist-item" onclick="window.location.href='customPlaylists.html'" style="display: flex; gap: 12px; padding: 12px; background: #090909; border-radius: 8px; cursor: pointer; transition: all 0.3s ease; border: 1px solid rgb(22 22 22);">
-                        <img src="${poster}" onerror="this.src='/img/LOGO_Short.png'" style="width: 60px; height: 90px; border-radius: 6px; object-fit: cover;">
+                        <img src="${poster}" onerror="this.src='/img/LOGO_Short.svg'" style="width: 60px; height: 90px; border-radius: 6px; object-fit: cover;">
                         <div style="flex: 1; display: flex; flex-direction: column; justify-content: center;">
                             <h4 style="margin: 0 0 5px 0; font-size: 1rem; color: var(--text-primary);">${p.name}</h4>
                             <span style="font-size: 0.85rem; color: var(--text-muted);">${count} movies</span>
@@ -610,8 +610,8 @@ function buildDownloadRow(row) {
     el.style.cssText = 'display:flex;align-items:center;gap:12px;padding:10px 12px;background:#090909;border-radius:8px;border:1px solid rgb(22 22 22);';
 
     const thumb = document.createElement('img');
-    thumb.src = row.thumbnail || '/img/LOGO_Short.png';
-    thumb.onerror = () => { thumb.src = '/img/LOGO_Short.png'; };
+    thumb.src = row.thumbnail || '/img/LOGO_Short.svg';
+    thumb.onerror = () => { thumb.src = '/img/LOGO_Short.svg'; };
     thumb.style.cssText = 'width:52px;height:78px;border-radius:6px;object-fit:cover;flex-shrink:0;';
     el.appendChild(thumb);
 

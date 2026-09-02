@@ -162,7 +162,7 @@ const EnhancedSearch = {
         
         resultsMenu.innerHTML = movies.map(item => `
             <div class="search-item" data-type="${item.type}" onclick="EnhancedSearch.selectMovie('${item.id}', '${item.type}')">
-                <img src="${item.poster || '/img/LOGO_Short.png'}" alt="${escapeHtml(item.title)}" onerror="this.src='/img/LOGO_Short.png'">
+                <img src="${item.poster || '/img/LOGO_Short.svg'}" alt="${escapeHtml(item.title)}" onerror="this.src='/img/LOGO_Short.svg'">
                 <div class="search-info">
                     <h5>${this.highlightQuery(item.title, query)}</h5>
                     <p>${item.year || 'N/A'} • ${item.type === 'tv' ? 'Series' : 'Movie'}</p>

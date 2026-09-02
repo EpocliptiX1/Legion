@@ -151,7 +151,7 @@
                     results.innerHTML = items.map((item, idx) => {
                         const title = escapeHtml(item.title || item.name || 'Unknown');
                         const year = (item.release_date || item.first_air_date || '').slice(0, 4);
-                        const img = item.poster_path ? `https://image.tmdb.org/t/p/w92${item.poster_path}` : '/img/LOGO_Short.png';
+                        const img = item.poster_path ? `https://image.tmdb.org/t/p/w92${item.poster_path}` : '/img/LOGO_Short.svg';
                         return `<div class="footer-media-picker-item" data-idx="${idx}">
                             <img src="${img}" alt="">
                             <div class="footer-media-picker-item-info">${title}${year ? ` (${year})` : ''} · ${item.media_type === 'tv' ? 'TV' : 'Movie'}</div>
@@ -181,7 +181,7 @@
                             } catch (_) { /* not anime, or lookup failed -- leave blank */ }
 
                             const title = item.title || item.name || 'Unknown';
-                            const img = item.poster_path ? `https://image.tmdb.org/t/p/w92${item.poster_path}` : '/img/LOGO_Short.png';
+                            const img = item.poster_path ? `https://image.tmdb.org/t/p/w92${item.poster_path}` : '/img/LOGO_Short.svg';
                             if (selected && selectedImg && selectedTitle) {
                                 selectedImg.src = img;
                                 selectedTitle.textContent = title;
@@ -264,7 +264,7 @@
                 if (data.anilistId) anilistInput.value = data.anilistId;
 
                 if (selected && selectedImg && selectedTitle && data.title) {
-                    selectedImg.src = data.poster ? `https://image.tmdb.org/t/p/w92${data.poster}` : '/img/LOGO_Short.png';
+                    selectedImg.src = data.poster ? `https://image.tmdb.org/t/p/w92${data.poster}` : '/img/LOGO_Short.svg';
                     selectedTitle.textContent = data.title;
                     selected.classList.add('active');
                 }

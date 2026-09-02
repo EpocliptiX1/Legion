@@ -96,7 +96,7 @@ async function renderPlaylistsGrid() {
         const moviesHTML = (p.movies || []).length > 0 
             ? p.movies.map(m => `
                 <div class="playlist-movie-item">
-                    <img src="${m.poster || '/img/LOGO_Short.png'}" alt="${m.movieTitle || 'Movie'}">
+                    <img src="${m.poster || '/img/LOGO_Short.svg'}" alt="${m.movieTitle || 'Movie'}">
                     <span>${m.movieTitle || 'Unknown'}</span>
                 </div>
             `).join('')
@@ -283,7 +283,7 @@ async function openPlaylistModal(id) {
         const title = details?.['Movie Name'] || m.movieTitle || 'Unknown';
         const desc = details?.['Plot'] || 'No description available';
         const rating = details?.['Rating'] || 'N/A';
-        const poster = details?.poster_full_url || m.poster || '/img/LOGO_Short.png';
+        const poster = details?.poster_full_url || m.poster || '/img/LOGO_Short.svg';
         
         const removeBtnHTML = isOwner ? `
             <button class="btn-remove-from-playlist" data-movie-id="${m.movieId}" title="Remove from playlist">
@@ -555,7 +555,7 @@ async function searchMoviesForPlaylist() {
                 const exists = activePlaylistMovieIds.has(movieId);
                 return `
                     <div class="playlist-search-item" data-movie-id="${movieId}" data-movie-title="${escapeHtml(movie['Movie Name'])}" data-movie-poster="${movie.poster_full_url || ''}" data-movie-genre="${escapeHtml(movie.Genre || '')}">
-                        <img src="${movie.poster_full_url || '/img/LOGO_Short.png'}" alt="${escapeHtml(movie['Movie Name'])}" onerror="this.src='/img/LOGO_Short.png'">
+                        <img src="${movie.poster_full_url || '/img/LOGO_Short.svg'}" alt="${escapeHtml(movie['Movie Name'])}" onerror="this.src='/img/LOGO_Short.svg'">
                         <div class="playlist-search-info">
                             <h5>${escapeHtml(movie['Movie Name'])}</h5>
                             <p>${movie.Year || 'N/A'} • ${movie.Genre || 'Unknown'} • ⭐ ${movie.Rating || 'N/A'}</p>

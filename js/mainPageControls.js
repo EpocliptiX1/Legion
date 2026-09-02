@@ -1279,7 +1279,7 @@ function renderSearchResults(movies, container) {
 
     container.innerHTML = movies.map(movie => `
         <div class="search-item" onclick="window.location.href='movieInfo.html?id=${movie.ID}&type=movie'">
-            <img src="${movie.poster_full_url}" alt="poster" onerror="this.src='/img/LOGO_Short.png'">
+            <img src="${movie.poster_full_url}" alt="poster" onerror="this.src='/img/LOGO_Short.svg'">
             <div class="search-info">
                 <h5>${movie['Movie Name']}</h5>
                 <p>${movie.release_date ? movie.release_date.split('-')[0] : (movie.Year || 'N/A')} • ⭐ ${getMovieRating(movie)} IMDb</p>
@@ -1639,8 +1639,8 @@ function normalizeTmdbForRow(item) {
     return {
         ID: item.id,
         'Movie Name': item.title || item.name || item.original_name || 'Unknown',
-        poster_full_url: item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : '/img/LOGO_Short.png',
-        Poster: item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : '/img/LOGO_Short.png',
+        poster_full_url: item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : '/img/LOGO_Short.svg',
+        Poster: item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : '/img/LOGO_Short.svg',
         Rating: item.vote_average ? item.vote_average.toFixed(1) : '--',
         Genre: Array.isArray(item.genre_ids) ? item.genre_ids.map(id => TMDB_GENRE_NAME_TO_ID[id] || '').filter(Boolean).join(', ') : '',
         Year: (item.release_date || item.first_air_date || '').slice(0, 4) || '----',
@@ -1794,7 +1794,7 @@ async function loadMyPlaylistsRow() {
         section.style.display = 'block';
         container.innerHTML = owned.slice(0, 10).map(pl => `
             <a class="grid-card" href="/html/customPlaylists.html" aria-label="Open playlist ${pl.name || ''}">
-                <img src="/img/LOGO_Short.png" alt="Playlist">
+                <img src="/img/LOGO_Short.svg" alt="Playlist">
                 <div class="card-meta">
                     <div class="card-title">${pl.name || 'Untitled Playlist'}</div>
                     <div class="card-sub">${(pl.movies || []).length} items</div>
@@ -2066,7 +2066,7 @@ function mapTmdbMovieForCard(item) {
     return {
         ID: item.id,
         'Movie Name': item.title || item.name || 'Unknown',
-        poster_full_url: item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.png',
+        poster_full_url: item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : '/img/LOGO_Short.svg',
         Rating: item.vote_average ? item.vote_average.toFixed(1) : '--',
         release_date: item.release_date || item.first_air_date || '',
         _type: 'movie'
@@ -2191,7 +2191,7 @@ async function loadHistoryRow() {
                 const m = {
                     ID: h.movie_id,
                     'Movie Name': tv.name || tv.title,
-                    poster_full_url: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.png',
+                    poster_full_url: tv.poster_path ? `https://image.tmdb.org/t/p/w500${tv.poster_path}` : '/img/LOGO_Short.svg',
                     Rating: tv.vote_average ? tv.vote_average.toFixed(1) : '--',
                     Genre: (tv.genres || []).map(g => g.name).join(', '),
                     Year: (tv.first_air_date || '').slice(0, 4),
@@ -2430,7 +2430,7 @@ function createCard(movie) {
         <div class="grid-card" data-id="${hasRealId ? movie.ID : ''}" data-title="${movie['Movie Name'] || ''}" data-year="${year}" data-runtime="${runtime}" data-rating="${rating}" data-plot="${plot}" data-genre="${genre}" data-type="${cardType}" onmouseenter="handleCardHover(this)" onmouseleave="handleCardLeave(this)">
             ${rating !== '--' ? `<span class="card-rating-badge"><span style="color:#f5c518;font-size:0.75rem">★</span>${rating}</span>` : ''}
             ${hasRealId && window.buildEpisodeCountBadgesPlaceholder ? window.buildEpisodeCountBadgesPlaceholder({ type: badgeType, title: movie['Movie Name'] || '', tmdbId: movie.ID }) : ''}
-            <img src="${movie.poster_full_url || '/img/LOGO_Short.png'}" loading="lazy" onclick="${clickHandler}" onerror="this.src='/img/LOGO_Short.png'">
+            <img src="${movie.poster_full_url || '/img/LOGO_Short.svg'}" loading="lazy" onclick="${clickHandler}" onerror="this.src='/img/LOGO_Short.svg'">
             <div class="card-title-label">
                 <div class="card-title-name">${movie['Movie Name'] || 'Unknown'}</div>
                 <div class="card-title-tag">${tagLabel}</div>

@@ -88,7 +88,7 @@ function renderMoviesList() {
     container.innerHTML = forumMovies.map(movie => `
            <div class="movie-item ${currentMovieId === movie.movieId ? 'active' : ''}" 
                onclick="selectMovie('${movie.movieId}', '${escapeForInlineHandler(movie.movieTitle)}', event)">
-            <img class="movie-item-poster" src="${movie.poster || '/img/LOGO_Short.png'}" alt="${escapeHtml(movie.movieTitle)}">
+            <img class="movie-item-poster" src="${movie.poster || '/img/LOGO_Short.svg'}" alt="${escapeHtml(movie.movieTitle)}">
             <div class="movie-item-info">
                 <h4>${escapeHtml(movie.movieTitle)}</h4>
                 <p>${movie.threadCount || 0} threads</p>
@@ -255,9 +255,9 @@ async function searchMoviesForForum() {
 
             container.innerHTML = movies.slice(0, 8).map(movie => `
                 <div class="search-item-forum" onclick="selectMovieForForum(${movie.ID}, '${escapeForInlineHandler(movie['Movie Name'])}', '${movie.poster_full_url || ''}', '${escapeForInlineHandler(movie.Genre || '')}')">
-                    <img src="${movie.poster_full_url || '/img/LOGO_Short.png'}" 
+                    <img src="${movie.poster_full_url || '/img/LOGO_Short.svg'}"
                          alt="${escapeHtml(movie['Movie Name'])}"
-                        onerror="this.src='/img/LOGO_Short.png'"
+                        onerror="this.src='/img/LOGO_Short.svg'"
                          style="width: 50px; height: 75px; object-fit: cover; border-radius: 4px;">
                     <div class="search-info-forum">
                         <h5 style="margin: 0; font-size: 0.95rem; color: var(--text-primary);">${escapeHtml(movie['Movie Name'])}</h5>

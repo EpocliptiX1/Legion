@@ -61,7 +61,7 @@ function createDownloadTaskCard(meta = {}) {
     const dock = document.getElementById('downloadDock');
     const title = meta.title || 'Unknown Anime';
     const episodeLabel = meta.episode ? `S${String(meta.season || '1').padStart(2, '0')}E${String(meta.episode).padStart(2, '0')}` : '';
-    const thumb = meta.thumbnail || window.currentDownloadContext?.thumbnail || window.currentAnimePosterThumb || '/img/LOGO_Short.png';
+    const thumb = meta.thumbnail || window.currentDownloadContext?.thumbnail || window.currentAnimePosterThumb || '/img/LOGO_Short.svg';
 
     const wrap = document.createElement('div');
     wrap.className = 'download-dock-card';
@@ -733,11 +733,11 @@ async function downloadKAAEpisode(requestedHeight, options = {}) {
         title: downloadContext.title || video?.title || 'Unknown Anime',
         episode: video?.episode || '',
         season: video?.season || '',
-        thumbnail: downloadContext.thumbnail || video?.thumbnail || video?.poster || '/img/LOGO_Short.png'
+        thumbnail: downloadContext.thumbnail || video?.thumbnail || video?.poster || '/img/LOGO_Short.svg'
     });
     console.log('[DownloadDock] task created', {
         title: downloadContext.title || video?.title || 'Unknown Anime',
-        thumbnail: downloadContext.thumbnail || video?.thumbnail || video?.poster || '/img/LOGO_Short.png'
+        thumbnail: downloadContext.thumbnail || video?.thumbnail || video?.poster || '/img/LOGO_Short.svg'
     });
     const setTaskStatus = (text) => {
         task.setStatus(text);
@@ -1311,7 +1311,7 @@ async function downloadKinoEpisode(requestedHeight, options = {}) {
         title: downloadContext.title || video?.title || 'Unknown',
         episode: video?.episode || '',
         season: video?.season || '',
-        thumbnail: downloadContext.thumbnail || video?.thumbnail || video?.poster || '/img/LOGO_Short.png'
+        thumbnail: downloadContext.thumbnail || video?.thumbnail || video?.poster || '/img/LOGO_Short.svg'
     });
     const setTaskStatus = (text) => {
         task.setStatus(text);

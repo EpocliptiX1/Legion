@@ -24,7 +24,7 @@
     "productName": "AniKino",
     "files": [
       "electron/**/*",
-      "img/LOGO_Short.png",
+      "img/LOGO_Short.svg",
       "package.json"
     ],
     "win": {

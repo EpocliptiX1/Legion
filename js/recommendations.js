@@ -334,7 +334,7 @@ async function loadRecommendations() {
     
     // Render movies
     container.innerHTML = movies.map(movie => {
-        const poster = movie.poster_full_url || '/img/LOGO_Short.png';
+        const poster = movie.poster_full_url || '/img/LOGO_Short.svg';
         const title = movie['Movie Name'] || movie.title || 'Unknown Title';
         const rating = movie.Rating || 'N/A';
         const genre = movie.Genre || '';
