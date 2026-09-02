@@ -2603,6 +2603,16 @@ function safeReload() {
     location.reload();
 }
 
+function returnToPostAuthPage() {
+    const returnPath = sessionStorage.getItem('aniKinoPostAuthReturn');
+    sessionStorage.removeItem('aniKinoPostAuthReturn');
+    // Only accept an on-site path saved by authSession.js. This keeps a
+    // malicious URL from turning a normal sign-in into an open redirect.
+    if (!returnPath || !returnPath.startsWith('/') || returnPath.startsWith('//')) return false;
+    location.assign(returnPath);
+    return true;
+}
+
 // Safety net for any message that ends up much longer than a toast is meant for (e.g. one
 // that accidentally embeds a full URL/token) - truncates instead of letting an unbroken
 // string blow the toast's layout out across the page.
@@ -3082,6 +3092,7 @@ window.handleSignIn = async function (e) {
         localStorage.setItem('is_guest_local', String(user.is_guest === 1 ? 1 : 0));
 
         closeSignInModal();
+        if (returnToPostAuthPage()) return;
         safeReload();
     } catch (err) {
         console.error('Sign-in error:', err);
@@ -4705,4 +4716,3 @@ function maskLoginCode(code) {
 
 // Alias so any "X" button wired to toggleSidebar also works
 window.toggleSidebar = window.toggleAccountMenu;
-
