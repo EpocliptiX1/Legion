@@ -10168,11 +10168,17 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     .sidebar-brand-mark{
         display: none;
     }
-    .logo-link{
-        display: block;
+    .sidebar-logo-wrap {
+        padding: 12.5px 10px;
+        justify-content: center;
     }
-    .sidebar-logo-wrap{
-        padding: 6.5px 10px;
+    .sidebar-logo-wrap .logo-link {
+        display: flex;
+        width: 100%;
+        justify-content: center;
+    }
+    .sidebar-logo-wrap .logo-img {
+        height: 38px;
     }
     body:not(.personal-list-page) {
         padding-left: max(70px, calc(50vw - 890px));
