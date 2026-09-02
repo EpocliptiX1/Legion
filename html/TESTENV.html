@@ -3,77 +3,71 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AniKino Embed Tester</title>
+  <meta name="theme-color" content="#070811">
+  <title>Relay Lab Player</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <style>
-    :root { color-scheme:dark; font-family:system-ui,sans-serif; background:#0d0d10; color:#f7f7f7; }
-    body { max-width:1100px; margin:auto; padding:24px; }
-    h1 { margin:0 0 8px; } p { color:#b9b9c2; }
-    form { display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)); gap:12px; padding:16px; background:#19191f; border:1px solid #353540; border-radius:12px; }
-    label { display:grid; gap:6px; font-size:.86rem; font-weight:700; }
-    input,select,button { min-height:42px; box-sizing:border-box; border-radius:8px; font:inherit; }
-    input,select { width:100%; padding:0 10px; border:1px solid #444451; background:#101014; color:inherit; }
-    #extra { grid-column:1/-1; display:flex; align-items:end; gap:18px; flex-wrap:wrap; }
-    #extra label { display:flex; align-items:center; gap:7px; } #extra input { width:auto; min-height:auto; }
-    button { padding:0 20px; border:0; background:#ff8000; color:#211307; font-weight:800; cursor:pointer; }
-    #status { min-height:1.5em; word-break:break-word; } iframe { width:100%; aspect-ratio:16/9; border:1px solid #353540; border-radius:12px; background:#000; }
-    @media(max-width:700px){ form { grid-template-columns:1fr 1fr; } }
+    :root { color-scheme:dark; font-family:Inter,ui-sans-serif,system-ui,sans-serif; background:#070811; color:#f7f7fc; --ink:#070811; --panel:#10121f; --panel-2:#171a2b; --line:#292e48; --muted:#9299b3; --violet:#8b5cf6; --cyan:#4de6d1; }
+    * { box-sizing:border-box; } body { min-width:320px; margin:0; min-height:100vh; background:radial-gradient(circle at 2% 0%,#281a58 0,transparent 28rem),radial-gradient(circle at 100% 100%,#0a3f52 0,transparent 32rem),var(--ink); }
+    button,input,select { font:inherit; } .app { width:min(1320px,calc(100% - 36px)); margin:auto; padding:28px 0 48px; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:26px; } .brand { display:flex; align-items:center; gap:12px; font-size:1.04rem; font-weight:850; letter-spacing:-.03em; }
+    .brand-mark { display:grid; width:36px; height:36px; place-items:center; border-radius:12px; background:linear-gradient(135deg,var(--violet),#4ebde8); color:#fff; box-shadow:0 9px 26px #845bf666; } .brand-mark::after { width:10px; height:10px; border:2px solid currentColor; border-radius:50%; content:""; }
+    .lab-pill { padding:8px 11px; border:1px solid #365b73; border-radius:999px; background:#0e202b; color:#75d7ef; font-size:.72rem; font-weight:800; letter-spacing:.06em; text-transform:uppercase; }
+    .layout { display:grid; grid-template-columns:minmax(0,1.65fr) minmax(310px,.72fr); gap:22px; align-items:start; }
+    .player-shell,.config { border:1px solid var(--line); border-radius:20px; background:linear-gradient(145deg,#15182a,#0d0f1a 72%); box-shadow:0 22px 55px #0006; }
+    .player-shell { overflow:hidden; } .player-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:17px 20px; border-bottom:1px solid var(--line); }
+    .eyebrow { margin:0 0 4px; color:var(--cyan); font-size:.67rem; font-weight:800; letter-spacing:.13em; text-transform:uppercase; } h1 { margin:0; font-size:1.02rem; letter-spacing:-.025em; } .stream-state { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:.74rem; white-space:nowrap; } .stream-state::before { width:8px; height:8px; border-radius:50%; background:#68708d; content:""; } .stream-state[data-state="loading"]::before { background:#f2c45e; box-shadow:0 0 0 4px #503d1d; } .stream-state[data-state="ready"]::before { background:var(--cyan); box-shadow:0 0 0 4px #154a4b; } .stream-state[data-state="error"]::before { background:#ff6d82; box-shadow:0 0 0 4px #50212e; }
+    .stage { position:relative; aspect-ratio:16/9; background:#02030a; } video { width:100%; height:100%; background:#02030a; object-fit:contain; } .empty { position:absolute; inset:0; display:grid; place-items:center; padding:30px; background:radial-gradient(circle at 50% 40%,#1e1a3d 0,transparent 20rem); text-align:center; pointer-events:none; } .empty[hidden] { display:none; } .empty-card { max-width:360px; } .orb { width:58px; height:58px; margin:0 auto 17px; border:1px solid #6d57b5; border-radius:50%; background:#1c1740; box-shadow:inset 0 0 24px #8b5cf64a,0 0 30px #8b5cf644; } .empty h2 { margin:0 0 8px; font-size:1.05rem; } .empty p { margin:0; color:var(--muted); font-size:.86rem; line-height:1.55; }
+    .controls { display:grid; grid-template-columns:auto auto minmax(90px,1fr) auto auto auto; align-items:center; gap:11px; padding:12px 16px; border-top:1px solid var(--line); background:#0c0e19; } .control { min-height:32px; border:1px solid #323851; border-radius:8px; background:#171b2c; color:#e7e9f5; cursor:pointer; font-size:.73rem; font-weight:800; } .control:hover { border-color:#8067ce; background:#211d40; } .time { min-width:82px; color:#b9c0d5; font-size:.72rem; font-variant-numeric:tabular-nums; text-align:right; } input[type="range"] { width:100%; accent-color:var(--cyan); cursor:pointer; } #volume { width:74px; }
+    .player-foot { display:flex; justify-content:space-between; gap:15px; padding:14px 19px; color:#8f96af; font-size:.75rem; } #title-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .secure-note { color:#69708b; text-align:right; }
+    .config { padding:20px; } .config h2 { margin:0; font-size:1.03rem; letter-spacing:-.03em; } .config > p { margin:7px 0 20px; color:var(--muted); font-size:.79rem; line-height:1.5; }
+    .fields { display:grid; grid-template-columns:1fr 1fr; gap:13px; } label,.field { display:grid; gap:7px; color:#aeb4c8; font-size:.72rem; font-weight:760; } .full { grid-column:1/-1; } input,select { min-width:0; height:41px; padding:0 11px; border:1px solid #343a54; border-radius:8px; outline:none; background:#0b0d17; color:#f1f3fb; } input:focus,select:focus { border-color:var(--violet); box-shadow:0 0 0 3px #8b5cf633; } input:disabled,select:disabled { opacity:.45; }
+    .audio { display:grid; grid-template-columns:1fr 1fr; gap:7px; } .audio label { display:grid; place-items:center; height:40px; border:1px solid #343a54; border-radius:8px; background:#111420; cursor:pointer; color:#aeb4c8; } .audio input { position:absolute; opacity:0; } .audio label:has(input:checked) { border-color:#7d68d5; background:#33275e; color:#f5f1ff; }
+    .switches { display:grid; gap:9px; margin:17px 0; } .switch { display:flex; align-items:center; justify-content:space-between; color:#aeb4c8; font-size:.78rem; font-weight:700; } .switch input { appearance:none; width:37px; height:21px; margin:0; padding:2px; border:0; border-radius:999px; background:#414763; cursor:pointer; transition:.2s; } .switch input::after { display:block; width:17px; height:17px; border-radius:50%; background:#e6e7ee; content:""; transition:.2s; } .switch input:checked { background:var(--violet); } .switch input:checked::after { transform:translateX(16px); }
+    .launch { width:100%; min-height:46px; border:0; border-radius:9px; background:linear-gradient(100deg,var(--violet),#579de5); color:white; cursor:pointer; font-weight:850; box-shadow:0 10px 24px #7653bd3a; } .launch:hover { filter:brightness(1.1); } .hint { margin:16px 0 0; padding-top:14px; border-top:1px solid var(--line); color:#7d849d; font-size:.72rem; line-height:1.5; } .hint strong { color:#b7bed2; }
+    @media (max-width:900px) { .layout { grid-template-columns:1fr; } .config { order:-1; } } @media (max-width:560px) { .app { width:min(100% - 24px,1320px); padding-top:18px; } .topbar { align-items:flex-start; flex-direction:column; } .fields { grid-template-columns:1fr; } .full { grid-column:auto; } .controls { grid-template-columns:auto auto 1fr auto; } .time { grid-column:1/3; text-align:left; } #volume { display:none; } .secure-note { display:none; } .player-head { padding:14px; } }
   </style>
 </head>
 <body>
-  <h1>AniKino embed tester</h1>
-  <p>Loads the public, tokenized <code>/embed/*</code> player only. No upstream stream address is read, shown, or stored here.</p>
-  <form id="test-form">
-    <label>Type <select id="type"><option value="anime">Anime</option><option value="tv">TV</option><option value="movie">Movie</option></select></label>
-    <label>Media ID <input id="id" value="1429" required maxlength="64" placeholder="TMDB / MAL / IMDb ID"></label>
-    <label>Season <input id="season" value="1" required inputmode="numeric" pattern="[1-9][0-9]*"></label>
-    <label>Episode <input id="episode" value="1" required inputmode="numeric" pattern="[1-9][0-9]*"></label>
-    <label>Server <select id="server"></select></label>
-    <div id="extra">
-      <label id="audio-label">Audio <select id="audio"><option value="sub">Sub</option><option value="dub">Dub</option></select></label>
-      <label><input id="autoplay" type="checkbox"> Autoplay</label>
-      <label><input id="autonext" type="checkbox"> Auto-next</label>
-      <button type="submit">Play</button>
-    </div>
-  </form>
-  <p id="status" role="status">Ready.</p>
-  <iframe id="player" title="AniKino player" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+  <main class="app">
+    <header class="topbar"><div class="brand"><span class="brand-mark"></span><span>Relay Lab</span></div><span class="lab-pill">Standalone player test</span></header>
+    <section class="layout">
+      <article class="player-shell">
+        <div class="player-head"><div><p class="eyebrow">Experimental playback</p><h1>Relay Player</h1></div><span class="stream-state" id="state" data-state="idle">Waiting for source</span></div>
+        <div class="stage"><video id="video" playsinline preload="metadata"></video><div class="empty" id="empty"><div class="empty-card"><div class="orb"></div><h2>A completely separate player UI</h2><p>Choose an episode and launch the test. The embed page is used only to obtain a session-bound source; its player UI is never shown.</p></div></div></div>
+        <div class="controls"><button class="control" id="play" type="button">Play</button><button class="control" id="mute" type="button">Mute</button><input id="progress" type="range" min="0" max="0" value="0" aria-label="Seek"><span class="time" id="time">0:00 / 0:00</span><input id="volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume"><button class="control" id="full" type="button">Full</button></div>
+        <div class="player-foot"><span id="title-label">No title loaded</span><span class="secure-note">Source intentionally hidden from this UI</span></div>
+      </article>
+      <aside class="config">
+        <h2>Source configuration</h2><p>This simulates the replacement-player attack locally. It does not iframe or restyle the AniKino player.</p>
+        <form id="form"><div class="fields">
+          <label>Content type<select id="type"><option value="anime">Anime</option><option value="tv">TV series</option><option value="movie">Movie</option></select></label>
+          <label>Provider<select id="server"></select></label>
+          <label class="full">Media ID<input id="id" value="1429" required maxlength="64" placeholder="TMDB, MAL, or IMDb ID"></label>
+          <label id="season-field">Season<input id="season" value="1" required type="number" min="1"></label>
+          <label id="episode-field">Episode<input id="episode" value="1" required type="number" min="1"></label>
+          <div class="field" id="audio-field"><span>Audio</span><span class="audio"><label><input name="audio" type="radio" value="sub" checked>SUB</label><label><input name="audio" type="radio" value="dub">DUB</label></span></div>
+          <label>Start at (seconds)<input id="start" value="0" type="number" min="0"></label>
+        </div><div class="switches"><label class="switch"><span>Autoplay after load</span><input id="autoplay" type="checkbox"></label><label class="switch" id="autonext-field"><span>Continue next episode</span><input id="autonext" type="checkbox"></label></div><button class="launch" type="submit">Launch standalone player</button></form>
+        <p class="hint"><strong>What this proves:</strong> a public embed that gives an anonymous session a playable proxy manifest can be placed behind another UI. A real remote attacker would keep that session in its own backend and relay the proxy responses.</p>
+      </aside>
+    </section>
+  </main>
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const form = $('test-form'), type = $('type'), mediaId = $('id'), season = $('season'), episode = $('episode');
-      const server = $('server'), audio = $('audio'), audioLabel = $('audio-label'), autoplay = $('autoplay'), autonext = $('autonext');
-      const player = $('player'), status = $('status');
-      const providers = { anime:['mega','kaa','neko','ru'], tv:['kino','ru'], movie:['kino','ru'] };
-      function sync() {
-        const movie = type.value === 'movie';
-        season.disabled = movie; episode.disabled = movie; autonext.disabled = movie;
-        audioLabel.hidden = type.value !== 'anime';
-        server.replaceChildren(...providers[type.value].map(name => new Option(name, name)));
-      }
-      function url() {
-        const value = mediaId.value.trim();
-        if (!/^(?:\d+|tt\d+|mal-\d+|(?:anilist|al)-\d+)$/i.test(value)) throw Error('Enter a numeric TMDB ID, tt IMDb ID, mal-ID, or anilist-ID.');
-        const query = new URLSearchParams({ server:server.value });
-        if (type.value === 'anime') { query.set('season', season.value); query.set('audio', audio.value); }
-        if (autoplay.checked) query.set('autoplay', '1');
-        if (autonext.checked && type.value !== 'movie') query.set('autonext', '1');
-        const id = encodeURIComponent(value);
-        let path;
-        if (type.value === 'movie') path = `/embed/movie/${id}`;
-        else if (type.value === 'tv') path = `/embed/tv/${id}/${encodeURIComponent(season.value)}/${encodeURIComponent(episode.value)}`;
-        else path = `/embed/anime/${id}/${encodeURIComponent(episode.value)}`;
-        return `${path}?${query}`;
-      }
-      type.addEventListener('change', sync);
-      form.addEventListener('submit', event => {
-        event.preventDefault(); if (!form.reportValidity()) return;
-        try { const src = url(); player.src = src; status.textContent = `Loading ${type.value} on ${server.value}: ${src}`; }
-        catch (error) { status.textContent = error.message; }
-      });
-      window.addEventListener('message', event => {
-        if (event.origin === location.origin && event.data?.source === 'anikino-embed') status.textContent = `Player: ${event.data.event}`;
-      });
-      sync();
+      const form=$('form'), type=$('type'), server=$('server'), mediaId=$('id'), season=$('season'), episode=$('episode'), start=$('start'), autoplay=$('autoplay'), autonext=$('autonext');
+      const fields={season:$('season-field'),episode:$('episode-field'),audio:$('audio-field'),autonext:$('autonext-field')}; const video=$('video'), empty=$('empty'), state=$('state'), title=$('title-label'), play=$('play'), mute=$('mute'), progress=$('progress'), time=$('time'), volume=$('volume');
+      const providers={anime:['mega','kaa','neko','ru'],tv:['kino','ru','t1m'],movie:['kino','ru','t1m']}; const defaults={anime:{id:'1429',season:'1',episode:'1'},tv:{id:'1399',season:'1',episode:'1'},movie:{id:'550'}}; let hls=null, pendingStart=0;
+      const setState=(message,kind='idle')=>{state.dataset.state=kind;state.textContent=message;}; const selectedAudio=()=>document.querySelector('input[name="audio"]:checked').value; const format=seconds=>{seconds=Number.isFinite(seconds)?Math.floor(seconds):0;return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;};
+      function sync(reset=false) { const kind=type.value,isMovie=kind==='movie',isAnime=kind==='anime',old=server.value; server.replaceChildren(...providers[kind].map(p=>new Option(p.toUpperCase(),p,false,p===old))); if(!server.value)server.selectedIndex=0; fields.season.hidden=isMovie;fields.episode.hidden=isMovie;fields.autonext.hidden=isMovie;fields.audio.hidden=!isAnime;season.disabled=isMovie;episode.disabled=isMovie;autonext.disabled=isMovie;if(reset){const d=defaults[kind];mediaId.value=d.id;season.value=d.season||'1';episode.value=d.episode||'1';} }
+      function embedPath() { const id=mediaId.value.trim();if(!/^(?:\d+|tt\d+|mal-\d+|(?:anilist|al)-\d+)$/i.test(id))throw new Error('Use a numeric TMDB/MAL ID, tt IMDb ID, mal-ID, or anilist-ID.');const query=new URLSearchParams({server:server.value});if(type.value==='anime'){query.set('season',season.value);query.set('audio',selectedAudio());}if(Number(start.value)>0)query.set('startAt',String(Math.floor(Number(start.value))));if(autoplay.checked)query.set('autoplay','1');if(autonext.checked&&type.value!=='movie')query.set('autonext','1');const encoded=encodeURIComponent(id);if(type.value==='movie')return `/embed/movie/${encoded}?${query}`;if(type.value==='tv')return `/embed/tv/${encoded}/${encodeURIComponent(season.value)}/${encodeURIComponent(episode.value)}?${query}`;return `/embed/anime/${encoded}/${encodeURIComponent(episode.value)}?${query}`; }
+      async function sha256(text) { const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));return [...new Uint8Array(bytes)].map(n=>n.toString(16).padStart(2,'0')).join(''); }
+      async function passPow() { setState('Completing public gate…','loading');const challenge=await (await fetch('/api/pow-challenge',{credentials:'include'})).json();const prefix='0'.repeat(challenge.difficulty);let solution=0,digest='';while(!digest.startsWith(prefix)){for(let i=0;i<2000;i++,solution++){digest=await sha256(`${challenge.seed}:${solution}`);if(digest.startsWith(prefix))break;}if(!digest.startsWith(prefix))await new Promise(requestAnimationFrame);}const result=await fetch('/api/pow-verify',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({seed:challenge.seed,token:challenge.token,solution:String(solution),automationSignals:{webdriver:navigator.webdriver===true,pluginsEmpty:!navigator.plugins||navigator.plugins.length===0,languagesEmpty:!navigator.languages||navigator.languages.length===0,cdpConsoleSignal:false}})});if(!result.ok)throw new Error('Public gate rejected the test session.'); }
+      async function obtainSource(path) { let response=await fetch(path,{credentials:'include'}), html=await response.text();if(!response.ok)throw new Error(`Embed request failed (${response.status}).`);if(/Preparing player|api\/pow-challenge/.test(html)){await passPow();response=await fetch(path,{credentials:'include'});html=await response.text();}if(!response.ok)throw new Error(`Embed request failed (${response.status}).`);const match=html.match(/var src = ("(?:[^"\\]|\\.)*");/);if(!match){if(/megaplay\.buzz/i.test(html))throw new Error('The public route returned a provider fallback, not a native proxy source.');throw new Error('The public route did not return a native video source.');}return JSON.parse(match[1]); }
+      function loadSource(source) { if(hls){hls.destroy();hls=null;}video.removeAttribute('src');if(window.Hls&&window.Hls.isSupported()){hls=new Hls({enableWorker:true});hls.loadSource(source);hls.attachMedia(video);hls.on(Hls.Events.MANIFEST_PARSED,()=>{if(pendingStart>0)video.currentTime=pendingStart;if(autoplay.checked)video.play().catch(()=>{});setState('Standalone stream ready','ready');});hls.on(Hls.Events.ERROR,(_,data)=>{if(data.fatal)setState('Playback source failed','error');});}else if(video.canPlayType('application/vnd.apple.mpegurl')){video.src=source;video.onloadedmetadata=()=>{if(pendingStart>0)video.currentTime=pendingStart;if(autoplay.checked)video.play().catch(()=>{});setState('Standalone stream ready','ready');};}else throw new Error('This browser cannot play HLS in the test player.'); }
+      form.addEventListener('submit',async event=>{event.preventDefault();if(!form.reportValidity())return;try{const path=embedPath();pendingStart=Math.max(0,Number(start.value)||0);empty.hidden=true;setState('Obtaining isolated source…','loading');const source=await obtainSource(path);title.textContent=`${type.options[type.selectedIndex].text} · ${server.options[server.selectedIndex].text} · ${mediaId.value.trim()}`;loadSource(source);}catch(error){empty.hidden=false;setState(error.message,'error');}});type.addEventListener('change',()=>sync(true));
+      play.addEventListener('click',()=>video.paused?video.play().catch(()=>{}):video.pause());mute.addEventListener('click',()=>{video.muted=!video.muted;mute.textContent=video.muted?'Unmute':'Mute';});volume.addEventListener('input',()=>{video.volume=Number(volume.value);video.muted=false;mute.textContent='Mute';});progress.addEventListener('input',()=>{if(Number.isFinite(video.duration))video.currentTime=Number(progress.value);});$('full').addEventListener('click',()=>$('video').requestFullscreen?.());video.addEventListener('play',()=>play.textContent='Pause');video.addEventListener('pause',()=>play.textContent='Play');video.addEventListener('timeupdate',()=>{progress.max=Number.isFinite(video.duration)?video.duration:0;progress.value=video.currentTime||0;time.textContent=`${format(video.currentTime)} / ${format(video.duration)}`;});sync();
     })();
   </script>
 </body>

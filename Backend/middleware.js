@@ -37,6 +37,11 @@ const BACKEND_PORT     = parseInt(process.env.BACKEND_PORT     || '4000', 10);
 // problem on a public repo. Both processes now independently load/generate the same persisted
 // secretStore.js file, so they still agree without hardcoding a public value.
 const MIDDLEWARE_SECRET = process.env.MIDDLEWARE_SECRET || require('./secretStore').loadOrCreateSecret('middleware_secret.key');
+// Public embeds make every anonymous visitor a potential stream-relay session. They are
+// disabled by default and can only be enabled for local, first-party diagnostics. Do NOT turn
+// this on in production as a substitute for a partner authorization system.
+const ENABLE_LEGACY_FIRST_PARTY_EMBEDS = process.env.ENABLE_LEGACY_FIRST_PARTY_EMBEDS === '1' && process.env.NODE_ENV !== 'production';
+const ENABLE_SECURITY_TEST_PAGES = process.env.ENABLE_SECURITY_TEST_PAGES === '1' && process.env.NODE_ENV !== 'production';
 // Comma-separated list of origins allowed to call /api/* - anything else (curl, a script,
 // another site's fetch) gets rejected before it ever reaches the backend. Set this to your
 // real domain(s) when deployed, e.g. "https://mysite.com,https://www.mysite.com".
@@ -101,28 +106,21 @@ const authLimiter = rateLimit({
     message: { error: 'Too many authentication attempts. Please try again later.' }
 });
 
-// Public embed player (/embed/*) - unlike everything else here, this is DELIBERATELY reachable
-// cross-origin (that's the entire point of an embeddable player) and carries no shared-secret
-// auth at all, so it needs its own protection instead of requireSameOrigin/apiLimiter.
-// Pentest (2026-08-24) found this route had no *effective* limiting from an outside IP - the
-// generous 250/5min budget plus the session/network resolver budget in server.js still let a
-// script mass-resolve the catalog at whatever concurrency it wanted. 40/min per IP still covers
-// any real viewer or NAT'd household (nobody legitimately loads 40+ distinct embeds in a minute)
-// while making bulk scripted resolution across many titles noticeably slower. Paired with the
-// resolve-nonce-style session/network budget below and the proof-of-work gate in server.js
-// (requireEmbedPow) for the CPU-cost side of the same problem.
+// Legacy first-party embed route. This is deliberately *not* a public iframe API any more:
+// access is denied by default, and even when diagnostics opt in locally it must pass the same
+// origin guard as MovieInfo's internal player traffic.
 const embedLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 40,
     skip: skipLocalhost,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: 'Too many embed requests. Please slow down.' }
+    message: { error: 'Too many legacy player requests. Please slow down.' }
 });
 
 // Internal resolve routes (anime-kaa-servers, anime-megaplay-log, anime-neko-log,
 // movie/tv-kino-log, movie/tv-ru-log, anime-download-links, movie/tv-ru-download) - these are
-// NOT the public API (that's /embed/*, embedLimiter above, untouched by this), they only exist
+// not a public API. They only exist
 // for movieInfo.html's own JS to call while a real person watches something. apiLimiter's
 // 100k/15min is generous enough that scripted bulk-resolving an entire catalog barely notices
 // it. A real viewer, even binge-watching 20+ episodes with a couple of server retries each,
@@ -161,8 +159,36 @@ const resolveLimiter = rateLimit({
 // silently serve a stale cached copy. Without this, a background tab getting
 // reloaded by the browser (memory-saver tab discarding, etc.) could load
 // against whatever the browser last decided was "still fresh enough".
-const staticHeaders = { setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') };
+const staticHeaders = {
+    setHeaders: (res) => {
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+        // Keep same-origin Referer headers for the protected HLS/API requests, while never
+        // disclosing player paths or query strings to third-party origins.
+        res.setHeader('Referrer-Policy', 'same-origin');
+    }
+};
 const PROJECT_ROOT = path.join(__dirname, '..');
+
+// All first-party documents refuse cross-site framing. This does not try to hide HTML/JS (that
+// is impossible for a public website); it prevents another site from making our real UI appear
+// inside its own chrome while it is served from this origin.
+function setFirstPartyDocumentHeaders(req, res, next) {
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    next();
+}
+
+// These pages document or demonstrate the retired public-embed model. Never expose them in a
+// production/static deployment. TESTENV remains available only to a deliberate local dev opt-in.
+app.use('/html/apidocs.html', (req, res) => res.status(404).end());
+app.use('/html/TESTENV.html', (req, res, next) => {
+    if (!ENABLE_SECURITY_TEST_PAGES || !skipLocalhost(req)) return res.status(404).end();
+    next();
+});
+app.use('/html', setFirstPartyDocumentHeaders);
 ['html', 'css', 'js', 'img', 'svg'].forEach(dir => {
     app.use(`/${dir}`, express.static(path.join(PROJECT_ROOT, dir), staticHeaders));
 });
@@ -193,14 +219,17 @@ app.use(
 // separately-hosted frontend), not required for the normal case.
 function requireSameOrigin(req, res, next) {
     if (skipLocalhost(req)) return next();
-    // Public embed routes are MEANT to be loaded cross-origin - a third-party site putting
-    // /embed/... in an <iframe src> sends ITS OWN Referer/Origin, not ours, so this check would
-    // otherwise 403 every real embed view. Protected by embedLimiter instead (see its own
-    // comment above) rather than same-origin enforcement.
-    if (req.path.startsWith('/embed/')) return next();
 
     const host = req.headers['host'];
     const validOrigins = host ? [`https://${host}`, `http://${host}`, ...ALLOWED_ORIGINS] : ALLOWED_ORIGINS;
+
+    // Modern browsers identify real same-origin player fetches. This is only a supplemental
+    // signal (a server-side attacker can forge headers), but it rejects ordinary cross-site
+    // iframe/navigation traffic before it consumes resolver capacity.
+    const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+    if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
 
     const origin = req.headers['origin'];
     if (origin) {
@@ -216,6 +245,13 @@ function requireSameOrigin(req, res, next) {
     return res.status(403).json({ error: 'Forbidden' });
 }
 
+function requireLegacyFirstPartyEmbed(req, res, next) {
+    setFirstPartyDocumentHeaders(req, res, () => {});
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ENABLE_LEGACY_FIRST_PARTY_EMBEDS) return res.status(404).end();
+    return requireSameOrigin(req, res, next);
+}
+
 // Apply limits before proxying to backend.
 // megacloud/anime-allanime/anime-animetsu/anime-kite-servers routes themselves were removed
 // (dead debug/scraper endpoints leaking raw source URLs, see server.js 48138b1f/dff6a451) -
@@ -223,6 +259,7 @@ function requireSameOrigin(req, res, next) {
 app.use(['/api/anime-embed', '/api/yt-search', '/api/jikan', '/api/anime-mal-id'], heavyApiLimiter);
 app.use(RESOLVE_GATED_PATHS, resolveLimiter);
 app.use(['/users/register', '/users/auth', '/users/change-password'], authLimiter);
+app.use('/embed', requireLegacyFirstPartyEmbed);
 app.use('/embed', embedLimiter);
 
 // Friendly redirects
