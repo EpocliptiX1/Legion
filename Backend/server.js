@@ -1860,7 +1860,11 @@ function spendResolveBudget(req, res, { nonce = false } = {}) {
     return true;
 }
 
-function recordPlaybackLeaseViolation(req) {
+function recordPlaybackLeaseViolation(req, err = null) {
+    // Reaching a normal capacity limit (e.g. the live HLS player overlapping with a download)
+    // is not a replay/context violation. It should receive that one request's 429, but must not
+    // turn into the separate 15-minute resolver cooldown after a few retries.
+    if (err?.leaseLimit) return;
     const now = Date.now();
     const budget = getResolveBudget(resolveNetworkBudgets, resolverNetworkKey(req), now);
     budget.violations++;
@@ -2145,11 +2149,11 @@ const PROXY_TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
 // only kept in memory while playback is active.
 const PLAYBACK_LEASE_IDLE_MS = 10 * 60 * 1000;
 const PLAYBACK_LEASE_MAX_AGE_MS = PROXY_TOKEN_TTL_MS;
-// Browsing between titles (or trying several server buttons while diagnosing a provider) can
-// leave recently-idle HLS instances behind for a moment. Six still puts a firm ceiling on a
-// relay session without turning ordinary same-browser exploration into a false positive.
-const MAX_ACTIVE_LEASES_PER_SESSION = 6;
-const MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE = 6; // video + audio + small browser prefetch
+// Browsing between titles, switching servers and starting a download can leave several
+// short-lived HLS instances overlapping. Keep a finite relay ceiling, but leave enough headroom
+// for ordinary playback plus the downloader instead of treating normal use as a 429 condition.
+const MAX_ACTIVE_LEASES_PER_SESSION = 12;
+const MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE = 12; // player prefetch + video/audio download overlap
 const MAX_MEDIA_BYTES_PER_LEASE = 8 * 1024 * 1024 * 1024; // 8 GiB: generous for normal HD viewing, finite for relays
 const playbackLeases = new Map(); // leaseId -> { sessionId, ipPrefix, uaHash, createdAt, lastSeenAt, inFlight }
 
@@ -7357,7 +7361,7 @@ app.get('/api/download-proxy', async (req, res) => {
         res.once('finish', releaseLease);
         res.once('close', releaseLease);
     } catch (err) {
-        recordPlaybackLeaseViolation(req);
+        recordPlaybackLeaseViolation(req, err);
         return res.status(429).send(err.leaseLimit ? 'Download request limit reached' : 'Download lease is no longer valid');
     }
 
@@ -7407,7 +7411,7 @@ app.get('/api/download-proxy', async (req, res) => {
     } catch (err) {
         releaseLease();
         if (err.leaseLimit) {
-            recordPlaybackLeaseViolation(req);
+            recordPlaybackLeaseViolation(req, err);
             return res.status(429).send('Download byte limit reached');
         }
         console.error('[RU Download Proxy] Error:', err.message);
@@ -7481,7 +7485,7 @@ app.get('/api/proxy-stream', async (req, res) => {
             res.once('close', releaseLease);
         }
     } catch (err) {
-        recordPlaybackLeaseViolation(req);
+        recordPlaybackLeaseViolation(req, err);
         return res.status(429).send(err.leaseLimit ? 'Playback request limit reached' : 'Playback lease is no longer valid');
     }
     try {
@@ -11284,7 +11288,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             res.once('close', releaseLease);
         }
     } catch (err) {
-        recordPlaybackLeaseViolation(req);
+        recordPlaybackLeaseViolation(req, err);
         return res.status(429).send(err.leaseLimit ? 'Playback request limit reached' : 'Playback lease is no longer valid');
     }
 
@@ -11365,7 +11369,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         try {
             chargePlaybackBytes(decodedLeaseId, Number(response.headers['content-length']) || 0);
         } catch (err) {
-            recordPlaybackLeaseViolation(req);
+            recordPlaybackLeaseViolation(req, err);
             response.data?.destroy?.();
             return res.status(429).send('Playback byte limit reached');
         }
@@ -17440,7 +17444,7 @@ function buildT1mMasterManifestUrl(manifest, sessionId) {
     // param defaults via `= createPlaybackLeaseId()`, which fires on every call where the
     // argument is omitted/undefined - passing undefined here per-line meant every rendition in
     // an adaptive master (typically several) minted its OWN brand-new lease, burning through
-    // MAX_ACTIVE_LEASES_PER_SESSION (6) in one or two clicks and 429ing all subsequent segment/
+    // the active-lease ceiling in one or two clicks and 429ing all subsequent segment/
     // variant-playlist requests with "Too many active playback streams for this session" -
     // confirmed live via read_network_requests (first proxy call 200, everything after 429).
     // Every other provider shares one leaseId across its whole manifest chain; this matches that.
