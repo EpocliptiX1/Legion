@@ -9655,25 +9655,30 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     align-items: flex-start;
     gap: 24px;
 }
-/* The anime panel has six independent download controls. On desktop, make them a real grid
-   so the final column uses the available player width instead of leaving a dead strip empty. */
-#animeDownloadPanel .anime-download-panel__row {
+/* Both download panels have six independent controls. Use a real grid on desktop so every
+   column uses the player width rather than letting a flex row leave a dead strip at the end. */
+#animeDownloadPanel .anime-download-panel__row,
+#movieDownloadPanel .anime-download-panel__row {
     display: grid;
     grid-template-columns: minmax(145px, 1.25fr) minmax(70px, 0.65fr) minmax(70px, 0.65fr) minmax(180px, 1.35fr) minmax(155px, 1.2fr) minmax(105px, 0.9fr);
     gap: 16px;
 }
-#animeDownloadPanel .anime-download-panel__row > * {
+#animeDownloadPanel .anime-download-panel__row > *,
+#movieDownloadPanel .anime-download-panel__row > * {
     min-width: 0;
 }
-#animeDownloadPanel .anime-download-panel__burn {
+#animeDownloadPanel .anime-download-panel__burn,
+#movieDownloadPanel .anime-download-panel__burn {
     min-width: 0;
     max-width: none;
 }
-#animeDownloadPanel .anime-download-panel__go {
+#animeDownloadPanel .anime-download-panel__go,
+#movieDownloadPanel .anime-download-panel__go {
     min-width: 0;
     align-items: stretch;
 }
-#animeDownloadPanel .anime-download-panel__go-btn {
+#animeDownloadPanel .anime-download-panel__go-btn,
+#movieDownloadPanel .anime-download-panel__go-btn {
     width: 100%;
 }
 .anime-download-panel__label {
@@ -9684,6 +9689,10 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
 .anime-download-panel__group {
     flex-direction: column;
     align-items: stretch;
+}
+.anime-download-panel .anime-download-panel__group .audio-btn {
+    width: 100%;
+    margin: 0;
 }
 /* Panel buttons reuse .audio-btn for styling but shouldn't carry its glow - too busy against
    this many stacked buttons in one small panel. */
@@ -9740,13 +9749,71 @@ button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contai
     width: 20px;
     height: 20px;
 }
-@media (max-width: 850px) {
-    #animeDownloadPanel .anime-download-panel__row {
-        display: flex;
-        gap: 16px;
+/* On tablet widths the desktop six-column row has no room once the navigation rail is present.
+   Keep the quick source/type/quality controls together, then give compression and subtitle
+   options their own usable rows instead of allowing them to clip horizontally. */
+@media (max-width: 1100px) {
+    #animeDownloadPanel .anime-download-panel__row,
+    #movieDownloadPanel .anime-download-panel__row {
+        grid-template-columns: minmax(125px, 1.35fr) minmax(70px, 0.7fr) minmax(70px, 0.7fr);
+        gap: 12px;
     }
-    #animeDownloadPanel .anime-download-panel__burn {
-        min-width: 180px;
+    #animeDownloadPanel #dlCompressionWrap,
+    #movieDownloadPanel #mdlCompressionWrap {
+        grid-column: 1 / -1;
+    }
+    #animeDownloadPanel #dlBurnWrap,
+    #movieDownloadPanel #mdlBurnWrap {
+        grid-column: 1 / span 2;
+    }
+    #animeDownloadPanel .anime-download-panel__go,
+    #movieDownloadPanel .anime-download-panel__go {
+        grid-column: 3;
+        align-self: end;
+    }
+}
+
+@media (max-width: 660px) {
+    .anime-download-panel {
+        padding: 12px;
+    }
+    #animeDownloadPanel .anime-download-panel__row,
+    #movieDownloadPanel .anime-download-panel__row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+    }
+    #animeDownloadPanel .anime-download-panel__row > :first-child,
+    #movieDownloadPanel .anime-download-panel__row > :first-child,
+    #animeDownloadPanel #dlCompressionWrap,
+    #movieDownloadPanel #mdlCompressionWrap,
+    #animeDownloadPanel #dlBurnWrap,
+    #movieDownloadPanel #mdlBurnWrap,
+    #animeDownloadPanel .anime-download-panel__go,
+    #movieDownloadPanel .anime-download-panel__go {
+        grid-column: 1 / -1;
+    }
+    #animeDownloadPanel #dlSourceRow,
+    #movieDownloadPanel #mdlSourceRow {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    #animeDownloadPanel #dlSourceRow .audio-btn:last-child,
+    #movieDownloadPanel #mdlSourceRow .audio-btn:last-child {
+        grid-column: 1 / -1;
+    }
+    .anime-download-panel__burn-label {
+        line-height: 1.25;
+    }
+}
+
+@media (max-width: 430px) {
+    #animeDownloadPanel .anime-download-panel__row,
+    #movieDownloadPanel .anime-download-panel__row {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    #animeDownloadPanel .anime-download-panel__row > *,
+    #movieDownloadPanel .anime-download-panel__row > * {
+        grid-column: 1 / -1;
     }
 }
 .kaa-download-menu {
