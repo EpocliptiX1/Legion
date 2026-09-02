@@ -1748,9 +1748,10 @@ function issueSessionCookie(res, sid) {
     res.cookie(SESSION_COOKIE_NAME, `${sid}.${signSessionId(sid)}`, {
         httpOnly: true,
         secure: true,
-        // Playback is now first-party only. Strict keeps an existing anonymous playback
-        // session out of cross-site navigations/iframes instead of merely relying on headers.
-        sameSite: 'strict',
+        // Public embeds are framed by other sites, so their HttpOnly session must survive the
+        // proof-of-work reload inside a third-party iframe. `Secure` is required for None.
+        // Stream tokens remain encrypted, short-lived, and bound to this signed session.
+        sameSite: 'none',
         maxAge: SESSION_COOKIE_MAX_AGE_MS
     });
 }
@@ -1774,7 +1775,7 @@ app.use((req, res, next) => {
         issueSessionCookie(res, sid);
     }
     if (revokedPlaybackSessions.get(sid) > Date.now()) {
-        res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, secure: true, sameSite: 'strict' });
+        res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, secure: true, sameSite: 'none' });
         return res.status(429).json({ error: 'Playback session temporarily unavailable' });
     }
     if (isPlaybackIntegrityNetworkBlocked(req)) {
@@ -1969,7 +1970,7 @@ function signPowPass(sessionId, issuedAt) {
 function issuePowPassCookie(req, res) {
     const issuedAt = Date.now();
     res.cookie(POW_COOKIE_NAME, `${issuedAt}.${signPowPass(req.sessionId, issuedAt)}`, {
-        httpOnly: true, secure: true, sameSite: 'strict', maxAge: POW_TTL_MS
+        httpOnly: true, secure: true, sameSite: 'none', maxAge: POW_TTL_MS
     });
 }
 function hasValidPowPass(req) {
@@ -2094,22 +2095,33 @@ function requireEmbedPow(req, res, next) {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.status(200).send(renderEmbedPowChallengeHtml());
 }
-// The former public embed API is retained only for local diagnostic work. It must never be
-// enabled in production: a keyless embed makes every anonymous viewer a valid relay session.
-// Middleware enforces the same policy at the edge; this is the backend defense-in-depth layer.
-const ENABLE_LEGACY_FIRST_PARTY_EMBEDS = process.env.ENABLE_LEGACY_FIRST_PARTY_EMBEDS === '1' && process.env.NODE_ENV !== 'production';
+// /embed is intentionally a public, third-party-frameable API. These headers harden the
+// document itself without preventing that use: stream routes remain same-origin, session-bound,
+// encrypted and short-lived, while the document cannot load arbitrary injected resources.
+const PUBLIC_EMBED_CSP = [
+    "default-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors *",
+    "script-src 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.plyr.io",
+    "style-src 'unsafe-inline' https://cdn.plyr.io",
+    "img-src 'self' data:",
+    "media-src 'self'",
+    "connect-src 'self'",
+    "font-src 'self' data:",
+    "worker-src blob:"
+].join('; ');
 app.use('/embed', (req, res, next) => {
-    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
-    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Content-Security-Policy', PUBLIC_EMBED_CSP);
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'same-origin');
-    if (!ENABLE_LEGACY_FIRST_PARTY_EMBEDS) return res.status(404).end();
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     next();
 });
 app.use('/embed', requireEmbedPow);
 
-// Legacy diagnostics still perform an expensive provider resolve, so keep them inside the same
-// anonymous resolver budget. They are never a partner/public embed API any more.
+// Public embeds still perform an expensive provider resolve, so keep them inside the same
+// anonymous resolver budget. This constrains abuse but is not caller authentication.
 app.use('/embed', (req, res, next) => {
     if (!spendResolveBudget(req, res)) return;
     next();
@@ -20539,11 +20551,13 @@ async function fetchAndIngestUserList(token, userUID) {
     }
 }
 // =========================================
-//  9c. LEGACY FIRST-PARTY EMBED DIAGNOSTICS (/embed/*)
+//  9c. PUBLIC EMBED API (/embed/*)
 // =========================================
-// These routes are kept separate from the normal MovieInfo resolver flow so they can be disabled
-// as a unit. Middleware no longer exempts them from same-origin enforcement and both layers deny
-// them by default; only local, explicit diagnostic opt-in can reach them.
+// These routes are intentionally separate from the normal MovieInfo resolver flow because they
+// must remain public and frameable by third-party sites. They do not expose upstream media URLs:
+// callers receive only short-lived, session-bound AniKino proxy paths. A public API cannot stop
+// a determined third party from creating its own anonymous session; rate limits and proof-of-work
+// make that costly, while the proxy/token boundary prevents copied links from being reusable.
 //
 // Security approach: extract MegaPlay's real stream (same resolveMegaplaySourcesCached call the
 // internal player's PREFERRED path already uses - see loadMegaPlayFrame's "native playback"
@@ -20557,8 +20571,8 @@ async function fetchAndIngestUserList(token, userUID) {
 // cross-origin moment is the initial /embed/anime/... navigation (which middleware.js's
 // requireSameOrigin already exempts); every request after that (loading the HLS manifest,
 // segments, subtitles) is JS on OUR OWN served page fetching OUR OWN domain, which is same-origin
-// regardless of which third-party site iframed the page in. Falls back to nesting MegaPlay's own
-// iframe (same as the internal player's own fallback) only if extraction itself fails.
+// regardless of which third-party site iframed the page in. If native resolution fails, return an
+// unavailable-player response rather than leaking a direct provider iframe as a fallback.
 
 // Resolves either a numeric TMDB id or an IMDB id (tt1234567) to a numeric TMDB id. mediaType
 // picks which /find results array to read - anime is always represented as a TMDB TV entry (even
@@ -21048,9 +21062,9 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
         const { streamUrl, tracks } = await resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId: req.sessionId });
         return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `Episode ${episode}`, startAt, autoplay, nextEpisodeUrl }));
     } catch (err) {
-        console.warn(`[Legacy First-Party Embed] anime/${server} resolution failed:`, err.message || err);
-        // Never hand the browser a provider iframe as a fallback. Even a first-party diagnostic
-        // page should fail closed rather than create a direct third-party embed path.
+        console.warn(`[Public Embed] anime/${server} resolution failed:`, err.message || err);
+        // Never hand the browser a provider iframe as a fallback. A public embed must fail
+        // closed rather than create a direct provider path outside our proxy boundary.
         return res.status(502).send(renderPublicEmbedErrorHtml(`This server (${server}) could not resolve a native playable source for this episode right now.`));
     }
 });
@@ -21115,7 +21129,7 @@ app.get('/embed/movie/:id', async (req, res) => {
         }
         return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie', startAt, autoplay }));
     } catch (err) {
-        console.warn(`[Legacy First-Party Embed] movie/${server} resolution failed:`, err.message || err);
+        console.warn(`[Public Embed] movie/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
     }
 });
@@ -21164,7 +21178,7 @@ app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
         }
         return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}`, startAt, autoplay, nextEpisodeUrl }));
     } catch (err) {
-        console.warn(`[Legacy First-Party Embed] tv/${server} resolution failed:`, err.message || err);
+        console.warn(`[Public Embed] tv/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
     }
 });

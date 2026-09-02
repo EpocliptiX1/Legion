@@ -37,10 +37,6 @@ const BACKEND_PORT     = parseInt(process.env.BACKEND_PORT     || '4000', 10);
 // problem on a public repo. Both processes now independently load/generate the same persisted
 // secretStore.js file, so they still agree without hardcoding a public value.
 const MIDDLEWARE_SECRET = process.env.MIDDLEWARE_SECRET || require('./secretStore').loadOrCreateSecret('middleware_secret.key');
-// Public embeds make every anonymous visitor a potential stream-relay session. They are
-// disabled by default and can only be enabled for local, first-party diagnostics. Do NOT turn
-// this on in production as a substitute for a partner authorization system.
-const ENABLE_LEGACY_FIRST_PARTY_EMBEDS = process.env.ENABLE_LEGACY_FIRST_PARTY_EMBEDS === '1' && process.env.NODE_ENV !== 'production';
 const ENABLE_SECURITY_TEST_PAGES = process.env.ENABLE_SECURITY_TEST_PAGES === '1' && process.env.NODE_ENV !== 'production';
 // Comma-separated list of origins allowed to call /api/* - anything else (curl, a script,
 // another site's fetch) gets rejected before it ever reaches the backend. Set this to your
@@ -106,21 +102,20 @@ const authLimiter = rateLimit({
     message: { error: 'Too many authentication attempts. Please try again later.' }
 });
 
-// Legacy first-party embed route. This is deliberately *not* a public iframe API any more:
-// access is denied by default, and even when diagnostics opt in locally it must pass the same
-// origin guard as MovieInfo's internal player traffic.
+// Public embed player (/embed/*). It must remain iframe-loadable from third-party sites, so it
+// has its own tight edge limit while its actual media stays behind session-bound proxy tokens.
 const embedLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 40,
     skip: skipLocalhost,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: 'Too many legacy player requests. Please slow down.' }
+    message: { error: 'Too many embed requests. Please slow down.' }
 });
 
 // Internal resolve routes (anime-kaa-servers, anime-megaplay-log, anime-neko-log,
 // movie/tv-kino-log, movie/tv-ru-log, anime-download-links, movie/tv-ru-download) - these are
-// not a public API. They only exist
+// NOT the public API (that's /embed/*, embedLimiter above, untouched by this). They only exist
 // for movieInfo.html's own JS to call while a real person watches something. apiLimiter's
 // 100k/15min is generous enough that scripted bulk-resolving an entire catalog barely notices
 // it. A real viewer, even binge-watching 20+ episodes with a couple of server retries each,
@@ -181,9 +176,8 @@ function setFirstPartyDocumentHeaders(req, res, next) {
     next();
 }
 
-// These pages document or demonstrate the retired public-embed model. Never expose them in a
-// production/static deployment. TESTENV remains available only to a deliberate local dev opt-in.
-app.use('/html/apidocs.html', (req, res) => res.status(404).end());
+// TESTENV deliberately demonstrates the security boundary, so keep it off a production/static
+// deployment. Public API documentation remains accessible independently of this test page.
 app.use('/html/TESTENV.html', (req, res, next) => {
     if (!ENABLE_SECURITY_TEST_PAGES || !skipLocalhost(req)) return res.status(404).end();
     next();
@@ -219,6 +213,9 @@ app.use(
 // separately-hosted frontend), not required for the normal case.
 function requireSameOrigin(req, res, next) {
     if (skipLocalhost(req)) return next();
+    // Public embeds are intentionally frameable. Requests made *inside* the embedded player
+    // remain same-origin with AniKino and continue to use the session-bound proxy routes.
+    if (req.path.startsWith('/embed/')) return next();
 
     const host = req.headers['host'];
     const validOrigins = host ? [`https://${host}`, `http://${host}`, ...ALLOWED_ORIGINS] : ALLOWED_ORIGINS;
@@ -245,13 +242,6 @@ function requireSameOrigin(req, res, next) {
     return res.status(403).json({ error: 'Forbidden' });
 }
 
-function requireLegacyFirstPartyEmbed(req, res, next) {
-    setFirstPartyDocumentHeaders(req, res, () => {});
-    res.setHeader('Cache-Control', 'no-store');
-    if (!ENABLE_LEGACY_FIRST_PARTY_EMBEDS) return res.status(404).end();
-    return requireSameOrigin(req, res, next);
-}
-
 // Apply limits before proxying to backend.
 // megacloud/anime-allanime/anime-animetsu/anime-kite-servers routes themselves were removed
 // (dead debug/scraper endpoints leaking raw source URLs, see server.js 48138b1f/dff6a451) -
@@ -259,7 +249,6 @@ function requireLegacyFirstPartyEmbed(req, res, next) {
 app.use(['/api/anime-embed', '/api/yt-search', '/api/jikan', '/api/anime-mal-id'], heavyApiLimiter);
 app.use(RESOLVE_GATED_PATHS, resolveLimiter);
 app.use(['/users/register', '/users/auth', '/users/change-password'], authLimiter);
-app.use('/embed', requireLegacyFirstPartyEmbed);
 app.use('/embed', embedLimiter);
 
 // Friendly redirects
