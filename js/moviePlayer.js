@@ -1455,6 +1455,13 @@ document.addEventListener('DOMContentLoaded', function() {
                                     <button class="audio-btn" data-mdl-quality="360">360p</button>
                                 </div>
                             </div>
+                            <div id="mdlCompressionWrap" class="anime-download-panel__burn">
+                                <div class="anime-download-panel__label">Compression</div>
+                                <label class="download-subs-choice anime-download-panel__burn-label" title="Re-encodes the chosen quality on this device to reduce the final file size.">
+                                    <input type="checkbox" id="mdlCompressCheckbox" />
+                                    Compress file size, takes longer (-40% in size)
+                                </label>
+                            </div>
                             <div id="mdlBurnWrap" class="anime-download-panel__burn">
                                 <div class="anime-download-panel__label">Subtitles (burn into mp4)</div>
                                 <label class="download-subs-choice anime-download-panel__burn-label">
@@ -4543,8 +4550,12 @@ document.addEventListener('DOMContentLoaded', function() {
         const mdlSyncRowsForSource = () => {
             const isRumv = mdlSource === 'rumv';
             const burnWrap = document.getElementById('mdlBurnWrap');
+            const compressionWrap = document.getElementById('mdlCompressionWrap');
             const typeWrap = document.getElementById('mdlTypeWrap');
             if (burnWrap) burnWrap.style.display = isRumv ? 'none' : 'block';
+            // RU-MV opens the provider's direct MP4 link and never runs through FFmpeg, so
+            // compression cannot apply to that source.
+            if (compressionWrap) compressionWrap.style.display = isRumv ? 'none' : 'block';
             // "Entire Season" batches sequential single-episode downloads - meaningless for a
             // movie (one file, no season concept), so the whole Type row only applies to TV.
             if (typeWrap) typeWrap.style.display = isSeries ? 'block' : 'none';
@@ -4605,12 +4616,14 @@ document.addEventListener('DOMContentLoaded', function() {
             if (picker) picker.disabled = !e.target.checked;
         });
 
-        function mdlGetBurnOptions() {
+        function mdlGetDownloadOptions() {
             const burnCheckbox = document.getElementById('mdlBurnCheckbox');
+            const compressCheckbox = document.getElementById('mdlCompressCheckbox');
             const subsPicker = document.getElementById('mdlSubsPicker');
             const burnEnabled = burnCheckbox?.checked === true && subsPicker?.value !== '';
             if (burnEnabled) window.currentSubtitleTrackIndex = Number(subsPicker.value || 0);
             return {
+                compress: compressCheckbox?.checked === true,
                 burnSubtitles: burnEnabled,
                 subtitleTrackIndex: burnEnabled ? window.currentSubtitleTrackIndex : undefined
             };
@@ -4690,7 +4703,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (match) subsPickerEl.value = match.value;
                 }
             }
-            await window.downloadKinoEpisode?.(parseInt(mdlQuality, 10) || undefined, mdlGetBurnOptions());
+            await window.downloadKinoEpisode?.(parseInt(mdlQuality, 10) || undefined, mdlGetDownloadOptions());
             return true;
         }
 
