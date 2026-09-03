@@ -1778,8 +1778,12 @@ app.use((req, res, next) => {
         res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, secure: true, sameSite: 'none' });
         return res.status(429).json({ error: 'Playback session temporarily unavailable' });
     }
-    if (isPlaybackIntegrityNetworkBlocked(req)) {
-        return res.status(429).json({ error: 'Playback temporarily unavailable' });
+    const networkBlockType = getPlaybackIntegrityNetworkBlockType(req);
+    if (networkBlockType) {
+        if (req.path === '/api/proxy-stream' || req.path === '/api/m3u8-proxy') {
+            return sendPlaybackIntegrityMediaBlock(res, networkBlockType);
+        }
+        return res.status(429).json({ error: 'Playback temporarily unavailable', blockType: networkBlockType });
     }
     req.sessionId = sid;
     next();
@@ -2120,16 +2124,207 @@ app.use('/embed', (req, res, next) => {
 });
 app.use('/embed', requireEmbedPow);
 
-// Public embeds still perform an expensive provider resolve, so keep them inside the same
-// anonymous resolver budget. This constrains abuse but is not caller authentication.
+// Public embeds have no account or API key. Keep their resolver allowance well below the
+// first-party player budget: a normal iframe resolves a title once, while a relay needs a
+// continuing supply of fresh title/session combinations.
+const PUBLIC_EMBED_RESOLVE_WINDOW_MS = 15 * 60 * 1000;
+const MAX_PUBLIC_EMBED_RESOLVES_PER_SESSION = 12;
+const MAX_PUBLIC_EMBED_RESOLVES_PER_NETWORK = 48;
+const publicEmbedSessionBudgets = new Map();
+const publicEmbedNetworkBudgets = new Map();
+function spendPublicEmbedResolveBudget(req, res) {
+    const now = Date.now();
+    const consume = (store, key, maximum) => {
+        let entry = store.get(key);
+        if (!entry || now - entry.windowStartedAt >= PUBLIC_EMBED_RESOLVE_WINDOW_MS) {
+            entry = { windowStartedAt: now, resolves: 0 };
+            store.set(key, entry);
+        }
+        if (entry.resolves >= maximum) return entry;
+        entry.resolves++;
+        return null;
+    };
+    const exceeded = consume(publicEmbedSessionBudgets, req.sessionId, MAX_PUBLIC_EMBED_RESOLVES_PER_SESSION) ||
+        consume(publicEmbedNetworkBudgets, resolverNetworkKey(req), MAX_PUBLIC_EMBED_RESOLVES_PER_NETWORK);
+    if (!exceeded) return true;
+    const retry = Math.max(1, Math.ceil((exceeded.windowStartedAt + PUBLIC_EMBED_RESOLVE_WINDOW_MS - now) / 1000));
+    res.set('Retry-After', String(retry));
+    res.status(429).send(renderPublicEmbedErrorHtml('Embed resolver limit reached. Please try again later.'));
+    return false;
+}
+setInterval(() => {
+    const now = Date.now();
+    for (const store of [publicEmbedSessionBudgets, publicEmbedNetworkBudgets]) {
+        for (const [key, entry] of store) {
+            if (now - entry.windowStartedAt >= PUBLIC_EMBED_RESOLVE_WINDOW_MS) store.delete(key);
+        }
+    }
+}, 60 * 1000).unref();
 app.use('/embed', (req, res, next) => {
-    if (!spendResolveBudget(req, res)) return;
+    if (!spendPublicEmbedResolveBudget(req, res)) return;
     next();
 });
 // Public embeds have no API key by design, but their response still gets the same harmless
 // session-bound canary as the internal player routes. An iframe never consumes this header.
 app.use('/embed', attachPlaybackIntegrityDecoy);
 app.use('/embed', scoreBrowserRequestSignals);
+
+// A public embed is still intentionally anonymous, so this is a friction boundary rather than
+// an authorization boundary. Keeping the playable route and caption tokens off the HTML means a
+// static scraper cannot pull a source with one regex; it must run the page's activation step in
+// the same short-lived session. Tickets are one-use, session-bound, and never persisted.
+const PUBLIC_EMBED_ACTIVATION_TTL_MS = 45 * 1000;
+const publicEmbedActivations = new Map();
+// A heartbeat is an integrity signal, not proof that the viewer saw our UI: an attacker that
+// owns a relay can reproduce it. It is still useful for separating normal embeds from bare HLS
+// consumers and escalating only sustained media traffic without expected player activity.
+const PUBLIC_EMBED_HEARTBEAT_INTERVAL_MS = 25 * 1000;
+const PUBLIC_EMBED_HEARTBEAT_GRACE_MS = 75 * 1000;
+const PUBLIC_EMBED_HEARTBEAT_REPORT_MS = 60 * 1000;
+const publicEmbedTelemetry = new Map();
+const publicEmbedTelemetryByLease = new Map();
+// A relay-heartbeat threshold is handled through the next playlist request, not by swapping an
+// arbitrary live segment. That lets HLS see an explicit discontinuity before the final local
+// block clip, and isolates the response to the offending session/lease.
+const PUBLIC_EMBED_BLOCK_SEGMENT_TTL_MS = 45 * 1000;
+const PUBLIC_EMBED_BLOCK_SEGMENT_DURATION = 2.021333;
+const publicEmbedPendingBlocks = new Map(); // leaseId -> session/network identity and queue time
+const publicEmbedBlockSegments = new Map(); // ticket -> { sessionId, leaseId, expiresAt }
+function createPublicEmbedActivation(sessionId, streamUrl, tracks) {
+    const ticket = crypto.randomBytes(24).toString('base64url');
+    publicEmbedActivations.set(ticket, {
+        sessionId,
+        streamUrl,
+        tracks: Array.isArray(tracks) ? tracks : [],
+        expiresAt: Date.now() + PUBLIC_EMBED_ACTIVATION_TTL_MS
+    });
+    return ticket;
+}
+setInterval(() => {
+    const now = Date.now();
+    for (const [ticket, entry] of publicEmbedActivations) {
+        if (entry.expiresAt <= now) publicEmbedActivations.delete(ticket);
+    }
+}, 30 * 1000).unref();
+app.post('/api/embed-activate', (req, res) => {
+    const ticket = typeof req.body?.ticket === 'string' ? req.body.ticket : '';
+    const entry = publicEmbedActivations.get(ticket);
+    if (!hasValidPowPass(req) || !entry || entry.sessionId !== req.sessionId || entry.expiresAt <= Date.now()) {
+        if (ticket) publicEmbedActivations.delete(ticket);
+        const outcome = recordPlaybackIntegrityEvent(req, 'public-embed-activation-invalid', 2);
+        return sendIntegrityFailure(req, res, outcome, 403, 'Embed activation expired or invalid');
+    }
+    // Consume before responding: a copied activation value cannot be replayed, even by the
+    // same session. The route remains deliberately same-origin-only at the middleware edge.
+    publicEmbedActivations.delete(ticket);
+    let telemetry = null;
+    try {
+        const sourceToken = new URL(entry.streamUrl, 'https://local.invalid').searchParams.get('token');
+        const decoded = decryptProxyTarget(sourceToken);
+        if (decoded.scope === 'public-embed' && decoded.leaseId) {
+            const telemetryTicket = crypto.randomBytes(18).toString('base64url');
+            const state = { sessionId: req.sessionId, leaseId: decoded.leaseId, createdAt: Date.now(), lastSeenAt: 0, lastMissingReportedAt: 0, expiresAt: Date.now() + PROXY_TOKEN_TTL_MS };
+            publicEmbedTelemetry.set(telemetryTicket, state);
+            publicEmbedTelemetryByLease.set(decoded.leaseId, telemetryTicket);
+            telemetry = { ticket: telemetryTicket, intervalMs: PUBLIC_EMBED_HEARTBEAT_INTERVAL_MS };
+        }
+    } catch (err) {
+        // Activation remains available if a legacy/non-HLS source has no proxy-token lease.
+        console.warn('[Public Embed] telemetry setup skipped:', err.message);
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.json({ source: entry.streamUrl, tracks: entry.tracks, telemetry });
+});
+
+app.post('/api/embed-playback-event', (req, res) => {
+    const ticket = typeof req.body?.ticket === 'string' ? req.body.ticket : '';
+    const event = typeof req.body?.event === 'string' ? req.body.event : '';
+    const validEvents = new Set(['activated', 'ready', 'play', 'pause', 'timeupdate', 'ended', 'ad-start', 'ad-complete']);
+    const state = publicEmbedTelemetry.get(ticket);
+    if (!hasValidPowPass(req) || !state || state.sessionId !== req.sessionId || state.expiresAt <= Date.now() || !validEvents.has(event)) {
+        if (state && publicEmbedTelemetryByLease.get(state.leaseId) === ticket) publicEmbedTelemetryByLease.delete(state.leaseId);
+        if (ticket) publicEmbedTelemetry.delete(ticket);
+        const outcome = recordPlaybackIntegrityEvent(req, 'public-embed-telemetry-invalid', 2, event || 'missing');
+        return sendIntegrityFailure(req, res, outcome, 403, 'Embed playback event rejected');
+    }
+    state.lastSeenAt = Date.now();
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ ok: true });
+});
+
+function queuePublicEmbedRelayBlock(req, leaseId) {
+    if (!leaseId || publicEmbedPendingBlocks.has(leaseId)) return;
+    publicEmbedPendingBlocks.set(leaseId, {
+        sessionId: req.sessionId,
+        networkHash: resolverNetworkKey(req),
+        scoreKey: integrityScoreKey(req, INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT),
+        networkScoreKey: networkIntegrityScoreKey(req, INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT),
+        ip: auditClientIp(req), ipPrefix: playbackIpPrefix(req), queuedAt: Date.now()
+    });
+}
+function finalizePublicEmbedRelayBlock(req, leaseId) {
+    publicEmbedPendingBlocks.delete(leaseId);
+    const now = Date.now();
+    const banType = INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT;
+    const entry = getIntegrityScore(playbackIntegrityScores, integrityScoreKey(req, banType), now);
+    const networkEntry = getIntegrityScore(playbackIntegrityNetworkScores, networkIntegrityScoreKey(req, banType), now);
+    const escalation = registerPersistentNetworkBan(req, 'public-embed-media-without-ui-heartbeat', banType, now);
+    entry.blockedUntil = Math.max(entry.blockedUntil, escalation.banUntil);
+    networkEntry.blockedUntil = Math.max(networkEntry.blockedUntil, escalation.banUntil);
+    revokedPlaybackSessions.set(req.sessionId, entry.blockedUntil);
+    writeHoneypotEvent({
+        at: new Date(now).toISOString(), kind: 'public-embed-relay-block-delivered', banType,
+        points: 0, score: entry.score, networkScore: networkEntry.score,
+        ip: auditClientIp(req), ipPrefix: playbackIpPrefix(req),
+        session: crypto.createHash('sha256').update(req.sessionId).digest('hex').slice(0, 16),
+        detail: leaseId.slice(0, 8), thresholdReached: true, thresholdJustReached: false,
+        strike: escalation.strikes, banDurationMs: escalation.durationMs, enforcement: 'enabled'
+    });
+}
+function expirePublicEmbedRelayBlock(leaseId, state) {
+    const now = Date.now();
+    const banType = INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT;
+    const entry = getIntegrityScore(playbackIntegrityScores, state.scoreKey, now);
+    const networkEntry = getIntegrityScore(playbackIntegrityNetworkScores, state.networkScoreKey, now);
+    const escalation = registerPersistentNetworkBanByHash(state.networkHash, 'public-embed-media-without-ui-heartbeat', banType, now);
+    entry.blockedUntil = Math.max(entry.blockedUntil, escalation.banUntil);
+    networkEntry.blockedUntil = Math.max(networkEntry.blockedUntil, escalation.banUntil);
+    revokedPlaybackSessions.set(state.sessionId, entry.blockedUntil);
+    writeHoneypotEvent({
+        at: new Date(now).toISOString(), kind: 'public-embed-relay-block-expired', banType,
+        points: 0, score: entry.score, networkScore: networkEntry.score,
+        ip: state.ip, ipPrefix: state.ipPrefix,
+        session: crypto.createHash('sha256').update(state.sessionId).digest('hex').slice(0, 16),
+        detail: leaseId.slice(0, 8), thresholdReached: true, thresholdJustReached: false,
+        strike: escalation.strikes, banDurationMs: escalation.durationMs, enforcement: 'enabled'
+    });
+}
+function renderPublicEmbedBlockPlaylist(ticket) {
+    return `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-DISCONTINUITY\n#EXTINF:${PUBLIC_EMBED_BLOCK_SEGMENT_DURATION.toFixed(6)},\n/api/public-embed-block-segment?ticket=${encodeURIComponent(ticket)}\n#EXT-X-ENDLIST\n`;
+}
+app.get('/api/public-embed-block-segment', (req, res) => {
+    const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : '';
+    const entry = publicEmbedBlockSegments.get(ticket);
+    if (!entry || entry.sessionId !== req.sessionId || entry.expiresAt <= Date.now()) {
+        if (ticket) publicEmbedBlockSegments.delete(ticket);
+        return res.status(403).type('text/plain').send('Blocked media segment unavailable');
+    }
+    publicEmbedBlockSegments.delete(ticket);
+    try {
+        const segment = fs.readFileSync(BLOCKED_RELAY_SEGMENT_PATH);
+        res.status(200).set({
+            'Cache-Control': 'no-store, private', 'Content-Type': 'video/mp2t',
+            'Content-Length': String(segment.length), 'X-Playback-Block-Type': INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT,
+            'X-Playback-Block-Final-Segment': '1'
+        }).send(segment);
+        finalizePublicEmbedRelayBlock(req, entry.leaseId);
+    } catch (err) {
+        console.error('[Playback integrity] blocked relay segment unavailable:', err.message);
+        finalizePublicEmbedRelayBlock(req, entry.leaseId);
+        res.status(451).type('text/plain').send('Playback blocked');
+    }
+});
 
 // --- Proxy target encryption -------------------------------------------------------------
 // /api/m3u8-proxy and /api/proxy-stream used to take the real upstream CDN URL as a plain
@@ -2179,6 +2374,13 @@ const PLAYBACK_LEASE_MAX_AGE_MS = PROXY_TOKEN_TTL_MS;
 const MAX_ACTIVE_LEASES_PER_SESSION = 12;
 const MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE = 12; // player prefetch + video/audio download overlap
 const MAX_MEDIA_BYTES_PER_LEASE = 8 * 1024 * 1024 * 1024; // 8 GiB: generous for normal HD viewing, finite for relays
+// A public embed is intentionally anonymous and therefore has a tighter relay ceiling than a
+// first-party MovieInfo session. Two concurrent players and 4 GiB are still generous for a
+// legitimate embedded viewer, while a relay needs many independent PoW-backed sessions to
+// serve an audience instead of turning one embed response into an open-origin media pipe.
+const MAX_PUBLIC_EMBED_LEASES_PER_SESSION = 2;
+const MAX_PUBLIC_EMBED_MEDIA_REQUESTS_PER_LEASE = 6;
+const MAX_PUBLIC_EMBED_BYTES_PER_LEASE = 4 * 1024 * 1024 * 1024;
 const playbackLeases = new Map(); // leaseId -> { sessionId, ipPrefix, uaHash, createdAt, lastSeenAt, inFlight }
 
 function createPlaybackLeaseId() {
@@ -2217,7 +2419,10 @@ function claimPlaybackLease(req, decoded, { isPlaybackRequest = true, countAsMed
         const activeForSession = [...playbackLeases.entries()].filter(([, item]) =>
             item.sessionId === req.sessionId && now - item.lastSeenAt < PLAYBACK_LEASE_IDLE_MS
         );
-        if (activeForSession.length >= MAX_ACTIVE_LEASES_PER_SESSION) {
+        const activeLeaseLimit = decoded.scope === 'public-embed'
+            ? MAX_PUBLIC_EMBED_LEASES_PER_SESSION
+            : MAX_ACTIVE_LEASES_PER_SESSION;
+        if (activeForSession.length >= activeLeaseLimit) {
             const err = new Error('Too many active playback streams for this session');
             err.leaseLimit = true;
             throw err;
@@ -2229,7 +2434,13 @@ function claimPlaybackLease(req, decoded, { isPlaybackRequest = true, countAsMed
             createdAt: now,
             lastSeenAt: now,
             inFlight: 0,
-            bytesSent: 0
+            bytesSent: 0,
+            maxConcurrentRequests: decoded.scope === 'public-embed'
+                ? MAX_PUBLIC_EMBED_MEDIA_REQUESTS_PER_LEASE
+                : MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE,
+            maxBytes: decoded.scope === 'public-embed'
+                ? MAX_PUBLIC_EMBED_BYTES_PER_LEASE
+                : MAX_MEDIA_BYTES_PER_LEASE
         };
         playbackLeases.set(decoded.leaseId, lease);
     } else {
@@ -2265,7 +2476,7 @@ function claimPlaybackLease(req, decoded, { isPlaybackRequest = true, countAsMed
     }
 
     if (!countAsMediaRequest) return () => {};
-    if (lease.inFlight >= MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE) {
+    if (lease.inFlight >= lease.maxConcurrentRequests) {
         const err = new Error('Too many concurrent media requests for this playback lease');
         err.leaseLimit = true;
         throw err;
@@ -2285,13 +2496,30 @@ function chargePlaybackBytes(leaseId, byteLength) {
     const lease = playbackLeases.get(leaseId);
     // A pre-rollout token has no lease. Preserve the rollout grace rule used above.
     if (!lease) return;
-    if (lease.bytesSent + byteLength > MAX_MEDIA_BYTES_PER_LEASE) {
+    if (lease.bytesSent + byteLength > (lease.maxBytes || MAX_MEDIA_BYTES_PER_LEASE)) {
         const err = new Error('Playback lease egress limit reached');
         err.leaseLimit = true;
         throw err;
     }
     lease.bytesSent += byteLength;
     lease.lastSeenAt = Date.now();
+}
+
+function observePublicEmbedMediaRequest(req, decoded) {
+    if (decoded.scope !== 'public-embed' || !decoded.leaseId) return;
+    const telemetryTicket = publicEmbedTelemetryByLease.get(decoded.leaseId);
+    const state = telemetryTicket ? publicEmbedTelemetry.get(telemetryTicket) : null;
+    const now = Date.now();
+    // Do not score startup: hls.js fetches initial segments before metadata is available.
+    // After grace, one report per minute prevents segment-rate inflation.
+    if (!state || state.sessionId !== req.sessionId || now - state.lastSeenAt <= PUBLIC_EMBED_HEARTBEAT_GRACE_MS) return null;
+    if (state.lastMissingReportedAt && now - state.lastMissingReportedAt < PUBLIC_EMBED_HEARTBEAT_REPORT_MS) return null;
+    state.lastMissingReportedAt = now;
+    const outcome = recordPlaybackIntegrityEvent(req, 'public-embed-media-without-ui-heartbeat', 4, decoded.leaseId.slice(0, 8), { deferEnforcement: true });
+    if (outcome.thresholdJustReached && HONEYPOT_ENFORCE && !isPlaybackIntegrityAuditOnly(req)) {
+        queuePublicEmbedRelayBlock(req, decoded.leaseId);
+    }
+    return outcome;
 }
 
 // Stream unknown-length upstream bodies through a tiny Transform rather than buffering them in
@@ -2336,10 +2564,25 @@ setInterval(() => {
             playbackLeases.delete(leaseId);
         }
     }
+    for (const [ticket, state] of publicEmbedTelemetry) {
+        if (state.expiresAt <= now) {
+            publicEmbedTelemetry.delete(ticket);
+            if (publicEmbedTelemetryByLease.get(state.leaseId) === ticket) publicEmbedTelemetryByLease.delete(state.leaseId);
+        }
+    }
+    for (const [leaseId, state] of publicEmbedPendingBlocks) {
+        if (now - state.queuedAt > PUBLIC_EMBED_BLOCK_SEGMENT_TTL_MS) {
+            publicEmbedPendingBlocks.delete(leaseId);
+            expirePublicEmbedRelayBlock(leaseId, state);
+        }
+    }
+    for (const [ticket, state] of publicEmbedBlockSegments) {
+        if (state.expiresAt <= now) publicEmbedBlockSegments.delete(ticket);
+    }
 }, 60 * 1000).unref();
 
-function encryptProxyTarget({ url, referer = null, ua = null, sessionId = null, leaseId = null, purpose = null, forcePlaylist = false }) {
-    const payload = JSON.stringify({ u: url, r: referer, a: ua, s: sessionId, l: leaseId, p: purpose, fp: forcePlaylist || undefined, e: Date.now() + PROXY_TOKEN_TTL_MS });
+function encryptProxyTarget({ url, referer = null, ua = null, sessionId = null, leaseId = null, purpose = null, forcePlaylist = false, scope = null }) {
+    const payload = JSON.stringify({ u: url, r: referer, a: ua, s: sessionId, l: leaseId, p: purpose, fp: forcePlaylist || undefined, sc: scope || undefined, e: Date.now() + PROXY_TOKEN_TTL_MS });
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', PROXY_TOKEN_KEY, iv);
     const encrypted = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
@@ -2367,7 +2610,7 @@ function decryptProxyTarget(token) {
     if (!payload.u || !payload.e || payload.e < Date.now()) {
         throw new Error('Proxy token expired or invalid');
     }
-    return { url: payload.u, referer: payload.r || null, ua: payload.a || null, sessionId: payload.s || null, leaseId: payload.l || null, purpose: payload.p || null, forcePlaylist: !!payload.fp };
+    return { url: payload.u, referer: payload.r || null, ua: payload.a || null, sessionId: payload.s || null, leaseId: payload.l || null, purpose: payload.p || null, forcePlaylist: !!payload.fp, scope: payload.sc || null };
 }
 
 // Verifies the decrypted token's embedded session id against the CALLER's own session cookie
@@ -2395,11 +2638,14 @@ function verifyProxySession(req, decoded) {
 // skipping the token/session model every other proxied URL gets). Every EXISTING caller omits
 // this, so the route falls back to the exact same URL-based detection as before - this is
 // purely additive, not a behavior change for KAA/Neko/Kino/etc.
-function buildM3u8ProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeaseId(), forcePlaylist = false) {
-    return `/api/m3u8-proxy?token=${encryptProxyTarget({ url, referer, sessionId, leaseId, ...(forcePlaylist ? { forcePlaylist: true } : {}) })}`;
+function buildM3u8ProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeaseId(), forcePlaylist = false, scope = null) {
+    return `/api/m3u8-proxy?token=${encryptProxyTarget({ url, referer, sessionId, leaseId, ...(forcePlaylist ? { forcePlaylist: true } : {}), scope })}`;
 }
-function buildStreamProxyUrl(url, referer, ua, sessionId, leaseId = createPlaybackLeaseId()) {
-    return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua, sessionId, leaseId })}`;
+function buildStreamProxyUrl(url, referer, ua, sessionId, leaseId = createPlaybackLeaseId(), scope = null) {
+    return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua, sessionId, leaseId, scope })}`;
+}
+function buildPublicEmbedM3u8ProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeaseId(), forcePlaylist = false) {
+    return buildM3u8ProxyUrl(url, referer, sessionId, leaseId, forcePlaylist, 'public-embed');
 }
 
 // --- Playback integrity decoys (monitor-only by default) --------------------------------
@@ -2408,15 +2654,22 @@ const HONEYPOT_WINDOW_MS = 30 * 60 * 1000;
 const HONEYPOT_BLOCK_MS = 30 * 60 * 1000;
 const HONEYPOT_BLOCK_SCORE = 12;
 // Keep this off while testing. Set HONEYPOT_ENFORCE=1 only after reviewing real traffic.
-// Local/private addresses always remain audit-only, so a LAN-hosted development server cannot
-// lock itself out.
+// Local/private addresses remain audit-only by default. Set HONEYPOT_ENFORCE_LOCAL=1 together
+// with HONEYPOT_ENFORCE=1 only for a deliberate localhost/LAN enforcement test.
 const HONEYPOT_ENFORCE = process.env.HONEYPOT_ENFORCE === '1';
+const HONEYPOT_ENFORCE_LOCAL = process.env.HONEYPOT_ENFORCE_LOCAL === '1';
+console.log(`[Playback integrity] enforcement=${HONEYPOT_ENFORCE ? 'enabled' : 'audit-only'} localEnforcement=${HONEYPOT_ENFORCE_LOCAL ? 'enabled' : 'audit-only'}`);
+const INTEGRITY_BAN_TYPES = Object.freeze({
+    RELAY_HEARTBEAT: 'relay-heartbeat',
+    GENERAL_ABUSE: 'integrity-abuse'
+});
+const BLOCKED_RELAY_SEGMENT_PATH = path.join(__dirname, '..', 'img', 'blocked-stream.ts');
 const playbackIntegrityScores = new Map();
 const playbackIntegrityNetworkScores = new Map();
 const PERSISTENT_BAN_STRIKE_RESET_MS = 30 * 24 * 60 * 60 * 1000;
 const PERSISTENT_BAN_DURATIONS_MS = [30 * 60 * 1000, 24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000];
 const SECURITY_ENFORCEMENT_DB_FILE = path.join(__dirname, 'security_enforcement.db');
-const persistentNetworkBans = new Map(); // hashed prefix -> { strikes, lastStrikeAt, banUntil }
+const persistentNetworkBans = new Map(); // `${banType}:${hashedPrefix}` -> { strikes, lastStrikeAt, banUntil }
 const securityEnforcementDb = new sqlite3.Database(SECURITY_ENFORCEMENT_DB_FILE, err => {
     if (err) console.error('[Playback integrity] enforcement database unavailable:', err.message);
 });
@@ -2436,7 +2689,11 @@ securityEnforcementDb.serialize(() => {
         (err, rows = []) => {
             if (err) return console.error('[Playback integrity] could not load enforcement history:', err.message);
             for (const row of rows) {
-                persistentNetworkBans.set(row.network_hash, {
+                // Historical rows predate split ban types. Preserve them as general abuse bans.
+                const storageKey = row.network_hash.includes(':')
+                    ? row.network_hash
+                    : persistentBanStorageKey(INTEGRITY_BAN_TYPES.GENERAL_ABUSE, row.network_hash);
+                persistentNetworkBans.set(storageKey, {
                     strikes: row.strikes,
                     lastStrikeAt: row.last_strike_at,
                     banUntil: row.ban_until
@@ -2467,8 +2724,22 @@ function isLocalOrPrivateClient(ip) {
         /^10\./.test(normalized) || /^192\.168\./.test(normalized) ||
         /^172\.(1[6-9]|2\d|3[0-1])\./.test(normalized) || /^fc|^fd|^fe80:/.test(normalized);
 }
-function integrityScoreKey(req) {
-    return `${req.sessionId}:${resolverNetworkKey(req)}`;
+function isPlaybackIntegrityAuditOnly(req) {
+    return isLocalOrPrivateClient(auditClientIp(req)) && !HONEYPOT_ENFORCE_LOCAL;
+}
+function banTypeForIntegrityEvent(kind) {
+    return kind === 'public-embed-media-without-ui-heartbeat'
+        ? INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT
+        : INTEGRITY_BAN_TYPES.GENERAL_ABUSE;
+}
+function persistentBanStorageKey(banType, networkHash) {
+    return `${banType}:${networkHash}`;
+}
+function integrityScoreKey(req, banType) {
+    return `${banType}:${req.sessionId}:${resolverNetworkKey(req)}`;
+}
+function networkIntegrityScoreKey(req, banType) {
+    return `${banType}:${resolverNetworkKey(req)}`;
 }
 function getIntegrityScore(store, key, now) {
     let entry = store.get(key);
@@ -2485,14 +2756,14 @@ function writeHoneypotEvent(event) {
         console.warn('[Playback integrity] failed to write audit event:', err.message);
     }
 }
-function registerPersistentNetworkBan(req, reason, now) {
-    const networkHash = resolverNetworkKey(req);
-    const previous = persistentNetworkBans.get(networkHash);
+function registerPersistentNetworkBanByHash(networkHash, reason, banType, now) {
+    const storageKey = persistentBanStorageKey(banType, networkHash);
+    const previous = persistentNetworkBans.get(storageKey);
     const recent = previous && now - previous.lastStrikeAt <= PERSISTENT_BAN_STRIKE_RESET_MS;
     const strikes = recent ? previous.strikes + 1 : 1;
     const durationMs = PERSISTENT_BAN_DURATIONS_MS[Math.min(strikes, PERSISTENT_BAN_DURATIONS_MS.length) - 1];
     const record = { strikes, lastStrikeAt: now, banUntil: now + durationMs };
-    persistentNetworkBans.set(networkHash, record);
+    persistentNetworkBans.set(storageKey, record);
     securityEnforcementDb.run(
         `INSERT INTO playback_integrity_bans (network_hash, strikes, last_strike_at, ban_until, last_reason)
          VALUES (?, ?, ?, ?, ?)
@@ -2501,20 +2772,24 @@ function registerPersistentNetworkBan(req, reason, now) {
            last_strike_at = excluded.last_strike_at,
            ban_until = excluded.ban_until,
            last_reason = excluded.last_reason`,
-        [networkHash, strikes, now, record.banUntil, reason],
+        [storageKey, strikes, now, record.banUntil, `${banType}:${reason}`],
         err => { if (err) console.error('[Playback integrity] could not persist ban:', err.message); }
     );
     return { strikes, durationMs, banUntil: record.banUntil };
 }
-function recordPlaybackIntegrityEvent(req, kind, points, detail = null) {
+function registerPersistentNetworkBan(req, reason, banType, now) {
+    return registerPersistentNetworkBanByHash(resolverNetworkKey(req), reason, banType, now);
+}
+function recordPlaybackIntegrityEvent(req, kind, points, detail = null, options = {}) {
     const now = Date.now();
-    const key = integrityScoreKey(req);
+    const banType = banTypeForIntegrityEvent(kind);
+    const key = integrityScoreKey(req, banType);
     const entry = getIntegrityScore(playbackIntegrityScores, key, now);
-    const networkEntry = getIntegrityScore(playbackIntegrityNetworkScores, resolverNetworkKey(req), now);
+    const networkEntry = getIntegrityScore(playbackIntegrityNetworkScores, networkIntegrityScoreKey(req, banType), now);
     entry.score += points;
     networkEntry.score += points;
     const clientIp = auditClientIp(req);
-    const protectedClient = isLocalOrPrivateClient(clientIp);
+    const auditOnlyClient = isPlaybackIntegrityAuditOnly(req);
     const thresholdReached = entry.score >= HONEYPOT_BLOCK_SCORE || networkEntry.score >= HONEYPOT_BLOCK_SCORE;
     const thresholdJustReached = thresholdReached && !entry.thresholdHandled && !networkEntry.thresholdHandled;
     let escalation = null;
@@ -2522,36 +2797,50 @@ function recordPlaybackIntegrityEvent(req, kind, points, detail = null) {
         entry.thresholdHandled = true;
         networkEntry.thresholdHandled = true;
     }
-    if (thresholdJustReached && HONEYPOT_ENFORCE && !protectedClient) {
-        escalation = registerPersistentNetworkBan(req, kind, now);
+    if (thresholdJustReached && HONEYPOT_ENFORCE && !auditOnlyClient && !options.deferEnforcement) {
+        escalation = registerPersistentNetworkBan(req, kind, banType, now);
         entry.blockedUntil = Math.max(entry.blockedUntil, escalation.banUntil);
         networkEntry.blockedUntil = Math.max(networkEntry.blockedUntil, escalation.banUntil);
         revokedPlaybackSessions.set(req.sessionId, entry.blockedUntil);
     }
     writeHoneypotEvent({
-        at: new Date(now).toISOString(), kind, points, score: entry.score, networkScore: networkEntry.score,
+        at: new Date(now).toISOString(), kind, banType, points, score: entry.score, networkScore: networkEntry.score,
         ip: clientIp, ipPrefix: playbackIpPrefix(req),
         session: crypto.createHash('sha256').update(req.sessionId).digest('hex').slice(0, 16),
         detail, thresholdReached, thresholdJustReached,
         strike: escalation?.strikes || null, banDurationMs: escalation?.durationMs || null,
-        enforcement: HONEYPOT_ENFORCE && !protectedClient ? 'enabled' : 'audit-only'
+        enforcement: HONEYPOT_ENFORCE && !auditOnlyClient ? (options.deferEnforcement ? 'pending-playlist-block' : 'enabled') : 'audit-only'
     });
-    return { score: entry.score, networkScore: networkEntry.score, thresholdReached };
+    return { score: entry.score, networkScore: networkEntry.score, thresholdReached, thresholdJustReached, banType };
+}
+function getPlaybackIntegrityNetworkBlockType(req) {
+    if (!HONEYPOT_ENFORCE || isPlaybackIntegrityAuditOnly(req)) return false;
+    for (const banType of [INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT, INTEGRITY_BAN_TYPES.GENERAL_ABUSE]) {
+        const entry = playbackIntegrityNetworkScores.get(networkIntegrityScoreKey(req, banType));
+        const persisted = persistentNetworkBans.get(persistentBanStorageKey(banType, resolverNetworkKey(req)));
+        if ((!!entry && entry.blockedUntil > Date.now()) || (!!persisted && persisted.banUntil > Date.now())) return banType;
+    }
+    return null;
+}
+function getPlaybackIntegrityBlockType(req) {
+    if (!HONEYPOT_ENFORCE || isPlaybackIntegrityAuditOnly(req)) return false;
+    for (const banType of [INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT, INTEGRITY_BAN_TYPES.GENERAL_ABUSE]) {
+        const entry = playbackIntegrityScores.get(integrityScoreKey(req, banType));
+        if (!!entry && entry.blockedUntil > Date.now()) return banType;
+    }
+    return getPlaybackIntegrityNetworkBlockType(req);
 }
 function isPlaybackIntegrityBlocked(req) {
-    if (!HONEYPOT_ENFORCE || isLocalOrPrivateClient(auditClientIp(req))) return false;
-    const entry = playbackIntegrityScores.get(integrityScoreKey(req));
-    return (!!entry && entry.blockedUntil > Date.now()) || isPlaybackIntegrityNetworkBlocked(req);
+    return !!getPlaybackIntegrityBlockType(req);
 }
 function isPlaybackIntegrityNetworkBlocked(req) {
-    if (!HONEYPOT_ENFORCE || isLocalOrPrivateClient(auditClientIp(req))) return false;
-    const networkHash = resolverNetworkKey(req);
-    const entry = playbackIntegrityNetworkScores.get(networkHash);
-    const persisted = persistentNetworkBans.get(networkHash);
-    return (!!entry && entry.blockedUntil > Date.now()) || (!!persisted && persisted.banUntil > Date.now());
+    return !!getPlaybackIntegrityNetworkBlockType(req);
+}
+function sendPlaybackIntegrityMediaBlock(res, banType) {
+    return res.status(429).type('text/plain').send('Playback temporarily unavailable');
 }
 function sendIntegrityFailure(req, res, outcome, status, fallback) {
-    if (outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req))) {
+    if (outcome.thresholdReached && isPlaybackIntegrityAuditOnly(req)) {
         // This header makes local black-box audits see the result even when the request was a
         // failed HLS fetch whose response body the browser/player itself does not render.
         res.set('X-Playback-Integrity-Audit', 'threshold-hit');
@@ -2561,7 +2850,9 @@ function sendIntegrityFailure(req, res, outcome, status, fallback) {
         if (String(req.headers.accept || '').includes('text/html')) {
             return res.redirect(302, '/html/security-audit-ended.html');
         }
-        return res.status(status).type('text/plain').send(LOCAL_AUDIT_NOTICE);
+        // 451 is reserved for a local integrity threshold. The public player recognizes it
+        // and navigates to the visible audit notice; normal provider failures do not redirect.
+        return res.status(451).type('text/plain').send(LOCAL_AUDIT_NOTICE);
     }
     return res.status(status).send(fallback);
 }
@@ -2598,12 +2889,12 @@ app.get(INTEGRITY_DECOY_VARIANTS.map(variant => variant.path), (req, res) => {
         const variant = INTEGRITY_DECOY_VARIANTS.find(item => decoded.purpose === `playback-integrity-decoy:${item.id}`);
         if (!variant) throw new Error('Not an integrity token');
         const outcome = recordPlaybackIntegrityEvent(req, 'integrity-decoy-requested', 12, variant.id);
-        if (outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req))) {
+        if (outcome.thresholdReached && isPlaybackIntegrityAuditOnly(req)) {
             return sendIntegrityFailure(req, res, outcome, 404, 'Not found');
         }
     } catch (err) {
         const outcome = recordPlaybackIntegrityEvent(req, 'integrity-decoy-invalid', 2, err.message);
-        if (outcome.thresholdReached && isLocalOrPrivateClient(auditClientIp(req))) {
+        if (outcome.thresholdReached && isPlaybackIntegrityAuditOnly(req)) {
             return sendIntegrityFailure(req, res, outcome, 404, 'Not found');
         }
     }
@@ -2674,11 +2965,11 @@ function tokenizeNekoDownloads(downloads, sessionId) {
 // MegaPlay's raw {file, label, kind, default} track shape, tokenized into the exact
 // {url, lang, default} shape the frontend consumes directly - moves the proxy URL building
 // (and the raw CDN url that used to travel with it) server-side, matching the video stream URL.
-function tokenizeMegaplayTracks(tracks, sessionId) {
+function tokenizeMegaplayTracks(tracks, sessionId, scope = null) {
     return (Array.isArray(tracks) ? tracks : [])
         .filter(t => t && t.file && (t.kind === 'captions' || t.kind === 'subtitles' || !t.kind))
         .map(t => ({
-            url: buildStreamProxyUrl(t.file, 'https://megaplay.buzz/', null, sessionId),
+            url: buildStreamProxyUrl(t.file, 'https://megaplay.buzz/', null, sessionId, createPlaybackLeaseId(), scope),
             lang: t.label || 'Subtitles',
             default: !!t.default
         }));
@@ -7455,10 +7746,11 @@ app.get('/api/proxy-stream', async (req, res) => {
         }
         return res.status(400).send('Missing token');
     }
-    if (isPlaybackIntegrityBlocked(req)) return res.status(429).send('Playback temporarily unavailable');
-    let decodedUrl, decodedReferer, decodedUserAgent, decodedLeaseId;
+    const existingBlockType = getPlaybackIntegrityBlockType(req);
+    if (existingBlockType) return sendPlaybackIntegrityMediaBlock(res, existingBlockType);
+    let decodedUrl, decodedReferer, decodedUserAgent, decodedLeaseId, decoded;
     try {
-        const decoded = decryptProxyTarget(req.query.token);
+        decoded = decryptProxyTarget(req.query.token);
         verifyProxySession(req, decoded);
         decodedUrl = decoded.url;
         decodedReferer = decoded.referer || 'https://kwik.si/';
@@ -7500,11 +7792,12 @@ app.get('/api/proxy-stream', async (req, res) => {
     const isSubtitleFile = /\.(vtt|srt)(\?|$)/i.test(decodedUrl);
     let releaseLease = () => {};
     try {
-        releaseLease = claimPlaybackLease(req, { leaseId: decodedLeaseId }, {
+        releaseLease = claimPlaybackLease(req, decoded, {
             isPlaybackRequest: !isSubtitleFile,
             countAsMediaRequest: !isM3u8 && !isSubtitleFile
         });
         if (!isM3u8 && !isSubtitleFile) {
+            observePublicEmbedMediaRequest(req, decoded);
             res.once('finish', releaseLease);
             res.once('close', releaseLease);
         }
@@ -11236,33 +11529,33 @@ async function resolveKickAssAnimeSources({ malId, tmdbId, itemType = 'tv', epis
         headers
     };
 }
-function proxiedKaaUrl(sourceUrl, headers = {}, sessionId) {
+function proxiedKaaUrl(sourceUrl, headers = {}, sessionId, scope = null) {
     const referer = headers.Referer || headers.referer || 'https://kaa.lt/';
     const userAgent = headers['User-Agent'] || headers['user-agent'] || '';
-    return buildStreamProxyUrl(sourceUrl, referer, userAgent || null, sessionId);
+    return buildStreamProxyUrl(sourceUrl, referer, userAgent || null, sessionId, createPlaybackLeaseId(), scope);
 }
 
-function proxiedKaaSubtitle(subtitle, headers = {}, sessionId) {
+function proxiedKaaSubtitle(subtitle, headers = {}, sessionId, scope = null) {
     if (!subtitle?.url) return subtitle;
     return {
         ...subtitle,
-        url: proxiedKaaUrl(subtitle.url, headers, sessionId)
+        url: proxiedKaaUrl(subtitle.url, headers, sessionId, scope)
     };
 }
 
 // Turns a raw {sources, subtitles, headers} result (fresh from resolveKickAssAnimeSources, or
 // reconstructed from a cache hit) into the final response shape with real, session-bound
 // proxiedUrl/subtitle.url values. Call this once per response, never before caching.
-function tokenizeKaaResult({ sources, subtitles, headers }, sessionId) {
+function tokenizeKaaResult({ sources, subtitles, headers }, sessionId, scope = null) {
     return {
         // Strip the raw upstream `url` before it reaches the client - only proxiedUrl should
         // ever leave the server. Pentest (2026-08-17) found the raw CDN URL was being spread
         // into the response alongside the token, defeating the whole point of tokenizing it.
         sources: (sources || []).map(({ url, ...rest }) => ({
             ...rest,
-            proxiedUrl: url ? proxiedKaaUrl(url, headers, sessionId) : ''
+            proxiedUrl: url ? proxiedKaaUrl(url, headers, sessionId, scope) : ''
         })),
-        subtitles: (subtitles || []).map(subtitle => proxiedKaaSubtitle(subtitle, headers, sessionId))
+        subtitles: (subtitles || []).map(subtitle => proxiedKaaSubtitle(subtitle, headers, sessionId, scope))
     };
 }
 // BOTTOM FOUR FUNCS ARE FOR NEKOSTREAM, ANIKOTO SHIT
@@ -11284,10 +11577,11 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         }
         return res.status(400).send('Missing token');
     }
-    if (isPlaybackIntegrityBlocked(req)) return res.status(429).send('Playback temporarily unavailable');
-    let targetUrl, refererOverride, decodedLeaseId, forcePlaylist;
+    const existingBlockType = getPlaybackIntegrityBlockType(req);
+    if (existingBlockType) return sendPlaybackIntegrityMediaBlock(res, existingBlockType);
+    let targetUrl, refererOverride, decodedLeaseId, forcePlaylist, decoded;
     try {
-        const decoded = decryptProxyTarget(req.query.token);
+        decoded = decryptProxyTarget(req.query.token);
         verifyProxySession(req, decoded);
         targetUrl = decoded.url;
         refererOverride = decoded.referer || undefined;
@@ -11300,14 +11594,34 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     }
     if (!targetUrl) return res.status(400).send('URL required');
 
+    const isPlaylistRequest = forcePlaylist || targetUrl.includes('.m3u8');
+    const pendingBlock = decoded.scope === 'public-embed' && decodedLeaseId
+        ? publicEmbedPendingBlocks.get(decodedLeaseId)
+        : null;
+    if (pendingBlock?.sessionId === req.sessionId && isPlaylistRequest) {
+        const ticket = crypto.randomBytes(24).toString('base64url');
+        publicEmbedBlockSegments.set(ticket, {
+            sessionId: req.sessionId, leaseId: decodedLeaseId,
+            expiresAt: Date.now() + PUBLIC_EMBED_BLOCK_SEGMENT_TTL_MS
+        });
+        publicEmbedPendingBlocks.delete(decodedLeaseId);
+        return res.status(200).set({
+            'Cache-Control': 'no-store, private',
+            'Content-Type': 'application/vnd.apple.mpegurl',
+            'X-Playback-Block-Type': INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT,
+            'X-Playback-Block-Playlist': '1'
+        }).send(renderPublicEmbedBlockPlaylist(ticket));
+    }
+
     const isMediaDataRequest = !forcePlaylist && !targetUrl.includes('.m3u8') && !/\.(vtt|srt)(\?|$)/i.test(targetUrl);
     let releaseLease = () => {};
     try {
-        releaseLease = claimPlaybackLease(req, { leaseId: decodedLeaseId }, {
+        releaseLease = claimPlaybackLease(req, decoded, {
             isPlaybackRequest: !/\.(vtt|srt)(\?|$)/i.test(targetUrl),
             countAsMediaRequest: isMediaDataRequest
         });
         if (isMediaDataRequest) {
+            observePublicEmbedMediaRequest(req, decoded);
             res.once('finish', releaseLease);
             res.once('close', releaseLease);
         }
@@ -11370,7 +11684,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             // paths (e.g. vidsrcme's "/pl/<hash>/index.m3u8") resolve correctly instead
             // of getting naively concatenated onto the directory prefix.
             const resolveUri = (uri) => new URL(uri, targetUrl).href;
-            const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null, req.sessionId, decodedLeaseId);
+            const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null, req.sessionId, decodedLeaseId, false, decoded.scope);
 
             const rewrittenM3u8 = response.data.split('\n').map(line => {
                 const trimmed = line.trim();
@@ -17463,7 +17777,7 @@ app.get('/api/t1m-master.m3u8', (req, res) => {
     res.send(entry.text);
 });
 
-function buildT1mMasterManifestUrl(manifest, sessionId) {
+function buildT1mMasterManifestUrl(manifest, sessionId, scope = null) {
     // One lease for the whole manifest, not one per variant line. buildM3u8ProxyUrl's leaseId
     // param defaults via `= createPlaybackLeaseId()`, which fires on every call where the
     // argument is omitted/undefined - passing undefined here per-line meant every rendition in
@@ -17476,7 +17790,7 @@ function buildT1mMasterManifestUrl(manifest, sessionId) {
     const rewritten = manifest.split('\n').map(line => {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) return line;
-        return buildM3u8ProxyUrl(trimmed, T1M_REFERER, sessionId, leaseId, true);
+        return buildM3u8ProxyUrl(trimmed, T1M_REFERER, sessionId, leaseId, true, scope);
     }).join('\n');
     const id = crypto.randomBytes(16).toString('hex');
     t1mManifestCache.set(id, { text: rewritten, cachedAt: Date.now() });
@@ -18261,22 +18575,6 @@ app.get('/api/anime-megaplay-log', async (req, res) => {
         res.status(500).json({ ok: false, error: err.message });
     }
 });
-
-// =========================================
-//  9b1. MEGAPLAY STREAM API (MAL ID based)
-// =========================================
-app.get(['/api/stream/mal/:malId/:episode', '/api/stream/mal/:malId/:episode/:language'], async (req, res) => {
-    try {
-        const { malId, episode, language } = req.params;
-        const lang = language || req.query.lang || 'sub';
-        const streamUrl = `https://megaplay.buzz/stream/mal/${malId}/${episode}/${lang}`;
-        res.json({ embedUrl: streamUrl });
-    } catch (error) {
-        console.error('[MegaPlay API] Error:', error.message);
-        res.status(500).json({ error: 'Failed to fetch stream via MAL ID' });
-    }
-});
-// --- MEGAPLAY DOWNLOAD EXTRACTOR ---
 
 // =========================================
 //  9b2. ANIME SEASON GROUPS (AniList-backed, Jikan/MAL fallback)
@@ -20654,10 +20952,8 @@ async function resolvePublicEmbedAnimeId(rawId) {
 // removed, so a one-time strip script loses that race almost immediately. Client-side JS below
 // avoids template-literal ${...} syntax entirely (string concatenation instead) so it can't
 // collide with this function's own server-side interpolation.
-function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, autoplay, nextEpisodeUrl }) {
-    const trackTags = (Array.isArray(tracks) ? tracks : [])
-        .map(t => `<track kind="subtitles" src="${t.url}" srclang="${escapeHtmlAttr(t.lang)}" label="${escapeHtmlAttr(t.lang)}" ${t.default ? 'default' : ''}>`)
-        .join('\n  ');
+function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, autoplay, nextEpisodeUrl, sessionId }) {
+    const activationTicket = createPublicEmbedActivation(sessionId, streamUrl, tracks);
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -20740,15 +21036,16 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
 </head>
 <body>
   <div class="wrap" id="wrap">
-    <video id="player" playsinline controls>
-      ${trackTags}
-    </video>
+    <video id="player" playsinline controls></video>
   </div>
   <script>
     (function () {
       var video = document.getElementById('player');
       var wrap = document.getElementById('wrap');
-      var src = ${JSON.stringify(streamUrl)};
+      // Playable routes are held server-side until this document activates its one-use ticket.
+      var activation = ${JSON.stringify(activationTicket)};
+      var telemetry = null;
+      var telemetryTimer = null;
       var startAt = ${JSON.stringify(Number(startAt) > 0 ? Number(startAt) : 0)};
       var autoplay = ${JSON.stringify(!!autoplay)};
       var nextEpisodeUrl = ${JSON.stringify(nextEpisodeUrl || null)};
@@ -20767,13 +21064,25 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
           }, extra || {}), '*');
         } catch (e) {}
       }
+      function sendTelemetry(name) {
+        if (!telemetry || !telemetry.ticket) return;
+        fetch('/api/embed-playback-event', {
+          method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticket: telemetry.ticket, event: name })
+        }).catch(function () {});
+      }
+      function startTelemetry() {
+        if (!telemetry || telemetryTimer) return;
+        sendTelemetry('activated');
+        telemetryTimer = setInterval(function () { sendTelemetry('timeupdate'); }, Math.max(10000, Number(telemetry.intervalMs) || 25000));
+      }
       var seekedToStart = false;
       video.addEventListener('loadedmetadata', function () {
         if (startAt > 0 && !seekedToStart) {
           seekedToStart = true;
           try { video.currentTime = Math.min(startAt, video.duration || startAt); } catch (e) {}
         }
-        postEvent('ready');
+        postEvent('ready'); sendTelemetry('ready');
         if (autoplay) {
           var playPromise = video.play();
           // Most browsers block autoplay-with-sound outright (no error, the promise just
@@ -20787,10 +21096,10 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
           }
         }
       });
-      video.addEventListener('play', function () { postEvent('play'); });
-      video.addEventListener('pause', function () { postEvent('pause'); });
+      video.addEventListener('play', function () { postEvent('play'); sendTelemetry('play'); });
+      video.addEventListener('pause', function () { postEvent('pause'); sendTelemetry('pause'); });
       video.addEventListener('ended', function () {
-        postEvent('ended');
+        postEvent('ended'); sendTelemetry('ended');
         if (nextEpisodeUrl) {
           postEvent('autonext', { nextEpisodeUrl: nextEpisodeUrl });
           location.href = nextEpisodeUrl;
@@ -20801,7 +21110,7 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
         var now = Date.now();
         if (now - lastTimeUpdatePost < 5000) return;
         lastTimeUpdatePost = now;
-        postEvent('timeupdate');
+        postEvent('timeupdate'); sendTelemetry('timeupdate');
       });
 
       // Same buildPlyrPlayer-after-MANIFEST_PARSED pattern the internal site player uses
@@ -20850,20 +21159,52 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
       }
 
       var hls = null;
-      if (window.Hls && window.Hls.isSupported()) {
-        hls = new window.Hls();
-        hls.loadSource(src);
-        hls.attachMedia(video);
-        hls.once(window.Hls.Events.MANIFEST_PARSED, function (event, data) {
-          var heights = (data.levels || []).map(function (l) { return l.height; }).filter(function (h) { return h > 0; });
-          heights = heights.filter(function (h, i) { return heights.indexOf(h) === i; }).sort(function (a, b) { return b - a; });
-          buildPlyr([0].concat(heights));
+      function installTracks(tracks) {
+        (Array.isArray(tracks) ? tracks : []).forEach(function (track) {
+          if (!track || !track.url) return;
+          var el = document.createElement('track');
+          el.kind = 'subtitles'; el.src = track.url; el.srclang = track.lang || 'und';
+          el.label = track.lang || 'Subtitles'; el.default = !!track.default;
+          video.appendChild(el);
         });
-        setTimeout(function () { buildPlyr([0, 1080, 720, 360]); }, 8000);
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = src;
-        buildPlyr([0]);
       }
+      function startPlayback(src) {
+        if (window.Hls && window.Hls.isSupported()) {
+          hls = new window.Hls();
+          hls.loadSource(src);
+          hls.attachMedia(video);
+          hls.once(window.Hls.Events.MANIFEST_PARSED, function (event, data) {
+            var heights = (data.levels || []).map(function (l) { return l.height; }).filter(function (h) { return h > 0; });
+            heights = heights.filter(function (h, i) { return heights.indexOf(h) === i; }).sort(function (a, b) { return b - a; });
+            buildPlyr([0].concat(heights));
+          });
+          hls.on(window.Hls.Events.ERROR, function (event, data) {
+            if (data && data.fatal && data.response && data.response.code === 451) {
+              window.top.location.replace('/html/security-audit-ended.html');
+            }
+          });
+          setTimeout(function () { buildPlyr([0, 1080, 720, 360]); }, 8000);
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = src;
+          buildPlyr([0]);
+        }
+      }
+      fetch('/api/embed-activate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket: activation })
+      }).then(function (response) {
+        if (response.status === 451) {
+          window.top.location.replace('/html/security-audit-ended.html');
+          throw new Error('integrity threshold reached');
+        }
+        if (!response.ok) throw new Error('activation rejected');
+        return response.json();
+      }).then(function (payload) {
+        if (!payload || !payload.source) throw new Error('activation returned no source');
+        telemetry = payload.telemetry || null; startTelemetry(); installTracks(payload.tracks); startPlayback(payload.source);
+      }).catch(function () {
+        wrap.setAttribute('data-activation-error', '1');
+      });
 
       // --- Branding watchdog ---------------------------------------------------------------
       // A true cross-origin <iframe> already can't be reached by whatever page embeds it (the
@@ -20931,7 +21272,7 @@ async function resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, ses
                         malId, tmdbId, itemType: 'tv', episodeNumber: episode,
                         audioType: kaaAudio, frontendTitle: title, season
                     });
-                    const subtitles = tokenizeKaaResult(raw, sessionId).subtitles;
+                    const subtitles = tokenizeKaaResult(raw, sessionId, 'public-embed').subtitles;
                     if (Array.isArray(subtitles) && subtitles.length) {
                         return subtitles.map((s, i) => ({ url: s.url, lang: s.lang || `Subtitle ${i + 1}`, default: i === 0 }));
                     }
@@ -20943,7 +21284,7 @@ async function resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, ses
     } catch (err) {
         // title lookup failed - fall through to MegaPlay's own track below
     }
-    return tokenizeMegaplayTracks(megaplayTracks, sessionId);
+    return tokenizeMegaplayTracks(megaplayTracks, sessionId, 'public-embed');
 }
 
 // Resolves an anime episode's stream from whichever server the caller picked. mega (default) is
@@ -20957,7 +21298,7 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
         const raw = await resolveKickAssAnimeSources({
             malId, tmdbId, itemType: 'tv', episodeNumber: episode, audioType: audio, frontendTitle: title, season
         });
-        const tokenized = tokenizeKaaResult(raw, sessionId);
+        const tokenized = tokenizeKaaResult(raw, sessionId, 'public-embed');
         const source = tokenized.sources?.[0];
         if (!source?.proxiedUrl) throw new Error('KAA returned no sources');
         const tracks = (tokenized.subtitles || []).map((s, i) => ({ url: s.url, lang: s.lang || `Subtitle ${i + 1}`, default: i === 0 }));
@@ -20979,7 +21320,7 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
             });
             if (!sources.stream) throw new Error('Neko returned no stream file');
             const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: sources.tracks || [] });
-            return { streamUrl: buildM3u8ProxyUrl(sources.stream, sources.proxyRef || null, sessionId), tracks };
+            return { streamUrl: buildPublicEmbedM3u8ProxyUrl(sources.stream, sources.proxyRef || null, sessionId), tracks };
         } catch (err) {
             // VidTube genuinely has no server for this audio type (not a transient failure) -
             // same fallback fetchKaaSubtitlesForEpisode's caller uses internally.
@@ -20987,7 +21328,7 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
             const data = await resolveMegaplaySourcesCached(malId, episode, audio);
             if (!data?.stream) throw new Error('Neko had nothing and MegaPlay fallback also failed');
             const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: data.tracks });
-            return { streamUrl: buildM3u8ProxyUrl(data.stream, data.proxyRef || null, sessionId), tracks };
+            return { streamUrl: buildPublicEmbedM3u8ProxyUrl(data.stream, data.proxyRef || null, sessionId), tracks };
         }
     }
 
@@ -21007,14 +21348,14 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
         }
         if (!streamUrl) throw new Error('RU-MV (animego/aniboom) has no playable translation for this episode');
         const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: [] });
-        return { streamUrl: buildM3u8ProxyUrl(streamUrl, 'https://aniboom.one/', sessionId), tracks };
+        return { streamUrl: buildPublicEmbedM3u8ProxyUrl(streamUrl, 'https://aniboom.one/', sessionId), tracks };
     }
 
     // default: mega (MegaPlay)
     const data = await resolveMegaplaySourcesCached(malId, episode, audio);
     if (!data?.stream) throw new Error('no stream in resolved data');
     const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: data.tracks });
-    return { streamUrl: buildM3u8ProxyUrl(data.stream, data.proxyRef || null, sessionId), tracks };
+    return { streamUrl: buildPublicEmbedM3u8ProxyUrl(data.stream, data.proxyRef || null, sessionId), tracks };
 }
 
 // GET /embed/anime/{id}/{episode}?season=1&audio=sub&server=mega
@@ -21060,7 +21401,7 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
 
     try {
         const { streamUrl, tracks } = await resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId: req.sessionId });
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `Episode ${episode}`, startAt, autoplay, nextEpisodeUrl }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `Episode ${episode}`, startAt, autoplay, nextEpisodeUrl, sessionId: req.sessionId }));
     } catch (err) {
         console.warn(`[Public Embed] anime/${server} resolution failed:`, err.message || err);
         // Never hand the browser a provider iframe as a fallback. A public embed must fail
@@ -21116,18 +21457,18 @@ app.get('/embed/movie/:id', async (req, res) => {
             const title = movieData?.title || movieData?.original_title;
             if (!title) throw new Error('could not resolve a title for RU-MV');
             const ru = await resolveMovieRuData(title, tmdbId);
-            streamUrl = buildM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId);
+            streamUrl = buildPublicEmbedM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId);
             tracks = [];
         } else if (server === 't1m') {
             const t1m = await resolveT1mSourcesCached('movie', tmdbId, 1, 1);
-            streamUrl = buildT1mMasterManifestUrl(t1m.manifest, req.sessionId);
+            streamUrl = buildT1mMasterManifestUrl(t1m.manifest, req.sessionId, 'public-embed');
             tracks = t1m.subtitles.map(s => ({ url: s.file, lang: s.label, default: /^english/i.test(s.label || '') }));
         } else {
             const kino = await resolveKinoCached(`movie:${tmdbId}`, () => runKinoExtraction(`movie/${tmdbId}`, 'movie'));
-            streamUrl = buildM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
+            streamUrl = buildPublicEmbedM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
             tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'movie' });
         }
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie', startAt, autoplay }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie', startAt, autoplay, sessionId: req.sessionId }));
     } catch (err) {
         console.warn(`[Public Embed] movie/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
@@ -21165,18 +21506,18 @@ app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
             const title = tvData?.name || tvData?.original_name;
             if (!title) throw new Error('could not resolve a title for RU-MV');
             const ru = await resolveTvRuData(title, tmdbId, season, episode);
-            streamUrl = buildM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId);
+            streamUrl = buildPublicEmbedM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId);
             tracks = [];
         } else if (server === 't1m') {
             const t1m = await resolveT1mSourcesCached('tv', tmdbId, season, episode);
-            streamUrl = buildT1mMasterManifestUrl(t1m.manifest, req.sessionId);
+            streamUrl = buildT1mMasterManifestUrl(t1m.manifest, req.sessionId, 'public-embed');
             tracks = t1m.subtitles.map(s => ({ url: s.file, lang: s.label, default: /^english/i.test(s.label || '') }));
         } else {
             const kino = await resolveKinoCached(`tv:${tmdbId}:${season}:${episode}`, () => runKinoExtraction(`tv/${tmdbId}/${season}/${episode}`, 'tv'));
-            streamUrl = buildM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
+            streamUrl = buildPublicEmbedM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
             tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'tv', season, episode });
         }
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}`, startAt, autoplay, nextEpisodeUrl }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}`, startAt, autoplay, nextEpisodeUrl, sessionId: req.sessionId }));
     } catch (err) {
         console.warn(`[Public Embed] tv/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
