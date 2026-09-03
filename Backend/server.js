@@ -1774,18 +1774,15 @@ app.use((req, res, next) => {
         sid = crypto.randomBytes(32).toString('hex');
         issueSessionCookie(res, sid);
     }
-    if (revokedPlaybackSessions.get(sid) > Date.now()) {
-        res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, secure: true, sameSite: 'none' });
-        return res.status(429).json({ error: 'Playback session temporarily unavailable' });
-    }
-    const networkBlockType = getPlaybackIntegrityNetworkBlockType(req);
-    if (networkBlockType) {
-        if (req.path === '/api/proxy-stream' || req.path === '/api/m3u8-proxy') {
-            return sendPlaybackIntegrityMediaBlock(res, networkBlockType);
-        }
-        return res.status(429).json({ error: 'Playback temporarily unavailable', blockType: networkBlockType });
-    }
     req.sessionId = sid;
+    req.publicEmbedSessionBlocked = revokedPlaybackSessions.get(sid) > Date.now();
+    req.publicEmbedNetworkBlockType = getPlaybackIntegrityNetworkBlockType(req);
+    // A public-embed relay ban must never lock a person out of MovieInfo or the first-party
+    // player. Proxy routes decide after decrypting the token whether it belongs to a public
+    // embed; only direct /embed routes can be identified here without inspecting a token.
+    if (isPublicEmbedRoute(req.path) && (req.publicEmbedSessionBlocked || req.publicEmbedNetworkBlockType)) {
+        return res.status(429).json({ error: 'Public embed playback temporarily unavailable' });
+    }
     next();
 });
 
@@ -2742,6 +2739,9 @@ function isPlaybackIntegrityBlocked(req) {
 }
 function isPlaybackIntegrityNetworkBlocked(req) {
     return !!getPlaybackIntegrityNetworkBlockType(req);
+}
+function isPublicEmbedRoute(path) {
+    return /^\/embed(?:\/|$)/.test(path) || path === '/api/embed-playback-event';
 }
 function sendPlaybackIntegrityMediaBlock(res, banType) {
     return res.status(429).type('text/plain').send('Playback temporarily unavailable');
@@ -7653,8 +7653,6 @@ app.get('/api/proxy-stream', async (req, res) => {
         }
         return res.status(400).send('Missing token');
     }
-    const existingBlockType = getPlaybackIntegrityBlockType(req);
-    if (existingBlockType) return sendPlaybackIntegrityMediaBlock(res, existingBlockType);
     let decodedUrl, decodedReferer, decodedUserAgent, decodedLeaseId, decoded;
     try {
         decoded = decryptProxyTarget(req.query.token);
@@ -7667,6 +7665,9 @@ app.get('/api/proxy-stream', async (req, res) => {
         const outcome = recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'proxy-stream-session-replay' : 'proxy-stream-invalid-token', err.sessionMismatch ? 6 : 1);
         const fallback = err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token';
         return sendIntegrityFailure(req, res, outcome, 403, fallback);
+    }
+    if (decoded.scope === 'public-embed' && (req.publicEmbedSessionBlocked || req.publicEmbedNetworkBlockType)) {
+        return sendPlaybackIntegrityMediaBlock(res, req.publicEmbedNetworkBlockType || INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT);
     }
 
     try {
@@ -11488,8 +11489,6 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         }
         return res.status(400).send('Missing token');
     }
-    const existingBlockType = getPlaybackIntegrityBlockType(req);
-    if (existingBlockType) return sendPlaybackIntegrityMediaBlock(res, existingBlockType);
     let targetUrl, refererOverride, decodedLeaseId, forcePlaylist, decoded;
     try {
         decoded = decryptProxyTarget(req.query.token);
@@ -11502,6 +11501,9 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         const outcome = recordPlaybackIntegrityEvent(req, err.sessionMismatch ? 'm3u8-session-replay' : 'm3u8-invalid-token', err.sessionMismatch ? 6 : 1);
         const fallback = err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token';
         return sendIntegrityFailure(req, res, outcome, 403, fallback);
+    }
+    if (decoded.scope === 'public-embed' && (req.publicEmbedSessionBlocked || req.publicEmbedNetworkBlockType)) {
+        return sendPlaybackIntegrityMediaBlock(res, req.publicEmbedNetworkBlockType || INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT);
     }
     if (!targetUrl) return res.status(400).send('URL required');
 
