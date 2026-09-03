@@ -2255,13 +2255,21 @@ app.post('/api/embed-playback-event', (req, res) => {
 
 function queuePublicEmbedRelayBlock(req, leaseId) {
     if (!leaseId || publicEmbedPendingBlocks.has(leaseId)) return;
-    publicEmbedPendingBlocks.set(leaseId, {
+    const state = {
         sessionId: req.sessionId,
         networkHash: resolverNetworkKey(req),
         scoreKey: integrityScoreKey(req, INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT),
         networkScoreKey: networkIntegrityScoreKey(req, INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT),
         ip: auditClientIp(req), ipPrefix: playbackIpPrefix(req), queuedAt: Date.now()
-    });
+    };
+    publicEmbedPendingBlocks.set(leaseId, state);
+    // VOD players often cache an ENDLIST and never ask for another manifest. Do not rely on
+    // the coarse maintenance sweep in that case: make the delivery window a hard deadline.
+    setTimeout(() => {
+        if (publicEmbedPendingBlocks.get(leaseId) !== state) return;
+        publicEmbedPendingBlocks.delete(leaseId);
+        expirePublicEmbedRelayBlock(leaseId, state);
+    }, PUBLIC_EMBED_BLOCK_SEGMENT_TTL_MS).unref();
 }
 function finalizePublicEmbedRelayBlock(req, leaseId) {
     publicEmbedPendingBlocks.delete(leaseId);
@@ -2809,7 +2817,9 @@ function recordPlaybackIntegrityEvent(req, kind, points, detail = null, options 
         session: crypto.createHash('sha256').update(req.sessionId).digest('hex').slice(0, 16),
         detail, thresholdReached, thresholdJustReached,
         strike: escalation?.strikes || null, banDurationMs: escalation?.durationMs || null,
-        enforcement: HONEYPOT_ENFORCE && !auditOnlyClient ? (options.deferEnforcement ? 'pending-playlist-block' : 'enabled') : 'audit-only'
+        enforcement: HONEYPOT_ENFORCE && !auditOnlyClient
+            ? (options.deferEnforcement && thresholdJustReached ? 'pending-playlist-block' : 'enabled')
+            : 'audit-only'
     });
     return { score: entry.score, networkScore: networkEntry.score, thresholdReached, thresholdJustReached, banType };
 }
