@@ -14,7 +14,7 @@
     .grid { display:grid; grid-template-columns:minmax(0,1.65fr) minmax(260px,.75fr); gap:18px; } .card { background:#111426e8; border:1px solid #2d3354; border-radius:16px; overflow:hidden; box-shadow:0 18px 48px #0007; }
     .player-top,.settings { padding:16px 18px; } .player-top { display:flex; justify-content:space-between; gap:12px; border-bottom:1px solid #2d3354; } .eyebrow { margin:0 0 4px; color:#7edcf3; font-size:.7rem; font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
     h2 { margin:0; font-size:1rem; } #state { color:#aeb6d0; font-size:.78rem; text-align:right; } #state[data-kind="error"] { color:#ff8798; } #state[data-kind="ready"] { color:#74e7c5; }
-    .stage { position:relative; aspect-ratio:16/9; background:#02030a; } video { display:block; width:100%; height:100%; background:#02030a; object-fit:contain; } .blocked-screen { position:absolute; inset:0; display:grid; place-items:center; background:#02030a; } .blocked-screen[hidden] { display:none; } .blocked-screen img { width:100%; height:100%; object-fit:contain; } .notice { padding:13px 18px; margin:0; border-top:1px solid #2d3354; font-size:.78rem; }
+    .stage { position:relative; aspect-ratio:16/9; background:#02030a; } video { display:block; width:100%; height:100%; background:#02030a; object-fit:contain; } .notice { padding:13px 18px; margin:0; border-top:1px solid #2d3354; font-size:.78rem; }
     .settings { display:grid; gap:13px; } label { display:grid; gap:6px; color:#b7bfd9; font-size:.78rem; font-weight:700; } input,select,button { font:inherit; } input,select { height:39px; width:100%; padding:0 10px; color:#f5f7ff; background:#090b16; border:1px solid #39405f; border-radius:8px; }
     button { min-height:42px; border:0; border-radius:8px; cursor:pointer; color:white; background:linear-gradient(110deg,#7157df,#3e9ecb); font-weight:800; } button:disabled { cursor:wait; opacity:.7; } .footnote { margin:2px 0 0; color:#818ba9; font-size:.73rem; }
     @media (max-width:760px) { .grid { grid-template-columns:1fr; } header { display:block; } .badge { display:inline-block; margin-top:10px; } }
@@ -29,7 +29,7 @@
     <section class="grid">
       <article class="card">
         <div class="player-top"><div><p class="eyebrow">Replacement UI</p><h2 id="title">No source loaded</h2></div><span id="state" data-kind="idle">Waiting</span></div>
-        <div class="stage"><video id="video" controls playsinline preload="metadata"></video><div class="blocked-screen" id="blocked-screen" hidden><img src="/img/blocked%20stream" alt="Playback blocked"></div></div>
+        <div class="stage"><video id="video" controls playsinline preload="metadata"></video></div>
         <p class="notice">This page keeps activation data and the protected route in memory only; it does not expose, copy, save, or download either value.</p>
       </article>
       <form class="card settings" id="form">
@@ -46,7 +46,7 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const video = $('video'), form = $('form'), launch = $('launch'), state = $('state'), title = $('title'), blockedScreen = $('blocked-screen');
+      const video = $('video'), form = $('form'), launch = $('launch'), state = $('state'), title = $('title');
       let hls = null;
       const setState = (text, kind = 'idle') => { state.textContent = text; state.dataset.kind = kind; };
       const hex = bytes => [...new Uint8Array(bytes)].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -77,10 +77,10 @@
         return JSON.parse(match[1]);
       }
 
-      function showBlockedScreen(status) { hls?.destroy(); hls = null; video.pause(); video.removeAttribute('src'); video.load(); blockedScreen.hidden = false; title.textContent = 'Playback blocked'; setState(`Relay-heartbeat enforcement returned HTTP ${status}`, 'error'); }
+      function showBlockedState(status) { hls?.destroy(); hls = null; video.pause(); video.removeAttribute('src'); video.load(); title.textContent = 'Playback blocked'; setState(`Relay-heartbeat enforcement returned HTTP ${status}`, 'error'); }
       function attachSource(source) {
-        hls?.destroy(); hls = null; blockedScreen.hidden = true; video.removeAttribute('src');
-        if (window.Hls?.isSupported()) { hls = new Hls({ enableWorker: true }); hls.loadSource(source); hls.attachMedia(video); hls.on(Hls.Events.MANIFEST_PARSED, () => setState('Independent player ready', 'ready')); hls.on(Hls.Events.ERROR, (_, data) => { const code = Number(data?.response?.code); if (code === 429 || code === 451) return showBlockedScreen(code); if (data.fatal) setState('Playback source failed', 'error'); }); }
+        hls?.destroy(); hls = null; video.removeAttribute('src');
+        if (window.Hls?.isSupported()) { hls = new Hls({ enableWorker: true }); hls.loadSource(source); hls.attachMedia(video); hls.on(Hls.Events.MANIFEST_PARSED, () => setState('Independent player ready', 'ready')); hls.on(Hls.Events.ERROR, (_, data) => { const code = Number(data?.response?.code); if (code === 429 || code === 451) return showBlockedState(code); if (data.fatal) setState('Playback source failed', 'error'); }); }
         else if (video.canPlayType('application/vnd.apple.mpegurl')) { video.src = source; video.onloadedmetadata = () => setState('Independent player ready', 'ready'); }
         else throw new Error('This browser cannot play HLS.');
       }

@@ -2183,13 +2183,6 @@ const PUBLIC_EMBED_HEARTBEAT_GRACE_MS = 75 * 1000;
 const PUBLIC_EMBED_HEARTBEAT_REPORT_MS = 30 * 1000;
 const publicEmbedTelemetry = new Map();
 const publicEmbedTelemetryByLease = new Map();
-// A relay-heartbeat threshold is handled through the next playlist request, not by swapping an
-// arbitrary live segment. That lets HLS see an explicit discontinuity before the final local
-// block clip, and isolates the response to the offending session/lease.
-const PUBLIC_EMBED_BLOCK_SEGMENT_TTL_MS = 45 * 1000;
-const PUBLIC_EMBED_BLOCK_SEGMENT_DURATION = 2.021333;
-const publicEmbedPendingBlocks = new Map(); // leaseId -> session/network identity and queue time
-const publicEmbedBlockSegments = new Map(); // ticket -> { sessionId, leaseId, expiresAt }
 function createPublicEmbedActivation(sessionId, streamUrl, tracks) {
     const ticket = crypto.randomBytes(24).toString('base64url');
     publicEmbedActivations.set(ticket, {
@@ -2251,87 +2244,6 @@ app.post('/api/embed-playback-event', (req, res) => {
     state.lastSeenAt = Date.now();
     res.setHeader('Cache-Control', 'no-store');
     return res.json({ ok: true });
-});
-
-function queuePublicEmbedRelayBlock(req, leaseId) {
-    if (!leaseId || publicEmbedPendingBlocks.has(leaseId)) return;
-    const state = {
-        sessionId: req.sessionId,
-        networkHash: resolverNetworkKey(req),
-        scoreKey: integrityScoreKey(req, INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT),
-        networkScoreKey: networkIntegrityScoreKey(req, INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT),
-        ip: auditClientIp(req), ipPrefix: playbackIpPrefix(req), queuedAt: Date.now()
-    };
-    publicEmbedPendingBlocks.set(leaseId, state);
-    // VOD players often cache an ENDLIST and never ask for another manifest. Do not rely on
-    // the coarse maintenance sweep in that case: make the delivery window a hard deadline.
-    setTimeout(() => {
-        if (publicEmbedPendingBlocks.get(leaseId) !== state) return;
-        publicEmbedPendingBlocks.delete(leaseId);
-        expirePublicEmbedRelayBlock(leaseId, state);
-    }, PUBLIC_EMBED_BLOCK_SEGMENT_TTL_MS).unref();
-}
-function finalizePublicEmbedRelayBlock(req, leaseId) {
-    publicEmbedPendingBlocks.delete(leaseId);
-    const now = Date.now();
-    const banType = INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT;
-    const entry = getIntegrityScore(playbackIntegrityScores, integrityScoreKey(req, banType), now);
-    const networkEntry = getIntegrityScore(playbackIntegrityNetworkScores, networkIntegrityScoreKey(req, banType), now);
-    const escalation = registerPersistentNetworkBan(req, 'public-embed-media-without-ui-heartbeat', banType, now);
-    entry.blockedUntil = Math.max(entry.blockedUntil, escalation.banUntil);
-    networkEntry.blockedUntil = Math.max(networkEntry.blockedUntil, escalation.banUntil);
-    revokedPlaybackSessions.set(req.sessionId, entry.blockedUntil);
-    writeHoneypotEvent({
-        at: new Date(now).toISOString(), kind: 'public-embed-relay-block-delivered', banType,
-        points: 0, score: entry.score, networkScore: networkEntry.score,
-        ip: auditClientIp(req), ipPrefix: playbackIpPrefix(req),
-        session: crypto.createHash('sha256').update(req.sessionId).digest('hex').slice(0, 16),
-        detail: leaseId.slice(0, 8), thresholdReached: true, thresholdJustReached: false,
-        strike: escalation.strikes, banDurationMs: escalation.durationMs, enforcement: 'enabled'
-    });
-}
-function expirePublicEmbedRelayBlock(leaseId, state) {
-    const now = Date.now();
-    const banType = INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT;
-    const entry = getIntegrityScore(playbackIntegrityScores, state.scoreKey, now);
-    const networkEntry = getIntegrityScore(playbackIntegrityNetworkScores, state.networkScoreKey, now);
-    const escalation = registerPersistentNetworkBanByHash(state.networkHash, 'public-embed-media-without-ui-heartbeat', banType, now);
-    entry.blockedUntil = Math.max(entry.blockedUntil, escalation.banUntil);
-    networkEntry.blockedUntil = Math.max(networkEntry.blockedUntil, escalation.banUntil);
-    revokedPlaybackSessions.set(state.sessionId, entry.blockedUntil);
-    writeHoneypotEvent({
-        at: new Date(now).toISOString(), kind: 'public-embed-relay-block-expired', banType,
-        points: 0, score: entry.score, networkScore: networkEntry.score,
-        ip: state.ip, ipPrefix: state.ipPrefix,
-        session: crypto.createHash('sha256').update(state.sessionId).digest('hex').slice(0, 16),
-        detail: leaseId.slice(0, 8), thresholdReached: true, thresholdJustReached: false,
-        strike: escalation.strikes, banDurationMs: escalation.durationMs, enforcement: 'enabled'
-    });
-}
-function renderPublicEmbedBlockPlaylist(ticket) {
-    return `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-DISCONTINUITY\n#EXTINF:${PUBLIC_EMBED_BLOCK_SEGMENT_DURATION.toFixed(6)},\n/api/public-embed-block-segment?ticket=${encodeURIComponent(ticket)}\n#EXT-X-ENDLIST\n`;
-}
-app.get('/api/public-embed-block-segment', (req, res) => {
-    const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : '';
-    const entry = publicEmbedBlockSegments.get(ticket);
-    if (!entry || entry.sessionId !== req.sessionId || entry.expiresAt <= Date.now()) {
-        if (ticket) publicEmbedBlockSegments.delete(ticket);
-        return res.status(403).type('text/plain').send('Blocked media segment unavailable');
-    }
-    publicEmbedBlockSegments.delete(ticket);
-    try {
-        const segment = fs.readFileSync(BLOCKED_RELAY_SEGMENT_PATH);
-        res.status(200).set({
-            'Cache-Control': 'no-store, private', 'Content-Type': 'video/mp2t',
-            'Content-Length': String(segment.length), 'X-Playback-Block-Type': INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT,
-            'X-Playback-Block-Final-Segment': '1'
-        }).send(segment);
-        finalizePublicEmbedRelayBlock(req, entry.leaseId);
-    } catch (err) {
-        console.error('[Playback integrity] blocked relay segment unavailable:', err.message);
-        finalizePublicEmbedRelayBlock(req, entry.leaseId);
-        res.status(451).type('text/plain').send('Playback blocked');
-    }
 });
 
 // --- Proxy target encryption -------------------------------------------------------------
@@ -2524,11 +2436,7 @@ function observePublicEmbedMediaRequest(req, decoded) {
     if (!state || state.sessionId !== req.sessionId || now - state.lastSeenAt <= PUBLIC_EMBED_HEARTBEAT_GRACE_MS) return null;
     if (state.lastMissingReportedAt && now - state.lastMissingReportedAt < PUBLIC_EMBED_HEARTBEAT_REPORT_MS) return null;
     state.lastMissingReportedAt = now;
-    const outcome = recordPlaybackIntegrityEvent(req, 'public-embed-media-without-ui-heartbeat', 4, decoded.leaseId.slice(0, 8), { deferEnforcement: true });
-    if (outcome.thresholdJustReached && HONEYPOT_ENFORCE && !isPlaybackIntegrityAuditOnly(req)) {
-        queuePublicEmbedRelayBlock(req, decoded.leaseId);
-    }
-    return outcome;
+    return recordPlaybackIntegrityEvent(req, 'public-embed-media-without-ui-heartbeat', 4, decoded.leaseId.slice(0, 8));
 }
 
 // Stream unknown-length upstream bodies through a tiny Transform rather than buffering them in
@@ -2578,15 +2486,6 @@ setInterval(() => {
             publicEmbedTelemetry.delete(ticket);
             if (publicEmbedTelemetryByLease.get(state.leaseId) === ticket) publicEmbedTelemetryByLease.delete(state.leaseId);
         }
-    }
-    for (const [leaseId, state] of publicEmbedPendingBlocks) {
-        if (now - state.queuedAt > PUBLIC_EMBED_BLOCK_SEGMENT_TTL_MS) {
-            publicEmbedPendingBlocks.delete(leaseId);
-            expirePublicEmbedRelayBlock(leaseId, state);
-        }
-    }
-    for (const [ticket, state] of publicEmbedBlockSegments) {
-        if (state.expiresAt <= now) publicEmbedBlockSegments.delete(ticket);
     }
 }, 60 * 1000).unref();
 
@@ -2672,7 +2571,6 @@ const INTEGRITY_BAN_TYPES = Object.freeze({
     RELAY_HEARTBEAT: 'relay-heartbeat',
     GENERAL_ABUSE: 'integrity-abuse'
 });
-const BLOCKED_RELAY_SEGMENT_PATH = path.join(__dirname, '..', 'img', 'blocked-stream.ts');
 const playbackIntegrityScores = new Map();
 const playbackIntegrityNetworkScores = new Map();
 const PERSISTENT_BAN_STRIKE_RESET_MS = 30 * 24 * 60 * 60 * 1000;
@@ -2765,7 +2663,8 @@ function writeHoneypotEvent(event) {
         console.warn('[Playback integrity] failed to write audit event:', err.message);
     }
 }
-function registerPersistentNetworkBanByHash(networkHash, reason, banType, now) {
+function registerPersistentNetworkBan(req, reason, banType, now) {
+    const networkHash = resolverNetworkKey(req);
     const storageKey = persistentBanStorageKey(banType, networkHash);
     const previous = persistentNetworkBans.get(storageKey);
     const recent = previous && now - previous.lastStrikeAt <= PERSISTENT_BAN_STRIKE_RESET_MS;
@@ -2785,9 +2684,6 @@ function registerPersistentNetworkBanByHash(networkHash, reason, banType, now) {
         err => { if (err) console.error('[Playback integrity] could not persist ban:', err.message); }
     );
     return { strikes, durationMs, banUntil: record.banUntil };
-}
-function registerPersistentNetworkBan(req, reason, banType, now) {
-    return registerPersistentNetworkBanByHash(resolverNetworkKey(req), reason, banType, now);
 }
 function recordPlaybackIntegrityEvent(req, kind, points, detail = null, options = {}) {
     const now = Date.now();
@@ -7808,7 +7704,11 @@ app.get('/api/proxy-stream', async (req, res) => {
             countAsMediaRequest: !isM3u8 && !isSubtitleFile
         });
         if (!isM3u8 && !isSubtitleFile) {
-            observePublicEmbedMediaRequest(req, decoded);
+            const heartbeatOutcome = observePublicEmbedMediaRequest(req, decoded);
+            if (heartbeatOutcome?.thresholdReached && getPlaybackIntegrityBlockType(req) === INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT) {
+                releaseLease();
+                return sendPlaybackIntegrityMediaBlock(res, INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT);
+            }
             res.once('finish', releaseLease);
             res.once('close', releaseLease);
         }
@@ -11605,25 +11505,6 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     }
     if (!targetUrl) return res.status(400).send('URL required');
 
-    const isPlaylistRequest = forcePlaylist || targetUrl.includes('.m3u8');
-    const pendingBlock = decoded.scope === 'public-embed' && decodedLeaseId
-        ? publicEmbedPendingBlocks.get(decodedLeaseId)
-        : null;
-    if (pendingBlock?.sessionId === req.sessionId && isPlaylistRequest) {
-        const ticket = crypto.randomBytes(24).toString('base64url');
-        publicEmbedBlockSegments.set(ticket, {
-            sessionId: req.sessionId, leaseId: decodedLeaseId,
-            expiresAt: Date.now() + PUBLIC_EMBED_BLOCK_SEGMENT_TTL_MS
-        });
-        publicEmbedPendingBlocks.delete(decodedLeaseId);
-        return res.status(200).set({
-            'Cache-Control': 'no-store, private',
-            'Content-Type': 'application/vnd.apple.mpegurl',
-            'X-Playback-Block-Type': INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT,
-            'X-Playback-Block-Playlist': '1'
-        }).send(renderPublicEmbedBlockPlaylist(ticket));
-    }
-
     const isMediaDataRequest = !forcePlaylist && !targetUrl.includes('.m3u8') && !/\.(vtt|srt)(\?|$)/i.test(targetUrl);
     let releaseLease = () => {};
     try {
@@ -11632,7 +11513,11 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             countAsMediaRequest: isMediaDataRequest
         });
         if (isMediaDataRequest) {
-            observePublicEmbedMediaRequest(req, decoded);
+            const heartbeatOutcome = observePublicEmbedMediaRequest(req, decoded);
+            if (heartbeatOutcome?.thresholdReached && getPlaybackIntegrityBlockType(req) === INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT) {
+                releaseLease();
+                return sendPlaybackIntegrityMediaBlock(res, INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT);
+            }
             res.once('finish', releaseLease);
             res.once('close', releaseLease);
         }
