@@ -77,10 +77,10 @@
         return JSON.parse(match[1]);
       }
 
-      function showBlockedScreen() { hls?.destroy(); hls = null; video.pause(); video.removeAttribute('src'); video.load(); blockedScreen.hidden = false; title.textContent = 'Playback blocked'; setState('Relay-heartbeat enforcement returned HTTP 451', 'error'); }
+      function showBlockedScreen(status) { hls?.destroy(); hls = null; video.pause(); video.removeAttribute('src'); video.load(); blockedScreen.hidden = false; title.textContent = 'Playback blocked'; setState(`Relay-heartbeat enforcement returned HTTP ${status}`, 'error'); }
       function attachSource(source) {
         hls?.destroy(); hls = null; blockedScreen.hidden = true; video.removeAttribute('src');
-        if (window.Hls?.isSupported()) { hls = new Hls({ enableWorker: true }); hls.loadSource(source); hls.attachMedia(video); hls.on(Hls.Events.MANIFEST_PARSED, () => setState('Independent player ready', 'ready')); hls.on(Hls.Events.ERROR, (_, data) => { if (data?.response?.code === 451) return showBlockedScreen(); if (data.fatal) setState('Playback source failed', 'error'); }); }
+        if (window.Hls?.isSupported()) { hls = new Hls({ enableWorker: true }); hls.loadSource(source); hls.attachMedia(video); hls.on(Hls.Events.MANIFEST_PARSED, () => setState('Independent player ready', 'ready')); hls.on(Hls.Events.ERROR, (_, data) => { const code = Number(data?.response?.code); if (code === 429 || code === 451) return showBlockedScreen(code); if (data.fatal) setState('Playback source failed', 'error'); }); }
         else if (video.canPlayType('application/vnd.apple.mpegurl')) { video.src = source; video.onloadedmetadata = () => setState('Independent player ready', 'ready'); }
         else throw new Error('This browser cannot play HLS.');
       }
