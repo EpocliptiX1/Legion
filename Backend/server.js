@@ -2180,7 +2180,7 @@ const publicEmbedActivations = new Map();
 // consumers and escalating only sustained media traffic without expected player activity.
 const PUBLIC_EMBED_HEARTBEAT_INTERVAL_MS = 25 * 1000;
 const PUBLIC_EMBED_HEARTBEAT_GRACE_MS = 75 * 1000;
-const PUBLIC_EMBED_HEARTBEAT_REPORT_MS = 60 * 1000;
+const PUBLIC_EMBED_HEARTBEAT_REPORT_MS = 30 * 1000;
 const publicEmbedTelemetry = new Map();
 const publicEmbedTelemetryByLease = new Map();
 // A relay-heartbeat threshold is handled through the next playlist request, not by swapping an
@@ -2519,7 +2519,8 @@ function observePublicEmbedMediaRequest(req, decoded) {
     const state = telemetryTicket ? publicEmbedTelemetry.get(telemetryTicket) : null;
     const now = Date.now();
     // Do not score startup: hls.js fetches initial segments before metadata is available.
-    // After grace, one report per minute prevents segment-rate inflation.
+    // After grace, one report per 30 seconds prevents segment-rate inflation while
+    // reaching the sustained-relay threshold promptly.
     if (!state || state.sessionId !== req.sessionId || now - state.lastSeenAt <= PUBLIC_EMBED_HEARTBEAT_GRACE_MS) return null;
     if (state.lastMissingReportedAt && now - state.lastMissingReportedAt < PUBLIC_EMBED_HEARTBEAT_REPORT_MS) return null;
     state.lastMissingReportedAt = now;
