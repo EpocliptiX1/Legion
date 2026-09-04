@@ -1267,7 +1267,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                                      source in several places in this file, so it stays in the DOM (just hidden) rather
                                                      than being removed outright along with the visible box the user actually wanted gone. -->
                                                 <span id="episodeNum" style="display:none;">1</span>
-                                                <div class="player-info">Our servers: Kino, KAA, Neko, RU - MV, MegaVid<br>The rest we have no control over, just close whatever opens up.<br>MegaVid = fastest<br>NekoStream = fast<br>KAA = old, may not have dub<br>Kino = fast<br>RU - MV = normal</div>
+                                                <div class="player-info">Our servers: Kino, KaF, Neko, RU - MV, MVP<br>The rest we have no control over, just close whatever opens up.<br>MVP = fastest<br>NekoStream = fast<br>KaF = old, may not have dub<br>Kino = fast<br>RU - MV = normal</div>
                                             </div>
                                             <div class="player-block-actions">
                                                 <div class="player-block-report">
@@ -1347,7 +1347,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <div class="player-label" id="labelAnimeDub" style="cursor:pointer;" title="Click for info">Anime Sub/Dub: <span style="font-size:0.75rem;opacity:0.5;font-weight:400;">ⓘ</span></div>
                         <div class="server-group">
                             <button id="srvPahe1" class="server-btn">
-                                KickAssAnime
+                                KaF
                             </button>
                             <button id="srvNeko1" class="server-btn">
                                 NekoStream
@@ -1355,7 +1355,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             <button id="srvNew1" class="server-btn">
                                 RU - MV <img src="https://upload.wikimedia.org/wikipedia/commons/f/f3/Flag_of_Russia.svg" alt="RU" style="width:16px;height:11px;vertical-align:middle;margin-left:2px;">
                             </button>
-                            <button id="srvMega1" class="server-btn">MegaVid</button>
+                            <button id="srvMega1" class="server-btn">MVP</button>
                         </div>
                         <div id="subDubToggleRow" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                             <button id="btnSub" class="audio-btn active">SUB</button>
@@ -1375,8 +1375,8 @@ document.addEventListener('DOMContentLoaded', function() {
                                 <div class="anime-download-panel__label">Servers for downloads</div>
                                 <div class="server-group anime-download-panel__group" id="dlSourceRow">
                                     <button class="audio-btn active" data-dl-source="neko">NekoStream</button>
-                                    <button class="audio-btn" data-dl-source="kaa">KAA</button>
-                                    <button class="audio-btn" data-dl-source="megaplay">MegaPlay</button>
+                                    <button class="audio-btn" data-dl-source="kaa">KaF</button>
+                                    <button class="audio-btn" data-dl-source="megaplay">MVP</button>
                                     <button class="audio-btn" data-dl-source="rumv">RU-MV</button>
                                     <button class="audio-btn" data-dl-source="external">Kiwi (Direct MP4)</button>
                                 </div>
@@ -1421,7 +1421,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             </div>
                         </div>
                         <div id="dlBurnHint" class="anime-download-panel__hint">
-                            KAA / MegaPlay / NekoStream / RU-MV switch active server if needed. Compression runs in this browser and uses more time, battery and memory.
+                            KaF / MVP / NekoStream / RU-MV switch active server if needed. Compression runs in this browser and uses more time, battery and memory.
                         </div>
                     </div>
                 </div>
@@ -1746,7 +1746,7 @@ document.addEventListener('DOMContentLoaded', function() {
             srvKinoTv: 'Kino: HLS stream, TV shows only (slower first load)',
             srvMega: 'MegaCloud (S1): Fast Streaming',
             srvUp: 'UpCloud (S2): Stable Mirror',
-            srvPahe1: 'KickAssAnime: HLS stream',
+            srvPahe1: 'KaF: HLS stream',
             srvNeko1: 'NekoStream: HLS stream, or Injected, depends',
             srvNew1: 'RU - MV: HLS stream, Russian audio only (no sub/dub toggle)',
             srvT: 'T-Cloud (S3): Reliable Backup',
@@ -1759,7 +1759,7 @@ document.addEventListener('DOMContentLoaded', function() {
             srv111Movies: '111Movies: Extra Source',
             srvMoviesApiM: 'MoviesAPI: Extra Source',
             srv111MoviesM: '111Movies: Extra Source',
-            srvMega1: 'MegaPlay: Anime MAL-based stream'
+            srvMega1: 'MVP: Anime MAL-based stream'
         };
         // function showLimitToast2(message) {
         //     const existing = document.querySelector('.limit-toast');
@@ -2383,7 +2383,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!malId) return false;
 
             try {
-                if (infoDiv) infoDiv.textContent = 'KickAssAnime: Loading stream...';
+                if (infoDiv) infoDiv.textContent = 'KaF: Loading stream...';
                 const seasonSelectEl = document.getElementById('seasonSelect');
                 const selectedSeason = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || 1;
                 if (!watchHistoryCache && typeof window.getActivityUID === 'function') {
@@ -2482,7 +2482,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (myGen !== playbackRequestGen) return false;
                     // KAA is the last hop of the Neko -> MegaPlay -> KAA auto-fallback chain -
                     // nothing left to fall further to.
-                    if (infoDiv) infoDiv.textContent = 'KickAssAnime: No playable stream found.';
+                    if (infoDiv) infoDiv.textContent = 'KaF: No playable stream found.';
                     return false;
                 }
 
@@ -2522,14 +2522,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 if (infoDiv) {
                     infoDiv.textContent = ok
-                        ? `KickAssAnime: Loaded ${source.quality || 'HLS'} [${audioType.toUpperCase()}]`
-                        : 'KickAssAnime: HLS playback is not supported in this browser.';
+                        ? `KaF: Loaded ${source.quality || 'HLS'} [${audioType.toUpperCase()}]`
+                        : 'KaF: HLS playback is not supported in this browser.';
                 }
 
                 return ok;
             } catch (err) {
                 console.error('[KickAssAnime] playback error:', err);
-                if (infoDiv) infoDiv.textContent = 'KickAssAnime: Failed to load stream.';
+                if (infoDiv) infoDiv.textContent = 'KaF: Failed to load stream.';
                 return false;
             }
         }
@@ -2596,7 +2596,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const myGen = playbackRequestGen;
             const infoDiv = document.getElementById('serverInfoText');
             if (!malId) {
-                if (infoDiv) infoDiv.textContent = 'MegaPlay: MAL ID unavailable for this title.';
+                if (infoDiv) infoDiv.textContent = 'MVP: MAL ID unavailable for this title.';
                 return false;
             }
             // Split-cour seasons (e.g. "86 Part 2") are their own MAL entry with local
@@ -2677,7 +2677,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             audio: audioType
                         });
                         if (ok !== false) {
-                            if (infoDiv) infoDiv.textContent = `MegaPlay: Loaded [${audioType.toUpperCase()}]${marks.length ? ' · skip markers' : ''}`;
+                            if (infoDiv) infoDiv.textContent = `MVP: Loaded [${audioType.toUpperCase()}]${marks.length ? ' · skip markers' : ''}`;
                             // Only the native path has a <video> element we can read currentTime
                             // from - the iframe fallback below is megaplay's own cross-origin
                             // player, so there's nothing to track there.
@@ -3975,10 +3975,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 url = '__async__';
                 showIframePlayer('about:blank');
                 const infoDiv = document.getElementById('serverInfoText');
-                if (infoDiv) infoDiv.textContent = 'MegaPlay: Loading...';
+                if (infoDiv) infoDiv.textContent = 'MVP: Loading...';
                 const audioType = currentAudioMode === 'dub' ? 'dub' : 'sub';
                 loadMegaPlayFrame(e, audioType).then(ok => {
-                    if (!ok && infoDiv) infoDiv.textContent = 'MegaPlay: Failed to load. Try another source.';
+                    if (!ok && infoDiv) infoDiv.textContent = 'MVP: Failed to load. Try another source.';
                 });
             }
 
@@ -4898,7 +4898,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',
             animeTV: 'ⓘ Currently supports nearly all series and animes. Sub/dub switching may be unstable for most anime titles.',
-            animeDub: 'ⓘ Currently supports anime streaming via MegaPlay, KickAssAnime and NekoStream.'
+            animeDub: 'ⓘ Currently supports anime streaming via MVP, KaF and NekoStream.'
         };
 
         [...moviesBtns, ...animeTVBtns, ...animeDubBtns].forEach(id => {

@@ -27,7 +27,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    max-width: 1180px;
+    max-width: 1520px;
     margin: 0 auto;
     padding: 14px 24px;
 }
@@ -75,6 +75,19 @@
     .docs-layout{
         grid-template-columns: 128px minmax(0, 820px);
         gap: 20px;
+    }
+}
+/* A real third grid column for the playground sidebar, not an overlay - reserves its own width
+   so it can never overlap .docs-main regardless of scroll position. This breakpoint (1300px)
+   MUST stay in sync with .playground-fixed-mount's own media query below - they used to be two
+   separate, mismatched values (1000px here, 1300px there), which left the grid reserving a
+   third column's worth of space for a hundreds-of-pixels stretch where the sidebar itself was
+   still display:none, squeezing .docs-main into a narrower column for a phantom empty column
+   nobody could see (confirmed live). One shared breakpoint, defined once. */
+@media (min-width: 1300px) {
+    .docs-layout {
+        grid-template-columns: 240px minmax(0, 820px) 360px;
+        max-width: 1520px;
     }
 }
 
@@ -282,7 +295,6 @@ td.tbd, pre.placeholder-inline {
     display: flex;
     flex-direction: column;
     gap: 14px;
-    max-width: 560px;
 }
 .support-form-row { display: flex; flex-direction: column; gap: 6px; }
 .support-form-row label { font-size: 0.85rem; color: var(--text-secondary); font-weight: 600; }
@@ -331,3 +343,185 @@ td.tbd, pre.placeholder-inline {
 .support-form-status { margin: 0; font-size: 0.85rem; min-height: 1.2em; }
 .support-form-status.success { color: #3ecf6c; }
 .support-form-status.error { color: #e35d5d; }
+
+/* ── Embed Playground ──────────────────────────────────────────────────────────────────────
+   Own fixed dark/orange palette (matching the site's own --accent-primary orange, #ff8000)
+   rather than the page's generic --accent-primary tokens directly - this is meant to visually
+   read as a distinct "tool" panel, not just another docs section, while staying on-brand
+   instead of the reference embed-tester's own violet. Hardcoded colors are intentional. */
+.playground-card {
+    max-width: 420px;
+    background: linear-gradient(180deg, #1a1410 0%, #120d09 100%);
+    border: 1px solid #4a2f10;
+    border-radius: 16px;
+    padding: 22px 22px 24px;
+    box-shadow: 0 20px 50px rgba(255, 128, 0, 0.18);
+}
+.playground-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.playground-card-icon { display: inline-flex; color: #ff8000; }
+.playground-card-icon svg { width: 20px; height: 20px; }
+.playground-card-head h3 { margin: 0; font-size: 1.15rem; color: #ffb15c; font-weight: 700; }
+.playground-card-sub { color: #a3998c; font-size: 0.85rem; line-height: 1.5; margin: 0 0 20px; }
+
+.playground-field { margin-bottom: 16px; }
+.playground-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+.playground-row .playground-field { margin-bottom: 0; }
+.playground-label {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #a3998c;
+    margin-bottom: 8px;
+}
+.playground-input,
+.playground-select-wrap select {
+    width: 100%;
+    box-sizing: border-box;
+    background: #120d09;
+    border: 1px solid #3d2a12;
+    border-radius: 10px;
+    padding: 11px 14px;
+    color: #f3ece2;
+    font-size: 0.92rem;
+    font-family: inherit;
+}
+.playground-select-wrap { position: relative; }
+.playground-select-wrap select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 36px;
+    cursor: pointer;
+}
+.playground-select-wrap::after {
+    content: '';
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid #a3998c;
+    border-bottom: 2px solid #a3998c;
+    transform: translateY(-70%) rotate(45deg);
+    pointer-events: none;
+}
+.playground-input:focus,
+.playground-select-wrap select:focus { outline: none; border-color: #ff8000; }
+.playground-input::placeholder { color: #6b5f4f; }
+
+.playground-actions { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.playground-btn-primary,
+.playground-btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border-radius: 10px;
+    padding: 11px 18px;
+    font-size: 0.88rem;
+    font-weight: 700;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+}
+.playground-btn-primary {
+    background: linear-gradient(180deg, #ff9a2e, #ff8000);
+    color: #1a0f00;
+    box-shadow: 0 6px 18px rgba(255, 128, 0, 0.35);
+}
+.playground-btn-primary:hover { filter: brightness(1.08); }
+.playground-btn-secondary {
+    background: #201609;
+    color: #ffb15c;
+    border: 1px solid #4a2f10;
+}
+.playground-btn-secondary:hover { background: #2a1d0c; }
+
+.playground-status { min-height: 1.2em; font-size: 0.82rem; color: #a3998c; margin-bottom: 4px; }
+.playground-status.error { color: #f87171; }
+.playground-status.success { color: #4ade80; }
+
+.playground-output { margin-top: 14px; }
+.playground-code-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #120d09;
+    border: 1px solid #3d2a12;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 14px;
+}
+.playground-code-row code {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    color: #ffd7a8;
+    font-size: 0.78rem;
+    font-family: 'Consolas', 'Monaco', monospace;
+}
+.playground-copy-btn {
+    flex-shrink: 0;
+    background: #201609;
+    color: #ffb15c;
+    border: 1px solid #4a2f10;
+    border-radius: 7px;
+    padding: 6px 12px;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+.playground-copy-btn:hover { background: #2a1d0c; }
+.playground-preview-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 14px;
+}
+.playground-preview-grid.dual { grid-template-columns: 1fr 1fr; }
+.playground-preview-item iframe {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border: 1px solid #3d2a12;
+    border-radius: 10px;
+    background: #000;
+}
+.playground-preview-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #a3998c;
+    margin-bottom: 6px;
+}
+@media (max-width: 560px) {
+    .playground-preview-grid.dual { grid-template-columns: 1fr; }
+}
+
+/* Two copies of the same playground exist in the DOM at once (see renderPlaygroundCard) -
+   exactly one is ever displayed, switched purely by viewport width, at the SAME 1300px
+   breakpoint .docs-layout's own third-column media query above uses (kept in sync deliberately
+   - see that rule's comment for what happens when they drift apart). Below 1300px the inline
+   #embed-playground section (normal document flow, between Advanced and Info) is the one
+   that's visible; the sidebar copy only turns on at 1300px+, where .docs-layout has already
+   given it a real third grid column to live in - position:sticky here just keeps it in view
+   within THAT reserved column as the page scrolls, the same way .docs-nav already does on the
+   left. It can never overlap .docs-main because grid, not an absolute/fixed overlay, is what's
+   placing it - there's no shared space left to overlap. */
+.playground-fixed-mount { display: none; }
+@media (min-width: 1300px) {
+    #embed-playground { display: none; }
+    .playground-fixed-mount {
+        display: block;
+        position: sticky;
+        top: 70px;
+        align-self: start;
+        max-height: calc(100vh - 96px);
+        overflow-y: auto;
+        max-width: none;
+    }
+}
+/* Sidebar copy specifically: no glow. Sitting in a slim, always-visible column next to the
+   docs content, the card's own drop-shadow and the primary button's glow read as constant
+   visual noise there in a way they don't on the inline (<1300px) copy, which only appears
+   as a normal, scrolled-past section. */
+.playground-fixed-mount.playground-card { box-shadow: none; }
+.playground-fixed-mount .playground-btn-primary { box-shadow: none; }
