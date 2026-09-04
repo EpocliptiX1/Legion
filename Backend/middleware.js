@@ -37,7 +37,6 @@ const BACKEND_PORT     = parseInt(process.env.BACKEND_PORT     || '4000', 10);
 // problem on a public repo. Both processes now independently load/generate the same persisted
 // secretStore.js file, so they still agree without hardcoding a public value.
 const MIDDLEWARE_SECRET = process.env.MIDDLEWARE_SECRET || require('./secretStore').loadOrCreateSecret('middleware_secret.key');
-const ENABLE_SECURITY_TEST_PAGES = process.env.ENABLE_SECURITY_TEST_PAGES === '1' && process.env.NODE_ENV !== 'production';
 // Comma-separated list of origins allowed to call /api/* - anything else (curl, a script,
 // another site's fetch) gets rejected before it ever reaches the backend. Set this to your
 // real domain(s) when deployed, e.g. "https://mysite.com,https://www.mysite.com".
@@ -176,12 +175,6 @@ function setFirstPartyDocumentHeaders(req, res, next) {
     next();
 }
 
-// TESTENV deliberately demonstrates the security boundary, so keep it off a production/static
-// deployment. Public API documentation remains accessible independently of this test page.
-app.use('/html/TESTENV.html', (req, res, next) => {
-    if (!ENABLE_SECURITY_TEST_PAGES || !skipLocalhost(req)) return res.status(404).end();
-    next();
-});
 app.use('/html', setFirstPartyDocumentHeaders);
 ['html', 'css', 'js', 'img', 'svg'].forEach(dir => {
     app.use(`/${dir}`, express.static(path.join(PROJECT_ROOT, dir), staticHeaders));

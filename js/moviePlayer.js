@@ -2096,6 +2096,23 @@ document.addEventListener('DOMContentLoaded', function() {
                         i18n: { qualityLabel: { 0: 'Auto' } }
                     });
                     movePlyrTopControls();
+                    // Plyr's `download` control only creates a browser link to the current HLS
+                    // manifest, which is not a usable episode download. Put a real button in the
+                    // player bar instead and route it to the existing per-title download panel.
+                    const playerControls = window.plyrInstance.elements?.controls;
+                    if (playerControls && !playerControls.querySelector('.anikino-player-download')) {
+                        const downloadButton = document.createElement('button');
+                        downloadButton.type = 'button';
+                        downloadButton.className = 'plyr__controls__item plyr__control anikino-player-download';
+                        downloadButton.setAttribute('aria-label', 'Download');
+                        downloadButton.title = 'Download';
+                        downloadButton.innerHTML = '<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 21h14"/></svg><span class="plyr__tooltip">Download</span>';
+                        downloadButton.addEventListener('click', () => {
+                            const targetId = isAnime ? 'btnDownloadAnime' : (isSeries ? 'btnDownloadTv' : 'btnDownloadMovie');
+                            document.getElementById(targetId)?.click();
+                        });
+                        playerControls.insertBefore(downloadButton, playerControls.lastElementChild);
+                    }
                     setTimeout(() => {
                         console.log(window.plyrInstance.elements);
                         console.log(window.plyrInstance.elements.container);
@@ -2578,8 +2595,6 @@ document.addEventListener('DOMContentLoaded', function() {
         async function loadMegaPlayFrame(episode, audioType) {
             const myGen = playbackRequestGen;
             const infoDiv = document.getElementById('serverInfoText');
-            const frame = document.getElementById('moviePlayerFrame');
-            if (!frame) return false;
             if (!malId) {
                 if (infoDiv) infoDiv.textContent = 'MegaPlay: MAL ID unavailable for this title.';
                 return false;
@@ -2600,10 +2615,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 await fetchWatchHistory(activityUID, tmdbId).then(setWatchHistoryCache);
             }
             // Same preload-reuse pattern KAA's real loader uses (see window.preloadEpisodeSources
-            // above) - was never wired up for MegaPlay at all before, so "Watch Now" always paid
-            // both the /api/stream/mal health-check AND the /api/anime-megaplay-log extraction
-            // live, even on the common path where the page-load preload had already resolved the
-            // exact same season/episode/audio combo well before the click happened.
+            // above).  The legacy /api/stream/mal iframe resolver was deliberately removed: it
+            // exposed the upstream provider entry point to anyone, bypassing this player and its
+            // session-bound stream proxy.
             const preloadedMegaEp = window.__preloadedMegaEpisode;
             const hasMatchingMegaPreload = window.__preloadedMegaSources && isFreshSourcePreload(preloadedMegaEp) &&
                 parseInt(selectedSeason) === parseInt(preloadedMegaEp.season || 1) &&
@@ -2611,20 +2625,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 preloadedMegaEp.audioType === audioType;
 
             try {
-                let res = null;
-                if (!hasMatchingMegaPreload) {
-                    res = await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(megaplayFrameOverride.localEpisode)}/${encodeURIComponent(audioType)}`);
-                    if (!res.ok) {
-                        if (myGen !== playbackRequestGen) return false;
-                        console.log('[Fallback] MegaPlay health check failed, falling to KAA');
-                        return await fallbackFromMegaToKaa(episode, audioType);
-                    }
-                }
                 // Prefer NATIVE playback via the extracted stream: our own player instead of
                 // megaplay's iframe, which also means no megaplay ads/branding, real subtitle
                 // tracks, and - the reason this exists - their per-episode intro/outro skip
-                // markers, which an iframe can't expose to our skip overlay at all.
-                // Falls back to the original iframe below if extraction fails.
+                // markers, which an iframe can't expose to our skip overlay at all. If native
+                // resolution fails, fail closed to KAA rather than expose a provider iframe.
                 try {
                     let ex;
                     if (hasMatchingMegaPreload) {
@@ -2694,24 +2699,11 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                     }
                 } catch (exErr) {
-                    console.warn('[MegaPlay] native extraction failed, falling back to iframe:', exErr?.message || exErr);
-                }
-
-                const data = res ? await res.json().catch(() => ({})) : await fetch(`/api/stream/mal/${encodeURIComponent(megaplayMalId)}/${encodeURIComponent(megaplayFrameOverride.localEpisode)}/${encodeURIComponent(audioType)}`).then(r => r.json()).catch(() => ({}));
-                if (!data?.embedUrl) {
-                    if (myGen !== playbackRequestGen) return false;
-                    console.log('[Fallback] MegaPlay had no embed URL, falling to KAA');
-                    return await fallbackFromMegaToKaa(episode, audioType);
+                    console.warn('[MegaPlay] native extraction failed, falling back to KAA:', exErr?.message || exErr);
                 }
                 if (myGen !== playbackRequestGen) return false;
-                // Iframe fallback - no skip markers/subs available in this mode.
-                currentKaaSkipMarkers = [];
-                currentKaaSkipSegments = [];
-                renderKaaSkipSegments();
-                updateKaaSkipOverlay();
-                frame.src = data.embedUrl;
-                if (infoDiv) infoDiv.textContent = `MegaPlay: Loaded [${audioType.toUpperCase()}]`;
-                return true;
+                console.log('[Fallback] MegaPlay did not return a native stream, falling to KAA');
+                return await fallbackFromMegaToKaa(episode, audioType);
             } catch (err) {
                 console.error('[MegaPlay] playback error:', err);
                 if (myGen !== playbackRequestGen) return false;

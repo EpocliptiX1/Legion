@@ -1951,7 +1951,11 @@ app.use(RESOLVE_GATED_PATHS, scoreBrowserRequestSignals);
 // per-request) so one viewer only pays this once per POW_TTL_MS, not on every episode/season nav.
 const POW_DIFFICULTY = 5; // normal browser path: ~16^5 ≈ 1M avg attempts
 const POW_SUSPECT_DIFFICULTY = 6; // missing browser signals: 16x more work (~16M attempts)
-const POW_TTL_MS = 20 * 60 * 1000; // one solve covers roughly a binge sitting
+// Was 20 minutes despite the "roughly a binge sitting" comment - a real anime episode runs
+// ~23-24 minutes, so that TTL expired mid-episode (or right at the boundary) almost every single
+// time, re-triggering the puzzle for basically every episode of a binge instead of once per
+// sitting like intended. 4h actually covers one.
+const POW_TTL_MS = 4 * 60 * 60 * 1000;
 const POW_CHALLENGE_TTL_MS = 60 * 1000; // a minted challenge must be redeemed within a minute
 const POW_COOKIE_NAME = 'aniko_pow';
 function powDifficultyForRequest(req) {
@@ -2107,8 +2111,20 @@ const PUBLIC_EMBED_CSP = [
     "script-src 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.plyr.io",
     "style-src 'unsafe-inline' https://cdn.plyr.io",
     "img-src 'self' data:",
-    "media-src 'self'",
-    "connect-src 'self'",
+    // hls.js's MSE playback fundamentally works by creating a MediaSource and attaching it to
+    // the <video> element through a blob: URL - not an edge case, every hls.js/MSE player does
+    // this. 'self' alone silently blocked that final step (confirmed live: "Loading media from
+    // 'blob:https://...' violates ... media-src 'self'") while every manifest/segment fetch
+    // underneath succeeded fine - this is very likely THE actual root cause of the whole
+    // "embed always shows 00:00" saga, more fundamental than the plyr.svg one below.
+    "media-src 'self' blob:",
+    // Plyr fetches its own icon sprite (plyr.svg) via XHR at runtime, not bundled inline -
+    // classified as connect-src, not img-src, so allowing cdn.plyr.io on script-src/style-src
+    // wasn't enough. Without this, that fetch gets silently CSP-blocked mid-Plyr-init, leaving
+    // the time/duration display stuck at its default "00:00" placeholder even once real
+    // playback is actually happening. cdn.jsdelivr.net covers hls.js's own sourcemap fetch
+    // (DevTools-only, cosmetic, but free to allow since script-src already trusts that host).
+    "connect-src 'self' https://cdn.plyr.io https://cdn.jsdelivr.net",
     "font-src 'self' data:",
     "worker-src blob:"
 ].join('; ');
@@ -2176,16 +2192,30 @@ const publicEmbedActivations = new Map();
 // owns a relay can reproduce it. It is still useful for separating normal embeds from bare HLS
 // consumers and escalating only sustained media traffic without expected player activity.
 const PUBLIC_EMBED_HEARTBEAT_INTERVAL_MS = 25 * 1000;
-const PUBLIC_EMBED_HEARTBEAT_GRACE_MS = 75 * 1000;
-const PUBLIC_EMBED_HEARTBEAT_REPORT_MS = 30 * 1000;
+// Was a flat 5s, shorter than the interval the real player actually sends heartbeats on (25s) -
+// meaning for roughly 20 of every 25 seconds, ANY media/segment request from a completely
+// legitimate, official-player viewer landed "too long since the last heartbeat" and scored a
+// public-embed-media-without-ui-heartbeat hit (confirmed live: a normal paused viewing session,
+// nothing suspicious, racked up points every few minutes). Derived from the interval now with a
+// real safety margin (covers a missed beat plus normal network jitter) so this can't drift back
+// out of sync with it if the interval is ever retuned again without remembering this too.
+const PUBLIC_EMBED_HEARTBEAT_GRACE_MS = PUBLIC_EMBED_HEARTBEAT_INTERVAL_MS * 2.5;
+const PUBLIC_EMBED_HEARTBEAT_REPORT_MS = 10 * 1000;
 const publicEmbedTelemetry = new Map();
 const publicEmbedTelemetryByLease = new Map();
-function createPublicEmbedActivation(sessionId, streamUrl, tracks) {
+// fallbackStreamUrls: only the anime KAA path currently has more than one candidate mirror to
+// offer (resolveKickAssAnimeSources can return several) - every other embed source resolves to
+// exactly one stream, so this is empty for those. Without it, the embed player had no recourse
+// when candidate #1 happened to be a dead/expired CDN link (confirmed live: cdn.kryntal.top 404s
+// on the playlist, looping forever at 00:00 duration) even though the first-party player, which
+// gets the WHOLE sources array and can fall through it, played the same title fine.
+function createPublicEmbedActivation(sessionId, streamUrl, tracks, fallbackStreamUrls = []) {
     const ticket = crypto.randomBytes(24).toString('base64url');
     publicEmbedActivations.set(ticket, {
         sessionId,
         streamUrl,
         tracks: Array.isArray(tracks) ? tracks : [],
+        fallbackStreamUrls: Array.isArray(fallbackStreamUrls) ? fallbackStreamUrls.filter(Boolean) : [],
         expiresAt: Date.now() + PUBLIC_EMBED_ACTIVATION_TTL_MS
     });
     return ticket;
@@ -2213,7 +2243,8 @@ app.post('/api/embed-activate', (req, res) => {
         const decoded = decryptProxyTarget(sourceToken);
         if (decoded.scope === 'public-embed' && decoded.leaseId) {
             const telemetryTicket = crypto.randomBytes(18).toString('base64url');
-            const state = { sessionId: req.sessionId, leaseId: decoded.leaseId, createdAt: Date.now(), lastSeenAt: 0, lastMissingReportedAt: 0, expiresAt: Date.now() + PROXY_TOKEN_TTL_MS };
+            const createdAt = Date.now();
+            const state = { sessionId: req.sessionId, leaseId: decoded.leaseId, createdAt, lastSeenAt: createdAt, lastMissingReportedAt: 0, expiresAt: createdAt + PROXY_TOKEN_TTL_MS };
             publicEmbedTelemetry.set(telemetryTicket, state);
             publicEmbedTelemetryByLease.set(decoded.leaseId, telemetryTicket);
             telemetry = { ticket: telemetryTicket, intervalMs: PUBLIC_EMBED_HEARTBEAT_INTERVAL_MS };
@@ -2224,7 +2255,12 @@ app.post('/api/embed-activate', (req, res) => {
     }
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    return res.json({ source: entry.streamUrl, tracks: entry.tracks, telemetry });
+    // fallbackSources each carry their own independent lease/token - the heartbeat ticket above
+    // stays bound to the primary source's lease only, so a viewer who ends up on a fallback loses
+    // heartbeat tracking for that request. Acceptable: heartbeat is a detection signal, not a
+    // playback gate (see the relay-heartbeat comments above it), and working playback matters
+    // more here than one relay-detection signal being slightly less precise on a fallback path.
+    return res.json({ source: entry.streamUrl, fallbackSources: entry.fallbackStreamUrls, tracks: entry.tracks, telemetry });
 });
 
 app.post('/api/embed-playback-event', (req, res) => {
@@ -2232,7 +2268,17 @@ app.post('/api/embed-playback-event', (req, res) => {
     const event = typeof req.body?.event === 'string' ? req.body.event : '';
     const validEvents = new Set(['activated', 'ready', 'play', 'pause', 'timeupdate', 'ended', 'ad-start', 'ad-complete']);
     const state = publicEmbedTelemetry.get(ticket);
-    if (!hasValidPowPass(req) || !state || state.sessionId !== req.sessionId || state.expiresAt <= Date.now() || !validEvents.has(event)) {
+    // Deliberately NOT re-checking hasValidPowPass here (unlike /api/embed-activate, which
+    // still requires it in full). The PoW pass cookie lasts 20 minutes; a typical anime episode
+    // runs 23-24. Requiring it to still be fresh on every 25s heartbeat meant any legitimate
+    // viewer who just watched past the 20-minute mark started failing every remaining heartbeat
+    // for the rest of the episode and racking up integrity-abuse score for nothing (confirmed
+    // live - normal embed viewing, no suspicious activity, score climbing purely from this).
+    // The ticket itself is only ever minted by /api/embed-activate, which already required a
+    // valid PoW pass to reach - continued possession of a valid session-and-lease-bound ticket
+    // is sufficient ongoing proof; re-deriving PoW freshness adds no real signal here, it only
+    // punishes long-form legitimate viewing. Resolving a NEW stream still requires fresh PoW.
+    if (!state || state.sessionId !== req.sessionId || state.expiresAt <= Date.now() || !validEvents.has(event)) {
         if (state && publicEmbedTelemetryByLease.get(state.leaseId) === ticket) publicEmbedTelemetryByLease.delete(state.leaseId);
         if (ticket) publicEmbedTelemetry.delete(ticket);
         const outcome = recordPlaybackIntegrityEvent(req, 'public-embed-telemetry-invalid', 2, event || 'missing');
@@ -2428,7 +2474,7 @@ function observePublicEmbedMediaRequest(req, decoded) {
     const state = telemetryTicket ? publicEmbedTelemetry.get(telemetryTicket) : null;
     const now = Date.now();
     // Do not score startup: hls.js fetches initial segments before metadata is available.
-    // After grace, one report per 30 seconds prevents segment-rate inflation while
+    // After grace, one report per configured interval prevents segment-rate inflation while
     // reaching the sustained-relay threshold promptly.
     if (!state || state.sessionId !== req.sessionId || now - state.lastSeenAt <= PUBLIC_EMBED_HEARTBEAT_GRACE_MS) return null;
     if (state.lastMissingReportedAt && now - state.lastMissingReportedAt < PUBLIC_EMBED_HEARTBEAT_REPORT_MS) return null;
@@ -2555,7 +2601,19 @@ function buildPublicEmbedM3u8ProxyUrl(url, referer, sessionId, leaseId = createP
 
 // --- Playback integrity decoys (monitor-only by default) --------------------------------
 const HONEYPOT_LOG_PATH = path.join(__dirname, 'security-honeypot-events.jsonl');
-const HONEYPOT_WINDOW_MS = 30 * 60 * 1000;
+// getIntegrityScore below leaky-bucket decays a score entry toward 0 the longer it sits idle,
+// fully forgiving it once idle for a whole window - but ONLY the transient score. Once score
+// crosses HONEYPOT_BLOCK_SCORE, registerPersistentNetworkBan writes a SEPARATE, independent
+// record (persistentNetworkBans / securityEnforcementDb) with its own escalating-strike duration
+// (30min -> 24h -> 7day) - that ban is untouched by this decay/reset. So this value is really
+// just "how patient the forgiveness curve is for an accidental/false-positive score that never
+// actually reaches the ban threshold" - genuine sustained abuse still reaches that threshold
+// quickly (decay barely acts between closely-spaced violations) and goes to its own real ban
+// regardless of this value. 2h (was 30min, and was a hard reset-at-window-boundary rather than
+// decay) per an explicit ask: a slow drip of low-confidence points (e.g. the PoW-expiry-during-
+// long-episode heartbeat bug, or the heartbeat-grace-shorter-than-interval bug) should plateau
+// and fade out rather than ever linearly stacking to a ban.
+const HONEYPOT_WINDOW_MS = 2 * 60 * 60 * 1000;
 const HONEYPOT_BLOCK_MS = 30 * 60 * 1000;
 const HONEYPOT_BLOCK_SCORE = 12;
 // Keep this off while testing. Set HONEYPOT_ENFORCE=1 only after reviewing real traffic.
@@ -2645,12 +2703,33 @@ function integrityScoreKey(req, banType) {
 function networkIntegrityScoreKey(req, banType) {
     return `${banType}:${resolverNetworkKey(req)}`;
 }
+// A hard "reset only once the whole window has elapsed since it started" meant a slow drip of
+// small, non-abusive blips (one every hour, say) could still linearly stack up to the ban
+// threshold as long as each one landed before the single window boundary - it only forgave you
+// if your bad luck happened to spread across two different windows. Leaky-bucket decay instead:
+// every read fades the existing score down proportionally to how long it's been idle, and a
+// score untouched for a full HONEYPOT_WINDOW_MS forgives completely. A slow, spread-out drip of
+// low-confidence points now plateaus well under the threshold instead of climbing toward it -
+// while a genuine burst of rapid violations (little time to decay between them) still reaches it
+// quickly, since real abuse still comes in dense enough that decay barely has a chance to act.
 function getIntegrityScore(store, key, now) {
     let entry = store.get(key);
-    if (!entry || now - entry.windowStartedAt >= HONEYPOT_WINDOW_MS) {
-        entry = { windowStartedAt: now, score: 0, blockedUntil: 0, thresholdHandled: false };
+    if (!entry) {
+        entry = { lastUpdatedAt: now, score: 0, blockedUntil: 0, thresholdHandled: false };
         store.set(key, entry);
+        return entry;
     }
+    const idleMs = now - entry.lastUpdatedAt;
+    if (idleMs >= HONEYPOT_WINDOW_MS) {
+        // Fully idle for a whole window - forgive outright rather than leaving a decayed-but
+        // still-nonzero remainder sitting around indefinitely if nothing happens again.
+        entry.score = 0;
+        entry.thresholdHandled = false;
+        entry.blockedUntil = 0;
+    } else if (idleMs > 0) {
+        entry.score = Math.max(0, entry.score * (1 - idleMs / HONEYPOT_WINDOW_MS));
+    }
+    entry.lastUpdatedAt = now;
     return entry;
 }
 function writeHoneypotEvent(event) {
@@ -2812,7 +2891,7 @@ setInterval(() => {
     const now = Date.now();
     for (const store of [playbackIntegrityScores, playbackIntegrityNetworkScores]) {
         for (const [key, entry] of store) {
-            if (now - entry.windowStartedAt >= HONEYPOT_WINDOW_MS && entry.blockedUntil <= now) store.delete(key);
+            if (now - entry.lastUpdatedAt >= HONEYPOT_WINDOW_MS && entry.blockedUntil <= now) store.delete(key);
         }
     }
     for (const [sessionId, until] of revokedPlaybackSessions) {
@@ -11533,11 +11612,9 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     // CDN with their own Referer allowlist (e.g. aniboom.one) pass `ref` explicitly.
     const refererBase = refererOverride ? refererOverride.replace(/\/?$/, '/') : 'https://vidtube.site/';
     const originBase = refererBase.replace(/\/$/, '');
+    const isM3u8 = forcePlaylist || targetUrl.includes('.m3u8');
 
     try {
-        // 1. If it's a media chunk (.ts, .m4s, etc.) or playlist (.m3u8)
-        const isM3u8 = forcePlaylist || targetUrl.includes('.m3u8');
-
         // VidTube/Neko occasionally returns a transient 429/5xx for an individual HLS
         // chunk even though the exact same URL succeeds moments later. Retrying here is more
         // useful than only retrying in the browser: every browser retry used to create one more
@@ -11588,7 +11665,9 @@ app.get('/api/m3u8-proxy', async (req, res) => {
                 const trimmed = line.trim();
                 if (!trimmed) return line;
 
-                if (trimmed.startsWith('#EXT-X-MAP:') || trimmed.startsWith('#EXT-X-KEY:') || trimmed.startsWith('#EXT-X-MEDIA:')) {
+                if (trimmed.startsWith('#EXT-X-MAP:') || trimmed.startsWith('#EXT-X-KEY:') ||
+                    trimmed.startsWith('#EXT-X-MEDIA:') || trimmed.startsWith('#EXT-X-I-FRAME-STREAM-INF:') ||
+                    trimmed.startsWith('#EXT-X-IMAGE-STREAM-INF:')) {
                     return line.replace(/URI="([^"]+)"/, (match, uri) => `URI="${proxyUri(uri)}"`);
                 }
 
@@ -20850,8 +20929,8 @@ async function resolvePublicEmbedAnimeId(rawId) {
 // removed, so a one-time strip script loses that race almost immediately. Client-side JS below
 // avoids template-literal ${...} syntax entirely (string concatenation instead) so it can't
 // collide with this function's own server-side interpolation.
-function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, autoplay, nextEpisodeUrl, sessionId }) {
-    const activationTicket = createPublicEmbedActivation(sessionId, streamUrl, tracks);
+function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, tracks, title, tmdbId, mediaType, startAt, autoplay, nextEpisodeUrl, sessionId }) {
+    const activationTicket = createPublicEmbedActivation(sessionId, streamUrl, tracks, fallbackStreamUrls);
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -20930,11 +21009,46 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
 
   .embed-top-controls { position: absolute; top: 12px; right: 12px; display: flex; gap: 8px;
     align-items: center; z-index: 25; }
+
+  .embed-report-btn { display: inline-flex; align-items: center; justify-content: center;
+    width: 40px; height: 40px; border: none; border-radius: 8px; background: transparent;
+    color: #fff; cursor: pointer; padding: 0; }
+  .embed-report-btn:hover { background: rgba(255,128,0,0.25); }
+  .embed-report-btn svg { width: 22px; height: 22px; }
+
+  .embed-report-overlay { position: absolute; inset: 0; z-index: 40; display: none;
+    align-items: center; justify-content: center; background: rgba(0,0,0,0.65); }
+  .embed-report-overlay.open { display: flex; }
+  .embed-report-box { width: min(92%, 360px); background: #121212; border: 1px solid #2a2a2a;
+    border-radius: 12px; padding: 18px; color: #e6e6e6; font-size: 0.85rem;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+  .embed-report-box h3 { margin: 0 0 10px; font-size: 1rem; color: #fff; }
+  .embed-report-box textarea { width: 100%; box-sizing: border-box; min-height: 90px;
+    resize: vertical; background: #1a1a1a; border: 1px solid #2d2d2d; border-radius: 8px;
+    color: #eee; padding: 8px 10px; font: inherit; margin-bottom: 10px; }
+  .embed-report-box .embed-report-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .embed-report-box button { border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+    font-size: 0.85rem; }
+  .embed-report-cancel { background: #262626; color: #ccc; }
+  .embed-report-submit { background: #ff8000; color: #000; font-weight: 600; }
+  .embed-report-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+  .embed-report-status { margin: 0 0 10px; font-size: 0.8rem; color: #999; min-height: 1em; }
 </style>
 </head>
 <body>
   <div class="wrap" id="wrap">
     <video id="player" playsinline controls></video>
+    <div class="embed-report-overlay" id="embedReportOverlay">
+      <div class="embed-report-box">
+        <h3>Report a problem</h3>
+        <p class="embed-report-status" id="embedReportStatus"></p>
+        <textarea id="embedReportMessage" placeholder="What's wrong with this embed?" maxlength="4000"></textarea>
+        <div class="embed-report-actions">
+          <button type="button" class="embed-report-cancel" id="embedReportCancel">Cancel</button>
+          <button type="button" class="embed-report-submit" id="embedReportSubmit">Send</button>
+        </div>
+      </div>
+    </div>
   </div>
   <script>
     (function () {
@@ -20947,6 +21061,12 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
       var startAt = ${JSON.stringify(Number(startAt) > 0 ? Number(startAt) : 0)};
       var autoplay = ${JSON.stringify(!!autoplay)};
       var nextEpisodeUrl = ${JSON.stringify(nextEpisodeUrl || null)};
+      // Populated after activation - other candidate KAA mirrors to try if the primary one
+      // turns out to be a dead/expired CDN link (see createPublicEmbedActivation's comment).
+      var fallbackSources = [];
+      var reportTmdbId = ${JSON.stringify(tmdbId || null)};
+      var reportMediaType = ${JSON.stringify(mediaType || null)};
+      var reportMediaTitle = ${JSON.stringify(title || null)};
 
       // --- Resume playback / player events -------------------------------------------------
       // postMessage's target origin has to be '*' here since we genuinely don't know what
@@ -20963,16 +21083,17 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
         } catch (e) {}
       }
       function sendTelemetry(name) {
-        if (!telemetry || !telemetry.ticket) return;
-        fetch('/api/embed-playback-event', {
+        if (!telemetry || !telemetry.ticket) return Promise.resolve();
+        return fetch('/api/embed-playback-event', {
           method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ticket: telemetry.ticket, event: name })
         }).catch(function () {});
       }
       function startTelemetry() {
-        if (!telemetry || telemetryTimer) return;
-        sendTelemetry('activated');
+        if (!telemetry || telemetryTimer) return Promise.resolve();
+        var activated = sendTelemetry('activated');
         telemetryTimer = setInterval(function () { sendTelemetry('timeupdate'); }, Math.max(10000, Number(telemetry.intervalMs) || 25000));
+        return activated;
       }
       var seekedToStart = false;
       video.addEventListener('loadedmetadata', function () {
@@ -21019,6 +21140,54 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
       // volume/captions in the bottom bar, unlike the site's mobile-only split) - the embed is
       // always a small, often-narrow iframe, not a responsive full page, so this stays on
       // unconditionally rather than being gated behind a viewport width check.
+      // --- Report a problem ------------------------------------------------------------------
+      var reportOverlay = document.getElementById('embedReportOverlay');
+      var reportStatus = document.getElementById('embedReportStatus');
+      var reportMessage = document.getElementById('embedReportMessage');
+      var reportSubmitBtn = document.getElementById('embedReportSubmit');
+      function openReportModal() {
+        if (reportStatus) reportStatus.textContent = '';
+        if (reportMessage) reportMessage.value = '';
+        if (reportOverlay) reportOverlay.classList.add('open');
+      }
+      function closeReportModal() {
+        if (reportOverlay) reportOverlay.classList.remove('open');
+      }
+      document.getElementById('embedReportCancel')?.addEventListener('click', closeReportModal);
+      reportOverlay?.addEventListener('click', function (e) {
+        if (e.target === reportOverlay) closeReportModal();
+      });
+      reportSubmitBtn?.addEventListener('click', function () {
+        var text = (reportMessage && reportMessage.value || '').trim();
+        if (!text) {
+          if (reportStatus) reportStatus.textContent = 'Please describe the issue.';
+          return;
+        }
+        reportSubmitBtn.disabled = true;
+        if (reportStatus) reportStatus.textContent = 'Sending...';
+        // Same footer_submissions inbox the site's own Report a Bug form writes to - category
+        // 'specific' when we actually have a tmdbId (every real /embed/ route resolves one, so
+        // this is normally true), 'general' as a fallback so the form still submits either way.
+        fetch('/api/footer/report-bug', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            category: reportTmdbId ? 'specific' : 'general',
+            tmdbId: reportTmdbId,
+            mediaTitle: (reportMediaType ? '[' + reportMediaType + '] ' : '') + (reportMediaTitle || ''),
+            message: '[Embed report] ' + text
+          })
+        }).then(function (res) { return res.json().catch(function () { return {}; }); })
+          .then(function (data) {
+            if (!data || data.error) throw new Error((data && data.error) || 'Request failed');
+            if (reportStatus) reportStatus.textContent = 'Thanks - your report was sent.';
+            setTimeout(closeReportModal, 1200);
+          })
+          .catch(function () {
+            if (reportStatus) reportStatus.textContent = 'Something went wrong. Try again.';
+          })
+          .finally(function () { reportSubmitBtn.disabled = false; });
+      });
+
       function moveSettingsPipToTop(plyrInstance) {
         var playerContainer = plyrInstance.elements.container;
         var controls = plyrInstance.elements.controls;
@@ -21026,6 +21195,15 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
         var topControls = document.createElement('div');
         topControls.className = 'embed-top-controls';
         playerContainer.appendChild(topControls);
+        // Report button first so it lands to the LEFT of settings/pip in this left-to-right flex
+        // row (DOM order below), per an explicit ask.
+        var reportBtn = document.createElement('button');
+        reportBtn.type = 'button';
+        reportBtn.className = 'embed-report-btn';
+        reportBtn.title = 'Report a problem';
+        reportBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>';
+        reportBtn.addEventListener('click', openReportModal);
+        topControls.appendChild(reportBtn);
         ['[data-plyr="settings"]', '[data-plyr="pip"]'].forEach(function (selector) {
           var element = controls.querySelector(selector);
           if (element) topControls.appendChild(element);
@@ -21079,6 +21257,20 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
           hls.on(window.Hls.Events.ERROR, function (event, data) {
             if (data && data.fatal && data.response && data.response.code === 451) {
               window.top.location.replace('/html/security-audit-ended.html');
+              return;
+            }
+            // A fatal network error on the manifest/level itself (not a segment hiccup) means
+            // this specific mirror is dead - try the next candidate instead of leaving the
+            // player stuck at 00:00 forever (see fallbackSources' comment above).
+            var isManifestOrLevel = data && (data.details === window.Hls.ErrorDetails.MANIFEST_LOAD_ERROR ||
+              data.details === window.Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+              data.details === window.Hls.ErrorDetails.LEVEL_LOAD_ERROR ||
+              data.details === window.Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT);
+            if (data && data.fatal && isManifestOrLevel && fallbackSources.length > 0) {
+              var next = fallbackSources.shift();
+              try { hls.destroy(); } catch (e) {}
+              plyrBuilt = false;
+              startPlayback(next);
             }
           });
           setTimeout(function () { buildPlyr([0, 1080, 720, 360]); }, 8000);
@@ -21099,7 +21291,11 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title, startAt, a
         return response.json();
       }).then(function (payload) {
         if (!payload || !payload.source) throw new Error('activation returned no source');
-        telemetry = payload.telemetry || null; startTelemetry(); installTracks(payload.tracks); startPlayback(payload.source);
+        telemetry = payload.telemetry || null;
+        fallbackSources = Array.isArray(payload.fallbackSources) ? payload.fallbackSources.slice() : [];
+        // Do not let the first HLS segment race the server-side activated event. Without
+        // this ordering a legitimate player can look like a bare relay on a fast CDN.
+        startTelemetry().finally(function () { installTracks(payload.tracks); startPlayback(payload.source); });
       }).catch(function () {
         wrap.setAttribute('data-activation-error', '1');
       });
@@ -21193,14 +21389,40 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
     if (server === 'kaa') {
         const { title } = await getTmdbAnimeTitle(tmdbId);
         if (!title) throw new Error('could not resolve a title for KAA');
-        const raw = await resolveKickAssAnimeSources({
-            malId, tmdbId, itemType: 'tv', episodeNumber: episode, audioType: audio, frontendTitle: title, season
-        });
+        // Reuse the exact same episode_load_cache /api/anime-kaa-servers reads from - without
+        // this, the embed did a fully fresh resolveKickAssAnimeSources() call on every single
+        // request, with none of the "stick with whatever worked the first time, for up to 24h"
+        // caching the first-party player gets for free. Confirmed live: the same anime/episode
+        // played fine on movieInfo.html (serving its cached good link) while the embed kept
+        // getting a fresh, occasionally-dead one from KAA's own flaky extraction - same
+        // underlying scraper, the embed was just uniquely exposed to its flakiness.
+        const cached = await episodeLoadCacheGet(tmdbId, season, episode, audio, 'kaa');
+        let raw;
+        if (cached) {
+            const { __headers, ...subtitlesMeta } = cached.subtitles || {};
+            raw = { sources: cached.sources || [], subtitles: subtitlesMeta.__tracks || [], headers: __headers || {} };
+        } else {
+            raw = await resolveKickAssAnimeSources({
+                malId, tmdbId, itemType: 'tv', episodeNumber: episode, audioType: audio, frontendTitle: title, season
+            });
+            if (raw?.sources?.length > 0) {
+                episodeLoadCacheSet(tmdbId, malId, season, episode, audio, 'kaa',
+                    raw.animeId, raw.animeTitle, raw.sources,
+                    { __tracks: raw.subtitles, __headers: raw.headers }).catch(err =>
+                    console.warn('[Public Embed] Failed to cache KAA result:', err.message));
+            }
+        }
         const tokenized = tokenizeKaaResult(raw, sessionId, 'public-embed');
-        const source = tokenized.sources?.[0];
-        if (!source?.proxiedUrl) throw new Error('KAA returned no sources');
+        const candidates = (tokenized.sources || []).map(s => s?.proxiedUrl).filter(Boolean);
+        const source = candidates[0];
+        // KAA mirrors go stale independent of our own cache TTL - the first-party player gets
+        // the whole sources array and can fall through it, but this embed used to hardcode
+        // sources[0] with no recourse if that one mirror was already dead (confirmed live:
+        // cdn.kryntal.top 404ing on the playlist, looping forever at 00:00 duration on a source
+        // that had literally just been resolved). Hand the rest along as fallbacks instead.
+        if (!source) throw new Error('KAA returned no sources');
         const tracks = (tokenized.subtitles || []).map((s, i) => ({ url: s.url, lang: s.lang || `Subtitle ${i + 1}`, default: i === 0 }));
-        return { streamUrl: source.proxiedUrl, tracks };
+        return { streamUrl: source, fallbackStreamUrls: candidates.slice(1, 4), tracks };
     }
 
     if (server === 'neko') {
@@ -21298,8 +21520,8 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
     }
 
     try {
-        const { streamUrl, tracks } = await resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId: req.sessionId });
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `Episode ${episode}`, startAt, autoplay, nextEpisodeUrl, sessionId: req.sessionId }));
+        const { streamUrl, fallbackStreamUrls, tracks } = await resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId: req.sessionId });
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, tracks, title: `Episode ${episode}`, tmdbId, mediaType: 'anime', startAt, autoplay, nextEpisodeUrl, sessionId: req.sessionId }));
     } catch (err) {
         console.warn(`[Public Embed] anime/${server} resolution failed:`, err.message || err);
         // Never hand the browser a provider iframe as a fallback. A public embed must fail
@@ -21366,7 +21588,7 @@ app.get('/embed/movie/:id', async (req, res) => {
             streamUrl = buildPublicEmbedM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
             tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'movie' });
         }
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie', startAt, autoplay, sessionId: req.sessionId }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie', tmdbId, mediaType: 'movie', startAt, autoplay, sessionId: req.sessionId }));
     } catch (err) {
         console.warn(`[Public Embed] movie/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
@@ -21415,7 +21637,7 @@ app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
             streamUrl = buildPublicEmbedM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
             tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'tv', season, episode });
         }
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}`, startAt, autoplay, nextEpisodeUrl, sessionId: req.sessionId }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}`, tmdbId, mediaType: 'tv', startAt, autoplay, nextEpisodeUrl, sessionId: req.sessionId }));
     } catch (err) {
         console.warn(`[Public Embed] tv/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));
