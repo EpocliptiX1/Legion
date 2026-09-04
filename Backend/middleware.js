@@ -209,6 +209,12 @@ function requireSameOrigin(req, res, next) {
     // Public embeds are intentionally frameable. Requests made *inside* the embedded player
     // remain same-origin with AniKino and continue to use the session-bound proxy routes.
     if (req.path.startsWith('/embed/')) return next();
+    // Public, documented, read-only anime data API (see apidocs.html) - deliberately callable
+    // from any third-party site's own frontend/backend, same reasoning as /embed/ above. No
+    // session/auth surface to protect here (GET-only, no mutation), so there's nothing this
+    // check would meaningfully defend beyond what publicAnimeApiLimiter (server.js, 40/min/IP)
+    // already covers for abuse volume.
+    if (req.path.startsWith('/api/public/')) return next();
 
     const host = req.headers['host'];
     const validOrigins = host ? [`https://${host}`, `http://${host}`, ...ALLOWED_ORIGINS] : ALLOWED_ORIGINS;
@@ -303,6 +309,18 @@ function proxyToBackend(req, res) {
 // call, regardless of its path prefix.
 app.use(requireSameOrigin);
 app.use(apiLimiter);
+
+// CORS for the public anime data API (see apidocs.html) - requireSameOrigin above already lets
+// these paths through server-side, but without this a THIRD-PARTY SITE'S OWN frontend JS calling
+// fetch() would still have the response blocked client-side by the browser's own CORS policy.
+// GET-only, read-only, no cookies/credentials involved, so a wide-open origin is fine here in a
+// way it wouldn't be for anything session-bound.
+app.use('/api/public/', (req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+});
 
 // Use as catch-all fallback — anything not served as a static file goes to backend
 app.use((req, res) => proxyToBackend(req, res));

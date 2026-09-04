@@ -15274,6 +15274,126 @@ app.post('/api/apidocs/support', footerFormLimiter, (req, res) => {
     );
 });
 
+// ── Public read-only anime data API (documented on apidocs.html) ─────────────────────────────
+// Genuinely public: exempted from middleware.js's requireSameOrigin and CORS-open there (see its
+// own comments), same spirit as /embed/* being third-party-frameable - meant to be called from
+// OTHER sites' own frontends/backends, not just ours. Read-only, no auth, GET-only, so the only
+// real abuse surface is request volume - publicAnimeApiLimiter below covers that. SQL is always
+// parameterized (? placeholders) here; nothing user-supplied is ever concatenated into a query
+// string, so there is no injection surface regardless of what a caller sends as tmdbId/title.
+// Responses are JSON only (Content-Type: application/json), never rendered as HTML, so nothing
+// here is an XSS vector either - a title value only ever becomes a bound SQL parameter or a JSON
+// field, never markup.
+const publicAnimeApiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 40,
+    keyGenerator: rateLimitKey,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { ok: false, error: 'Too many requests - limit is 40 per minute.' }
+});
+// Strips control characters and caps length - not a security boundary by itself (see the block
+// comment above for why this endpoint has no injection surface to begin with), just sane input
+// hygiene so a malformed/huge title can't bloat a log line or a query plan for no reason.
+function sanitizePublicApiTitle(value) {
+    return String(value || '').replace(/[\x00-\x1F\x7F]/g, '').trim().slice(0, 300);
+}
+function parsePublicApiTmdbId(value) {
+    const n = parseInt(value, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// GET /api/public/episode-progress?tmdbId=1429&season=1
+// GET /api/public/episode-progress?title=Attack%20on%20Titan
+// Looked up by tmdb_id (+ optional season, default 1) when given - the more reliable path, same
+// reasoning as getAnyCachedNativeRow's own tmdb_id-first comment above. Falls back to a
+// normalized-title match (normalizeAnimeTitle - the exact same normalization every row was
+// written with) only when no tmdbId is supplied.
+app.get('/api/public/episode-progress', publicAnimeApiLimiter, (req, res) => {
+    const tmdbId = parsePublicApiTmdbId(req.query.tmdbId);
+    const title = sanitizePublicApiTitle(req.query.title);
+    const seasonParam = parseInt(req.query.season, 10);
+    const season = Number.isFinite(seasonParam) && seasonParam > 0 ? seasonParam : 1;
+    if (!tmdbId && !title) {
+        return res.status(400).json({ ok: false, error: 'tmdbId or title is required' });
+    }
+
+    const sql = tmdbId
+        ? `SELECT normalized_title, matched_title, tmdb_id, season_number, sub_count, dub_count, total_count, ru_dub_count, is_finished, tmdb_season_count, upcoming_date, data_source, cached_at
+           FROM native_episode_counts WHERE tmdb_id = ? AND season_number = ?`
+        : `SELECT normalized_title, matched_title, tmdb_id, season_number, sub_count, dub_count, total_count, ru_dub_count, is_finished, tmdb_season_count, upcoming_date, data_source, cached_at
+           FROM native_episode_counts WHERE normalized_title = ?`;
+    const params = tmdbId ? [tmdbId, season] : [normalizeAnimeTitle(title)];
+
+    animeCacheDb.get(sql, params, (err, row) => {
+        if (err) {
+            console.error('[Public API] episode-progress query failed:', err.message);
+            return res.status(500).json({ ok: false, error: 'Internal error' });
+        }
+        if (!row) return res.json({ ok: true, found: false });
+        res.json({
+            ok: true,
+            found: true,
+            data: {
+                tmdbId: row.tmdb_id,
+                season: row.season_number,
+                title: row.matched_title || row.normalized_title,
+                subEpisodes: row.sub_count,
+                dubEpisodes: row.dub_count,
+                totalEpisodes: row.total_count,
+                ruDubEpisodes: row.ru_dub_count,
+                isFinished: row.is_finished === 1,
+                tmdbSeasonEpisodeCount: row.tmdb_season_count,
+                upcomingDate: row.upcoming_date,
+                source: row.data_source,
+                cachedAt: row.cached_at
+            }
+        });
+    });
+});
+
+// GET /api/public/tmdb-mapping?tmdbId=1429
+// GET /api/public/tmdb-mapping?title=Attack%20on%20Titan
+// Every other anime-embed API in the wild keys off MAL/AniList ids - we're the outlier building
+// around TMDB (see apidocs.html's own callout on the Anime Embed section), so this exists purely
+// to let someone translate a TMDB id we already have mapped into the MAL/AniList id their own
+// tooling actually wants, or vice versa via title. tmdb_id is this table's real primary key
+// (exact match); title is a best-effort case-insensitive match against whatever title string
+// happened to get cached, not a normalized/fuzzy match like episode-progress's title lookup -
+// tmdbId is the far more reliable of the two here.
+app.get('/api/public/tmdb-mapping', publicAnimeApiLimiter, (req, res) => {
+    const tmdbId = parsePublicApiTmdbId(req.query.tmdbId);
+    const title = sanitizePublicApiTitle(req.query.title);
+    if (!tmdbId && !title) {
+        return res.status(400).json({ ok: false, error: 'tmdbId or title is required' });
+    }
+
+    const sql = tmdbId
+        ? `SELECT tmdb_id, mal_id, anilist_id, title, cached_at, validated_at FROM anime_tmdb_mapping WHERE tmdb_id = ?`
+        : `SELECT tmdb_id, mal_id, anilist_id, title, cached_at, validated_at FROM anime_tmdb_mapping WHERE LOWER(title) = LOWER(?)`;
+    const params = [tmdbId || title];
+
+    animeCacheDb.get(sql, params, (err, row) => {
+        if (err) {
+            console.error('[Public API] tmdb-mapping query failed:', err.message);
+            return res.status(500).json({ ok: false, error: 'Internal error' });
+        }
+        if (!row) return res.json({ ok: true, found: false });
+        res.json({
+            ok: true,
+            found: true,
+            data: {
+                tmdbId: row.tmdb_id,
+                malId: row.mal_id,
+                anilistId: row.anilist_id,
+                title: row.title,
+                cachedAt: row.cached_at,
+                validatedAt: row.validated_at
+            }
+        });
+    });
+});
+
 // Self-sufficient comments endpoint - doesn't depend on the user ever hitting the Neko
 // stream pipeline (KAA is the default anime server, so that pipeline may never run).
 // Cache-aside: serves from anime_comments if fresh, otherwise resolves the Anikoto
