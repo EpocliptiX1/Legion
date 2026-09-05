@@ -2379,10 +2379,14 @@ const MAX_ACTIVE_LEASES_PER_SESSION = 12;
 const MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE = 12; // player prefetch + video/audio download overlap
 const MAX_MEDIA_BYTES_PER_LEASE = 8 * 1024 * 1024 * 1024; // 8 GiB: generous for normal HD viewing, finite for relays
 // A public embed is intentionally anonymous and therefore has a tighter relay ceiling than a
-// first-party MovieInfo session. Two concurrent players and 4 GiB are still generous for a
-// legitimate embedded viewer, while a relay needs many independent PoW-backed sessions to
-// serve an audience instead of turning one embed response into an open-origin media pipe.
-const MAX_PUBLIC_EMBED_LEASES_PER_SESSION = 2;
+// first-party MovieInfo session. This is a public API meant for other sites' developers to
+// embed (not just one casual single-tab viewer) - a dev testing multiple episodes/servers, or
+// a page with several embeds open at once, can legitimately hold more than a couple of leases
+// at the same time (confirmed live 2026-09-05: a same-tab episode switch alone briefly held 2
+// leases and tripped this at the old ceiling of 2). 10 concurrent + the same per-session byte
+// cap (MAX_MEDIA_BYTES_PER_LEASE below applies per lease) is still finite - a relay would still
+// need many independent PoW-backed sessions to serve a real audience.
+const MAX_PUBLIC_EMBED_LEASES_PER_SESSION = 10;
 const MAX_PUBLIC_EMBED_MEDIA_REQUESTS_PER_LEASE = 6;
 const MAX_PUBLIC_EMBED_BYTES_PER_LEASE = 4 * 1024 * 1024 * 1024;
 // 'public-embed-playground' (see isPlaygroundEmbedRequest above) is every bit as much a public
@@ -2545,6 +2549,41 @@ function observePublicEmbedMediaRequest(req, decoded) {
 // Stream unknown-length upstream bodies through a tiny Transform rather than buffering them in
 // RAM. Known-length HLS segments take the direct pipe fast path; both paths account for bytes
 // against the anonymous playback lease.
+// axios's own `timeout` only bounds the wait for response HEADERS - once a `responseType:
+// 'stream'` request gets a 200 and starts receiving body bytes, axios stops watching it
+// entirely. If the upstream CDN accepts the connection, sends headers, then goes silent
+// mid-segment (no more bytes, socket never closes/errors), nothing here ever notices: no
+// timeout fires, no 'error' event fires, the pipe just sits open forever - confirmed live
+// 2026-09-05, a m3u8-proxy request that logged normally and then produced zero further output,
+// leaving the player buffering indefinitely with no server-side error to diagnose from. Resets
+// on every 'data' chunk; only fires if the upstream truly stops sending for the whole window.
+const STREAM_STALL_TIMEOUT_MS = 8000;
+function watchForStreamStall(stream, res, context) {
+    let timer = setTimeout(onStall, STREAM_STALL_TIMEOUT_MS);
+    function reset() {
+        clearTimeout(timer);
+        timer = setTimeout(onStall, STREAM_STALL_TIMEOUT_MS);
+    }
+    function cleanup() {
+        clearTimeout(timer);
+        stream.removeListener('data', reset);
+        stream.removeListener('end', cleanup);
+        stream.removeListener('close', cleanup);
+        stream.removeListener('error', cleanup);
+    }
+    function onStall() {
+        cleanup();
+        console.error('[Proxy Error] upstream stream stalled (no bytes for ' + STREAM_STALL_TIMEOUT_MS + 'ms)', context);
+        stream.destroy(new Error('stalled'));
+        if (!res.headersSent) res.status(504).send('Upstream media stream stalled');
+        else if (!res.writableEnded) res.destroy();
+    }
+    stream.on('data', reset);
+    stream.once('end', cleanup);
+    stream.once('close', cleanup);
+    stream.once('error', cleanup);
+}
+
 function pipeLeaseMedia(source, res, leaseId, contentLength) {
     // Do not let an upstream reset turn into an unhandled stream error. The caller has already
     // authenticated the lease; this is only transport cleanup, not a new authorization path.
@@ -11795,6 +11834,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         }
         if (response.headers['content-range']) res.setHeader('Content-Range', response.headers['content-range']);
         if (response.headers['accept-ranges']) res.setHeader('Accept-Ranges', response.headers['accept-ranges']);
+        watchForStreamStall(response.data, res, { host: (() => { try { return new URL(targetUrl).hostname; } catch (_) { return 'unknown'; } })(), resource: 'media segment' });
         // Known-length bodies were charged above. Unknown-length streams use the metered path.
         if (response.headers['content-length']) return response.data.pipe(res);
         return pipeLeaseMedia(response.data, res, decodedLeaseId, null);
@@ -21943,6 +21983,10 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
           hls = new window.Hls();
           hls.loadSource(src);
           hls.attachMedia(video);
+          // Bounded per-instance retry budget for the generic recovery below - a fresh
+          // instance (new mirror, or a later startPlayback call) gets its own fresh budget.
+          var hlsMediaRecoverAttempts = 0;
+          var hlsNetworkRecoverAttempts = 0;
           hls.once(window.Hls.Events.MANIFEST_PARSED, function (event, data) {
             var heights = (data.levels || []).map(function (l) { return l.height; }).filter(function (h) { return h > 0; });
             heights = heights.filter(function (h, i) { return heights.indexOf(h) === i; }).sort(function (a, b) { return b - a; });
@@ -21965,6 +22009,30 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
               try { hls.destroy(); } catch (e) {}
               plyrBuilt = false;
               startPlayback(next);
+              return;
+            }
+            // Everything else fatal (most commonly a single segment that stalled - see the
+            // m3u8-proxy stall watchdog server-side - exhausting hls.js's OWN internal
+            // fragment retry budget and finally surfacing here as a fatal FRAG_LOAD_ERROR/
+            // TIMEOUT) used to just fall through and do nothing: the player sat on a frozen
+            // frame forever with no recovery attempt at all. hls.js's own documented recovery
+            // pattern (startLoad for a network error, recoverMediaError for a decode error)
+            // fixes the vast majority of these - bounded so a genuinely dead stream still
+            // gives up (and falls to the next mirror, if any) instead of looping forever.
+            if (data && data.fatal) {
+              if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && hlsMediaRecoverAttempts < 2) {
+                hlsMediaRecoverAttempts++;
+                try { hls.recoverMediaError(); return; } catch (e) {}
+              } else if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && hlsNetworkRecoverAttempts < 3) {
+                hlsNetworkRecoverAttempts++;
+                try { hls.startLoad(); return; } catch (e) {}
+              }
+              if (fallbackSources.length > 0) {
+                var nextFallback = fallbackSources.shift();
+                try { hls.destroy(); } catch (e) {}
+                plyrBuilt = false;
+                startPlayback(nextFallback);
+              }
             }
           });
           setTimeout(function () { buildPlyr([0, 1080, 720, 360]); }, 8000);

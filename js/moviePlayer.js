@@ -2425,6 +2425,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 video.src = streamUrl;
             } else if (window.Hls && window.Hls.isSupported()) {
                 currentHls = new window.Hls();
+                // Bounded per-instance retry budget for the fatal-error recovery below (see
+                // the ERROR handler further down) - fresh each time a new hls instance is built.
+                let hlsMediaRecoverAttempts = 0;
+                let hlsNetworkRecoverAttempts = 0;
 
                 currentHls.loadSource(streamUrl);
                 currentHls.attachMedia(video);
@@ -2634,6 +2638,22 @@ document.addEventListener('DOMContentLoaded', function() {
                 currentHls.on(window.Hls.Events.ERROR, (event, data) => {
                     if (!data?.fatal) return;
                     console.error('[KickAssAnime/HLS]', data);
+                    // This used to just log and leave the player sitting on a frozen frame
+                    // forever - most fatal errors here are a single segment that exhausted
+                    // hls.js's own internal fragment retry budget (e.g. the m3u8-proxy stall
+                    // watchdog server-side killing a segment whose CDN went silent mid-stream)
+                    // and surfaced as a fatal FRAG_LOAD_ERROR/TIMEOUT, not something actually
+                    // unrecoverable. hls.js's own documented recovery pattern (startLoad for a
+                    // network error, recoverMediaError for a decode error) fixes the vast
+                    // majority of these - bounded so a genuinely dead stream still gives up
+                    // instead of looping forever.
+                    if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && hlsMediaRecoverAttempts < 2) {
+                        hlsMediaRecoverAttempts++;
+                        try { currentHls.recoverMediaError(); } catch (e) {}
+                    } else if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && hlsNetworkRecoverAttempts < 3) {
+                        hlsNetworkRecoverAttempts++;
+                        try { currentHls.startLoad(); } catch (e) {}
+                    }
                 });
             } else {
                 return false;
