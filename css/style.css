@@ -9187,6 +9187,35 @@ body.blur-active {
 #moviePlayerFrameWrap select:hover {
     background: rgba(0,0,0,0.5);
 }
+
+/* Double/multi-click skip-10 feedback (see wireDoubleClickZones in moviePlayer.js) - a big,
+   translucent icon over whichever side was clicked, showing the running total for the current
+   click burst. */
+.kaa-skip-overlay {
+    position: absolute;
+    top: 50%;
+    width: 33%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    transform: translateY(-50%);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+    z-index: 20;
+}
+.kaa-skip-overlay--left { left: 0; }
+.kaa-skip-overlay--right { right: 0; }
+.kaa-skip-overlay--visible { opacity: 1; }
+.kaa-skip-overlay-icon svg { width: 168px; height: 168px; fill: rgba(40,40,40,0.5); }
+.kaa-skip-overlay-label {
+    color: rgba(40,40,40,0.5);
+    font-size: 4.5rem;
+    font-weight: 600;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    margin-top: -90px;
+}
 /* Shared Styles */
 #btnBack10,
 #btnForward10,

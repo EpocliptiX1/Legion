@@ -744,6 +744,113 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // Plyr's own default is "double-click anywhere on the video toggles fullscreen" - built into
+    // Plyr itself, no config flag to just retarget it. Splits the video area into left/center/
+    // right thirds instead (same idea as YouTube's own double-tap gesture): left = -10s,
+    // right = +10s, center = fullscreen (Plyr's original behavior, kept only for the middle
+    // third), with a big translucent skip icon + running total shown over whichever side is
+    // active. Same copy as the public embed player's own wireDoubleClickZones.
+    //
+    // Deliberately NOT built on the native 'dblclick' event - two DIFFERENT dblclick events fire
+    // for a 4-click burst (clicks 1+2, then 3+4), which reads as "always +10s" no matter how many
+    // times you actually click, not a running total. click.detail is the browser's own rapid-
+    // click counter (2 for a double click, 3 for a triple, ...; resets to 1 once the OS's own
+    // double-click timing gap is exceeded) - using it directly means every qualifying click
+    // (detail >= 2) is its own +10s tick with an INDEPENDENT running accumulator here (reset on a
+    // short grace timer, or immediately if the click lands on the other side/center), so spamming
+    // 10 clicks shows "100 seconds" once, not "10 seconds" ten times. detail < 2 (an ordinary
+    // single click) is deliberately left completely alone - no preventDefault/stopPropagation -
+    // so Plyr's own single-click play/pause toggle keeps working exactly as before everywhere
+    // outside an active multi-click burst.
+    const skipAccum = { side: null, total: 0, timer: null };
+    const SKIP_ACCUM_RESET_MS = 700;
+    let skipOverlayEl = null;
+    const forwardSvgBig = '<svg xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" text-rendering="geometricPrecision" image-rendering="optimizeQuality" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" viewBox="0 0 512 295.15"><path fill-rule="nonzero" d="M40.35 266.28c1.63 10.3-5.4 19.98-15.7 21.61-10.3 1.63-19.98-5.39-21.61-15.69C.99 259.35 0 246.86 0 234.81c0-57.26 20.94-110.69 56.09-152.06 35.14-41.36 84.55-70.69 141.48-79.74C209.99 1.03 222.5 0 234.99 0c64.89 0 123.63 26.3 166.15 68.82 40.22 40.21 65.92 94.95 68.59 155.66l9.67-10.13c7.19-7.56 19.16-7.86 26.73-.66 7.56 7.19 7.86 19.16.66 26.72l-42.45 44.46a18.821 18.821 0 0 1-4.4 3.43c-7.71 5.82-18.74 4.91-25.37-2.38l-41.46-45.39c-7.03-7.73-6.47-19.7 1.26-26.73 7.72-7.03 19.7-6.47 26.73 1.26l10.79 11.81c-2.07-51.2-23.67-97.37-57.55-131.25-35.66-35.65-84.93-57.71-139.35-57.71-11.03 0-21.55.83-31.5 2.41-47.65 7.58-89.04 32.17-118.53 66.87-29.48 34.7-47.05 79.55-47.05 127.62 0 10.62.8 21.15 2.44 31.47z"/></svg>';
+    const rewindSvgBig = '<svg xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" text-rendering="geometricPrecision" image-rendering="optimizeQuality" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" viewBox="0 0 512 295.15"><g transform="translate(-45, 0)"><g transform="translate(512, 0) scale(-1, 1)"><path fill-rule="nonzero" d="M40.35 266.28c1.63 10.3-5.4 19.98-15.7 21.61-10.3 1.63-19.98-5.39-21.61-15.69C.99 259.35 0 246.86 0 234.81c0-57.26 20.94-110.69 56.09-152.06 35.14-41.36 84.55-70.69 141.48-79.74C209.99 1.03 222.5 0 234.99 0c64.89 0 123.63 26.3 166.15 68.82 40.22 40.21 65.92 94.95 68.59 155.66l9.67-10.13c7.19-7.56 19.16-7.86 26.73-.66 7.56 7.19 7.86 19.16.66 26.72l-42.45 44.46a18.821 18.821 0 0 1-4.4 3.43c-7.71 5.82-18.74 4.91-25.37-2.38l-41.46-45.39c-7.03-7.73-6.47-19.7 1.26-26.73 7.72-7.03 19.7-6.47 26.73 1.26l10.79 11.81c-2.07-51.2-23.67-97.37-57.55-131.25-35.66-35.65-84.93-57.71-139.35-57.71-11.03 0-21.55.83-31.5 2.41-47.65 7.58-89.04 32.17-118.53 66.87-29.48 34.7-47.05 79.55-47.05 127.62 0 10.62.8 21.15 2.44 31.47z"/></g></g></svg>';
+    function wireDoubleClickZones(plyrInstance, video) {
+        const container = plyrInstance?.elements?.container;
+        if (!container) return;
+
+        // 'click' and 'dblclick' are separate, independently-fired native events - intercepting
+        // 'click' below (however thoroughly) does nothing to stop the browser from ALSO firing a
+        // real 'dblclick' right after, which is what Plyr's own internal fullscreen-toggle
+        // actually listens for. Without this, double/multi-clicking the LEFT or RIGHT third
+        // still toggled fullscreen too (confirmed live) even though only the CENTER third's
+        // 'click'-based logic below is supposed to do that. This alone is enough to fully
+        // suppress it everywhere on the video area - the 'click' handler below already covers
+        // center-zone fullscreen on its own.
+        container.addEventListener('dblclick', (e) => {
+            if (e.target.closest('.plyr__controls, .kaa-top-controls')) return;
+            e.stopImmediatePropagation();
+            e.preventDefault();
+        }, true);
+
+        function ensureSkipOverlay() {
+            if (skipOverlayEl) return skipOverlayEl;
+            skipOverlayEl = document.createElement('div');
+            skipOverlayEl.className = 'kaa-skip-overlay';
+            skipOverlayEl.innerHTML = '<span class="kaa-skip-overlay-icon"></span><span class="kaa-skip-overlay-label"></span>';
+            container.appendChild(skipOverlayEl);
+            return skipOverlayEl;
+        }
+        function hideSkipOverlay() {
+            if (skipOverlayEl) skipOverlayEl.classList.remove('kaa-skip-overlay--visible');
+        }
+        function resetAccum() {
+            if (skipAccum.timer) clearTimeout(skipAccum.timer);
+            skipAccum.side = null;
+            skipAccum.total = 0;
+            skipAccum.timer = null;
+            hideSkipOverlay();
+        }
+        function showSkipOverlay(side, total) {
+            const el = ensureSkipOverlay();
+            el.className = 'kaa-skip-overlay kaa-skip-overlay--' + side + ' kaa-skip-overlay--visible';
+            el.querySelector('.kaa-skip-overlay-icon').innerHTML = side === 'left' ? rewindSvgBig : forwardSvgBig;
+            el.querySelector('.kaa-skip-overlay-label').textContent = total + 's';
+        }
+
+        container.addEventListener('click', (e) => {
+            // Let anything on the controls bar (or the mobile top-controls row) behave
+            // completely normally - only the bare video area gets the zone treatment.
+            if (e.target.closest('.plyr__controls, .kaa-top-controls')) return;
+            if (e.detail < 2) { resetAccum(); return; }
+            e.preventDefault();
+            e.stopPropagation();
+            const rect = container.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const third = rect.width / 3;
+            const side = x < third ? 'left' : (x > third * 2 ? 'right' : 'center');
+
+            if (side === 'center') {
+                resetAccum();
+                // Only the FIRST qualifying click (detail === 2, a genuine double-click) toggles -
+                // without this, a 3rd/4th/5th rapid click on center (detail 3, 4, 5...) re-fired
+                // this every time, flickering fullscreen on then straight back off.
+                if (e.detail === 2) {
+                    if (document.fullscreenElement) document.exitFullscreen();
+                    else if (container.requestFullscreen) container.requestFullscreen();
+                }
+                return;
+            }
+
+            if (skipAccum.side !== side) {
+                skipAccum.side = side;
+                skipAccum.total = 0;
+            }
+            skipAccum.total += 10;
+            if (side === 'left') {
+                video.currentTime = Math.max(0, video.currentTime - 10);
+            } else {
+                const dur = video.duration || Infinity;
+                video.currentTime = Math.min(dur, video.currentTime + 10);
+            }
+            showSkipOverlay(side, skipAccum.total);
+            if (skipAccum.timer) clearTimeout(skipAccum.timer);
+            skipAccum.timer = setTimeout(resetAccum, SKIP_ACCUM_RESET_MS);
+        }, true);
+    }
+
     // Splits volume/settings/captions/pip out of Plyr's bottom bar into a separate top-right
     // row - ONLY below the site's own mobile breakpoint (css/style.css's @media (max-width:850px)).
     // At that width the bottom bar gets too cramped for all 11 controls in one row; above it,
@@ -2392,6 +2499,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     });
                     movePlyrTopControls();
                     replaceSkipIcons(window.plyrInstance);
+                    wireDoubleClickZones(window.plyrInstance, video);
                     injectCcSettingsMenu(window.plyrInstance, video);
                     // Plyr appears to build its settings menu's actual DOM lazily, the first
                     // time it's opened - not eagerly at construction, so the call above alone

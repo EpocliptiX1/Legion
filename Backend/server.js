@@ -4662,6 +4662,13 @@ app.get('/activity/watch-buckets', (req, res) => {
 
 const NOTIF_GEN_THROTTLE_MS = 10 * 60 * 1000;
 const NOTIF_WEEK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// A user with a long watch history/list means this loop can have many candidates - firing all
+// their AniList lookups back-to-back with zero delay is exactly the burst pattern that gets a
+// server IP 403'd by AniList's own abuse detection (confirmed live 2026-09-05: once tripped,
+// every subsequent call in the same burst failed the same way). Spacing them out costs nothing
+// real - this already only runs at most once per 10min per user, in the background (see
+// generateNotificationsForUser's fire-and-forget call below).
+const ANILIST_NOTIF_CHECK_DELAY_MS = 1500;
 
 function notifInsert(userUID, type, dedupeKey, title, body, link, poster, data) {
     return new Promise((resolve) => {
@@ -4740,9 +4747,14 @@ async function generateNewEpisodeNotifications(userUID) {
     ));
 
     const now = Date.now();
+    let checkedCount = 0;
     for (const tmdbId of tmdbIds) {
         const anilistId = await resolveAnilistIdIfAnime(tmdbId);
         if (!anilistId) continue;
+
+        // One AniList round-trip per tick, not a tight loop - see ANILIST_NOTIF_CHECK_DELAY_MS.
+        if (checkedCount > 0) await sleep(ANILIST_NOTIF_CHECK_DELAY_MS);
+        checkedCount++;
 
         let info;
         try {
@@ -4838,7 +4850,12 @@ app.get('/notifications', async (req, res) => {
     const userUID = String(req.query.userUID || '').slice(0, 64);
     if (!userUID) return res.json({ notifications: [], unread: 0 });
 
-    await generateNotificationsForUser(userUID);
+    // Fire-and-forget: generation now staggers its AniList calls (see
+    // ANILIST_NOTIF_CHECK_DELAY_MS) and can take several seconds for a user with many
+    // candidates - awaiting it here would make every /notifications poll that slow. It's
+    // already throttled to once per 10min per user, so newly-generated rows just show up on
+    // the NEXT poll instead of this one.
+    generateNotificationsForUser(userUID).catch(err => console.error('[Notifications] generation failed', err.message));
 
     activityDb.all(
         `SELECT id, type, title, body, link, poster, read, created_at, data FROM notifications
@@ -7679,7 +7696,11 @@ const ALLOWED_PROXY_HOSTS = [
     // now because the embed path used to always prefer KaF's subtitles over the ACTIVE provider's
     // own - once fixed to prefer the active provider's own track first, MegaPlay titles with no
     // track of their own fall back to KaF's exactly like before, which is when this 403 surfaced.
-    'kryntal.top'
+    'kryntal.top',
+    // MegaPlay's OWN subtitle CDN (confirmed live 2026-09-05: rejected the same way kryntal.top
+    // was - MegaPlay serves its own tracks off this host for some titles, e.g.
+    // cdn.imgnex.top/anime/.../subtitles/eng-2.vtt).
+    'imgnex.top'
 ];
 let proxyDebugPrinted = false;
 
@@ -21154,7 +21175,7 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
   .plyr__control:hover { background: rgba(241,214,171,.2); }
   .plyr--video .plyr__control--overlaid { background: rgba(255, 128, 0, 0.9); }
   .plyr--full-ui input[type=range] { color: #ff8000; }
-  .plyr--video .plyr__controls { background: linear-gradient(transparent, rgba(0, 0, 0, 0.85)); backdrop-filter: blur(8px); }
+  .plyr--video .plyr__controls { background: linear-gradient(transparent, rgba(0, 0, 0, 0.85)); backdrop-filter: blur(8px); padding-top: 10px !important; }
   .plyr__control { color: #ffffff; }
   .plyr__control:hover, .plyr__control[aria-expanded="true"] { background: #ff8000; color: #fff; }
   .plyr__menu__container { background: #121212 !important; border: 1px solid #2a2a2a; border-radius: 10px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
@@ -21260,6 +21281,18 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
   #wrap[data-activation-error="1"] .embed-activation-error { display: flex; }
   .embed-activation-error button { border: none; border-radius: 8px; padding: 8px 16px;
     cursor: pointer; font-size: 0.85rem; font-weight: 600; background: #ff8000; color: #000; }
+
+  /* Double/multi-click skip-10 feedback (see wireDoubleClickZones) - a big, translucent icon
+     over whichever side was clicked, showing the running total for the current click burst. */
+  .embed-skip-overlay { position: absolute; top: 50%; width: 33%; display: flex;
+    flex-direction: column; align-items: center; gap: 6px; transform: translateY(-50%);
+    opacity: 0; pointer-events: none; transition: opacity 0.25s ease; z-index: 20; }
+  .embed-skip-overlay--left { left: 0; }
+  .embed-skip-overlay--right { right: 0; }
+  .embed-skip-overlay--visible { opacity: 1; }
+  .embed-skip-overlay-icon svg { width: 168px; height: 168px; fill: rgba(40,40,40,0.5); }
+  .embed-skip-overlay-label { color: rgba(40,40,40,0.5); font-size: 4.5rem; font-weight: 600;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.6); margin-top: -90px; }
 
   /* Different providers ship separately-timed rips of the same episode, so a caption borrowed
      from one (see resolvePublicEmbedSubtitles's own comment) can measurably drift against
@@ -21751,8 +21784,119 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
         moveSettingsPipToTop(plyrInstance);
         replaceSkipIcons(plyrInstance);
         injectCcSettingsMenu(plyrInstance);
+        wireDoubleClickZones(plyrInstance);
         var settingsBtn = plyrInstance.elements.controls && plyrInstance.elements.controls.querySelector('[data-plyr="settings"]');
         if (settingsBtn) settingsBtn.addEventListener('click', function () { injectCcSettingsMenu(plyrInstance); });
+      }
+
+      // Plyr's own default is "double-click anywhere on the video toggles fullscreen" - not our
+      // code, built into Plyr itself, so there's no config flag to just retarget it. Splits the
+      // video area into left/center/right thirds instead (same idea as YouTube's own double-tap
+      // gesture): left = -10s, right = +10s, center = fullscreen (Plyr's original behavior, kept
+      // only for the middle third), with a big translucent skip icon + running total shown over
+      // whichever side is active.
+      //
+      // Deliberately NOT built on the native 'dblclick' event - two DIFFERENT dblclick events
+      // fire for a 4-click burst (clicks 1+2, then 3+4), which reads as "always +10s" no matter
+      // how many times you actually click, not a running total. click.detail is the browser's
+      // own rapid-click counter (2 for a double click, 3 for a triple, ...; resets to 1 once the
+      // OS's own double-click timing gap is exceeded) - using it directly means every qualifying
+      // click (detail >= 2) is its own +10s tick with an INDEPENDENT running accumulator here
+      // (reset on a short grace timer, or immediately if the click lands on the other side/
+      // center), so spamming 10 clicks shows "100 seconds" once, not "10 seconds" ten times.
+      // detail < 2 (an ordinary single click) is deliberately left completely alone - no
+      // preventDefault/stopPropagation - so Plyr's own single-click play/pause toggle keeps
+      // working exactly as before everywhere outside an active multi-click burst.
+      var skipAccum = { side: null, total: 0, timer: null };
+      var SKIP_ACCUM_RESET_MS = 700;
+      var skipOverlayEl = null;
+      // Arrow only, no baked-in "10" - the icon's own path data has the number fused into extra
+      // subpaths (forward) / a separate sibling path (rewind), which read as clutter now that
+      // the actual running total is already shown as text right next to it.
+      var forwardSvgBig = '<svg xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" text-rendering="geometricPrecision" image-rendering="optimizeQuality" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" viewBox="0 0 512 295.15"><path fill-rule="nonzero" d="M40.35 266.28c1.63 10.3-5.4 19.98-15.7 21.61-10.3 1.63-19.98-5.39-21.61-15.69C.99 259.35 0 246.86 0 234.81c0-57.26 20.94-110.69 56.09-152.06 35.14-41.36 84.55-70.69 141.48-79.74C209.99 1.03 222.5 0 234.99 0c64.89 0 123.63 26.3 166.15 68.82 40.22 40.21 65.92 94.95 68.59 155.66l9.67-10.13c7.19-7.56 19.16-7.86 26.73-.66 7.56 7.19 7.86 19.16.66 26.72l-42.45 44.46a18.821 18.821 0 0 1-4.4 3.43c-7.71 5.82-18.74 4.91-25.37-2.38l-41.46-45.39c-7.03-7.73-6.47-19.7 1.26-26.73 7.72-7.03 19.7-6.47 26.73 1.26l10.79 11.81c-2.07-51.2-23.67-97.37-57.55-131.25-35.66-35.65-84.93-57.71-139.35-57.71-11.03 0-21.55.83-31.5 2.41-47.65 7.58-89.04 32.17-118.53 66.87-29.48 34.7-47.05 79.55-47.05 127.62 0 10.62.8 21.15 2.44 31.47z"/></svg>';
+      var rewindSvgBig = '<svg xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" text-rendering="geometricPrecision" image-rendering="optimizeQuality" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" viewBox="0 0 512 295.15"><g transform="translate(-45, 0)"><g transform="translate(512, 0) scale(-1, 1)"><path fill-rule="nonzero" d="M40.35 266.28c1.63 10.3-5.4 19.98-15.7 21.61-10.3 1.63-19.98-5.39-21.61-15.69C.99 259.35 0 246.86 0 234.81c0-57.26 20.94-110.69 56.09-152.06 35.14-41.36 84.55-70.69 141.48-79.74C209.99 1.03 222.5 0 234.99 0c64.89 0 123.63 26.3 166.15 68.82 40.22 40.21 65.92 94.95 68.59 155.66l9.67-10.13c7.19-7.56 19.16-7.86 26.73-.66 7.56 7.19 7.86 19.16.66 26.72l-42.45 44.46a18.821 18.821 0 0 1-4.4 3.43c-7.71 5.82-18.74 4.91-25.37-2.38l-41.46-45.39c-7.03-7.73-6.47-19.7 1.26-26.73 7.72-7.03 19.7-6.47 26.73 1.26l10.79 11.81c-2.07-51.2-23.67-97.37-57.55-131.25-35.66-35.65-84.93-57.71-139.35-57.71-11.03 0-21.55.83-31.5 2.41-47.65 7.58-89.04 32.17-118.53 66.87-29.48 34.7-47.05 79.55-47.05 127.62 0 10.62.8 21.15 2.44 31.47z"/></g></g></svg>';
+      function wireDoubleClickZones(plyrInstance) {
+        var container = plyrInstance.elements.container;
+        if (!container) return;
+
+        // 'click' and 'dblclick' are separate, independently-fired native events - intercepting
+        // 'click' below (however thoroughly) does nothing to stop the browser from ALSO firing a
+        // real 'dblclick' right after, which is what Plyr's own internal fullscreen-toggle
+        // actually listens for. Without this, double/multi-clicking the LEFT or RIGHT third
+        // still toggled fullscreen too (confirmed live) even though only the CENTER third's
+        // 'click'-based logic below is supposed to do that. This alone is enough to fully
+        // suppress it everywhere on the video area - the 'click' handler below already covers
+        // center-zone fullscreen on its own.
+        container.addEventListener('dblclick', function (e) {
+          if (e.target.closest('.plyr__controls, .embed-top-controls')) return;
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }, true);
+
+        function ensureSkipOverlay() {
+          if (skipOverlayEl) return skipOverlayEl;
+          skipOverlayEl = document.createElement('div');
+          skipOverlayEl.className = 'embed-skip-overlay';
+          skipOverlayEl.innerHTML = '<span class="embed-skip-overlay-icon"></span><span class="embed-skip-overlay-label"></span>';
+          container.appendChild(skipOverlayEl);
+          return skipOverlayEl;
+        }
+        function hideSkipOverlay() {
+          if (skipOverlayEl) skipOverlayEl.classList.remove('embed-skip-overlay--visible');
+        }
+        function resetAccum() {
+          if (skipAccum.timer) clearTimeout(skipAccum.timer);
+          skipAccum.side = null;
+          skipAccum.total = 0;
+          skipAccum.timer = null;
+          hideSkipOverlay();
+        }
+        function showSkipOverlay(side, total) {
+          var el = ensureSkipOverlay();
+          el.className = 'embed-skip-overlay embed-skip-overlay--' + side + ' embed-skip-overlay--visible';
+          el.querySelector('.embed-skip-overlay-icon').innerHTML = side === 'left' ? rewindSvgBig : forwardSvgBig;
+          el.querySelector('.embed-skip-overlay-label').textContent = total + 's';
+        }
+
+        container.addEventListener('click', function (e) {
+          // Let anything on the controls bar (or the report/settings row) behave completely
+          // normally - only the bare video area gets the zone treatment.
+          if (e.target.closest('.plyr__controls, .embed-top-controls')) return;
+          if (e.detail < 2) { resetAccum(); return; }
+          e.preventDefault();
+          e.stopPropagation();
+          var rect = container.getBoundingClientRect();
+          var x = e.clientX - rect.left;
+          var third = rect.width / 3;
+          var side = x < third ? 'left' : (x > third * 2 ? 'right' : 'center');
+
+          if (side === 'center') {
+            resetAccum();
+            // Only the FIRST qualifying click (detail === 2, a genuine double-click) toggles -
+            // without this, a 3rd/4th/5th rapid click on center (detail 3, 4, 5...) re-fired this
+            // every time, flickering fullscreen on then straight back off.
+            if (e.detail === 2) {
+              if (document.fullscreenElement) document.exitFullscreen();
+              else if (container.requestFullscreen) container.requestFullscreen();
+            }
+            return;
+          }
+
+          if (skipAccum.side !== side) {
+            skipAccum.side = side;
+            skipAccum.total = 0;
+          }
+          skipAccum.total += 10;
+          if (side === 'left') {
+            video.currentTime = Math.max(0, video.currentTime - 10);
+          } else {
+            var dur = video.duration || Infinity;
+            video.currentTime = Math.min(dur, video.currentTime + 10);
+          }
+          showSkipOverlay(side, skipAccum.total);
+          if (skipAccum.timer) clearTimeout(skipAccum.timer);
+          skipAccum.timer = setTimeout(resetAccum, SKIP_ACCUM_RESET_MS);
+        }, true);
       }
 
       var hls = null;
