@@ -46,6 +46,44 @@
         rel="stylesheet"
         href="https://cdn.plyr.io/3.7.8/plyr.css"
         />
+    <!-- Must come AFTER plyr.css, not just carry !important - css/style.css loads well before
+         this link, so on any property Plyr's own stylesheet also marks !important, source order
+         alone decided the tie in Plyr's favor regardless of !important on our side (confirmed
+         live: the volume slider kept escaping to the top-right of the whole player instead of
+         popping up above its own button). The public embed player never had this problem since
+         its equivalent <style> block is already declared after its own Plyr <link>. -->
+    <style>
+      .plyr--video .plyr__controls { padding-top: 10px !important; }
+      .plyr__volume { position: relative !important; }
+      .plyr__volume input[type="range"] {
+          position: absolute !important;
+          bottom: calc(100% + 30px) !important;
+          left: calc(50% + 5px) !important;
+          width: 70px !important;
+          max-width: none !important;
+          min-width: 0 !important;
+          transform: translateX(-50%) rotate(-90deg) !important;
+          transform-origin: center !important;
+          backdrop-filter: blur(3px);
+          border-radius: 6px !important;
+          padding: 8px 0 !important;
+          margin: 0 !important;
+      }
+      /* Invisible hover-bridge spanning the gap between the button and the popped-up slider
+         (currently 30px, matching the "bottom: calc(100% + 30px)" above - keep these in sync if
+         that gap ever changes). Without it, moving the mouse from the button straight up toward
+         the slider crosses a dead strip that isn't part of .plyr__volume's own hover area, so
+         :hover disengages and the slider vanishes right as you try to reach it. */
+      .plyr__volume::before {
+          content: '';
+          position: absolute;
+          left: 50%;
+          bottom: 100%;
+          transform: translateX(-50%);
+          width: 70px;
+          height: 30px;
+      }
+    </style>
 
     <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
     <script>

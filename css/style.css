@@ -9170,7 +9170,7 @@ body.blur-active {
     /* bottom: 12px; */
     /* top: 5px; */
     left: 5px;
-    background: rgba(0,0,0,0.6);
+    /* background: rgba(0,0,0,0.6); */
     border: none;
     border-radius: 8px;
     padding: 7px 10px;
@@ -9179,13 +9179,13 @@ body.blur-active {
     color: #fff;
     font-size: 1.1rem;
     line-height: 1;
-    backdrop-filter: blur(4px);
+    /* backdrop-filter: blur(4px); */
     transition: background 0.2s ease, transform 0.2s ease;
 }
  
 #moviePlayerFrameWrap button:hover,
 #moviePlayerFrameWrap select:hover {
-    background: rgba(0,0,0,0.85);
+    background: rgba(0,0,0,0.5);
 }
 /* Shared Styles */
 #btnBack10,
@@ -9265,7 +9265,7 @@ body.blur-active {
         transparent,
         rgba(0, 0, 0, 0.85)
     );
-    backdrop-filter: blur(8px);
+    backdrop-filter: blur(3px);
 }
 
 /* Buttons */
@@ -9346,6 +9346,56 @@ body.blur-active {
 }
 button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contains("undefined")) {
     display:none;
+}
+
+/* Volume: same treatment as the public embed player - stock Plyr reserves 60-90px of permanent
+   horizontal space for the range track even though it's only ever touched to mute/adjust for a
+   second, which squeezes the progress/duration bar next to it. Popping it up as a vertical
+   slider above the button on hover/focus (hidden by default, only takes space when open) frees
+   that width back up, same idea as YouTube's own volume control. */
+/* Values kept in sync with the late-loading override in movieInfo.html's own <head> (declared
+   after plyr.css, which is what actually makes it win - see that block's own comment). This copy
+   is a fallback/reference; !important throughout for the same reason as that one. */
+.plyr__volume { position: relative !important; }
+.plyr__volume input[type="range"] {
+    position: absolute !important;
+    bottom: calc(100% + 30px) !important;
+    left: calc(50% + 5px) !important;
+    /* rotated range inputs measure their OWN width along the now-vertical track, so "width" here
+       is the slider's vertical length once turned upright, not its (invisible) horizontal footprint */
+    width: 70px !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    transform: translateX(-50%) rotate(-90deg) !important;
+    transform-origin: center !important;
+    backdrop-filter: blur(3px);
+    border-radius: 6px !important;
+    padding: 8px 0 !important;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    margin: 0 !important;
+}
+/* Invisible hover-bridge spanning the gap between the button and the popped-up slider (currently
+   30px, matching "bottom: calc(100% + 30px)" above - keep in sync if that gap ever changes).
+   Without it, moving the mouse from the button straight up toward the slider crosses a dead
+   strip that isn't part of .plyr__volume's own hover area, so :hover disengages and the slider
+   vanishes right as you try to reach it. */
+.plyr__volume::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: 100%;
+    transform: translateX(-50%);
+    width: 70px;
+    height: 30px;
+}
+.plyr__volume:hover input[type="range"],
+.plyr__volume:focus-within input[type="range"] {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
 }
 
 /* Captions Settings (font size/color/weight + manual sync offset) - see injectCcSettingsMenu in

@@ -721,6 +721,29 @@ document.addEventListener('DOMContentLoaded', function() {
         refresh();
     }
 
+    // Plyr's stock rewind/fast-forward icons are two triangles stacked on top of each other -
+    // at a glance that reads as "skip to next/previous episode" rather than "skip 10s", not
+    // Plyr's fault exactly (it only ships the one pair), but worth swapping for something that
+    // actually looks like a time-skip. Runs once per Plyr instance, same timing as the other
+    // post-build DOM tweaks below.
+    function replaceSkipIcons(plyrInstance) {
+        const controls = plyrInstance?.elements?.controls;
+        if (!controls) return;
+        const forwardBtn = controls.querySelector('[data-plyr="fast-forward"]');
+        const rewindBtn = controls.querySelector('[data-plyr="rewind"]');
+        const forwardSvg = '<svg xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" text-rendering="geometricPrecision" image-rendering="optimizeQuality" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" viewBox="0 0 512 295.15" width="18" height="18"><path fill-rule="nonzero" d="M40.35 266.28c1.63 10.3-5.4 19.98-15.7 21.61-10.3 1.63-19.98-5.39-21.61-15.69C.99 259.35 0 246.86 0 234.81c0-57.26 20.94-110.69 56.09-152.06 35.14-41.36 84.55-70.69 141.48-79.74C209.99 1.03 222.5 0 234.99 0c64.89 0 123.63 26.3 166.15 68.82 40.22 40.21 65.92 94.95 68.59 155.66l9.67-10.13c7.19-7.56 19.16-7.86 26.73-.66 7.56 7.19 7.86 19.16.66 26.72l-42.45 44.46a18.821 18.821 0 0 1-4.4 3.43c-7.71 5.82-18.74 4.91-25.37-2.38l-41.46-45.39c-7.03-7.73-6.47-19.7 1.26-26.73 7.72-7.03 19.7-6.47 26.73 1.26l10.79 11.81c-2.07-51.2-23.67-97.37-57.55-131.25-35.66-35.65-84.93-57.71-139.35-57.71-11.03 0-21.55.83-31.5 2.41-47.65 7.58-89.04 32.17-118.53 66.87-29.48 34.7-47.05 79.55-47.05 127.62 0 10.62.8 21.15 2.44 31.47zm205.47 10.71c-4.04-6.32-6.85-13.61-8.4-21.87-1.54-8.26-2.33-18.67-2.33-31.22 0-12.55.79-24.95 2.33-33.21 1.55-8.26 4.36-15.56 8.4-21.86 4.03-6.31 9.84-10.92 17.41-13.82 7.58-2.9 17.18-4.35 28.79-4.35 11.6 0 21.16 1.45 28.67 4.35 7.51 2.9 13.31 7.51 17.42 13.82 4.1 6.3 6.91 13.59 8.39 21.86 1.48 8.26 2.23 20.7 2.23 33.32 0 12.62-.75 23.03-2.23 31.22-1.48 8.19-4.29 15.45-8.39 21.76-4.1 6.3-9.92 10.92-17.42 13.81-7.5 2.89-17.07 4.35-28.67 4.35-11.61 0-21.22-1.46-28.79-4.35-7.56-2.89-13.38-7.5-17.41-13.81zm31.08-79.78v62.92h8.92c6.37 0 14.73-.7 17.28-2.07 2.53-1.37 3.82-4.53 3.82-9.46v-62.91h-9.99c-6.22 0-14.38.66-16.63 1.95-2.26 1.3-3.4 4.52-3.4 9.57zm-65.39-46.54v143.36h-48.22v-90.5l-29.31 11.97-12.74-35.25 49.7-29.58h40.57z"/></svg>';
+        const rewindSvg = '<svg xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision" text-rendering="geometricPrecision" image-rendering="optimizeQuality" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" viewBox="0 0 512 295.15" width="18" height="18"><g transform="translate(-45, 0)"><g transform="translate(512, 0) scale(-1, 1)"><path fill-rule="nonzero" d="M40.35 266.28c1.63 10.3-5.4 19.98-15.7 21.61-10.3 1.63-19.98-5.39-21.61-15.69C.99 259.35 0 246.86 0 234.81c0-57.26 20.94-110.69 56.09-152.06 35.14-41.36 84.55-70.69 141.48-79.74C209.99 1.03 222.5 0 234.99 0c64.89 0 123.63 26.3 166.15 68.82 40.22 40.21 65.92 94.95 68.59 155.66l9.67-10.13c7.19-7.56 19.16-7.86 26.73-.66 7.56 7.19 7.86 19.16.66 26.72l-42.45 44.46a18.821 18.821 0 0 1-4.4 3.43c-7.71 5.82-18.74 4.91-25.37-2.38l-41.46-45.39c-7.03-7.73-6.47-19.7 1.26-26.73 7.72-7.03 19.7-6.47 26.73 1.26l10.79 11.81c-2.07-51.2-23.67-97.37-57.55-131.25-35.66-35.65-84.93-57.71-139.35-57.71-11.03 0-21.55.83-31.5 2.41-47.65 7.58-89.04 32.17-118.53 66.87-29.48 34.7-47.05 79.55-47.05 127.62 0 10.62.8 21.15 2.44 31.47z"/></g></g><path fill-rule="nonzero" d="M245.82 276.99c-4.04-6.32-6.85-13.61-8.4-21.87-1.54-8.26-2.33-18.67-2.33-31.22 0-12.55.79-24.95 2.33-33.21 1.55-8.26 4.36-15.56 8.4-21.86 4.03-6.31 9.84-10.92 17.41-13.82 7.58-2.9 17.18-4.35 28.79-4.35 11.6 0 21.16 1.45 28.67 4.35 7.51 2.9 13.31 7.51 17.42 13.82 4.1 6.3 6.91 13.59 8.39 21.86 1.48 8.26 2.23 20.7 2.23 33.32 0 12.62-.75 23.03-2.23 31.22-1.48 8.19-4.29 15.45-8.39 21.76-4.1 6.3-9.92 10.92-17.42 13.81-7.5 2.89-17.07 4.35-28.67 4.35-11.61 0-21.22-1.46-28.79-4.35-7.56-2.89-13.38-7.5-17.41-13.81zm31.08-79.78v62.92h8.92c6.37 0 14.73-.7 17.28-2.07 2.53-1.37 3.82-4.53 3.82-9.46v-62.91h-9.99c-6.22 0-14.38.66-16.63 1.95-2.26 1.3-3.4 4.52-3.4 9.57zm-65.39-46.54v143.36h-48.22v-90.5l-29.31 11.97-12.74-35.25 49.7-29.58h40.57z"/></svg>';
+        // Keep Plyr's own accessible label span (the visually-hidden text), only replace the icon.
+        if (forwardBtn) {
+            const label = forwardBtn.querySelector('.plyr__sr-only, .plyr__tooltip');
+            forwardBtn.innerHTML = forwardSvg + (label ? label.outerHTML : '');
+        }
+        if (rewindBtn) {
+            const label = rewindBtn.querySelector('.plyr__sr-only, .plyr__tooltip');
+            rewindBtn.innerHTML = rewindSvg + (label ? label.outerHTML : '');
+        }
+    }
+
     // Splits volume/settings/captions/pip out of Plyr's bottom bar into a separate top-right
     // row - ONLY below the site's own mobile breakpoint (css/style.css's @media (max-width:850px)).
     // At that width the bottom bar gets too cramped for all 11 controls in one row; above it,
@@ -2330,11 +2353,11 @@ document.addEventListener('DOMContentLoaded', function() {
                             'rewind',
                             'play',
                             'fast-forward',
+                            'mute',
+                            'volume',
                             'progress',
                             'current-time',
                             'duration',
-                            'mute',
-                            'volume',
                             'captions',
                             'settings',
                             'pip',
@@ -2368,6 +2391,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         i18n: { qualityLabel: { 0: 'Auto' } }
                     });
                     movePlyrTopControls();
+                    replaceSkipIcons(window.plyrInstance);
                     injectCcSettingsMenu(window.plyrInstance, video);
                     // Plyr appears to build its settings menu's actual DOM lazily, the first
                     // time it's opened - not eagerly at construction, so the call above alone
