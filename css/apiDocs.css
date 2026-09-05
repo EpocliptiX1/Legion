@@ -345,23 +345,26 @@ td.tbd, pre.placeholder-inline {
 .support-form-status.error { color: #e35d5d; }
 
 /* ── Embed Playground ──────────────────────────────────────────────────────────────────────
-   Own fixed dark/orange palette (matching the site's own --accent-primary orange, #ff8000)
-   rather than the page's generic --accent-primary tokens directly - this is meant to visually
-   read as a distinct "tool" panel, not just another docs section, while staying on-brand
-   instead of the reference embed-tester's own violet. Hardcoded colors are intentional. */
+   Uses the page's own theme tokens (--bg-card, --border-color, --text-primary/secondary,
+   --accent-primary) the same way the rest of apiDocs.css does (.code-block, .method-badge,
+   .callout, etc.) so this reads as part of the site rather than a separately-themed panel. */
 .playground-card {
     max-width: 420px;
-    background: linear-gradient(180deg, #1a1410 0%, #120d09 100%);
-    border: 1px solid #4a2f10;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
     border-radius: 16px;
     padding: 22px 22px 24px;
-    box-shadow: 0 20px 50px rgba(255, 128, 0, 0.18);
 }
+/* The 420px cap exists for the sidebar copy, which lives in a fixed ~320-360px grid column and
+   needs it. Below 1300px this is the ONLY copy shown (see #embed-playground's own media query
+   further down) and .docs-main gives it real room (up to 820px) - staying capped at 420px there
+   just wasted the rest of that width for no reason. */
+#embed-playground .playground-card { max-width: none; }
 .playground-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-.playground-card-icon { display: inline-flex; color: #ff8000; }
+.playground-card-icon { display: inline-flex; color: var(--accent-primary); }
 .playground-card-icon svg { width: 20px; height: 20px; }
-.playground-card-head h3 { margin: 0; font-size: 1.15rem; color: #ffb15c; font-weight: 700; }
-.playground-card-sub { color: #a3998c; font-size: 0.85rem; line-height: 1.5; margin: 0 0 20px; }
+.playground-card-head h3 { margin: 0; font-size: 1.15rem; color: var(--text-primary); font-weight: 700; }
+.playground-card-sub { color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin: 0 0 20px; }
 
 .playground-field { margin-bottom: 16px; }
 .playground-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
@@ -372,18 +375,18 @@ td.tbd, pre.placeholder-inline {
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #a3998c;
+    color: var(--text-secondary);
     margin-bottom: 8px;
 }
 .playground-input,
 .playground-select-wrap select {
     width: 100%;
     box-sizing: border-box;
-    background: #120d09;
-    border: 1px solid #3d2a12;
+    background: var(--bg-hover);
+    border: 1px solid var(--border-color);
     border-radius: 10px;
     padding: 11px 14px;
-    color: #f3ece2;
+    color: var(--text-primary);
     font-size: 0.92rem;
     font-family: inherit;
 }
@@ -401,14 +404,14 @@ td.tbd, pre.placeholder-inline {
     top: 50%;
     width: 8px;
     height: 8px;
-    border-right: 2px solid #a3998c;
-    border-bottom: 2px solid #a3998c;
+    border-right: 2px solid var(--text-secondary);
+    border-bottom: 2px solid var(--text-secondary);
     transform: translateY(-70%) rotate(45deg);
     pointer-events: none;
 }
 .playground-input:focus,
-.playground-select-wrap select:focus { outline: none; border-color: #ff8000; }
-.playground-input::placeholder { color: #6b5f4f; }
+.playground-select-wrap select:focus { outline: none; border-color: var(--accent-primary); }
+.playground-input::placeholder { color: var(--text-muted); }
 
 .playground-actions { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .playground-btn-primary,
@@ -425,53 +428,55 @@ td.tbd, pre.placeholder-inline {
     font-family: inherit;
 }
 .playground-btn-primary {
-    background: linear-gradient(180deg, #ff9a2e, #ff8000);
-    color: #1a0f00;
-    box-shadow: 0 6px 18px rgba(255, 128, 0, 0.35);
+    background: var(--accent-primary);
+    color: #000;
 }
-.playground-btn-primary:hover { filter: brightness(1.08); }
+.playground-btn-primary:hover { filter: brightness(1.1); }
 .playground-btn-secondary {
-    background: #201609;
-    color: #ffb15c;
-    border: 1px solid #4a2f10;
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
 }
-.playground-btn-secondary:hover { background: #2a1d0c; }
+.playground-btn-secondary:hover { filter: brightness(1.15); }
 
-.playground-status { min-height: 1.2em; font-size: 0.82rem; color: #a3998c; margin-bottom: 4px; }
+.playground-status { min-height: 1.2em; font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 4px; }
 .playground-status.error { color: #f87171; }
 .playground-status.success { color: #4ade80; }
 
 .playground-output { margin-top: 14px; }
 .playground-code-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
-    background: #120d09;
-    border: 1px solid #3d2a12;
+    background: var(--bg-hover);
+    border: 1px solid var(--border-color);
     border-radius: 10px;
     padding: 10px 12px;
     margin-bottom: 14px;
 }
+/* Grows in height with its content instead of forcing a single nowrap line with its own
+   horizontal scrollbar - a Sub+Dub embed's code is two full iframe tags, and side-scrolling to
+   read one was worse than just letting the row get taller. */
 .playground-code-row code {
     flex: 1;
     min-width: 0;
-    overflow-x: auto;
-    white-space: nowrap;
-    color: #ffd7a8;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--accent-primary);
     font-size: 0.78rem;
     font-family: 'Consolas', 'Monaco', monospace;
 }
 .playground-copy-btn {
     flex-shrink: 0;
-    background: #201609;
-    color: #ffb15c;
-    border: 1px solid #4a2f10;
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
     border-radius: 7px;
     padding: 6px 12px;
     font-size: 0.78rem;
     cursor: pointer;
 }
-.playground-copy-btn:hover { background: #2a1d0c; }
+.playground-copy-btn:hover { filter: brightness(1.15); }
 .playground-preview-grid {
     display: grid;
     grid-template-columns: 1fr;
@@ -481,7 +486,7 @@ td.tbd, pre.placeholder-inline {
 .playground-preview-item iframe {
     width: 100%;
     aspect-ratio: 16 / 9;
-    border: 1px solid #3d2a12;
+    border: 1px solid var(--border-color);
     border-radius: 10px;
     background: #000;
 }
@@ -489,12 +494,39 @@ td.tbd, pre.placeholder-inline {
     font-size: 0.72rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #a3998c;
+    color: var(--text-secondary);
     margin-bottom: 6px;
 }
 @media (max-width: 560px) {
     .playground-preview-grid.dual { grid-template-columns: 1fr; }
 }
+/* The sidebar copy's card is only ~320-360px wide regardless of viewport width (it's a fixed
+   grid column, not the whole screen) - the viewport-width media query above never fires there
+   even though the CARD itself is plenty narrow enough to need it, which squeezed the two SUB/DUB
+   preview iframes into slivers (confirmed live). Force single-column any time the grid is inside
+   the sidebar specifically, independent of viewport width. */
+.playground-fixed-mount .playground-preview-grid.dual { grid-template-columns: 1fr; }
+/* Tighter sizing for the narrow (~320-360px) sidebar card specifically - the base sizes were
+   tuned for the wider inline copy and read as cramped/wrapping oddly here (e.g. the ID field's
+   label wrapping mid-word - confirmed live). */
+.playground-fixed-mount { padding: 18px 16px 20px; }
+.playground-fixed-mount .playground-label { font-size: 0.66rem; letter-spacing: 0.03em; }
+.playground-fixed-mount .playground-input,
+.playground-fixed-mount .playground-select-wrap select { padding: 9px 12px; font-size: 0.85rem; }
+.playground-fixed-mount .playground-field { margin-bottom: 12px; }
+.playground-fixed-mount .playground-row { gap: 8px; margin-bottom: 12px; }
+.playground-fixed-mount .playground-actions { gap: 8px; }
+.playground-fixed-mount .playground-btn-primary,
+.playground-fixed-mount .playground-btn-secondary { padding: 9px 14px; font-size: 0.82rem; }
+
+/* Same orange-on-dark scrollbar as .code-block pre, on the same theme tokens. */
+.playground-fixed-mount {
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent-primary) var(--bg-hover);
+}
+.playground-fixed-mount::-webkit-scrollbar { width: 8px; }
+.playground-fixed-mount::-webkit-scrollbar-track { background: var(--bg-hover); }
+.playground-fixed-mount::-webkit-scrollbar-thumb { background: var(--accent-primary); border-radius: 4px; }
 
 /* Two copies of the same playground exist in the DOM at once (see renderPlaygroundCard) -
    exactly one is ever displayed, switched purely by viewport width, at the SAME 1300px
@@ -519,9 +551,3 @@ td.tbd, pre.placeholder-inline {
         max-width: none;
     }
 }
-/* Sidebar copy specifically: no glow. Sitting in a slim, always-visible column next to the
-   docs content, the card's own drop-shadow and the primary button's glow read as constant
-   visual noise there in a way they don't on the inline (<1300px) copy, which only appears
-   as a normal, scrolled-past section. */
-.playground-fixed-mount.playground-card { box-shadow: none; }
-.playground-fixed-mount .playground-btn-primary { box-shadow: none; }

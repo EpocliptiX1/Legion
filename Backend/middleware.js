@@ -272,6 +272,13 @@ function proxyToBackend(req, res) {
     // Identify the real client IP for the backend
     headers['x-forwarded-for']   = req.ip || req.socket.remoteAddress || '';
     headers['x-forwarded-proto'] = 'https';
+    // The Host header above is deliberately stripped (Node re-derives it to the backend's own
+    // hostname:port otherwise), but the backend still needs the ORIGINAL public-facing host to
+    // compare against Origin/Referer for its own same-origin checks (e.g. telling an /embed/
+    // request that genuinely came from our own apidocs.html apart from a real third-party
+    // embed) - without this, req.headers.host on the backend is always 'localhost:4000'
+    // (its own internal address), which can never match a browser-facing Referer/Origin.
+    headers['x-forwarded-host']  = req.headers['host'] || '';
 
     // Shared secret so the backend knows the request came through the middleware
     headers['x-middleware-secret'] = MIDDLEWARE_SECRET;

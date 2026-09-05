@@ -76,9 +76,13 @@ document.addEventListener('DOMContentLoaded', function() {
         const list = document.getElementById('seasonCardsList');
         if (!row || !list) return;
         try {
-            const res = await fetch(`/api/anime-season-cards?tmdbId=${encodeURIComponent(tmdbId)}`);
-            if (!res.ok) return;
-            const data = await res.json();
+            // Reuse the page-load preload (fired the instant tmdbId was known, well before this
+            // DOM existed to render into) instead of firing a second, identical fetch from
+            // scratch here.
+            const data = window.__seasonCardsPreload
+                ? await window.__seasonCardsPreload
+                : await fetch(`/api/anime-season-cards?tmdbId=${encodeURIComponent(tmdbId)}`).then(r => r.ok ? r.json() : null);
+            if (!data) return;
             const seasons = Array.isArray(data.seasons) ? data.seasons : [];
             if (!seasons.length) return;
 
@@ -454,6 +458,24 @@ document.addEventListener('DOMContentLoaded', function() {
         return (Date.now() - state.spawnedAt) < KAA_SKIP_BUTTON_VISIBLE_MS;
     }
 
+    // Was KaF-only (srvPahe1) - now covers all four anime servers, each downloading directly
+    // (no panel) using whichever of the two existing client-side ffmpeg.wasm download functions
+    // actually matches that source's own manifest shape - same mapping the full download panel's
+    // own "Go" button already uses (see DL_SOURCE_INFO further down), not a new assumption:
+    //   KAA and RU-MV carry a separate #EXT-X-MEDIA audio track -> downloadKAAEpisode (it
+    //     hard-requires master.audios.length >= 1 and throws otherwise - confirmed this breaks
+    //     on the other two).
+    //   MegaPlay and NekoStream mux audio+video together per variant, same shape as Kino ->
+    //     downloadKinoEpisode (no separate-track assumption at all).
+    // Both functions already read entirely from window.currentVideo/currentAudioType/
+    // currentSubtitleTrackIndex (whatever's CURRENTLY loaded) - nothing KAA-specific left in
+    // either despite the names, so no per-server branching is needed beyond picking the right one.
+    const KAA_DOWNLOAD_BTN_FN_BY_SERVER = {
+        srvPahe1: 'downloadKAAEpisode',
+        srvNew1: 'downloadKAAEpisode',
+        srvMega1: 'downloadKinoEpisode',
+        srvNeko1: 'downloadKinoEpisode'
+    };
     function attachKaaDownloadButton() {
         const player = window.plyrInstance?.elements?.container;
         if (!player) return;
@@ -477,12 +499,226 @@ document.addEventListener('DOMContentLoaded', function() {
                 </svg>
                 `;
         btn.addEventListener('click', () => {
-            if (window.currentServer === 'srvPahe1') {
-                window.downloadKAAEpisode?.();
+            const fnName = KAA_DOWNLOAD_BTN_FN_BY_SERVER[window.currentServer];
+            const fn = fnName && window[fnName];
+            if (typeof fn === 'function') {
+                fn();
+            } else {
+                // Kiwi (external) or anything unrecognized: no client-side download function
+                // applies (Kiwi is just a link to a third-party page) - fall back to opening
+                // the full panel same as before.
+                document.getElementById('btnDownloadAnime')?.click();
             }
         });
         player.appendChild(btn);
-        btn.style.display = window.currentServer === 'srvPahe1' ? 'flex' : 'none';
+    }
+
+    // --- Captions Settings: size / color / weight / manual sync offset -----------------------
+    // Different providers ship separately-timed rips of the same episode, so a caption borrowed
+    // from a different provider than the one actually serving the video (see fetchKaaSubtitles-
+    // ForEpisode above) can measurably drift out of sync - not fixable at the source, so this
+    // gives the viewer a manual +-1s nudge instead. Preferences are per-device (localStorage),
+    // shared with the public embed player's own copy of this same feature (identical key/shape).
+    const CC_PREFS_KEY = 'anikino-cc-prefs';
+    const CC_SIZES = { small: '0.8vw', medium: '1.05vw', large: '1.35vw', xlarge: '1.7vw', xxlarge: '2.1vw', xxxlarge: '2.6vw' };
+    const CC_COLORS = ['#ffffff', '#000000', '#ffe14d', '#ff4d4d'];
+    function loadCcPrefs() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(CC_PREFS_KEY) || '{}');
+            return {
+                size: CC_SIZES[parsed.size] ? parsed.size : 'medium',
+                color: CC_COLORS.includes(parsed.color) ? parsed.color : '#ffffff',
+                bold: !!parsed.bold,
+                // On by default (flipped back per a follow-up ask - readability against a busy
+                // scene without it turned out to matter more than the plain-text look). Only an
+                // explicit false (the viewer actually turned it off) stays off; unset/missing
+                // defaults on.
+                bg: parsed.bg === false ? false : true,
+                offset: Number.isFinite(parsed.offset) ? parsed.offset : 0
+            };
+        } catch (err) {
+            return { size: 'medium', color: '#ffffff', bold: false, bg: true, offset: 0 };
+        }
+    }
+    const ccPrefs = loadCcPrefs();
+    function saveCcPrefs() {
+        try { localStorage.setItem(CC_PREFS_KEY, JSON.stringify(ccPrefs)); } catch (err) { /* private mode etc */ }
+    }
+    // Set on :root rather than the player container - this page only ever has one active
+    // player, and .plyr__caption inherits the custom property either way.
+    function applyCcStyle() {
+        document.documentElement.style.setProperty('--cc-size', CC_SIZES[ccPrefs.size]);
+        document.documentElement.style.setProperty('--cc-color', ccPrefs.color);
+        document.documentElement.style.setProperty('--cc-weight', ccPrefs.bold ? '700' : '400');
+        document.documentElement.classList.toggle('cc-bg-on', !!ccPrefs.bg);
+    }
+    applyCcStyle();
+    // Bakes a DELTA (not an absolute value) into one TextTrack's already-loaded cues -
+    // re-applying the same offset twice must be a no-op. A freshly loaded track's raw cues
+    // (delta = the full current offset, since they start un-adjusted) go through this same
+    // function - see showVideoPlayer's track.addEventListener('load', ...) below.
+    function bakeCcOffsetIntoTrack(track, delta) {
+        if (!track || !track.cues || !delta) return;
+        for (let i = 0; i < track.cues.length; i++) {
+            track.cues[i].startTime = Math.max(0, track.cues[i].startTime + delta);
+            track.cues[i].endTime = Math.max(0, track.cues[i].endTime + delta);
+        }
+    }
+    function setCcOffset(video, next) {
+        next = Math.max(-30, Math.min(30, Math.round(next * 10) / 10));
+        const delta = next - ccPrefs.offset;
+        ccPrefs.offset = next;
+        const tracks = video?.textTracks || [];
+        for (let i = 0; i < tracks.length; i++) bakeCcOffsetIntoTrack(tracks[i], delta);
+        saveCcPrefs();
+    }
+    function ccOffsetLabel() { return (ccPrefs.offset > 0 ? '+' : '') + ccPrefs.offset + 's'; }
+
+    // Plyr 3.x has no API to add a custom row to its own settings menu, so this builds one by
+    // hand: a "Captions Settings" row inserted right after the real "Captions" row in Plyr's own
+    // home menu, and a sibling panel appended into the same .plyr__menu__container Plyr's own
+    // Captions/Quality/Speed panels live in (so it inherits their exact sizing/scrolling).
+    // Manually toggles hidden and recomputes the container height on switch, rather than Plyr's
+    // own internal panel-swap method (private, not part of its public API surface).
+    function injectCcSettingsMenu(plyrInstance, video) {
+        const controls = plyrInstance?.elements?.controls;
+        if (!controls) return;
+        if (controls.querySelector('.cc-settings-panel')) return; // already injected for this instance
+        const menuContainer = controls.querySelector('.plyr__menu__container');
+        if (!menuContainer) return;
+        // Confirmed live (2026-09-04) against the public embed player's identical copy of this
+        // same menu (same Plyr version/config): .plyr__menu__container > ONE unlabeled wrapper
+        // div > #plyr-settings-N-home / -captions / -quality / -speed as sibling panels - not
+        // direct children of the menu container, and with no aria-controls anywhere at all.
+        const panelsWrapper = menuContainer.firstElementChild;
+        const homePanel = panelsWrapper && panelsWrapper.querySelector('[id$="-home"]');
+        if (!panelsWrapper || !homePanel) return;
+        // The row's label is "Captions" plus a nested, no-space <span class="plyr__menu__value">
+        // ("CaptionsDisabled", "CaptionsEnglish", etc) - matched by startsWith, not a trailing
+        // \b (no word boundary exists between "s" and the next letter there).
+        const captionsHomeBtn = Array.prototype.find.call(
+            homePanel.querySelectorAll('button, [role="menuitem"]'),
+            b => /^Captions/i.test((b.textContent || '').trim())
+        );
+        if (!captionsHomeBtn) return;
+
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'plyr__control plyr__control--forward';
+        openBtn.setAttribute('role', 'menuitem');
+        openBtn.innerHTML = '<span>Captions Settings</span>';
+        captionsHomeBtn.insertAdjacentElement('afterend', openBtn);
+
+        const panel = document.createElement('div');
+        panel.className = 'cc-settings-panel';
+        panel.hidden = true;
+        panel.innerHTML =
+            '<button type="button" class="plyr__control plyr__control--back" role="menuitem">' +
+                '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="14" height="14">' +
+                    '<path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>' +
+                '<span>Captions Settings</span>' +
+            '</button>' +
+            '<p class="cc-settings-note">Captions can come from a different source than the video and drift out of sync. Nudge the offset below to fix it.</p>' +
+            '<div class="cc-settings-row"><label>Size</label><div class="cc-settings-choices" data-group="size">' +
+                '<button type="button" data-size="small">S</button><button type="button" data-size="medium">M</button>' +
+                '<button type="button" data-size="large">L</button><button type="button" data-size="xlarge">XL</button>' +
+                '<button type="button" data-size="xxlarge">XXL</button><button type="button" data-size="xxxlarge">XXXL</button>' +
+            '</div></div>' +
+            '<div class="cc-settings-row"><label>Color</label><div class="cc-settings-choices" data-group="color">' +
+                CC_COLORS.map(c => '<button type="button" class="cc-color-swatch" data-color="' + c + '" ' +
+                    'style="background:' + c + ';border:1px solid ' + (c === '#ffffff' ? '#555' : 'transparent') + '"></button>').join('') +
+            '</div></div>' +
+            '<div class="cc-settings-row"><label>Bold</label><div class="cc-settings-choices" data-group="bold">' +
+                '<button type="button" data-bold="0">Off</button><button type="button" data-bold="1">On</button>' +
+            '</div></div>' +
+            '<div class="cc-settings-row"><label>Background</label><div class="cc-settings-choices" data-group="bg">' +
+                '<button type="button" data-bg="0">Off</button><button type="button" data-bg="1">On</button>' +
+            '</div></div>' +
+            '<div class="cc-settings-row"><label>Sync Offset</label><div class="cc-offset-row">' +
+                '<button type="button" data-cc-offset="-1">-1s</button>' +
+                '<span class="cc-offset-value" data-cc-offset-value></span>' +
+                '<button type="button" data-cc-offset="1">+1s</button>' +
+            '</div></div>';
+        panelsWrapper.appendChild(panel);
+
+        function showPanel(target) {
+            Array.prototype.forEach.call(panelsWrapper.children, p => { p.hidden = (p !== target); });
+            requestAnimationFrame(() => { menuContainer.style.height = target.scrollHeight + 'px'; });
+        }
+        function refresh() {
+            panel.querySelectorAll('[data-size]').forEach(b => b.classList.toggle('active', b.getAttribute('data-size') === ccPrefs.size));
+            panel.querySelectorAll('[data-color]').forEach(b => b.classList.toggle('active', b.getAttribute('data-color') === ccPrefs.color));
+            panel.querySelectorAll('[data-bold]').forEach(b => b.classList.toggle('active', (b.getAttribute('data-bold') === '1') === ccPrefs.bold));
+            panel.querySelectorAll('[data-bg]').forEach(b => b.classList.toggle('active', (b.getAttribute('data-bg') === '1') === ccPrefs.bg));
+            const valueEl = panel.querySelector('[data-cc-offset-value]');
+            if (valueEl) valueEl.textContent = ccOffsetLabel();
+        }
+        openBtn.addEventListener('click', () => { showPanel(panel); refresh(); });
+        panel.querySelector('.plyr__control--back').addEventListener('click', () => showPanel(homePanel));
+        panel.querySelectorAll('[data-size]').forEach(b => b.addEventListener('click', () => {
+            ccPrefs.size = b.getAttribute('data-size'); applyCcStyle(); saveCcPrefs(); refresh();
+        }));
+        panel.querySelectorAll('[data-color]').forEach(b => b.addEventListener('click', () => {
+            ccPrefs.color = b.getAttribute('data-color'); applyCcStyle(); saveCcPrefs(); refresh();
+        }));
+        panel.querySelectorAll('[data-bold]').forEach(b => b.addEventListener('click', () => {
+            ccPrefs.bold = b.getAttribute('data-bold') === '1'; applyCcStyle(); saveCcPrefs(); refresh();
+        }));
+        panel.querySelectorAll('[data-bg]').forEach(b => b.addEventListener('click', () => {
+            ccPrefs.bg = b.getAttribute('data-bg') === '1'; applyCcStyle(); saveCcPrefs(); refresh();
+        }));
+        panel.querySelectorAll('[data-cc-offset]').forEach(b => b.addEventListener('click', () => {
+            setCcOffset(video, ccPrefs.offset + Number(b.getAttribute('data-cc-offset'))); refresh();
+        }));
+    }
+
+    // Burned subtitles become permanent pixels - unlike the live player, there's no going back
+    // and restyling them after the fact, so the download panel gets its own copy of the same
+    // Size/Color/Bold/Background controls, right under the language picker once "Burn subtitles"
+    // is checked. Deliberately reads/writes the SAME ccPrefs (shared 'anikino-cc-prefs'
+    // localStorage key) rather than a separate burn-only preference - whatever a viewer already
+    // set for live captions is what they see previewed here, and adjusting it here also updates
+    // their live captions, since it's genuinely the same preference either way. No Sync Offset
+    // row here - that corrects a live drift between two different sources' timing, which doesn't
+    // apply once a single provider's own subtitle file is what's being burned in.
+    function renderCcBurnStylePanel(container) {
+        if (!container || container.dataset.ccBurnInit) return;
+        container.dataset.ccBurnInit = '1';
+        container.innerHTML =
+            '<div class="cc-settings-row"><label>Size</label><div class="cc-settings-choices" data-group="size">' +
+                '<button type="button" data-size="small">S</button><button type="button" data-size="medium">M</button>' +
+                '<button type="button" data-size="large">L</button><button type="button" data-size="xlarge">XL</button>' +
+                '<button type="button" data-size="xxlarge">XXL</button><button type="button" data-size="xxxlarge">XXXL</button>' +
+            '</div><p class="cc-settings-note cc-burn-size-note">Size of captions while downloading is significantly bigger than in the live player.</p></div>' +
+            '<div class="cc-settings-row"><label>Color</label><div class="cc-settings-choices" data-group="color">' +
+                CC_COLORS.map(c => '<button type="button" class="cc-color-swatch" data-color="' + c + '" ' +
+                    'style="background:' + c + ';border:1px solid ' + (c === '#ffffff' ? '#555' : 'transparent') + '"></button>').join('') +
+            '</div></div>' +
+            '<div class="cc-settings-row"><label>Bold</label><div class="cc-settings-choices" data-group="bold">' +
+                '<button type="button" data-bold="0">Off</button><button type="button" data-bold="1">On</button>' +
+            '</div></div>' +
+            '<div class="cc-settings-row"><label>Background</label><div class="cc-settings-choices" data-group="bg">' +
+                '<button type="button" data-bg="0">Off</button><button type="button" data-bg="1">On</button>' +
+            '</div></div>';
+        function refresh() {
+            container.querySelectorAll('[data-size]').forEach(b => b.classList.toggle('active', b.getAttribute('data-size') === ccPrefs.size));
+            container.querySelectorAll('[data-color]').forEach(b => b.classList.toggle('active', b.getAttribute('data-color') === ccPrefs.color));
+            container.querySelectorAll('[data-bold]').forEach(b => b.classList.toggle('active', (b.getAttribute('data-bold') === '1') === ccPrefs.bold));
+            container.querySelectorAll('[data-bg]').forEach(b => b.classList.toggle('active', (b.getAttribute('data-bg') === '1') === ccPrefs.bg));
+        }
+        container.querySelectorAll('[data-size]').forEach(b => b.addEventListener('click', () => {
+            ccPrefs.size = b.getAttribute('data-size'); applyCcStyle(); saveCcPrefs(); refresh();
+        }));
+        container.querySelectorAll('[data-color]').forEach(b => b.addEventListener('click', () => {
+            ccPrefs.color = b.getAttribute('data-color'); applyCcStyle(); saveCcPrefs(); refresh();
+        }));
+        container.querySelectorAll('[data-bold]').forEach(b => b.addEventListener('click', () => {
+            ccPrefs.bold = b.getAttribute('data-bold') === '1'; applyCcStyle(); saveCcPrefs(); refresh();
+        }));
+        container.querySelectorAll('[data-bg]').forEach(b => b.addEventListener('click', () => {
+            ccPrefs.bg = b.getAttribute('data-bg') === '1'; applyCcStyle(); saveCcPrefs(); refresh();
+        }));
+        refresh();
     }
 
     // Splits volume/settings/captions/pip out of Plyr's bottom bar into a separate top-right
@@ -996,92 +1232,113 @@ document.addEventListener('DOMContentLoaded', function() {
             const malId = window.__malId || '';
             const title = document.getElementById('title')?.textContent.trim() || '';
 
-            console.log('[Preload] Starting background source preload:', { tmdbId, season, episode, audioType, malId });
+            // Only the server that's ALREADY going to be tried first (whatever updateSource's
+            // own default-selection logic already picked, before this even runs - there's no
+            // per-user "favorite server" persisted anywhere yet, unlike preferredAudio) gets
+            // preloaded here. It used to unconditionally preload all four providers for the
+            // current episode on every single page load, regardless of which one (if any) the
+            // viewer would actually use - a real, avoidable cost against third-party sites that
+            // aren't ours to rate-limit-proof (unlike our own cached endpoints). Once the viewer
+            // actually starts watching on whichever server this turns out to be, the OTHER three
+            // get their turn anyway: preloadNextEpisodeSources already warms all four for the
+            // NEXT episode once this one is 80% through.
+            const serverIdToProvider = { srvPahe1: 'kaa', srvNeko1: 'neko', srvNew1: 'rumv', srvMega1: 'megaplay' };
+            const preferredProvider = serverIdToProvider[window.currentServer] || 'neko';
+
+            console.log('[Preload] Starting background source preload:', { tmdbId, season, episode, audioType, malId, preferredProvider });
 
             // Kino TV shares the same resolved season/episode -- it lives in the
             // "TV Shows" server row regardless of whether this ends up being
             // real anime or not, so preload it alongside KAA/Neko.
             window.preloadKinoTvSource(tmdbId, season, episode);
 
-            // Preload KAA sources
-            // Same synthetic-season override loadKickAssAnimeVideo's own fetch uses (see its
-            // comment) - without it here too, THIS preload (which races ahead of the user even
-            // opening the player, straight from continue-watching history) resolves the wrong
-            // season with no anchor title, caches that wrong result into
-            // window.__preloadedKaaSources, and the real loader below then just reuses it
-            // instead of making its own correctly-overridden request at all (confirmed live:
-            // this preload firing for a synthetic Workshop Battle season was exactly why KAA
-            // kept falling back to Neko even after the main loader's own override was working).
+            // Season-only lookup shared by KAA/Neko/MegaPlay below (not KAA-specific despite the
+            // variable name) - cheap local array lookup, fine to compute regardless of which one
+            // provider actually ends up preloaded.
             const kaaSeasonGroupsForPreload = window.__resolvedSeasonGroups || [];
             const kaaSeasonMatchForPreload = kaaSeasonGroupsForPreload.find(g => Number(g.seasonNumber) === Number(season));
-            // KAA's own catalog is titled in romaji/native form, not English - romajiTitle
-            // specifically (falls back to label if that field isn't present, e.g. an older
-            // cached /api/anime-season-groups response from before this field existed).
-            const preloadSeasonTitleParam = (kaaSeasonMatchForPreload?.romajiTitle || kaaSeasonMatchForPreload?.label) ? `&seasonTitle=${encodeURIComponent(kaaSeasonMatchForPreload.romajiTitle || kaaSeasonMatchForPreload.label)}` : '';
-            const preloadSeasonEpCountParam = Number.isFinite(kaaSeasonMatchForPreload?.episodes?.length) ? `&seasonEpisodeCount=${kaaSeasonMatchForPreload.episodes.length}` : '';
-            const kaaUrl = `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=tv&title=${encodeURIComponent(title)}${preloadSeasonTitleParam}${preloadSeasonEpCountParam}`;
-            console.log('[Preload] KAA fetch URL:', kaaUrl);
-            fetch(kaaUrl).then(res => res.json()).then(data => {
-                if (data?.sources?.length > 0) {
-                    window.__preloadedKaaSources = data;
-                    window.__preloadedKaaEpisode = { season, ep: episode, audioType, cachedAt: Date.now() };
-                    console.log('[Preload] ✓ KAA sources cached for S' + season + 'E' + episode, { sourceCount: data.sources.length });
-                } else {
-                    console.log('[Preload] ✗ KAA returned no sources:', data);
-                }
-            }).catch(err => console.log('[Preload] ✗ KAA preload failed:', err));
+
+            // Preload KAA sources
+            if (preferredProvider === 'kaa') {
+                // Same synthetic-season override loadKickAssAnimeVideo's own fetch uses (see its
+                // comment) - without it here too, THIS preload (which races ahead of the user even
+                // opening the player, straight from continue-watching history) resolves the wrong
+                // season with no anchor title, caches that wrong result into
+                // window.__preloadedKaaSources, and the real loader below then just reuses it
+                // instead of making its own correctly-overridden request at all (confirmed live:
+                // this preload firing for a synthetic Workshop Battle season was exactly why KAA
+                // kept falling back to Neko even after the main loader's own override was working).
+                // KAA's own catalog is titled in romaji/native form, not English - romajiTitle
+                // specifically (falls back to label if that field isn't present, e.g. an older
+                // cached /api/anime-season-groups response from before this field existed).
+                const preloadSeasonTitleParam = (kaaSeasonMatchForPreload?.romajiTitle || kaaSeasonMatchForPreload?.label) ? `&seasonTitle=${encodeURIComponent(kaaSeasonMatchForPreload.romajiTitle || kaaSeasonMatchForPreload.label)}` : '';
+                const preloadSeasonEpCountParam = Number.isFinite(kaaSeasonMatchForPreload?.episodes?.length) ? `&seasonEpisodeCount=${kaaSeasonMatchForPreload.episodes.length}` : '';
+                const kaaUrl = `/api/anime-kaa-servers?malId=${encodeURIComponent(malId)}&tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&ep=${encodeURIComponent(episode)}&audio=${encodeURIComponent(audioType)}&itemType=tv&title=${encodeURIComponent(title)}${preloadSeasonTitleParam}${preloadSeasonEpCountParam}`;
+                console.log('[Preload] KAA fetch URL:', kaaUrl);
+                fetch(kaaUrl).then(res => res.json()).then(data => {
+                    if (data?.sources?.length > 0) {
+                        window.__preloadedKaaSources = data;
+                        window.__preloadedKaaEpisode = { season, ep: episode, audioType, cachedAt: Date.now() };
+                        console.log('[Preload] ✓ KAA sources cached for S' + season + 'E' + episode, { sourceCount: data.sources.length });
+                    } else {
+                        console.log('[Preload] ✗ KAA returned no sources:', data);
+                    }
+                }).catch(err => console.log('[Preload] ✗ KAA preload failed:', err));
+            }
 
             // Preload Neko sources
-            // Same synthetic-season override as KAA's preload just above (reusing the same
-            // kaaSeasonMatchForPreload lookup - it's season-only, not KAA-specific).
-            const nekoQuery = new URLSearchParams({
-                malId: malId || '',
-                tmdbId: tmdbId || '',
-                title,
-                type: audioType,
-                season: season || 1,
-                ep: episode || 1
-            });
-            if (kaaSeasonMatchForPreload?.label) nekoQuery.set('seasonTitle', kaaSeasonMatchForPreload.label);
-            const nekoUrl = `/api/anime-neko-log?${nekoQuery.toString()}`;
-            console.log('[Preload] Neko fetch URL:', nekoUrl);
-            fetch(nekoUrl).then(res => res.json()).then(data => {
-                if (data?.stream || data?.sources?.file) {
-                    window.__preloadedNekoSources = data;
-                    window.__preloadedNekoEpisode = { season, ep: episode, audio: audioType, cachedAt: Date.now() };
-                    console.log('[Preload] ✓ Neko sources cached for S' + season + 'E' + episode, { hasStream: !!data.stream });
-                } else {
-                    console.log('[Preload] ✗ Neko returned no stream:', data);
-                }
-            }).catch(err => console.log('[Preload] ✗ Neko preload failed:', err));
+            if (preferredProvider === 'neko') {
+                // Same synthetic-season override as KAA's preload above (reusing the same
+                // kaaSeasonMatchForPreload lookup - it's season-only, not KAA-specific).
+                const nekoQuery = new URLSearchParams({
+                    malId: malId || '',
+                    tmdbId: tmdbId || '',
+                    title,
+                    type: audioType,
+                    season: season || 1,
+                    ep: episode || 1
+                });
+                if (kaaSeasonMatchForPreload?.label) nekoQuery.set('seasonTitle', kaaSeasonMatchForPreload.label);
+                const nekoUrl = `/api/anime-neko-log?${nekoQuery.toString()}`;
+                console.log('[Preload] Neko fetch URL:', nekoUrl);
+                fetch(nekoUrl).then(res => res.json()).then(data => {
+                    if (data?.stream || data?.sources?.file) {
+                        window.__preloadedNekoSources = data;
+                        window.__preloadedNekoEpisode = { season, ep: episode, audio: audioType, cachedAt: Date.now() };
+                        console.log('[Preload] ✓ Neko sources cached for S' + season + 'E' + episode, { hasStream: !!data.stream });
+                    } else {
+                        console.log('[Preload] ✗ Neko returned no stream:', data);
+                    }
+                }).catch(err => console.log('[Preload] ✗ Neko preload failed:', err));
+            }
 
             // Preload RU - MV (newstream) sources
-            const newQuery = new URLSearchParams({
-                malId: malId || '',
-                tmdbId: tmdbId || '',
-                title,
-                season: season || 1,
-                ep: episode || 1
-            });
-            const newUrl = `/api/anime-new-log?${newQuery.toString()}`;
-            console.log('[Preload] RU-MV fetch URL:', newUrl);
-            fetch(newUrl).then(res => res.json()).then(data => {
-                if (data?.stream) {
-                    window.__preloadedNewSources = data;
-                    window.__preloadedNewEpisode = { season, ep: episode, cachedAt: Date.now() };
-                    console.log('[Preload] ✓ RU-MV sources cached for S' + season + 'E' + episode);
-                } else {
-                    console.log('[Preload] ✗ RU-MV returned no stream:', data);
-                }
-            }).catch(err => console.log('[Preload] ✗ RU-MV preload failed:', err));
+            if (preferredProvider === 'rumv') {
+                const newQuery = new URLSearchParams({
+                    malId: malId || '',
+                    tmdbId: tmdbId || '',
+                    title,
+                    season: season || 1,
+                    ep: episode || 1
+                });
+                const newUrl = `/api/anime-new-log?${newQuery.toString()}`;
+                console.log('[Preload] RU-MV fetch URL:', newUrl);
+                fetch(newUrl).then(res => res.json()).then(data => {
+                    if (data?.stream) {
+                        window.__preloadedNewSources = data;
+                        window.__preloadedNewEpisode = { season, ep: episode, cachedAt: Date.now() };
+                        console.log('[Preload] ✓ RU-MV sources cached for S' + season + 'E' + episode);
+                    } else {
+                        console.log('[Preload] ✗ RU-MV returned no stream:', data);
+                    }
+                }).catch(err => console.log('[Preload] ✗ RU-MV preload failed:', err));
+            }
 
-            // Preload MegaPlay sources - was never wired up here at all, unlike KAA/Neko/RU-MV
-            // above, so "Watch Now" always paid this fetch live even when MegaPlay ended up
-            // being the server that actually played. /api/anime-megaplay-log is the real payload
+            // Preload MegaPlay sources - /api/anime-megaplay-log is the real payload
             // loadMegaPlayFrame's native-playback path consumes (tokenized stream + skip markers
             // + subtitle tracks) - same endpoint, same malId-per-season lookup loadMegaPlayFrame
             // itself does, just run ahead of time instead of on click.
-            if (malId) {
+            if (preferredProvider === 'megaplay' && malId) {
                 const megaplaySeasonMatchForPreload = kaaSeasonGroupsForPreload.find(g => Number(g.seasonNumber) === Number(season));
                 const megaplayMalIdForPreload = megaplaySeasonMatchForPreload?.malId || malId;
                 const megaUrl = `/api/anime-megaplay-log?malId=${encodeURIComponent(megaplayMalIdForPreload)}&episode=${encodeURIComponent(episode)}&lang=${encodeURIComponent(audioType)}`;
@@ -1112,6 +1369,16 @@ document.addEventListener('DOMContentLoaded', function() {
         const requestedType = (urlParams.get('type') || 'movie').toLowerCase();
         
         if (!tmdbId) return alert('No ID found!');
+
+        // Season cards (AniList relations - see renderSeasonCardsRow) only ever needs tmdbId,
+        // no malId or stream resolve first - but it used to only ever get fetched once
+        // showVideoPlayer had already built the #seasonCardsRow/#seasonCardsList DOM it renders
+        // into, which only happens once playback itself starts. Kicking the fetch off THIS early
+        // instead means the row can render the instant that DOM exists, using data that's often
+        // already in by then, rather than waiting on a fresh round trip at that point.
+        window.__seasonCardsPreload = fetch(`/api/anime-season-cards?tmdbId=${encodeURIComponent(tmdbId)}`)
+            .then(res => res.ok ? res.json() : null)
+            .catch(() => null);
 
         const savedPreferredAudio = localStorage.getItem('preferredAudio');
         let currentAudioMode = savedPreferredAudio === 'dub' ? 'dub' : 'sub';
@@ -1413,6 +1680,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 <select id="dlSubsPicker" class="download-subs-picker" disabled>
                                     <option value="">Skip</option>
                                 </select>
+                                <div id="dlBurnStyleWrap" class="cc-settings-panel cc-burn-style" hidden></div>
                             </div>
                             <div class="anime-download-panel__go">
                                 <div class="anime-download-panel__label">Finalization</div>
@@ -1994,6 +2262,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 track.srclang = srclang;
                 track.src = subtitleUrl;
                 if (index === 0) track.default = true;
+                // Freshly loaded cues arrive un-adjusted - bring them up to the current sync
+                // offset (Settings > Captions Settings) once the browser has actually parsed
+                // the VTT file (cues don't exist before then).
+                track.addEventListener('load', () => bakeCcOffsetIntoTrack(track.track, ccPrefs.offset));
                 video.appendChild(track);
                 console.log(`[Subtitles] Added ${track.label} (${srclang})`);
             });
@@ -2096,22 +2368,33 @@ document.addEventListener('DOMContentLoaded', function() {
                         i18n: { qualityLabel: { 0: 'Auto' } }
                     });
                     movePlyrTopControls();
-                    // Plyr's `download` control only creates a browser link to the current HLS
-                    // manifest, which is not a usable episode download. Put a real button in the
-                    // player bar instead and route it to the existing per-title download panel.
-                    const playerControls = window.plyrInstance.elements?.controls;
-                    if (playerControls && !playerControls.querySelector('.anikino-player-download')) {
-                        const downloadButton = document.createElement('button');
-                        downloadButton.type = 'button';
-                        downloadButton.className = 'plyr__controls__item plyr__control anikino-player-download';
-                        downloadButton.setAttribute('aria-label', 'Download');
-                        downloadButton.title = 'Download';
-                        downloadButton.innerHTML = '<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 21h14"/></svg><span class="plyr__tooltip">Download</span>';
-                        downloadButton.addEventListener('click', () => {
-                            const targetId = isAnime ? 'btnDownloadAnime' : (isSeries ? 'btnDownloadTv' : 'btnDownloadMovie');
-                            document.getElementById(targetId)?.click();
-                        });
-                        playerControls.insertBefore(downloadButton, playerControls.lastElementChild);
+                    injectCcSettingsMenu(window.plyrInstance, video);
+                    // Plyr appears to build its settings menu's actual DOM lazily, the first
+                    // time it's opened - not eagerly at construction, so the call above alone
+                    // often finds nothing to inject into yet. Retry once the settings button is
+                    // actually clicked (injectCcSettingsMenu no-ops if already injected).
+                    const settingsBtn = window.plyrInstance.elements?.controls?.querySelector('[data-plyr="settings"]');
+                    if (settingsBtn) settingsBtn.addEventListener('click', () => injectCcSettingsMenu(window.plyrInstance, video));
+                    // The .kaa-download-btn-top floating button (attachKaaDownloadButton below)
+                    // now covers every ANIME server, so the separate in-bar Plyr control this
+                    // used to create was a redundant second download button there - removed for
+                    // anime specifically. Movie/TV (Kino/T1M/RU-MV) has no floating equivalent,
+                    // so it keeps this one as its only in-player download entry point.
+                    if (!isAnime) {
+                        const playerControls = window.plyrInstance.elements?.controls;
+                        if (playerControls && !playerControls.querySelector('.anikino-player-download')) {
+                            const downloadButton = document.createElement('button');
+                            downloadButton.type = 'button';
+                            downloadButton.className = 'plyr__controls__item plyr__control anikino-player-download';
+                            downloadButton.setAttribute('aria-label', 'Download');
+                            downloadButton.title = 'Download';
+                            downloadButton.innerHTML = '<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 21h14"/></svg><span class="plyr__tooltip">Download</span>';
+                            downloadButton.addEventListener('click', () => {
+                                const targetId = isSeries ? 'btnDownloadTv' : 'btnDownloadMovie';
+                                document.getElementById(targetId)?.click();
+                            });
+                            playerControls.insertBefore(downloadButton, playerControls.lastElementChild);
+                        }
                     }
                     setTimeout(() => {
                         console.log(window.plyrInstance.elements);
@@ -2119,7 +2402,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     }, 2000);
 
                     setTimeout(() => {
-                        attachKaaDownloadButton();
+                        // Movie/TV keeps its own separate in-bar download button (see !isAnime
+                        // above) - this floating one is anime-only.
+                        if (isAnime) attachKaaDownloadButton();
                         attachKaaSkipOverlay();
                     }, 1000);
                 }
@@ -4172,6 +4457,11 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!picker) return;
             picker.disabled = !e.target.checked;
             if (e.target.checked) dlAutoPickSubsLanguage();
+            const styleWrap = document.getElementById('dlBurnStyleWrap');
+            if (styleWrap) {
+                styleWrap.hidden = !e.target.checked;
+                if (e.target.checked) renderCcBurnStylePanel(styleWrap);
+            }
         });
 
         // Server/type availability for the panel - HSUB (Neko only), SUB/DUB on KAA specifically
@@ -5273,12 +5563,23 @@ document.addEventListener('DOMContentLoaded', function() {
                                 if (resolvedSeasonGroups && resolvedSeasonGroups.length > 0) {
                                     bySeason.push(...resolvedSeasonGroups.map(g => ({ seasonNumber: g.seasonNumber, episodes: g.episodes })));
                                 } else {
-                                    for (const sEntry of seasonEntries) {
+                                    // Was a sequential for-await loop - one full network round trip
+                                    // PER SEASON, one after another, before anything could render at
+                                    // all. A long-running show with many seasons (or per-cour splits)
+                                    // paid that full serial latency every time "All eps" was picked.
+                                    // Independent requests, so fire them all at once instead - real
+                                    // wall-clock cost drops to whichever single season is slowest,
+                                    // not the sum of all of them. Aired seasons are cached server-side
+                                    // indefinitely anyway (see /api/tmdb-proxy's season special case),
+                                    // so this is fetching mostly-instant cache hits in parallel, not
+                                    // hammering TMDB with a burst of live requests.
+                                    const seasonResults = await Promise.all(seasonEntries.map(async (sEntry) => {
                                         const sNum = Number(sEntry.season_number);
                                         const seasonRes = await fetch(`/api/tmdb-proxy/tv/${tmdbId}/season/${sNum}`);
                                         const seasonData = await seasonRes.json();
-                                        bySeason.push({ seasonNumber: sNum, episodes: Array.isArray(seasonData?.episodes) ? seasonData.episodes : [] });
-                                    }
+                                        return { seasonNumber: sNum, episodes: Array.isArray(seasonData?.episodes) ? seasonData.episodes : [] };
+                                    }));
+                                    bySeason.push(...seasonResults);
                                 }
                             } else {
                                 const selectedSeasonNum = Number(mode) || 1;
@@ -5384,7 +5685,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 }
 
                                 let firstThumb = null;
-                                let listHTML = '';
+                                const episodeHtmlParts = [];
                                 console.log('[Episode List] Starting render with continue_from:', {
                                     season: window.__continueFromSeason,
                                     episode: window.__continueFromEpisode
@@ -5440,7 +5741,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     const globalEpNum = (fillerSeasonOffsets[seasonNum] || 0) + Number(ep.episode_number);
                                     const fillerType = isAnime ? (fillerTypeByGlobalEpisode[globalEpNum] || 'Unknown') : '';
 
-                                    listHTML += `
+                                    episodeHtmlParts.push(`
                                         <li class="episode-list-item${isWatched}${isContinueFrom}" data-season="${seasonNum}" data-ep="${ep.episode_number}" data-filler-type="${fillerType}" onclick="window.__handleEpisodeItemClick && window.__handleEpisodeItemClick(this)">
                                             <span class="episode-num">${ep.episode_number}</span>
                                             <img class="episode-thumb" src="${thumb}" alt="Episode ${ep.episode_number}" loading="lazy" decoding="async" onerror="this.src='/img/LOGO_Short.svg'">
@@ -5450,42 +5751,74 @@ document.addEventListener('DOMContentLoaded', function() {
                                             </div>
                                             <span class="episode-play">▶</span>
                                         </li>
-                                    `;
+                                    `);
                                 });
-                                episodeListContainer.innerHTML = listHTML;
                                 window.currentEpisodeThumb = firstThumb || animePosterThumb;
                                 window.currentAnimePosterThumb = animePosterThumb;
-                                applyEpisodeFilters();
 
-                                // Apply .active class to continue_from episode AFTER DOM is rendered
-                                requestAnimationFrame(() => {
-                                    const continueS = window.__continueFromSeason;
-                                    const continueE = window.__continueFromEpisode;
-                                    if (continueS && continueE) {
-                                        const activeItem = document.querySelector(`.episode-list-item[data-season="${continueS}"][data-ep="${continueE}"]`);
-                                        if (activeItem) {
-                                            document.querySelectorAll('.episode-list-item.active').forEach(el => el.classList.remove('active'));
-                                            activeItem.classList.add('active');
-                                            console.log(`[Episode List] ✓ Applied .active to S${continueS}E${continueE}`);
+                                // Insert in chunks instead of one giant innerHTML set - a long-
+                                // running show's "All eps" list can run into the hundreds (Bleach:
+                                // 416 across its classic run + Blood War arcs), and building/
+                                // parsing that much markup - plus the several hundred thumbnail
+                                // requests it fires - in one synchronous paint was real, measured
+                                // multi-second jank (confirmed live on Bleach's "All eps" view).
+                                // First 20 render immediately - enough to fill the visible panel
+                                // without waiting on anything below the fold - then the rest streams
+                                // in right behind it at a faster clip; nobody scrolls fast enough to
+                                // actually catch it "loading" in real time, so there's no reason to
+                                // throttle the background portion as gently as the first paint.
+                                // Everything below that assumes the FULL list exists (search/filter
+                                // counts, the continue_from active-episode highlight, the source
+                                // re-sync it can trigger) is deliberately held until every chunk has
+                                // actually landed, not fired optimistically after the first one.
+                                episodeListContainer.innerHTML = '';
+                                const EPISODE_RENDER_FIRST_CHUNK_SIZE = 20;
+                                const EPISODE_RENDER_CHUNK_SIZE = 80;
+                                let chunkStart = 0;
+                                const renderNextEpisodeChunk = () => {
+                                    const size = chunkStart === 0 ? EPISODE_RENDER_FIRST_CHUNK_SIZE : EPISODE_RENDER_CHUNK_SIZE;
+                                    const slice = episodeHtmlParts.slice(chunkStart, chunkStart + size);
+                                    if (slice.length) episodeListContainer.insertAdjacentHTML('beforeend', slice.join(''));
+                                    chunkStart += size;
+                                    if (chunkStart < episodeHtmlParts.length) {
+                                        requestAnimationFrame(renderNextEpisodeChunk);
+                                        return;
+                                    }
+
+                                    applyEpisodeFilters();
+
+                                    // Apply .active class to continue_from episode AFTER the full
+                                    // list is rendered
+                                    requestAnimationFrame(() => {
+                                        const continueS = window.__continueFromSeason;
+                                        const continueE = window.__continueFromEpisode;
+                                        if (continueS && continueE) {
+                                            const activeItem = document.querySelector(`.episode-list-item[data-season="${continueS}"][data-ep="${continueE}"]`);
+                                            if (activeItem) {
+                                                document.querySelectorAll('.episode-list-item.active').forEach(el => el.classList.remove('active'));
+                                                activeItem.classList.add('active');
+                                                console.log(`[Episode List] ✓ Applied .active to S${continueS}E${continueE}`);
+                                            } else {
+                                                console.log(`[Episode List] Could not find S${continueS}E${continueE} in DOM`);
+                                            }
                                         } else {
-                                            console.log(`[Episode List] Could not find S${continueS}E${continueE} in DOM`);
+                                            console.log(`[Episode List] continue_from not set when applying .active`);
                                         }
-                                    } else {
-                                        console.log(`[Episode List] continue_from not set when applying .active`);
-                                    }
 
-                                    // The history value and the hidden <select> can settle on
-                                    // separate microtasks. Once the actual active list row exists,
-                                    // issue one authoritative source update from that row. This
-                                    // prevents an earlier default-E1 request from surviving while
-                                    // the UI correctly shows the restored E7 selection.
-                                    if (startupResumeSourceSyncPending) {
-                                        startupResumeSourceSyncPending = false;
-                                        updateSource(currentServer);
-                                    }
-                                });
+                                        // The history value and the hidden <select> can settle on
+                                        // separate microtasks. Once the actual active list row exists,
+                                        // issue one authoritative source update from that row. This
+                                        // prevents an earlier default-E1 request from surviving while
+                                        // the UI correctly shows the restored E7 selection.
+                                        if (startupResumeSourceSyncPending) {
+                                            startupResumeSourceSyncPending = false;
+                                            updateSource(currentServer);
+                                        }
+                                    });
 
-                                wireEpisodeSearch();
+                                    wireEpisodeSearch();
+                                };
+                                renderNextEpisodeChunk();
 
                             }
                         } catch(e) {
@@ -5532,6 +5865,18 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             malId = await lookupMalId();
+            // Re-enabled (was disabled 2026-08-27) - the old trigger fired blind on a fixed
+            // 500ms timer in movieLoading.js, before malId had actually resolved, reading
+            // window.__malId which was never even assigned anywhere in the first place (a
+            // second, separate bug beyond just bad timing - it always read '' regardless of how
+            // long you waited). Firing it HERE, right after the real malId resolves, fixes both:
+            // window.__malId is set immediately before the call so preloadEpisodeSources' own
+            // internal read of it is finally correct, and there's no arbitrary delay to race
+            // against - it only ever runs once malId is genuinely ready. Fire-and-forget by
+            // design (same as before) - this is a speculative warm-up for whichever server the
+            // viewer switches to, not on the critical path to actually starting playback.
+            window.__malId = malId;
+            window.preloadEpisodeSources?.();
         } catch (e) {
             console.error('Metadata Fetch Error:', e);
         }

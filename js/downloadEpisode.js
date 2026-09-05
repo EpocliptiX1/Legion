@@ -390,6 +390,34 @@ function normalizeSubtitlePayload(text) {
 const SUBTITLE_FONT_URL = 'https://cdn.jsdelivr.net/gh/googlefonts/roboto@main/src/hinted/Roboto-Regular.ttf';
 let subtitleFontBytesPromise = null;
 
+// Burned subtitles are permanent pixels - there's no restyling them after the fact like the live
+// player's captions, so the download panel's own Size/Color/Bold/Background controls (see
+// renderCcBurnStylePanel in moviePlayer.js) write into the SAME 'anikino-cc-prefs' localStorage
+// key the live player reads. Read directly here instead of depending on moviePlayer.js's
+// in-memory ccPrefs object - this is a separate script, and the shared key is the actual contract
+// between the two, not the variable.
+const CC_BURN_FONT_SIZES = { small: 20, medium: 28, large: 36, xlarge: 44, xxlarge: 52, xxxlarge: 60 };
+function getCcPrefsForBurn() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem('anikino-cc-prefs') || '{}');
+        return {
+            size: CC_BURN_FONT_SIZES[parsed.size] ? parsed.size : 'medium',
+            color: /^#[0-9a-fA-F]{6}$/.test(parsed.color || '') ? parsed.color : '#ffffff',
+            bold: !!parsed.bold,
+            // On by default, matching the live player - only an explicit false sticks.
+            bg: parsed.bg === false ? false : true
+        };
+    } catch (err) {
+        return { size: 'medium', color: '#ffffff', bold: false, bg: true };
+    }
+}
+// ASS/libass wants &HAABBGGRR& (alpha, then BGR - the reverse byte order of a CSS #RRGGBB hex).
+function cssHexToAssColor(hex, alphaHex) {
+    const clean = String(hex || '#ffffff').replace('#', '');
+    const r = clean.slice(0, 2), g = clean.slice(2, 4), b = clean.slice(4, 6);
+    return '&H' + (alphaHex || '00') + b + g + r + '&';
+}
+
 async function prepareSubtitleBurnFilter(ffmpeg, subtitleFilename) {
     if (!subtitleFontBytesPromise) {
         subtitleFontBytesPromise = fetch(SUBTITLE_FONT_URL, { cache: 'force-cache' })
@@ -414,7 +442,22 @@ async function prepareSubtitleBurnFilter(ffmpeg, subtitleFilename) {
     await ffmpeg.writeFile('/fonts/Roboto-Regular.ttf', fontBytes);
     // Force the supplied font as well as exposing its directory.  A generic fallback name
     // can otherwise resolve to nothing in FFmpeg.wasm even though the filter itself loads.
-    return `subtitles=filename=${subtitleFilename}:fontsdir=/fonts:force_style=FontName=Roboto`;
+    const style = getCcPrefsForBurn();
+    const fontSize = CC_BURN_FONT_SIZES[style.size];
+    const primaryColour = cssHexToAssColor(style.color, '00'); // 00 = fully opaque text
+    const forceStyle = [
+        'FontName=Roboto',
+        `FontSize=${fontSize}`,
+        `PrimaryColour=${primaryColour}`,
+        `Bold=${style.bold ? -1 : 0}`,
+        // BorderStyle 3 = opaque box behind the text (background on); 1 = outline only, no box
+        // (background off) - Outline/Shadow give the text some readability without a box.
+        `BorderStyle=${style.bg ? 3 : 1}`,
+        `BackColour=${cssHexToAssColor('#000000', '33')}`, // ~80% opaque black, only visible when BorderStyle=3
+        `Outline=${style.bg ? 0 : 2}`,
+        'Shadow=0'
+    ].join(',');
+    return `subtitles=filename=${subtitleFilename}:fontsdir=/fonts:force_style='${forceStyle}'`;
 }
 
 function triggerBrowserDownload(filename, text, mimeType = 'text/plain;charset=utf-8') {

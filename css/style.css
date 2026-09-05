@@ -9347,6 +9347,51 @@ body.blur-active {
 button[data-plyr="settings"][aria-haspopup="true"]:has(.plyr__menu__value:contains("undefined")) {
     display:none;
 }
+
+/* Captions Settings (font size/color/weight + manual sync offset) - see injectCcSettingsMenu in
+   moviePlayer.js. Different providers ship separately-timed rips of the same episode, so a
+   caption borrowed from a different provider than the one actually serving the video can drift
+   out of sync - not fixable at the source, so this gives the viewer a manual +-1s nudge instead.
+   --cc-size/--cc-color/--cc-weight are set on :root by applyCcStyle(). */
+.plyr__caption {
+    font-size: var(--cc-size, 1.05vw) !important;
+    color: var(--cc-color, #fff) !important;
+    font-weight: var(--cc-weight, 400) !important;
+    background: transparent !important;
+    padding: 0 !important;
+}
+/* Background off by default - Plyr's own caption box otherwise always sits on a solid black
+   backing. html.cc-bg-on is toggled by applyCcStyle() based on ccPrefs.bg; a plain var()-based
+   background/padding pair can't branch on "is this transparent or not" in CSS itself, so the
+   "on" state's background/padding are their own rule instead. */
+html.cc-bg-on .plyr__caption {
+    background: rgba(0,0,0,.8) !important;
+    padding: .2em .5em !important;
+    border-radius: 3px;
+}
+.cc-settings-panel { padding: 10px 0; }
+.cc-settings-panel .plyr__control--back { width: 100%; }
+.cc-settings-note { padding: 4px 14px 12px; margin: 0; font-size: 0.78rem; line-height: 1.4; color: #999; }
+.cc-settings-row { padding: 6px 14px; }
+.cc-settings-row label { display: block; font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.04em; color: #999; margin-bottom: 8px; }
+.cc-settings-choices { display: flex; gap: 6px; flex-wrap: wrap; }
+.cc-settings-choices button { border: 1px solid #2d2d2d; background: #1a1a1a; color: #ddd;
+    border-radius: 6px; padding: 5px 10px; font-size: 0.78rem; cursor: pointer; font-family: inherit; }
+.cc-settings-choices button:hover { border-color: #ff8000; }
+.cc-settings-choices button.active { background: #ff8000; border-color: #ff8000; color: #000; font-weight: 600; }
+.cc-color-swatch { width: 26px; height: 26px; padding: 0; border-radius: 50%; position: relative; }
+.cc-color-swatch.active { border-color: #ff8000; box-shadow: 0 0 0 2px #ff8000; }
+.cc-offset-row { display: flex; align-items: center; gap: 10px; }
+.cc-offset-row button { width: 34px; height: 30px; border: 1px solid #2d2d2d; background: #1a1a1a;
+    color: #fff; border-radius: 6px; cursor: pointer; font-size: 1rem; font-family: inherit; }
+.cc-offset-row button:hover { border-color: #ff8000; color: #ff8000; }
+.cc-offset-value { min-width: 46px; text-align: center; font-size: 0.85rem; color: #eee; font-variant-numeric: tabular-nums; }
+/* The download panel's own copy of this same panel (see renderCcBurnStylePanel in
+   moviePlayer.js) isn't inside a Plyr dropdown, so it needs its own visual container to read as
+   a distinct sub-section of the burn row instead of loose controls. */
+.cc-burn-style { margin-top: 10px; padding: 10px 4px 4px; border-top: 1px solid #2a2a2a; }
+.cc-burn-style .cc-settings-row { padding: 6px 0; }
 .kaa-download-btn-top {
     position: absolute;
     top: 12px;

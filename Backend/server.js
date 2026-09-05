@@ -2071,15 +2071,24 @@ function renderEmbedPowChallengeHtml() {
   try {
     const challenge = await (await fetch('/api/pow-challenge')).json();
     const prefix = '0'.repeat(challenge.difficulty);
-    let solution = 0, digest = '';
-    // Yield to the event loop periodically so this doesn't freeze the tab on slower devices.
-    while (true) {
-      for (let i = 0; i < 2000; i++, solution++) {
-        digest = await sha256Hex(challenge.seed + ':' + solution);
-        if (digest.startsWith(prefix)) break;
+    // Fire a batch of digests concurrently instead of one await per hash. crypto.subtle.digest
+    // is a native (BoringSSL) call under a Promise - awaiting each one individually serializes
+    // every single hash behind its own microtask round trip, which dominated the actual hashing
+    // work once measured (millions of attempts at difficulty 5-6 each paying that overhead).
+    // Batching lets the browser dispatch/resolve many at once, cutting real wall-clock solve time
+    // substantially without changing the amount of work done or the difficulty itself. Still
+    // yields to the event loop between batches so this doesn't freeze the tab on slower devices.
+    const BATCH_SIZE = 256;
+    let solution = -1, batchStart = 0;
+    while (solution === -1) {
+      const digests = await Promise.all(
+        Array.from({ length: BATCH_SIZE }, (_, i) => sha256Hex(challenge.seed + ':' + (batchStart + i)))
+      );
+      for (let i = 0; i < digests.length; i++) {
+        if (digests[i].startsWith(prefix)) { solution = batchStart + i; break; }
       }
-      if (digest.startsWith(prefix)) break;
-      await new Promise(r => setTimeout(r, 0));
+      batchStart += BATCH_SIZE;
+      if (solution === -1) await new Promise(r => setTimeout(r, 0));
     }
     const verify = await fetch('/api/pow-verify', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2136,6 +2145,38 @@ app.use('/embed', (req, res, next) => {
     next();
 });
 app.use('/embed', requireEmbedPow);
+
+// The "Test Your Embed" playground on our own /html/apidocs.html loads these same /embed/*
+// routes in an iframe to preview them - indistinguishable from a real third-party embed at the
+// HTTP layer except for one thing: Referrer-Policy is 'same-origin' site-wide (see
+// setFirstPartyDocumentHeaders in middleware.js), so a same-origin navigation FROM apidocs.html
+// still carries its full Referer, while every real third-party site's embed necessarily has a
+// different Referer (or none, if the embedding page strips it). Used only to relax the
+// concurrent-playback ceiling below to the same one movieInfo.html gets (see
+// MAX_PUBLIC_EMBED_LEASES_PER_SESSION) - every other public-embed defense (PoW, resolve budget,
+// honeypot/heartbeat scoring, blocked-session checks) still applies identically either way, via
+// isPublicEmbedScope() treating both scope values as the same thing everywhere except the one
+// spot that picks lease/media/byte limits.
+function isPlaygroundEmbedRequest(req) {
+    try {
+        const ref = new URL(req.headers.referer || '');
+        // req.headers.host is USELESS for this comparison: middleware.js's proxyToBackend
+        // deliberately strips the original Host header before forwarding (Node otherwise
+        // re-derives it to the backend's own internal address), so on this side of the proxy it
+        // is always the backend's own hostname:port, never what the browser actually navigated
+        // to. x-forwarded-host is what that same middleware forwards in its place - confirmed
+        // live: without this, every real playground request compared 'localhost:3000' (the
+        // Referer) against 'localhost:4000' (req.headers.host) and never once matched.
+        const publicHost = req.headers['x-forwarded-host'] || req.headers.host;
+        return ref.host === publicHost && ref.pathname === '/html/apidocs.html';
+    } catch (err) {
+        return false;
+    }
+}
+app.use('/embed', (req, res, next) => {
+    req.publicEmbedScope = isPlaygroundEmbedRequest(req) ? 'public-embed-playground' : 'public-embed';
+    next();
+});
 
 // Public embeds have no account or API key. Keep their resolver allowance well below the
 // first-party player budget: a normal iframe resolves a title once, while a relay needs a
@@ -2241,7 +2282,7 @@ app.post('/api/embed-activate', (req, res) => {
     try {
         const sourceToken = new URL(entry.streamUrl, 'https://local.invalid').searchParams.get('token');
         const decoded = decryptProxyTarget(sourceToken);
-        if (decoded.scope === 'public-embed' && decoded.leaseId) {
+        if (isPublicEmbedScope(decoded.scope) && decoded.leaseId) {
             const telemetryTicket = crypto.randomBytes(18).toString('base64url');
             const createdAt = Date.now();
             const state = { sessionId: req.sessionId, leaseId: decoded.leaseId, createdAt, lastSeenAt: createdAt, lastMissingReportedAt: 0, expiresAt: createdAt + PROXY_TOKEN_TTL_MS };
@@ -2344,6 +2385,16 @@ const MAX_MEDIA_BYTES_PER_LEASE = 8 * 1024 * 1024 * 1024; // 8 GiB: generous for
 const MAX_PUBLIC_EMBED_LEASES_PER_SESSION = 2;
 const MAX_PUBLIC_EMBED_MEDIA_REQUESTS_PER_LEASE = 6;
 const MAX_PUBLIC_EMBED_BYTES_PER_LEASE = 4 * 1024 * 1024 * 1024;
+// 'public-embed-playground' (see isPlaygroundEmbedRequest above) is every bit as much a public
+// embed as 'public-embed' for every defense EXCEPT the lease/media/byte ceiling above - that one
+// specific check below stays keyed to the exact 'public-embed' string on purpose, so a
+// playground-scoped token falls through to the same (looser) limits movieInfo.html gets. Every
+// OTHER place that gates on "is this a public embed at all" should use this helper instead of a
+// literal equality check, so it keeps matching both scopes if a third public-embed-ish scope is
+// ever added later.
+function isPublicEmbedScope(scope) {
+    return scope === 'public-embed' || scope === 'public-embed-playground';
+}
 const playbackLeases = new Map(); // leaseId -> { sessionId, ipPrefix, uaHash, createdAt, lastSeenAt, inFlight }
 
 function createPlaybackLeaseId() {
@@ -2386,6 +2437,14 @@ function claimPlaybackLease(req, decoded, { isPlaybackRequest = true, countAsMed
             ? MAX_PUBLIC_EMBED_LEASES_PER_SESSION
             : MAX_ACTIVE_LEASES_PER_SESSION;
         if (activeForSession.length >= activeLeaseLimit) {
+            // Temporary (2026-09-04) diagnostic for the playground concurrency investigation -
+            // remove once confirmed. Prints exactly what scope this lease attempt was minted
+            // with and what it's being measured against, so a 429 here is diagnosable from the
+            // server log instead of guessed at.
+            console.warn('[Playback Lease] rejected:', {
+                scope: decoded.scope, limit: activeLeaseLimit, activeCount: activeForSession.length,
+                activeScopes: activeForSession.map(([, item]) => item.scopeForDebug || 'unknown')
+            });
             const err = new Error('Too many active playback streams for this session');
             err.leaseLimit = true;
             throw err;
@@ -2398,6 +2457,7 @@ function claimPlaybackLease(req, decoded, { isPlaybackRequest = true, countAsMed
             lastSeenAt: now,
             inFlight: 0,
             bytesSent: 0,
+            scopeForDebug: decoded.scope || 'movieinfo', // temporary (2026-09-04), see the diagnostic above
             maxConcurrentRequests: decoded.scope === 'public-embed'
                 ? MAX_PUBLIC_EMBED_MEDIA_REQUESTS_PER_LEASE
                 : MAX_CONCURRENT_MEDIA_REQUESTS_PER_LEASE,
@@ -2469,7 +2529,7 @@ function chargePlaybackBytes(leaseId, byteLength) {
 }
 
 function observePublicEmbedMediaRequest(req, decoded) {
-    if (decoded.scope !== 'public-embed' || !decoded.leaseId) return;
+    if (!isPublicEmbedScope(decoded.scope) || !decoded.leaseId) return;
     const telemetryTicket = publicEmbedTelemetryByLease.get(decoded.leaseId);
     const state = telemetryTicket ? publicEmbedTelemetry.get(telemetryTicket) : null;
     const now = Date.now();
@@ -2595,8 +2655,12 @@ function buildM3u8ProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeas
 function buildStreamProxyUrl(url, referer, ua, sessionId, leaseId = createPlaybackLeaseId(), scope = null) {
     return `/api/proxy-stream?token=${encryptProxyTarget({ url, referer, ua, sessionId, leaseId, scope })}`;
 }
-function buildPublicEmbedM3u8ProxyUrl(url, referer, sessionId, leaseId = createPlaybackLeaseId(), forcePlaylist = false) {
-    return buildM3u8ProxyUrl(url, referer, sessionId, leaseId, forcePlaylist, 'public-embed');
+// scope defaults to plain 'public-embed' for every existing caller that doesn't know about the
+// playground distinction - only the /embed/* route handlers (which have req.publicEmbedScope)
+// pass it through explicitly, via the last (options) argument so none of their existing 3-arg
+// call sites needed to change shape.
+function buildPublicEmbedM3u8ProxyUrl(url, referer, sessionId, { leaseId = createPlaybackLeaseId(), forcePlaylist = false, scope = 'public-embed' } = {}) {
+    return buildM3u8ProxyUrl(url, referer, sessionId, leaseId, forcePlaylist, scope);
 }
 
 // --- Playback integrity decoys (monitor-only by default) --------------------------------
@@ -7607,7 +7671,15 @@ const ALLOWED_PROXY_HOSTS = [
     // MegaPlay/VidTube (see vidscr.txt) - CDN hosts for playlists/segments/subtitles.
     // livedns.my segment hosts are numbered/rotating (03nc1.livedns.my etc.), hence the
     // suffix match rather than a fixed hostname.
-    'megaplay.buzz', 'watching.onl', 'livedns.my', 'akirax.buzz', 'shiora.top'
+    'megaplay.buzz', 'watching.onl', 'livedns.my', 'akirax.buzz', 'shiora.top',
+    // KickAssAnime (KaF)'s own subtitle CDN. Confirmed live (2026-09-04): /api/m3u8-proxy has no
+    // host allowlist at all, so KAA's video segments/manifests off this same host always worked
+    // fine - but /api/proxy-stream (used for direct .vtt subtitle files, not playlists/segments)
+    // DOES enforce this list, and this host was simply never added to it. Went unnoticed until
+    // now because the embed path used to always prefer KaF's subtitles over the ACTIVE provider's
+    // own - once fixed to prefer the active provider's own track first, MegaPlay titles with no
+    // track of their own fall back to KaF's exactly like before, which is when this 403 surfaced.
+    'kryntal.top'
 ];
 let proxyDebugPrinted = false;
 
@@ -7745,13 +7817,20 @@ app.get('/api/proxy-stream', async (req, res) => {
         const fallback = err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token';
         return sendIntegrityFailure(req, res, outcome, 403, fallback);
     }
-    if (decoded.scope === 'public-embed' && (req.publicEmbedSessionBlocked || req.publicEmbedNetworkBlockType)) {
+    if (isPublicEmbedScope(decoded.scope) && (req.publicEmbedSessionBlocked || req.publicEmbedNetworkBlockType)) {
         return sendPlaybackIntegrityMediaBlock(res, req.publicEmbedNetworkBlockType || INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT);
     }
 
     try {
         const host = new URL(decodedUrl).hostname;
         if (!ALLOWED_PROXY_HOSTS.some(h => host === h || host.endsWith('.' + h))) {
+            // Temporary (2026-09-04) diagnostic for the mega-subtitle-priority fix's fallout -
+            // remove once ALLOWED_PROXY_HOSTS is confirmed to cover whatever this turns out to
+            // be. Now preferring MegaPlay's own subtitle track over KaF's borrowed one (see
+            // resolvePublicEmbedAnimeSource's mega branch) means MegaPlay's OWN subtitle CDN
+            // gets proxied here for the first time - previously KaF was always preferred, so
+            // this path was never actually exercised, and its host may never have been added.
+            console.warn('[Proxy Stream] rejected host not in ALLOWED_PROXY_HOSTS:', host, '| full url:', decodedUrl);
             return res.status(403).send('Domain not allowed');
         }
             // if (decodedUrl.includes('master.m3u8')) {
@@ -11581,7 +11660,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         const fallback = err.sessionMismatch ? 'This link does not belong to your session' : 'Invalid or expired proxy token';
         return sendIntegrityFailure(req, res, outcome, 403, fallback);
     }
-    if (decoded.scope === 'public-embed' && (req.publicEmbedSessionBlocked || req.publicEmbedNetworkBlockType)) {
+    if (isPublicEmbedScope(decoded.scope) && (req.publicEmbedSessionBlocked || req.publicEmbedNetworkBlockType)) {
         return sendPlaybackIntegrityMediaBlock(res, req.publicEmbedNetworkBlockType || INTEGRITY_BAN_TYPES.RELAY_HEARTBEAT);
     }
     if (!targetUrl) return res.status(400).send('URL required');
@@ -21049,7 +21128,7 @@ async function resolvePublicEmbedAnimeId(rawId) {
 // removed, so a one-time strip script loses that race almost immediately. Client-side JS below
 // avoids template-literal ${...} syntax entirely (string concatenation instead) so it can't
 // collide with this function's own server-side interpolation.
-function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, tracks, title, tmdbId, mediaType, startAt, autoplay, nextEpisodeUrl, sessionId }) {
+function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, tracks, title, tmdbId, mediaType, season, episode, startAt, autoplay, nextEpisodeUrl, sessionId }) {
     const activationTicket = createPublicEmbedActivation(sessionId, streamUrl, tracks, fallbackStreamUrls);
     return `<!DOCTYPE html>
 <html lang="en">
@@ -21153,11 +21232,64 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
   .embed-report-submit { background: #ff8000; color: #000; font-weight: 600; }
   .embed-report-submit:disabled { opacity: 0.6; cursor: not-allowed; }
   .embed-report-status { margin: 0 0 10px; font-size: 0.8rem; color: #999; min-height: 1em; }
+
+  /* Was completely silent before - wrap only got a data-attribute nothing else read, so an
+     activation failure left the bare native <video controls> element sitting there forever with
+     zero indication anything went wrong (confirmed live: stuck at 00:00/00:00, no console error
+     visible without opening that specific iframe's own DevTools context). Reloading mints a
+     brand new one-use activation ticket, so unlike retrying the same (possibly already-consumed)
+     ticket, this recovers cleanly regardless of why the first one failed. */
+  .embed-activation-error { position: absolute; inset: 0; z-index: 45; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 12px;
+    background: rgba(0,0,0,0.88); color: #ccc; font-size: 0.85rem; text-align: center; padding: 20px;
+    box-sizing: border-box; }
+  #wrap[data-activation-error="1"] .embed-activation-error { display: flex; }
+  .embed-activation-error button { border: none; border-radius: 8px; padding: 8px 16px;
+    cursor: pointer; font-size: 0.85rem; font-weight: 600; background: #ff8000; color: #000; }
+
+  /* Different providers ship separately-timed rips of the same episode, so a caption borrowed
+     from one (see resolvePublicEmbedSubtitles's own comment) can measurably drift against
+     whichever provider actually served THIS video - not something we can fix at the source, so
+     instead: font size/color/weight plus a manual +-1s offset the viewer can dial in themselves,
+     under Settings > Captions Settings. Overrides Plyr's own .plyr__caption rendering directly
+     via CSS custom properties set on #player (see applyCcPrefs in the script below) rather than
+     touching the VTT file itself - the underlying track/cue timing is what --cc-offset adjusts
+     instead (see applyCcOffset), by mutating each loaded TextTrack's cues directly. */
+  .plyr__caption { font-size: var(--cc-size, 1.05vw) !important; color: var(--cc-color, #fff) !important;
+    font-weight: var(--cc-weight, 400) !important; background: transparent !important; padding: 0 !important; }
+  /* Off by default - Plyr's own caption box otherwise always sits on a solid black backing.
+     #wrap gets this class from applyCcStyle() based on ccPrefs.bg, not a bare CSS var (a plain
+     var()-based background/padding pair can't branch on "is this transparent or not" in CSS
+     itself, so background/padding for the "on" state are re-applied here as their own rule). */
+  #wrap.cc-bg-on .plyr__caption { background: rgba(0,0,0,.8) !important; padding: .2em .5em !important; border-radius: 3px; }
+  .plyr__control--cc-settings svg { width: 18px; height: 18px; }
+  .cc-settings-panel { padding: 10px 0; }
+  .cc-settings-panel .plyr__control--back { width: 100%; }
+  .cc-settings-note { padding: 4px 14px 12px; margin: 0; font-size: 0.78rem; line-height: 1.4; color: #999; }
+  .cc-settings-row { padding: 6px 14px; }
+  .cc-settings-row label { display: block; font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.04em; color: #999; margin-bottom: 8px; }
+  .cc-settings-choices { display: flex; gap: 6px; flex-wrap: wrap; }
+  .cc-settings-choices button { border: 1px solid #2d2d2d; background: #1a1a1a; color: #ddd;
+    border-radius: 6px; padding: 5px 10px; font-size: 0.78rem; cursor: pointer; font-family: inherit; }
+  .cc-settings-choices button:hover { border-color: #ff8000; }
+  .cc-settings-choices button.active { background: #ff8000; border-color: #ff8000; color: #000; font-weight: 600; }
+  .cc-color-swatch { width: 26px; height: 26px; padding: 0; border-radius: 50%; position: relative; }
+  .cc-color-swatch.active { border-color: #ff8000; box-shadow: 0 0 0 2px #ff8000; }
+  .cc-offset-row { display: flex; align-items: center; gap: 10px; }
+  .cc-offset-row button { width: 34px; height: 30px; border: 1px solid #2d2d2d; background: #1a1a1a;
+    color: #fff; border-radius: 6px; cursor: pointer; font-size: 1rem; font-family: inherit; }
+  .cc-offset-row button:hover { border-color: #ff8000; color: #ff8000; }
+  .cc-offset-value { min-width: 46px; text-align: center; font-size: 0.85rem; color: #eee; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
   <div class="wrap" id="wrap">
     <video id="player" playsinline controls></video>
+    <div class="embed-activation-error" id="embedActivationError">
+      <div>Couldn't start playback.</div>
+      <button type="button" id="embedActivationRetry">Retry</button>
+    </div>
     <div class="embed-report-overlay" id="embedReportOverlay">
       <div class="embed-report-box">
         <h3>Report a problem</h3>
@@ -21181,6 +21313,37 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
       var startAt = ${JSON.stringify(Number(startAt) > 0 ? Number(startAt) : 0)};
       var autoplay = ${JSON.stringify(!!autoplay)};
       var nextEpisodeUrl = ${JSON.stringify(nextEpisodeUrl || null)};
+
+      // --- Local resume (per-viewer, per-browser - see apidocs.html's own documented Resume
+      // Playback pattern for host sites that want to do this themselves via ?startAt=) --------
+      // A host page can implement its own resume (documented API, ?startAt= + the postMessage
+      // timeupdate/pause events below) but most embedders never will. This makes resume work out
+      // of the box regardless, entirely client-side in the viewer's OWN browser - nothing is sent
+      // to us, and it's scoped to OUR origin (every /embed/ page, on every site that embeds us,
+      // shares the same localStorage), not the embedding site's. An explicit ?startAt= from the
+      // host page always wins over this (see loadedmetadata below) - never silently override a
+      // host page's own resume mechanism with ours.
+      var resumeKey = ${JSON.stringify('anikino-embed-resume:' + mediaType + ':' + tmdbId + (season != null && episode != null ? (':' + season + ':' + episode) : ''))};
+      var RESUME_MIN_SECONDS = 5; // not worth resuming a few seconds in
+      var RESUME_END_BUFFER = 15; // basically finished - don't offer to "resume" right at the end
+      function loadLocalResume() {
+        try {
+          var parsed = JSON.parse(localStorage.getItem(resumeKey) || 'null');
+          return parsed && Number.isFinite(parsed.t) ? parsed.t : null;
+        } catch (e) { return null; }
+      }
+      function saveLocalResume(t, d) {
+        try {
+          if (!(t > RESUME_MIN_SECONDS) || !(d > 0) || t > d - RESUME_END_BUFFER) {
+            localStorage.removeItem(resumeKey);
+            return;
+          }
+          localStorage.setItem(resumeKey, JSON.stringify({ t: t, d: d, at: Date.now() }));
+        } catch (e) { /* private mode etc */ }
+      }
+      function clearLocalResume() {
+        try { localStorage.removeItem(resumeKey); } catch (e) {}
+      }
       // Populated after activation - other candidate KAA mirrors to try if the primary one
       // turns out to be a dead/expired CDN link (see createPublicEmbedActivation's comment).
       var fallbackSources = [];
@@ -21217,9 +21380,14 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
       }
       var seekedToStart = false;
       video.addEventListener('loadedmetadata', function () {
-        if (startAt > 0 && !seekedToStart) {
+        if (!seekedToStart) {
           seekedToStart = true;
-          try { video.currentTime = Math.min(startAt, video.duration || startAt); } catch (e) {}
+          // An explicit ?startAt= from the host page always wins over our own saved local
+          // position - see the resumeKey comment above.
+          var target = startAt > 0 ? startAt : loadLocalResume();
+          if (target > 0) {
+            try { video.currentTime = Math.min(target, video.duration || target); } catch (e) {}
+          }
         }
         postEvent('ready'); sendTelemetry('ready');
         if (autoplay) {
@@ -21236,8 +21404,9 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
         }
       });
       video.addEventListener('play', function () { postEvent('play'); sendTelemetry('play'); });
-      video.addEventListener('pause', function () { postEvent('pause'); sendTelemetry('pause'); });
+      video.addEventListener('pause', function () { saveLocalResume(video.currentTime, video.duration); postEvent('pause'); sendTelemetry('pause'); });
       video.addEventListener('ended', function () {
+        clearLocalResume();
         postEvent('ended'); sendTelemetry('ended');
         if (nextEpisodeUrl) {
           postEvent('autonext', { nextEpisodeUrl: nextEpisodeUrl });
@@ -21249,6 +21418,7 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
         var now = Date.now();
         if (now - lastTimeUpdatePost < 5000) return;
         lastTimeUpdatePost = now;
+        saveLocalResume(video.currentTime, video.duration);
         postEvent('timeupdate'); sendTelemetry('timeupdate');
       });
 
@@ -21308,6 +21478,190 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
           .finally(function () { reportSubmitBtn.disabled = false; });
       });
 
+      // --- Captions Settings: size / color / weight / manual sync offset -------------------
+      // Different providers ship separately-timed rips of the same episode, so a caption
+      // borrowed from a different provider than the one actually serving the video can
+      // measurably drift out of sync - not fixable at the source, so this gives the viewer a
+      // manual +-1s nudge instead. Preferences are per-device (localStorage), same reasoning as
+      // any other "how do captions look on MY screen" setting.
+      var CC_PREFS_KEY = 'anikino-cc-prefs';
+      var CC_SIZES = { small: '0.8vw', medium: '1.05vw', large: '1.35vw', xlarge: '1.7vw', xxlarge: '2.1vw', xxxlarge: '2.6vw' };
+      var CC_COLORS = ['#ffffff', '#000000', '#ffe14d', '#ff4d4d'];
+      function loadCcPrefs() {
+        try {
+          var parsed = JSON.parse(localStorage.getItem(CC_PREFS_KEY) || '{}');
+          return {
+            size: CC_SIZES[parsed.size] ? parsed.size : 'medium',
+            color: CC_COLORS.indexOf(parsed.color) !== -1 ? parsed.color : '#ffffff',
+            bold: !!parsed.bold,
+            // On by default (flipped back per a follow-up ask - readability against a busy
+            // scene without it turned out to matter more than the plain-text look). Only an
+            // explicit false (the viewer actually turned it off) stays off; unset/missing
+            // defaults on.
+            bg: parsed.bg === false ? false : true,
+            offset: Number.isFinite(parsed.offset) ? parsed.offset : 0
+          };
+        } catch (err) {
+          return { size: 'medium', color: '#ffffff', bold: false, bg: true, offset: 0 };
+        }
+      }
+      var ccPrefs = loadCcPrefs();
+      function saveCcPrefs() {
+        try { localStorage.setItem(CC_PREFS_KEY, JSON.stringify(ccPrefs)); } catch (err) { /* private mode etc */ }
+      }
+      function applyCcStyle() {
+        wrap.style.setProperty('--cc-size', CC_SIZES[ccPrefs.size]);
+        wrap.style.setProperty('--cc-color', ccPrefs.color);
+        wrap.style.setProperty('--cc-weight', ccPrefs.bold ? '700' : '400');
+        wrap.classList.toggle('cc-bg-on', !!ccPrefs.bg);
+      }
+      applyCcStyle();
+      // Bakes a delta (not an absolute value) into one TextTrack's already-loaded cues -
+      // re-applying the same offset twice must be a no-op, and a freshly loaded track's raw
+      // cues (delta = the FULL current offset, since they start un-adjusted) go through the
+      // exact same function - see installTracks below.
+      function bakeCcOffsetIntoTrack(track, delta) {
+        if (!track || !track.cues || !delta) return;
+        for (var i = 0; i < track.cues.length; i++) {
+          track.cues[i].startTime = Math.max(0, track.cues[i].startTime + delta);
+          track.cues[i].endTime = Math.max(0, track.cues[i].endTime + delta);
+        }
+      }
+      function setCcOffset(next) {
+        next = Math.max(-30, Math.min(30, Math.round(next * 10) / 10));
+        var delta = next - ccPrefs.offset;
+        ccPrefs.offset = next;
+        var tracks = video.textTracks || [];
+        for (var i = 0; i < tracks.length; i++) bakeCcOffsetIntoTrack(tracks[i], delta);
+        saveCcPrefs();
+      }
+      function ccOffsetLabel() { return (ccPrefs.offset > 0 ? '+' : '') + ccPrefs.offset + 's'; }
+
+      // Plyr 3.x has no API to add a custom row to its own settings menu, so this builds one by
+      // hand: a "Captions Settings" row inserted right after the real "Captions" row in Plyr's
+      // own home menu, and a sibling panel appended into the same .plyr__menu__container Plyr's
+      // own Captions/Quality/Speed panels live in (so it inherits their exact sizing/scrolling).
+      // Manually toggling hidden and recomputing the container height on switch, rather than
+      // Plyr's own internal panel-swap method (private, not part of its public API surface).
+      // Plyr appears to build its settings menu's actual DOM (.plyr__menu__container and its
+      // panels) lazily, the first time the settings button is opened - not eagerly at
+      // construction. Calling this once right after new Plyr(...) (as buildPlyr below used to,
+      // alone) found nothing to inject into every time. Tries immediately (cheap, harmless if it
+      // no-ops) AND retries on the settings button's first click, which is what actually works.
+      function injectCcSettingsMenu(plyrInstance) {
+        var controls = plyrInstance.elements.controls;
+        if (!controls) return;
+        if (controls.querySelector('.cc-settings-panel')) return; // already injected
+        var menuContainer = controls.querySelector('.plyr__menu__container');
+        if (!menuContainer) return;
+        // Confirmed live (2026-09-04) this Plyr build's REAL markup, since guessing at it twice
+        // got it wrong both times: .plyr__menu__container > ONE unlabeled wrapper div >
+        // #plyr-settings-N-home / -captions / -quality / -speed as sibling panels - not direct
+        // children of the menu container itself, and with no aria-controls anywhere at all.
+        var panelsWrapper = menuContainer.firstElementChild;
+        var homePanel = panelsWrapper && panelsWrapper.querySelector('[id$="-home"]');
+        if (!panelsWrapper || !homePanel) {
+          console.warn('[CC Settings] panels wrapper/home not found: ' + JSON.stringify({
+            menuHtml: menuContainer.innerHTML.slice(0, 1200)
+          }));
+          return;
+        }
+        // The row's label is "Captions" plus a nested, no-space <span class="plyr__menu__value">
+        // ("CaptionsDisabled", "CaptionsEnglish", etc) - a trailing \b in the match regex doesn't
+        // find a word boundary between "s" and the next letter, which is why an earlier version
+        // of this match silently failed. startsWith is enough; nothing else in this row starts
+        // with "Captions".
+        var captionsHomeBtn = Array.prototype.find.call(
+          homePanel.querySelectorAll('button, [role="menuitem"]'),
+          function (b) { return /^Captions/i.test((b.textContent || '').trim()); }
+        );
+        if (!captionsHomeBtn) {
+          console.warn('[CC Settings] captions row not found in home panel: ' + JSON.stringify({
+            homeHtml: homePanel.innerHTML.slice(0, 800)
+          }));
+          return;
+        }
+        console.log('[CC Settings] injected OK');
+
+        var openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'plyr__control plyr__control--forward';
+        openBtn.setAttribute('role', 'menuitem');
+        openBtn.innerHTML = '<span>Captions Settings</span>';
+        captionsHomeBtn.insertAdjacentElement('afterend', openBtn);
+
+        var panel = document.createElement('div');
+        panel.className = 'cc-settings-panel';
+        panel.hidden = true;
+        panel.innerHTML =
+          '<button type="button" class="plyr__control plyr__control--back" role="menuitem">' +
+          
+            '<span>Captions Settings</span>' +
+          '</button>' +
+          '<p class="cc-settings-note">Captions can come from a different source than the video and drift out of sync. Nudge the offset below to fix it.</p>' +
+          '<div class="cc-settings-row"><label>Size</label><div class="cc-settings-choices" data-group="size">' +
+            '<button type="button" data-size="small">S</button><button type="button" data-size="medium">M</button>' +
+            '<button type="button" data-size="large">L</button><button type="button" data-size="xlarge">XL</button>' +
+            '<button type="button" data-size="xxlarge">XXL</button><button type="button" data-size="xxxlarge">XXXL</button>' +
+          '</div></div>' +
+          '<div class="cc-settings-row"><label>Color</label><div class="cc-settings-choices" data-group="color">' +
+            CC_COLORS.map(function (c) {
+              return '<button type="button" class="cc-color-swatch" data-color="' + c + '" ' +
+                'style="background:' + c + ';border:1px solid ' + (c === '#ffffff' ? '#555' : 'transparent') + '"></button>';
+            }).join('') +
+          '</div></div>' +
+          '<div class="cc-settings-row"><label>Bold</label><div class="cc-settings-choices" data-group="bold">' +
+            '<button type="button" data-bold="0">Off</button><button type="button" data-bold="1">On</button>' +
+          '</div></div>' +
+          '<div class="cc-settings-row"><label>Background</label><div class="cc-settings-choices" data-group="bg">' +
+            '<button type="button" data-bg="0">Off</button><button type="button" data-bg="1">On</button>' +
+          '</div></div>' +
+          '<div class="cc-settings-row"><label>Sync Offset</label><div class="cc-offset-row">' +
+            '<button type="button" data-cc-offset="-1">-1s</button>' +
+            '<span class="cc-offset-value" data-cc-offset-value></span>' +
+            '<button type="button" data-cc-offset="1">+1s</button>' +
+          '</div></div>';
+        panelsWrapper.appendChild(panel);
+
+        function showPanel(target) {
+          Array.prototype.forEach.call(panelsWrapper.children, function (p) { p.hidden = (p !== target); });
+          requestAnimationFrame(function () { menuContainer.style.height = target.scrollHeight + 'px'; });
+        }
+        function refresh() {
+          panel.querySelectorAll('[data-size]').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-size') === ccPrefs.size);
+          });
+          panel.querySelectorAll('[data-color]').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-color') === ccPrefs.color);
+          });
+          panel.querySelectorAll('[data-bold]').forEach(function (b) {
+            b.classList.toggle('active', (b.getAttribute('data-bold') === '1') === ccPrefs.bold);
+          });
+          panel.querySelectorAll('[data-bg]').forEach(function (b) {
+            b.classList.toggle('active', (b.getAttribute('data-bg') === '1') === ccPrefs.bg);
+          });
+          var valueEl = panel.querySelector('[data-cc-offset-value]');
+          if (valueEl) valueEl.textContent = ccOffsetLabel();
+        }
+        openBtn.addEventListener('click', function () { showPanel(panel); refresh(); });
+        panel.querySelector('.plyr__control--back').addEventListener('click', function () { showPanel(homePanel); });
+        panel.querySelectorAll('[data-size]').forEach(function (b) {
+          b.addEventListener('click', function () { ccPrefs.size = b.getAttribute('data-size'); applyCcStyle(); saveCcPrefs(); refresh(); });
+        });
+        panel.querySelectorAll('[data-color]').forEach(function (b) {
+          b.addEventListener('click', function () { ccPrefs.color = b.getAttribute('data-color'); applyCcStyle(); saveCcPrefs(); refresh(); });
+        });
+        panel.querySelectorAll('[data-bold]').forEach(function (b) {
+          b.addEventListener('click', function () { ccPrefs.bold = b.getAttribute('data-bold') === '1'; applyCcStyle(); saveCcPrefs(); refresh(); });
+        });
+        panel.querySelectorAll('[data-bg]').forEach(function (b) {
+          b.addEventListener('click', function () { ccPrefs.bg = b.getAttribute('data-bg') === '1'; applyCcStyle(); saveCcPrefs(); refresh(); });
+        });
+        panel.querySelectorAll('[data-cc-offset]').forEach(function (b) {
+          b.addEventListener('click', function () { setCcOffset(ccPrefs.offset + Number(b.getAttribute('data-cc-offset'))); refresh(); });
+        });
+      }
+
       function moveSettingsPipToTop(plyrInstance) {
         var playerContainer = plyrInstance.elements.container;
         var controls = plyrInstance.elements.controls;
@@ -21352,15 +21706,47 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
           i18n: { qualityLabel: { 0: 'Auto' } }
         });
         moveSettingsPipToTop(plyrInstance);
+        injectCcSettingsMenu(plyrInstance);
+        var settingsBtn = plyrInstance.elements.controls && plyrInstance.elements.controls.querySelector('[data-plyr="settings"]');
+        if (settingsBtn) settingsBtn.addEventListener('click', function () { injectCcSettingsMenu(plyrInstance); });
       }
 
       var hls = null;
+      // Maps language names to real BCP 47 tags so multiple tracks get distinct srclang codes
+      // (identical to moviePlayer.js's own langMap - see its "Generate unique srclang code for
+      // each subtitle" comment). Was missing entirely here: every track fell back to a shared
+      // literal 'und' (or whatever the raw provider label happened to be), so Plyr saw several
+      // tracks it couldn't tell apart - confirmed live as the actual cause of a selected caption
+      // flashing on then immediately reverting to Disabled, the exact bug this same fix already
+      // solved on the first-party player.
+      var CC_LANG_MAP = {
+        'English': 'en', 'eng': 'en',
+        'Arabic': 'ar', 'ara': 'ar',
+        'French': 'fr', 'fra': 'fr',
+        'German': 'de', 'deu': 'de',
+        'Italian': 'it', 'ita': 'it',
+        'Portuguese': 'pt', 'por': 'pt',
+        'Russian': 'ru', 'rus': 'ru',
+        'Spanish': 'es', 'spa': 'es',
+        'Thai': 'th', 'tha': 'th',
+        'Vietnamese': 'vi', 'vie': 'vi',
+        'Indonesian': 'id', 'ind': 'id',
+        'Chinese': 'zh', 'chi': 'zh', 'zho': 'zh',
+        '中文（简体）': 'zh', 'Simplified Chinese': 'zh',
+        '中文（繁體）': 'zh-TW', 'Traditional Chinese': 'zh-TW',
+        'Tiếng Việt': 'vi', 'ภาษาไทย': 'th', 'Bahasa Indonesia': 'id'
+      };
       function installTracks(tracks) {
-        (Array.isArray(tracks) ? tracks : []).forEach(function (track) {
+        (Array.isArray(tracks) ? tracks : []).forEach(function (track, index) {
           if (!track || !track.url) return;
           var el = document.createElement('track');
-          el.kind = 'subtitles'; el.src = track.url; el.srclang = track.lang || 'und';
+          el.kind = 'subtitles';
+          el.src = track.url;
+          el.srclang = CC_LANG_MAP[track.lang] || ('xx-' + index);
           el.label = track.lang || 'Subtitles'; el.default = !!track.default;
+          // Freshly loaded cues arrive un-adjusted - bring them up to the current sync offset
+          // once the browser has actually parsed the VTT file (cues don't exist before then).
+          el.addEventListener('load', function () { bakeCcOffsetIntoTrack(el.track, ccPrefs.offset); });
           video.appendChild(el);
         });
       }
@@ -21416,9 +21802,12 @@ function renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, track
         // Do not let the first HLS segment race the server-side activated event. Without
         // this ordering a legitimate player can look like a bare relay on a fast CDN.
         startTelemetry().finally(function () { installTracks(payload.tracks); startPlayback(payload.source); });
-      }).catch(function () {
+      }).catch(function (err) {
+        console.error('[AniKino Embed] activation failed:', err && err.message);
         wrap.setAttribute('data-activation-error', '1');
       });
+      var retryBtn = document.getElementById('embedActivationRetry');
+      if (retryBtn) retryBtn.addEventListener('click', function () { location.reload(); });
 
       // --- Branding watchdog ---------------------------------------------------------------
       // A true cross-origin <iframe> already can't be reached by whatever page embeds it (the
@@ -21476,36 +21865,57 @@ function renderPublicEmbedErrorHtml(message) {
 // entries with different subtitle coverage - and only fall back to MegaPlay's own track if KAA
 // has nothing at all). Same order here, called in-process (resolveKickAssAnimeSources +
 // tokenizeKaaResult directly) rather than through the internal /api/anime-kaa-servers route.
-async function resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks }) {
-    try {
-        const { title } = await getTmdbAnimeTitle(tmdbId);
-        if (title) {
-            for (const kaaAudio of ['sub', 'dub']) {
-                try {
-                    const raw = await resolveKickAssAnimeSources({
-                        malId, tmdbId, itemType: 'tv', episodeNumber: episode,
-                        audioType: kaaAudio, frontendTitle: title, season
-                    });
-                    const subtitles = tokenizeKaaResult(raw, sessionId, 'public-embed').subtitles;
-                    if (Array.isArray(subtitles) && subtitles.length) {
-                        return subtitles.map((s, i) => ({ url: s.url, lang: s.lang || `Subtitle ${i + 1}`, default: i === 0 }));
-                    }
-                } catch (err) {
-                    // try the next audio type / fall through to MegaPlay's own track below
+//
+// Perf (2026-09-04): this used to run strictly AFTER the real provider's own stream resolve,
+// with no caching of its own at all - every mega/neko/ru embed load paid for up to two full,
+// live KickAssAnime scrapes (sub then dub, each a search -> episode-list -> server-list -> CDN
+// extraction chain) purely to borrow a subtitle track, on EVERY single request, even repeat
+// loads of the exact same episode seconds apart. Confirmed live: back-to-back identical
+// /embed/anime requests both took 6-9s wall time with nothing getting faster the second time.
+// Now: (1) reads/writes the same episode_load_cache the direct kaa server branch below already
+// uses, so a repeat load of the same (tmdbId, season, episode, audioType) is a cache hit instead
+// of a fresh scrape, and (2) title is passed in by the caller instead of re-fetched here, so this
+// can be kicked off CONCURRENTLY with the real provider's own stream resolve (see the three
+// branches below) instead of only starting once that resolve has already finished. Returns null
+// (not the MegaPlay fallback) on no match - the caller decides what to fall back to, since only
+// it knows what its own provider's track looks like.
+async function resolvePublicEmbedKaaSubtitlesOnly({ title, tmdbId, malId, season, episode, sessionId, scope = 'public-embed' }) {
+    if (!title) return null;
+    for (const kaaAudio of ['sub', 'dub']) {
+        try {
+            const cached = await episodeLoadCacheGet(tmdbId, season, episode, kaaAudio, 'kaa');
+            let raw;
+            if (cached) {
+                const { __headers, ...subtitlesMeta } = cached.subtitles || {};
+                raw = { sources: cached.sources || [], subtitles: subtitlesMeta.__tracks || [], headers: __headers || {} };
+            } else {
+                raw = await resolveKickAssAnimeSources({
+                    malId, tmdbId, itemType: 'tv', episodeNumber: episode,
+                    audioType: kaaAudio, frontendTitle: title, season
+                });
+                if (raw?.sources?.length > 0) {
+                    episodeLoadCacheSet(tmdbId, malId, season, episode, kaaAudio, 'kaa',
+                        raw.animeId, raw.animeTitle, raw.sources,
+                        { __tracks: raw.subtitles, __headers: raw.headers }).catch(err =>
+                        console.warn('[Public Embed] Failed to cache KAA subtitle lookup:', err.message));
                 }
             }
+            const subtitles = tokenizeKaaResult(raw, sessionId, scope).subtitles;
+            if (Array.isArray(subtitles) && subtitles.length) {
+                return subtitles.map((s, i) => ({ url: s.url, lang: s.lang || `Subtitle ${i + 1}`, default: i === 0 }));
+            }
+        } catch (err) {
+            // try the next audio type / fall through to the provider's own track below
         }
-    } catch (err) {
-        // title lookup failed - fall through to MegaPlay's own track below
     }
-    return tokenizeMegaplayTracks(megaplayTracks, sessionId, 'public-embed');
+    return null;
 }
 
 // Resolves an anime episode's stream from whichever server the caller picked. mega (default) is
 // the only one with a graceful iframe fallback (see the route below) - kaa/neko/ru all either
 // resolve a real stream or the route returns an error page, matching how the plain movie/tv
 // embed routes behave for their own single provider.
-async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId }) {
+async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId, scope = 'public-embed' }) {
     if (server === 'kaa') {
         const { title } = await getTmdbAnimeTitle(tmdbId);
         if (!title) throw new Error('could not resolve a title for KAA');
@@ -21532,7 +21942,7 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
                     console.warn('[Public Embed] Failed to cache KAA result:', err.message));
             }
         }
-        const tokenized = tokenizeKaaResult(raw, sessionId, 'public-embed');
+        const tokenized = tokenizeKaaResult(raw, sessionId, scope);
         const candidates = (tokenized.sources || []).map(s => s?.proxiedUrl).filter(Boolean);
         const source = candidates[0];
         // KAA mirrors go stale independent of our own cache TTL - the first-party player gets
@@ -21548,6 +21958,10 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
     if (server === 'neko') {
         const { title } = await getTmdbAnimeTitle(tmdbId);
         if (!title) throw new Error('could not resolve a title for Neko');
+        // Kicked off now, alongside the Neko stream chain below, instead of only starting once
+        // that chain finishes - see resolvePublicEmbedKaaSubtitlesOnly's own comment. Both
+        // fallback paths below reuse this SAME promise rather than starting a second one.
+        const kaaSubsPromise = resolvePublicEmbedKaaSubtitlesOnly({ title, tmdbId, malId, season, episode, sessionId, scope }).catch(() => null);
         // Same reasoning as the comment-import job's own call - this public embed route has no
         // concept of a merged season's per-part local episode number, only the plain episode
         // it was given, so malId is deliberately left out here too rather than risk the fast
@@ -21559,22 +21973,26 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
                 serverToken: epInfo.serverToken, audio, baseHeaders: epInfo.baseHeaders
             });
             if (!sources.stream) throw new Error('Neko returned no stream file');
-            const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: sources.tracks || [] });
-            return { streamUrl: buildPublicEmbedM3u8ProxyUrl(sources.stream, sources.proxyRef || null, sessionId), tracks };
+            const kaaSubs = await kaaSubsPromise;
+            const tracks = (kaaSubs && kaaSubs.length) ? kaaSubs : tokenizeMegaplayTracks(sources.tracks || [], sessionId, scope);
+            return { streamUrl: buildPublicEmbedM3u8ProxyUrl(sources.stream, sources.proxyRef || null, sessionId, { scope }), tracks };
         } catch (err) {
             // VidTube genuinely has no server for this audio type (not a transient failure) -
             // same fallback fetchKaaSubtitlesForEpisode's caller uses internally.
             if (!err.noVidtube) throw err;
             const data = await resolveMegaplaySourcesCached(malId, episode, audio);
             if (!data?.stream) throw new Error('Neko had nothing and MegaPlay fallback also failed');
-            const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: data.tracks });
-            return { streamUrl: buildPublicEmbedM3u8ProxyUrl(data.stream, data.proxyRef || null, sessionId), tracks };
+            const kaaSubs = await kaaSubsPromise;
+            const tracks = (kaaSubs && kaaSubs.length) ? kaaSubs : tokenizeMegaplayTracks(data.tracks, sessionId, scope);
+            return { streamUrl: buildPublicEmbedM3u8ProxyUrl(data.stream, data.proxyRef || null, sessionId, { scope }), tracks };
         }
     }
 
     if (server === 'ru') {
         const { title } = await getTmdbAnimeTitle(tmdbId);
         if (!title) throw new Error('could not resolve a title for RU-MV');
+        // Same "kick off alongside, not after" treatment as the neko branch above.
+        const kaaSubsPromise = resolvePublicEmbedKaaSubtitlesOnly({ title, tmdbId, malId, season, episode, sessionId, scope }).catch(() => null);
         const info = await resolveAnimegoAniboomCached(title, season, { malId, tmdbId });
         const translations = Array.isArray(info?.translations) ? info.translations.slice(0, 4) : [];
         let streamUrl = null;
@@ -21587,15 +22005,33 @@ async function resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, ep
             }
         }
         if (!streamUrl) throw new Error('RU-MV (animego/aniboom) has no playable translation for this episode');
-        const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: [] });
-        return { streamUrl: buildPublicEmbedM3u8ProxyUrl(streamUrl, 'https://aniboom.one/', sessionId), tracks };
+        const kaaSubs = await kaaSubsPromise;
+        const tracks = (kaaSubs && kaaSubs.length) ? kaaSubs : tokenizeMegaplayTracks([], sessionId, scope);
+        return { streamUrl: buildPublicEmbedM3u8ProxyUrl(streamUrl, 'https://aniboom.one/', sessionId, { scope }), tracks };
     }
 
-    // default: mega (MegaPlay)
-    const data = await resolveMegaplaySourcesCached(malId, episode, audio);
+    // default: mega (MegaPlay) - title, the MegaPlay resolve, and (once title lands) the KAA
+    // subtitle borrow all now run concurrently instead of three back-to-back sequential awaits,
+    // since none of them actually depend on each other's result until the very end.
+    const titlePromise = getTmdbAnimeTitle(tmdbId).catch(() => ({ title: null }));
+    const dataPromise = resolveMegaplaySourcesCached(malId, episode, audio);
+    const kaaSubsPromise = titlePromise
+        .then(({ title }) => resolvePublicEmbedKaaSubtitlesOnly({ title, tmdbId, malId, season, episode, sessionId, scope }))
+        .catch(() => null);
+    const [data, kaaSubs] = await Promise.all([dataPromise, kaaSubsPromise]);
     if (!data?.stream) throw new Error('no stream in resolved data');
-    const tracks = await resolvePublicEmbedSubtitles({ tmdbId, malId, season, episode, sessionId, megaplayTracks: data.tracks });
-    return { streamUrl: buildPublicEmbedM3u8ProxyUrl(data.stream, data.proxyRef || null, sessionId), tracks };
+    // Prefer MegaPlay's OWN track when it has one, only falling back to KaF's borrowed track
+    // when MegaPlay's response carried none - matches the first-party player's own priority
+    // (loadMegaPlayFrame in moviePlayer.js: `if (!subs.length) { borrowed = await
+    // fetchKaaSubtitlesForEpisode(...) }`). This used to be backwards (always preferred KaF's
+    // track over MegaPlay's own whenever KaF had one at all) despite an old comment above
+    // claiming it matched the first-party player - it didn't, and it's not just cosmetic: KaF
+    // and MegaPlay pull separately-timed rips of the same episode, and a subtitle file borrowed
+    // from one provider can measurably drift out of sync against a video actually served by the
+    // other (confirmed: same episode's dub can differ by several real seconds between the two).
+    const ownTracks = tokenizeMegaplayTracks(data.tracks, sessionId, scope);
+    const tracks = ownTracks.length ? ownTracks : ((kaaSubs && kaaSubs.length) ? kaaSubs : ownTracks);
+    return { streamUrl: buildPublicEmbedM3u8ProxyUrl(data.stream, data.proxyRef || null, sessionId, { scope }), tracks };
 }
 
 // GET /embed/anime/{id}/{episode}?season=1&audio=sub&server=mega
@@ -21640,8 +22076,8 @@ app.get('/embed/anime/:id/:episode', async (req, res) => {
     }
 
     try {
-        const { streamUrl, fallbackStreamUrls, tracks } = await resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId: req.sessionId });
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, tracks, title: `Episode ${episode}`, tmdbId, mediaType: 'anime', startAt, autoplay, nextEpisodeUrl, sessionId: req.sessionId }));
+        const { streamUrl, fallbackStreamUrls, tracks } = await resolvePublicEmbedAnimeSource({ server, tmdbId, malId, season, episode, audio, sessionId: req.sessionId, scope: req.publicEmbedScope });
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, fallbackStreamUrls, tracks, title: `Episode ${episode}`, tmdbId, mediaType: 'anime', season, episode, startAt, autoplay, nextEpisodeUrl, sessionId: req.sessionId }));
     } catch (err) {
         console.warn(`[Public Embed] anime/${server} resolution failed:`, err.message || err);
         // Never hand the browser a provider iframe as a fallback. A public embed must fail
@@ -21697,15 +22133,15 @@ app.get('/embed/movie/:id', async (req, res) => {
             const title = movieData?.title || movieData?.original_title;
             if (!title) throw new Error('could not resolve a title for RU-MV');
             const ru = await resolveMovieRuData(title, tmdbId);
-            streamUrl = buildPublicEmbedM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId);
+            streamUrl = buildPublicEmbedM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId, { scope: req.publicEmbedScope });
             tracks = [];
         } else if (server === 't1m') {
             const t1m = await resolveT1mSourcesCached('movie', tmdbId, 1, 1);
-            streamUrl = buildT1mMasterManifestUrl(t1m.manifest, req.sessionId, 'public-embed');
+            streamUrl = buildT1mMasterManifestUrl(t1m.manifest, req.sessionId, req.publicEmbedScope);
             tracks = t1m.subtitles.map(s => ({ url: s.file, lang: s.label, default: /^english/i.test(s.label || '') }));
         } else {
             const kino = await resolveKinoCached(`movie:${tmdbId}`, () => runKinoExtraction(`movie/${tmdbId}`, 'movie'));
-            streamUrl = buildPublicEmbedM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
+            streamUrl = buildPublicEmbedM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId, { scope: req.publicEmbedScope });
             tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'movie' });
         }
         return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: 'Movie', tmdbId, mediaType: 'movie', startAt, autoplay, sessionId: req.sessionId }));
@@ -21746,18 +22182,18 @@ app.get('/embed/tv/:id/:season/:episode', async (req, res) => {
             const title = tvData?.name || tvData?.original_name;
             if (!title) throw new Error('could not resolve a title for RU-MV');
             const ru = await resolveTvRuData(title, tmdbId, season, episode);
-            streamUrl = buildPublicEmbedM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId);
+            streamUrl = buildPublicEmbedM3u8ProxyUrl(ru.streamUrl, 'https://cinemar.cc/', req.sessionId, { scope: req.publicEmbedScope });
             tracks = [];
         } else if (server === 't1m') {
             const t1m = await resolveT1mSourcesCached('tv', tmdbId, season, episode);
-            streamUrl = buildT1mMasterManifestUrl(t1m.manifest, req.sessionId, 'public-embed');
+            streamUrl = buildT1mMasterManifestUrl(t1m.manifest, req.sessionId, req.publicEmbedScope);
             tracks = t1m.subtitles.map(s => ({ url: s.file, lang: s.label, default: /^english/i.test(s.label || '') }));
         } else {
             const kino = await resolveKinoCached(`tv:${tmdbId}:${season}:${episode}`, () => runKinoExtraction(`tv/${tmdbId}/${season}/${episode}`, 'tv'));
-            streamUrl = buildPublicEmbedM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId);
+            streamUrl = buildPublicEmbedM3u8ProxyUrl(kino.streamUrl, kino.proxyRef || null, req.sessionId, { scope: req.publicEmbedScope });
             tracks = await resolvePublicEmbedKinoSubtitles({ tmdbId, mediaType: 'tv', season, episode });
         }
-        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}`, tmdbId, mediaType: 'tv', startAt, autoplay, nextEpisodeUrl, sessionId: req.sessionId }));
+        return res.send(renderPublicEmbedVideoPlayerHtml({ streamUrl, tracks, title: `S${season}E${episode}`, tmdbId, mediaType: 'tv', season, episode, startAt, autoplay, nextEpisodeUrl, sessionId: req.sessionId }));
     } catch (err) {
         console.warn(`[Public Embed] tv/${server} resolution failed:`, err.message || err);
         return res.status(502).send(renderPublicEmbedErrorHtml('This title could not be resolved to a playable source right now.'));

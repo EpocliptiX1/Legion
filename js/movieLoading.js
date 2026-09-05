@@ -394,19 +394,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 setTimeout(() => {
                     loadingOverlay.style.display = 'none';
 
-                    // Preload episode sources in background (500ms after loading screen disappears)
-                    // TEMP DISABLED 2026-08-27 for testing: this fires KAA+Neko+RU-MV+KinoTV resolve
-                    // calls (and their own resolve-nonce mint) unconditionally on every page load,
-                    // using window.__malId which is very often still empty at this point (the real
-                    // lookupMalId() in moviePlayer.js's main init flow hasn't resolved yet) - the
-                    // main flow's own updateSource(currentServer) call (after malId IS resolved)
-                    // does the real, authoritative load regardless, making this speculative early
-                    // attempt a guaranteed-wasted duplicate of the whole resolve chain whenever
-                    // malId isn't already warm. Confirmed live: doubled anime-kaa-servers/
-                    // anime-neko-log/anime-new-log/resolve-nonce calls on a single fresh load.
-                    // setTimeout(() => {
-                    //     window.preloadEpisodeSources?.();
-                    // }, 500);
+                    // Episode source preload used to fire blind from here on a fixed timer -
+                    // removed 2026-08-27 (see git history) because it fired before malId had
+                    // actually resolved, using window.__malId which wasn't even being assigned
+                    // anywhere. Re-enabled 2026-09-05 in moviePlayer.js instead, right after the
+                    // real lookupMalId() resolves (and now actually sets window.__malId first) -
+                    // no arbitrary delay to race against.
                 }, 500);
             }, 350);
         }, 350);
