@@ -31,7 +31,7 @@
         'stop-circle': '<path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9.75v4.5m-3.75-4.5v4.5m9.75-2.25a9.75 9.75 0 1 1-19.5 0 9.75 9.75 0 0 1 19.5 0Z" />',
         'user-group': '<path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 0 0 3.741.479 3 3 0 0 0-3.741-5.72m0 5.24v-.001c0-1.107-.285-2.148-.786-3.052m0 0A3.003 3.003 0 0 0 12 13.5a3.003 3.003 0 0 0-5.214 2.166m10.428 0A9.094 9.094 0 0 1 12 21a9.094 9.094 0 0 1-5.214-1.634m0 0A3 3 0 0 0 3 19.2a9.094 9.094 0 0 0 3.786-.48m0 0A3 3 0 0 1 6 13.5m12 0a3 3 0 1 0-6 0m-6 0a3 3 0 1 0 6 0" />',
         'hand-raised': '<path stroke-linecap="round" stroke-linejoin="round" d="M10.05 4.575a1.575 1.575 0 1 0-3.15 0v3m3.15-3v-1.5a1.575 1.575 0 0 1 3.15 0v1.5m-3.15 0 .075 5.925m3.075.75V4.575m0 0a1.575 1.575 0 0 1 3.15 0V15" />'
-        , 'star': '<path stroke-linecap="round" stroke-linejoin="round" d="m11.48 3.499 2.123 5.428 5.818.379-4.476 3.737 1.452 5.646-4.917-3.119-4.917 3.119 1.452-5.646-4.476-3.737 5.818-.379L11.48 3.5Z" />'
+        , 'star': '<path stroke-linecap="round" stroke-linejoin="round" d="M11.48 3.499a.562.562 0 0 1 1.04 0l2.125 5.111a.563.563 0 0 0 .475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 0 0-.182.557l1.285 5.385a.562.562 0 0 1-.84.61l-4.725-2.885a.562.562 0 0 0-.586 0L6.982 20.54a.562.562 0 0 1-.84-.61l1.285-5.386a.562.562 0 0 0-.182-.557l-4.204-3.602a.562.562 0 0 1 .321-.988l5.518-.442a.563.563 0 0 0 .475-.345L11.48 3.5Z" />'
         , 'x-mark': '<path stroke-linecap="round" stroke-linejoin="round" d="m6 18 12-12M6 6l12 12" />'
         , 'arrows-pointing-out': '<path stroke-linecap="round" stroke-linejoin="round" d="M4.5 4.5h5.25m0 0L7.5 2.25m2.25 2.25L7.5 6.75M4.5 19.5h5.25m0 0L7.5 17.25m2.25 2.25L7.5 21.75M19.5 4.5h-5.25m0 0 2.25-2.25m-2.25 2.25 2.25 2.25M19.5 19.5h-5.25m0 0 2.25-2.25m-2.25 2.25 2.25 2.25" />'
         , 'play': '<path stroke-linecap="round" stroke-linejoin="round" d="m5.25 5.25 13.5 6.75-13.5 6.75V5.25Z" />'
@@ -52,7 +52,7 @@
         '✨': ['sparkles', 'Theme'], '🎉': ['sparkles', 'Celebration'], '🎯': ['sparkles', 'Goal'],
         '🔔': ['bell', 'Notifications'], '🛑': ['stop-circle', 'Stopped'], '🤝': ['user-group', 'Friends'],
         '🙋': ['hand-raised', 'Control request'], '🟢': ['signal', 'Online'],
-        '✦': ['sparkles', 'Featured'], '★': ['star', 'Rating'], '✕': ['x-mark', 'Close'],
+        '✦': ['sparkles', 'Featured'], '★': ['star', 'Rating'], '⭐': ['star', 'Rating'], '✕': ['x-mark', 'Close'],
         '⛶': ['arrows-pointing-out', 'Fullscreen'], '▶': ['play', 'Play'], '⬇': ['arrow-down-tray', 'Download'],
         '⚙️': ['cog', 'Settings'], '⚙': ['cog', 'Settings'], '🔒': ['lock-closed', 'Locked']
     };

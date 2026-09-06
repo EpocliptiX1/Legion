@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AniKino - Stream Anime &amp; Movies for Free</title>
+<meta name="description" content="AniKino is a free anime and movie streaming site with sub/dub audio, multiple servers, customizable captions, downloads, Watch2Gether, and a public embed API for developers.">
+<link rel="icon" href="/img/LOGO_Short.svg">
+<!-- style.css first so the real site-wide search dropdown component (#searchResults, see
+     enhancedSearch.js) looks/behaves exactly like it does on indexMain/indexBrowse;
+     landingSearch.css loads after to override the generic body/layout defaults. theme-
+     enhancements.css defines --accent-primary, which highlightQuery()'s <mark> styling depends
+     on for the orange match-highlight color - without it the highlight silently renders as no
+     background at all. -->
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="/css/theme-enhancements.css">
+<link rel="stylesheet" href="/css/landingSearch.css">
+</head>
+<body class="landing-body">
+
+<div class="landing-wrap">
+    <div class="landing-card">
+
+        <div class="landing-card-left">
+            <a href="/html/indexMain.html" class="landing-logo-link" aria-label="AniKino Home">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="20 0 500 120" class="landing-logo-svg">
+                    <defs>
+                        <filter id="round-corners-landing" x="-20%" y="-20%" width="140%" height="140%">
+                            <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" result="blur" />
+                            <feColorMatrix in="blur" type="matrix" values="
+                              1 0 0 0 0
+                              0 1 0 0 0
+                              0 0 1 0 0
+                              0 0 0 12 -4" result="rounded" />
+                            <feComposite in="SourceGraphic" in2="rounded" operator="atop" />
+                        </filter>
+                        <style>
+                            .landing-logo-svg .text {
+                              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                              font-weight: 800;
+                              font-size: 72px;
+                              letter-spacing: 3px;
+                              filter: url(#round-corners-landing);
+                            }
+                            .landing-logo-svg .ani { fill: #f96d00; }
+                            .landing-logo-svg .kino { fill: #ffffff; }
+                            .landing-logo-svg .big-letter { font-size: 90px; }
+                            .landing-logo-svg .small-slash { font-size: 54px; }
+                        </style>
+                    </defs>
+                    <text x="50%" y="50%" dominant-baseline="central" text-anchor="middle" class="text">
+                      <tspan class="ani big-letter" rotate="-8">A</tspan><tspan class="ani" rotate="0" dx="-5">n</tspan><tspan class="ani" rotate="0" dx="-2">!</tspan><tspan class="kino big-letter" rotate="8" dx="-8">K</tspan><tspan class="kino small-slash" rotate="0" dx="1" dy="5">/</tspan><tspan class="kino" rotate="0" dx="-2" dy="-5">n</tspan>
+                    </text>
+                    <g transform="translate(381.7, 47.7) scale(2.3)" filter="url(#round-corners-landing)">
+                        <circle cx="12" cy="12" r="7.5" fill="#f96d00" />
+                        <circle cx="12" cy="12" r="9" stroke="#000000" stroke-width="1.5" fill="none" />
+                        <path fill="#000000" d="M15.91 11.672a.375.375 0 0 1 0 .656l-5.603 3.113a.375.375 0 0 1-.557-.328V8.887c0-.286.307-.466.557-.327l5.603 3.112Z" />
+                    </g>
+                    <polygon class="ani" points="336,39 345,39 340,46 331,46" filter="url(#round-corners-landing)" />
+                </svg>
+            </a>
+
+            <!-- Same real search: #mainSearch + #searchResults is exactly what enhancedSearch.js
+                 (already used on indexMain/indexBrowse) looks for - live dropdown, history,
+                 Enter-to-search, all reused as-is instead of reinventing it here. -->
+            <div class="landing-search-box">
+                <svg class="landing-search-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+                </svg>
+                <input type="search" id="mainSearch" name="q" placeholder="Search anime or movie titles&hellip;" autocomplete="off" autocorrect="off" data-lpignore="true" data-form-type="other">
+            </div>
+            <div class="search-results-menu" id="searchResults"></div>
+
+            <p class="landing-search-tip">Tip: seasons/parts aren&rsquo;t separate entries here &mdash; search just the <strong>anime&rsquo;s</strong> name, not &ldquo;&hellip; Season 2&rdquo;, and pick the season from its page.</p>
+
+            <p class="landing-popular">
+                <strong>Popular:</strong>
+                <span class="landing-popular-terms" id="landingPopularTerms"></span>
+            </p>
+
+            <a href="/html/indexMain.html" class="landing-cta-btn">Visit Home <span class="landing-cta-arrow">&#8594;</span></a>
+        </div>
+
+        <div class="landing-card-right">
+            <h1>AniKino &mdash; Stream Anime &amp; Movies for Free</h1>
+            <p><strong>AniKino</strong> is a free anime streaming destination where fans can watch high-quality anime series and movies with English subtitles or dubbed audio. With a constantly growing collection, discovering your favorite anime takes just a moment.</p>
+
+            <h2>Is AniKino secure to use?</h2>
+            <p>Absolutely. AniKino was built with user experience and safety in mind. We actively monitor the platform and encourage visitors to report anything unusual so we can take quick action.</p>
+
+            <h2>Why choose AniKino for watching anime online?</h2>
+            <p>&ndash; <strong>Massive catalog</strong>: Our library covers a wide range of anime genres, from classics to the latest releases.</p>
+            <p>&ndash; <strong>Smooth streaming</strong>: Multiple optimized servers are available, allowing you to pick the one that performs best for you.</p>
+            <p>&ndash; <strong>Video quality options</strong>: Episodes are available in high resolution, with adjustable quality levels so viewers with slower connections can still enjoy uninterrupted playback.</p>
+            <p>&ndash; <strong>Public embed API</strong>: Any site can drop in our player with a single iframe &mdash; see the <a href="/html/apidocs.html">API docs</a>.</p>
+        </div>
+
+        <!-- Mobile + actively searching only (see landingSearch.css): the left column's own
+             Visit Home hides, and this one - a direct child of .landing-card, so at that width
+             (where the card is already column-flex) it lands below the results panel - takes
+             its place instead. -->
+        <a href="/html/indexMain.html" class="landing-cta-btn landing-cta-btn-searching">Visit Home <span class="landing-cta-arrow">&#8594;</span></a>
+
+    </div>
+</div>
+
+<script src="/js/enhancedSearch.js" defer></script>
+<script src="/js/landingSearch.js" defer></script>
+</body>
+</html>

@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>API Documentation - AniKino</title>
+    <link rel="icon" href="/img/LOGO_Short.svg">
     <link rel="stylesheet" href="/css/apiDocs.css">
     <script src="/js/theme.js" defer></script>
 </head>
@@ -38,10 +39,20 @@
                 <a href="#query-parameters">Query Parameters</a>
             </div>
             <div class="docs-nav-group">
+                <h4>Data API</h4>
+                <a href="#episode-progress">Episode Release Progress</a>
+                <a href="#tmdb-mapping">Anime TMDB Mapping</a>
+            </div>
+            <div class="docs-nav-group">
                 <h4>Advanced</h4>
                 <a href="#security">Security</a>
                 <a href="#player-events">Player Events</a>
                 <a href="#resume-playback">Resume Playback</a>
+                <a href="#captions-settings">Captions Settings</a>
+            </div>
+            <div class="docs-nav-group">
+                <h4>Playground</h4>
+                <a href="#embed-playground">Test Your Embed</a>
             </div>
             <div class="docs-nav-group">
                 <h4>Info</h4>
@@ -54,7 +65,7 @@
             <h1>API Documentation</h1>
             <p class="lead">
                 Embed movies, TV shows, and anime on your own site through AniKino - one iframe,
-                one URL, pulling from our Mega, Prime, Neko, RU MV, and Kino sources under the hood
+                one URL, pulling from our MVP, KaF, Neko, RU MV, and Kino sources under the hood
                 so you don't have to juggle providers yourself.
             </p>
 
@@ -130,18 +141,18 @@
                 </p>
                 <div class="provider-grid">
                     <div class="provider-card">
-                        <h4>Mega <span class="server-value" style="margin-left:6px;">anime, default</span></h4>
+                        <h4>MVP <span class="server-value" style="margin-left:6px;">anime, default</span></h4>
                         <p>Broad anime coverage, usually the fastest to resolve.</p>
                         <span class="server-value">server=mega</span>
                     </div>
                     <div class="provider-card">
-                        <h4>Prime <span class="server-value" style="margin-left:6px;">anime</span></h4>
+                        <h4>KaF <span class="server-value" style="margin-left:6px;">anime</span></h4>
                         <p>Broad anime coverage, but often the slowest of the four to resolve - and doesn't always have a dub (or the title at all).</p>
                         <span class="server-value">server=kaa</span>
                     </div>
                     <div class="provider-card">
                         <h4>Neko <span class="server-value" style="margin-left:6px;">anime</span></h4>
-                        <p>Lightweight, quick-resolving anime source - falls back to Mega automatically on titles it doesn't have.</p>
+                        <p>Lightweight, quick-resolving anime source - falls back to MVP automatically on titles it doesn't have.</p>
                         <span class="server-value">server=neko</span>
                     </div>
                     <div class="provider-card">
@@ -239,7 +250,7 @@
                     <span class="endpoint-path">/embed/anime/{id}/{episode}</span>
                 </div>
                 <h2 style="border:none;padding-top:0;font-size:1.1rem;">Anime Embed</h2>
-                <p>Embed an anime episode with sub/dub selection, resolved through Mega (default), Prime, Neko, or RU MV.</p>
+                <p>Embed an anime episode with sub/dub selection, resolved through MVP (default), KaF, Neko, or RU MV.</p>
                 <table class="param-table">
                     <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
                     <tbody>
@@ -260,13 +271,13 @@
                     </div>
                     <pre data-tab-panel="html">&lt;iframe src="https://your-domain.example/embed/anime/{id}/{episode}?season=1&amp;audio=dub" width="100%" height="560" allowfullscreen&gt;&lt;/iframe&gt;</pre>
                     <pre data-tab-panel="url" style="display:none;"
-><span class="url-example"><span class="url-example-note"># Attack on Titan S1E1, dub, default (Mega)</span><a href="/embed/anime/1429/1?season=1&amp;audio=dub" target="_blank" rel="noopener">/embed/anime/1429/1?season=1&amp;audio=dub</a></span
-><span class="url-example"><span class="url-example-note"># Sub, season 2, forced Prime</span><a href="/embed/anime/1429/1?season=2&amp;server=kaa" target="_blank" rel="noopener">/embed/anime/1429/1?season=2&amp;server=kaa</a></span
-><span class="url-example"><span class="url-example-note"># Dub, Neko (falls back to Mega automatically if unavailable)</span><a href="/embed/anime/1429/1?audio=dub&amp;server=neko" target="_blank" rel="noopener">/embed/anime/1429/1?audio=dub&amp;server=neko</a></span
-><span class="url-example"><span class="url-example-note"># RU MV - only succeeds when we have a confident title match</span><a href="/embed/anime/1429/1?server=ru" target="_blank" rel="noopener">/embed/anime/1429/1?server=ru</a></span
-><span class="url-example"><span class="url-example-note"># binge mode - autoplay + auto-advance to episode 2, 3... on end</span><a href="/embed/anime/1429/1?audio=dub&amp;autoplay=1&amp;autonext=1" target="_blank" rel="noopener">/embed/anime/1429/1?audio=dub&amp;autoplay=1&amp;autonext=1</a></span
-><span class="url-example"><span class="url-example-note"># same show, by MAL id instead of TMDB id</span><a href="/embed/anime/mal-16498/1?audio=dub" target="_blank" rel="noopener">/embed/anime/mal-16498/1?audio=dub</a></span
-><span class="url-example"><span class="url-example-note"># same show, by AniList id (anilist- and al- both work)</span><a href="/embed/anime/anilist-16498/1?audio=dub" target="_blank" rel="noopener">/embed/anime/anilist-16498/1?audio=dub</a></span
+><span class="url-example"><span class="url-example-note"># Bleach S1E1, dub, default (MVP)</span><a href="/embed/anime/30984/1?season=1&amp;audio=dub" target="_blank" rel="noopener">/embed/anime/30984/1?season=1&amp;audio=dub</a></span
+><span class="url-example"><span class="url-example-note"># Sub, season 2, forced KaF</span><a href="/embed/anime/30984/1?season=2&amp;server=kaa" target="_blank" rel="noopener">/embed/anime/30984/1?season=2&amp;server=kaa</a></span
+><span class="url-example"><span class="url-example-note"># Dub, Neko (falls back to MVP automatically if unavailable)</span><a href="/embed/anime/30984/1?audio=dub&amp;server=neko" target="_blank" rel="noopener">/embed/anime/30984/1?audio=dub&amp;server=neko</a></span
+><span class="url-example"><span class="url-example-note"># RU MV - only succeeds when we have a confident title match</span><a href="/embed/anime/30984/1?server=ru" target="_blank" rel="noopener">/embed/anime/30984/1?server=ru</a></span
+><span class="url-example"><span class="url-example-note"># binge mode - autoplay + auto-advance to episode 2, 3... on end</span><a href="/embed/anime/30984/1?audio=dub&amp;autoplay=1&amp;autonext=1" target="_blank" rel="noopener">/embed/anime/30984/1?audio=dub&amp;autoplay=1&amp;autonext=1</a></span
+><span class="url-example"><span class="url-example-note"># same show, by MAL id instead of TMDB id</span><a href="/embed/anime/mal-269/1?audio=dub" target="_blank" rel="noopener">/embed/anime/mal-269/1?audio=dub</a></span
+><span class="url-example"><span class="url-example-note"># same show, by AniList id (anilist- and al- both work)</span><a href="/embed/anime/anilist-269/1?audio=dub" target="_blank" rel="noopener">/embed/anime/anilist-269/1?audio=dub</a></span
 ></pre>
                 </div>
                 <div class="callout">
@@ -275,8 +286,8 @@
                         Most other anime embed APIs are built around MAL or AniList ids - we're
                         the outlier keying everything off TMDB, so a plain numeric <code>{id}</code>
                         always means <strong>TMDB</strong> (unchanged, existing behavior). To pass
-                        a MAL or AniList id instead, prefix it: <code>mal-16498</code> or
-                        <code>anilist-16498</code> (<code>al-16498</code> also works, same thing).
+                        a MAL or AniList id instead, prefix it: <code>mal-269</code> or
+                        <code>anilist-269</code> (<code>al-269</code> also works, same thing).
                         TMDB/MAL/AniList ids are all bare integers with overlapping ranges, so the
                         prefix is what disambiguates them - an unprefixed number is never treated
                         as a MAL/AniList id, even if the numbers happen to collide. This only
@@ -289,8 +300,8 @@
                 <div class="callout">
                     <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 0 1-.825-.242m9.345-8.334a2.126 2.126 0 0 0-.476-.095 48.64 48.64 0 0 0-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0 0 11.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155"/></svg></span>
                     <div>
-                        Captions are borrowed from Prime's own (usually multi-language) subtitle set
-                        regardless of which <code>server</code> you pick, since Mega/Neko/RU MV
+                        Captions are borrowed from KaF's own (usually multi-language) subtitle set
+                        regardless of which <code>server</code> you pick, since MVP/Neko/RU MV
                         don't carry a useful subtitle track of their own. Kino (movie/TV) instead
                         pulls real OpenSubtitles-backed captions directly.
                     </div>
@@ -311,6 +322,125 @@
                         <tr><td><code>autonext</code></td><td>0 / 1</td><td><span class="status-live"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg> Live</span></td><td>TV/anime only - loads episode + 1 (same season, same <code>server</code>/<code>audio</code>) when the current one ends. Doesn't roll over to the next season</td></tr>
                     </tbody>
                 </table>
+            </section>
+
+            <section class="docs-section" id="episode-progress">
+                <div class="endpoint-header">
+                    <span class="method-badge">GET</span>
+                    <span class="endpoint-path">/api/public/episode-progress</span>
+                </div>
+                <h2 style="border:none;padding-top:0;font-size:1.1rem;">Episode Release Progress</h2>
+                <p>
+                    How many episodes of a season we've actually got cached (sub/dub/RU-dub
+                    counts), whether the season is finished, and an upcoming air date when we
+                    have one. Read-only, rate limited to <strong>40 requests/minute per IP</strong>
+                    (separate from every other limiter on this page).
+                </p>
+                <table class="param-table">
+                    <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>tmdbId</code></td><td>One of tmdbId/title</td><td>TMDB TV id - the reliable lookup, checked first if both are given</td></tr>
+                        <tr><td><code>title</code></td><td>One of tmdbId/title</td><td>Only used when <code>tmdbId</code> isn't given - matched against a normalized title, so casing/punctuation don't need to match exactly</td></tr>
+                        <tr><td><code>season</code></td><td>Optional</td><td>Only applies with <code>tmdbId</code> - defaults to <code>1</code></td></tr>
+                    </tbody>
+                </table>
+                <div class="code-block">
+                    <div class="code-block-tabs">
+                        <span class="code-block-tab active" data-tab="json">Fetch</span>
+                        <span class="code-block-tab" data-tab="url">URL</span>
+                    </div>
+                    <pre data-tab-panel="json">fetch('https://your-domain.example/api/public/episode-progress?tmdbId=30984&amp;season=4')
+  .then(function (r) { return r.json(); })
+  .then(function (data) { console.log(data); });</pre>
+                    <pre data-tab-panel="url" style="display:none;"
+><span class="url-example"><span class="url-example-note"># Bleach, season 4</span><a href="/api/public/episode-progress?tmdbId=30984&amp;season=4" target="_blank" rel="noopener">/api/public/episode-progress?tmdbId=30984&amp;season=4</a></span
+><span class="url-example"><span class="url-example-note"># by title instead of tmdbId</span><a href="/api/public/episode-progress?title=Bleach" target="_blank" rel="noopener">/api/public/episode-progress?title=Bleach</a></span
+></pre>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-tabs"><span class="code-block-tab active">Response</span></div>
+                    <pre>{
+  "ok": true,
+  "found": true,
+  "data": {
+    "tmdbId": 30984,
+    "season": 4,
+    "title": "Bleach",
+    "subEpisodes": 28,
+    "dubEpisodes": 28,
+    "totalEpisodes": 28,
+    "ruDubEpisodes": 28,
+    "isFinished": true,
+    "tmdbSeasonEpisodeCount": 28,
+    "upcomingDate": null,
+    "source": "anikoto+native",
+    "cachedAt": 1767225600000
+  }
+}</pre>
+                </div>
+                <p>
+                    <code>found: false</code> (with an <code>ok: true</code>, <code>200</code>) means
+                    we don't have this title/season cached yet - not an error, just nothing to
+                    report. A genuinely malformed request (neither <code>tmdbId</code> nor
+                    <code>title</code> given) returns <code>400</code>.
+                </p>
+            </section>
+
+            <section class="docs-section" id="tmdb-mapping">
+                <div class="endpoint-header">
+                    <span class="method-badge">GET</span>
+                    <span class="endpoint-path">/api/public/tmdb-mapping</span>
+                </div>
+                <h2 style="border:none;padding-top:0;font-size:1.1rem;">Anime TMDB Mapping</h2>
+                <p>
+                    Every other anime embed API out there is built around MAL or AniList ids -
+                    we're the outlier keying everything off TMDB (see the callout on
+                    <a href="#anime-embed">Anime Embed</a>). This translates between them: hand
+                    it a TMDB id we've already mapped and get back its MAL/AniList id, or the
+                    reverse via title. Same <strong>40 requests/minute per IP</strong> limit as
+                    Episode Release Progress, read-only.
+                </p>
+                <table class="param-table">
+                    <thead><tr><th>Parameter</th><th>Required</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>tmdbId</code></td><td>One of tmdbId/title</td><td>TMDB TV id - this table's real primary key, exact match, the reliable lookup</td></tr>
+                        <tr><td><code>title</code></td><td>One of tmdbId/title</td><td>Only used when <code>tmdbId</code> isn't given - case-insensitive match against whatever title string got cached, not a fuzzy/normalized match</td></tr>
+                    </tbody>
+                </table>
+                <div class="code-block">
+                    <div class="code-block-tabs">
+                        <span class="code-block-tab active" data-tab="json2">Fetch</span>
+                        <span class="code-block-tab" data-tab="url2">URL</span>
+                    </div>
+                    <pre data-tab-panel="json2">fetch('https://your-domain.example/api/public/tmdb-mapping?tmdbId=30984')
+  .then(function (r) { return r.json(); })
+  .then(function (data) { console.log(data); });</pre>
+                    <pre data-tab-panel="url2" style="display:none;"
+><span class="url-example"><span class="url-example-note"># Bleach</span><a href="/api/public/tmdb-mapping?tmdbId=30984" target="_blank" rel="noopener">/api/public/tmdb-mapping?tmdbId=30984</a></span
+><span class="url-example"><span class="url-example-note"># by title instead of tmdbId</span><a href="/api/public/tmdb-mapping?title=Bleach" target="_blank" rel="noopener">/api/public/tmdb-mapping?title=Bleach</a></span
+></pre>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-tabs"><span class="code-block-tab active">Response</span></div>
+                    <pre>{
+  "ok": true,
+  "found": true,
+  "data": {
+    "tmdbId": 30984,
+    "malId": 269,
+    "anilistId": 269,
+    "title": "Bleach",
+    "cachedAt": 1767225600000,
+    "validatedAt": 1767225600000
+  }
+}</pre>
+                </div>
+                <p>
+                    We only have a mapping cached for a title once <em>something</em> on the site
+                    has actually resolved it before - this isn't a full TMDB&#8596;MAL/AniList
+                    directory, just our own cache. <code>found: false</code> means we don't have
+                    it yet.
+                </p>
             </section>
 
             <section class="docs-section" id="security">
@@ -384,6 +514,58 @@ window.addEventListener('message', function (e) {
 var resumeAt = localStorage.getItem('resume:293660') || 0;
 iframe.src = '/embed/movie/293660?startAt=' + resumeAt;</pre>
                 </div>
+                <div class="callout">
+                    <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg></span>
+                    <div>
+                        Building the above yourself is optional - every embed already does this
+                        automatically, entirely in the viewer's own browser (nothing sent to us).
+                        It saves progress to its own <code>localStorage</code> as the viewer
+                        watches and resumes from there on the next load of that same title/episode,
+                        scoped to our origin so it follows the viewer across every site that embeds
+                        us. An explicit <code>?startAt=</code> from your own page (like the example
+                        above) always takes priority over it, so implementing your own resume flow
+                        never conflicts with this - it's just a fallback for when you don't.
+                    </div>
+                </div>
+            </section>
+
+            <section class="docs-section" id="captions-settings">
+                <h2>Captions Settings</h2>
+                <p>
+                    Every player - <code>/embed/*</code> and the main site's own player alike -
+                    has a <strong>Captions Settings</strong> entry under the gear icon's
+                    <strong>Settings</strong> menu, right below <strong>Captions</strong>. It's
+                    there because different providers ship separately-timed rips of the same
+                    episode, so a caption borrowed from a different provider than the one actually
+                    serving the video can drift out of sync by a few real seconds - not something
+                    fixable at the source, so the viewer gets a manual nudge instead.
+                </p>
+                <table class="param-table">
+                    <thead><tr><th>Control</th><th>Options</th><th>Default</th></tr></thead>
+                    <tbody>
+                        <tr><td>Size</td><td>S / M / L / XL / XXL / XXXL</td><td>M</td></tr>
+                        <tr><td>Color</td><td>White / Black / Yellow / Red</td><td>White</td></tr>
+                        <tr><td>Bold</td><td>Off / On</td><td>Off</td></tr>
+                        <tr><td>Background</td><td>Off / On</td><td>On (a dark box behind the text keeps it readable over busy scenes)</td></tr>
+                        <tr><td>Sync Offset</td><td>-1s / +1s, cumulative</td><td>+0s</td></tr>
+                    </tbody>
+                </table>
+                <p>
+                    Saved to the viewer's own <code>localStorage</code>, per device - not sent to
+                    us, and not something a host page can read or set through the embed API.
+                    Sync Offset works by directly shifting the loaded caption track's cue timing
+                    (not the video), so it applies instantly with no reload, and persists across
+                    episode/server switches until changed again.
+                </p>
+            </section>
+
+            <section class="docs-section" id="embed-playground">
+                <h2>Test Your Embed</h2>
+                <!-- Filled by JS below (renderPlaygroundCard) - this is the <1000px copy, shown
+                     inline in normal document flow. A second copy renders into #playgroundFixedMount
+                     (outside .docs-layout, near the end of <body>) for >=1000px, position:fixed on
+                     the right side of the viewport - see the .playground-fixed-mount CSS. -->
+                <div class="playground-card" id="playgroundInlineMount"></div>
             </section>
 
             <section class="docs-section" id="support">
@@ -433,6 +615,12 @@ iframe.src = '/embed/movie/293660?startAt=' + resumeAt;</pre>
                 <p>This page and the embed API were last updated <strong>August 26, 2026</strong>.</p>
             </section>
         </main>
+
+        <!-- >=1000px copy of the embed playground - a real THIRD grid column (see
+             .docs-layout's own media query), not an overlay - position:sticky so it stays in
+             view while scrolling but respects its own reserved column width, same as the
+             reference site's sidebar tester never overlapping the middle content. -->
+        <aside class="playground-fixed-mount playground-card" id="playgroundFixedMount"></aside>
     </div>
 
     <script>
@@ -569,6 +757,231 @@ iframe.src = '/embed/movie/293660?startAt=' + resumeAt;</pre>
                         submitBtn.textContent = 'Send';
                     });
             });
+        })();
+
+        // Embed Playground (#embed-playground / the fixed sidebar copy) - builds a real
+        // /embed/... URL from the form, shows the iframe snippet, and drops a live preview
+        // iframe right on the page so anyone integrating can sanity-check a title before wiring
+        // it into their own site. Rendered TWICE from one template (renderPlaygroundCard) - an
+        // inline copy for <1000px viewports and a position:fixed right-side copy for >=1000px
+        // (only one is ever visible at a time, see .playground-fixed-mount / #embed-playground
+        // CSS) - every element id is suffixed per instance so both can safely exist in the DOM
+        // at once without colliding.
+        function renderPlaygroundCard(prefix) {
+            var id = function (base) { return base + '-' + prefix; };
+            return '' +
+                '<div class="playground-card-head">' +
+                    '<span class="playground-card-icon"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23-.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" /></svg></span>' +
+                    '<h3>Test Your Embed</h3>' +
+                '</div>' +
+                '<p class="playground-card-sub">Generate iframe code and preview. TMDB/IMDB id for movies and TV, or a TMDB/MAL/AniList id for anime.</p>' +
+                '<div class="playground-field">' +
+                    '<label class="playground-label">Type</label>' +
+                    '<div class="playground-select-wrap"><select id="' + id('pgType') + '">' +
+                        '<option value="anime">Anime</option><option value="movie">Movie</option><option value="tv">TV Show</option>' +
+                    '</select></div>' +
+                '</div>' +
+                '<div class="playground-field" id="' + id('pgServerField') + '">' +
+                    '<label class="playground-label">Server</label>' +
+                    '<div class="playground-select-wrap"><select id="' + id('pgServer') + '"></select></div>' +
+                '</div>' +
+                '<div class="playground-field">' +
+                    '<label class="playground-label" id="' + id('pgIdLabel') + '">ID (TMDB / IMDB / MAL / AniList)</label>' +
+                    '<input type="text" id="' + id('pgId') + '" class="playground-input" placeholder="e.g., 30984">' +
+                '</div>' +
+                '<div class="playground-row" id="' + id('pgSeasonEpisodeRow') + '">' +
+                    '<div class="playground-field"><label class="playground-label">Season</label>' +
+                        '<input type="text" id="' + id('pgSeason') + '" class="playground-input" placeholder="1" value="1"></div>' +
+                    '<div class="playground-field"><label class="playground-label">Episode</label>' +
+                        '<input type="text" id="' + id('pgEpisode') + '" class="playground-input" placeholder="1" value="1"></div>' +
+                '</div>' +
+                '<div class="playground-field" id="' + id('pgAudioField') + '">' +
+                    '<label class="playground-label">Language</label>' +
+                    '<div class="playground-select-wrap"><select id="' + id('pgAudio') + '"><option value="sub">Sub</option><option value="dub">Dub</option></select></div>' +
+                '</div>' +
+                '<div class="playground-actions">' +
+                    '<button type="button" class="playground-btn-primary" id="' + id('pgGenerate') + '">' +
+                        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M8 5v14l11-7z"/></svg>Generate Embed' +
+                    '</button>' +
+                    '<button type="button" class="playground-btn-secondary" id="' + id('pgSubDub') + '">' +
+                        '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" d="M6.429 9.75 2.25 12l4.179 2.25m0-4.5 5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0 4.179 2.25L12 21.75l-9.75-5.25 4.179-2.25m11.142 0-5.571 3-5.571-3" /></svg>Sub + Dub' +
+                    '</button>' +
+                '</div>' +
+                '<p class="playground-status" id="' + id('pgStatus') + '"></p>' +
+                '<div class="playground-output" id="' + id('pgOutput') + '" hidden>' +
+                    '<div class="playground-code-row"><code id="' + id('pgCode') + '"></code>' +
+                        '<button type="button" class="playground-copy-btn" id="' + id('pgCopy') + '">Copy</button></div>' +
+                    '<div class="playground-preview-grid" id="' + id('pgPreviewGrid') + '"></div>' +
+                '</div>';
+        }
+
+        function initPlayground(prefix) {
+            var id = function (base) { return base + '-' + prefix; };
+            var typeSelect = document.getElementById(id('pgType'));
+            var serverSelect = document.getElementById(id('pgServer'));
+            var idInput = document.getElementById(id('pgId'));
+            var idLabel = document.getElementById(id('pgIdLabel'));
+            var seasonEpisodeRow = document.getElementById(id('pgSeasonEpisodeRow'));
+            var seasonInput = document.getElementById(id('pgSeason'));
+            var episodeInput = document.getElementById(id('pgEpisode'));
+            var audioField = document.getElementById(id('pgAudioField'));
+            var audioSelect = document.getElementById(id('pgAudio'));
+            var generateBtn = document.getElementById(id('pgGenerate'));
+            var subDubBtn = document.getElementById(id('pgSubDub'));
+            var statusEl = document.getElementById(id('pgStatus'));
+            var outputEl = document.getElementById(id('pgOutput'));
+            var codeEl = document.getElementById(id('pgCode'));
+            var copyBtn = document.getElementById(id('pgCopy'));
+            var previewGrid = document.getElementById(id('pgPreviewGrid'));
+            if (!typeSelect || !generateBtn) return;
+
+            var SERVERS_BY_TYPE = {
+                anime: [
+                    { value: 'mega', label: 'MVP (default)' },
+                    { value: 'kaa', label: 'KaF' },
+                    { value: 'neko', label: 'NekoStream' },
+                    { value: 'ru', label: 'RU-MV' }
+                ],
+                movie: [
+                    { value: 'kino', label: 'Kino (default)' },
+                    { value: 'ru', label: 'RU-MV' },
+                    { value: 't1m', label: 'T1M' }
+                ],
+                tv: [
+                    { value: 'kino', label: 'Kino (default)' },
+                    { value: 'ru', label: 'RU-MV' },
+                    { value: 't1m', label: 'T1M' }
+                ]
+            };
+            var ID_LABELS = {
+                anime: 'ID (TMDB / MAL / AniList)',
+                movie: 'ID (TMDB / IMDB)',
+                tv: 'ID (TMDB / IMDB)'
+            };
+            var ID_PLACEHOLDERS = { anime: 'e.g., 30984 or mal-269', movie: 'e.g., 293660', tv: 'e.g., 1399' };
+
+            function syncFields() {
+                var type = typeSelect.value;
+                serverSelect.innerHTML = '';
+                SERVERS_BY_TYPE[type].forEach(function (opt) {
+                    var el = document.createElement('option');
+                    el.value = opt.value;
+                    el.textContent = opt.label;
+                    serverSelect.appendChild(el);
+                });
+                idLabel.textContent = ID_LABELS[type];
+                idInput.placeholder = ID_PLACEHOLDERS[type];
+                seasonEpisodeRow.style.display = type === 'movie' ? 'none' : '';
+                audioField.style.display = type === 'anime' ? '' : 'none';
+                subDubBtn.style.display = type === 'anime' ? '' : 'none';
+                outputEl.hidden = true;
+                statusEl.textContent = '';
+                statusEl.className = 'playground-status';
+            }
+            typeSelect.addEventListener('change', syncFields);
+            syncFields();
+
+            // Builds the path/query for one embed - audioOverride lets the Sub+Dub button ask
+            // for both without touching the Language dropdown's own selection.
+            function buildEmbedPath(audioOverride) {
+                var type = typeSelect.value;
+                var id = idInput.value.trim();
+                if (!id) return null;
+                var server = serverSelect.value;
+                var season = parseInt(seasonInput.value, 10) || 1;
+                var episode = parseInt(episodeInput.value, 10) || 1;
+                var path;
+                if (type === 'anime') {
+                    var audio = audioOverride || audioSelect.value;
+                    path = '/embed/anime/' + encodeURIComponent(id) + '/' + episode +
+                        '?season=' + season + '&audio=' + audio + '&server=' + server;
+                } else if (type === 'movie') {
+                    path = '/embed/movie/' + encodeURIComponent(id) + '?server=' + server;
+                } else {
+                    path = '/embed/tv/' + encodeURIComponent(id) + '/' + season + '/' + episode + '?server=' + server;
+                }
+                return path;
+            }
+
+            function renderPreview(paths) {
+                // paths: [{ path, label }]
+                previewGrid.className = 'playground-preview-grid' + (paths.length > 1 ? ' dual' : '');
+                previewGrid.innerHTML = '';
+                paths.forEach(function (p) {
+                    var item = document.createElement('div');
+                    item.className = 'playground-preview-item';
+                    if (paths.length > 1) {
+                        var label = document.createElement('div');
+                        label.className = 'playground-preview-label';
+                        label.textContent = p.label;
+                        item.appendChild(label);
+                    }
+                    var iframe = document.createElement('iframe');
+                    iframe.src = window.location.origin + p.path;
+                    iframe.allowFullscreen = true;
+                    item.appendChild(iframe);
+                    previewGrid.appendChild(item);
+                });
+                var codeText = paths.length > 1
+                    ? paths.map(function (p) { return '<iframe src="' + window.location.origin + p.path + '" allowfullscreen></iframe>'; }).join('\n')
+                    : '<iframe src="' + window.location.origin + paths[0].path + '" allowfullscreen></iframe>';
+                codeEl.textContent = codeText;
+                outputEl.hidden = false;
+                statusEl.textContent = '';
+                statusEl.className = 'playground-status';
+            }
+
+            generateBtn.addEventListener('click', function () {
+                var path = buildEmbedPath();
+                if (!path) {
+                    statusEl.textContent = 'Enter an id first.';
+                    statusEl.className = 'playground-status error';
+                    return;
+                }
+                var paths = [{ path: path, label: '' }];
+                renderPreview(paths);
+            });
+
+            subDubBtn.addEventListener('click', function () {
+                var subPath = buildEmbedPath('sub');
+                var dubPath = buildEmbedPath('dub');
+                if (!subPath || !dubPath) {
+                    statusEl.textContent = 'Enter an id first.';
+                    statusEl.className = 'playground-status error';
+                    return;
+                }
+                var paths = [{ path: subPath, label: 'Sub' }, { path: dubPath, label: 'Dub' }];
+                renderPreview(paths);
+            });
+
+            copyBtn.addEventListener('click', function () {
+                var text = codeEl.textContent;
+                if (!text) return;
+                var done = function () {
+                    var original = copyBtn.textContent;
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(function () { copyBtn.textContent = original; }, 1500);
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(done).catch(function () {});
+                } else {
+                    var ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try { document.execCommand('copy'); done(); } catch (e) {}
+                    document.body.removeChild(ta);
+                }
+            });
+        }
+
+        (function () {
+            var inlineMount = document.getElementById('playgroundInlineMount');
+            var fixedMount = document.getElementById('playgroundFixedMount');
+            if (inlineMount) { inlineMount.innerHTML = renderPlaygroundCard('inline'); initPlayground('inline'); }
+            if (fixedMount) { fixedMount.innerHTML = renderPlaygroundCard('fixed'); initPlayground('fixed'); }
         })();
     </script>
 </body>

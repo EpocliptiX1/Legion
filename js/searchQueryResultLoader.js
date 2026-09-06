@@ -20,8 +20,17 @@ document.addEventListener('DOMContentLoaded', function() {
         resultsGrid.innerHTML = '<div class="loading-text">Searching database...</div>';
         try {
             const response = await fetch(`/api/tmdb/search?q=${encodeURIComponent(query)}`);
-            const items = await response.json();
-            if (!Array.isArray(items) || items.length === 0) {
+            let items = await response.json();
+            if (!Array.isArray(items)) {
+                resultsGrid.innerHTML = '<div class="loading-text">No results found.</div>';
+                return;
+            }
+            // No poster from TMDB almost always means the title barely exists (unreleased,
+            // fan-made, or so obscure it's not worth showing) - rather than fall back to a
+            // generic placeholder image, just drop it from the results entirely (same rule the
+            // live dropdown in enhancedSearch.js applies).
+            items = items.filter(item => !!item.poster);
+            if (items.length === 0) {
                 resultsGrid.innerHTML = '<div class="loading-text">No results found.</div>';
                 return;
             }

@@ -2584,6 +2584,141 @@ function watchForStreamStall(stream, res, context) {
     stream.once('error', cleanup);
 }
 
+// --- Short-lived in-memory cache for HLS media segments (see /api/m3u8-proxy) ---------------
+// Several distinct viewers frequently request the exact same upstream segment within a short
+// window (a popular episode dropping and several people watching close together) - without
+// this, each one is an independent fetch against the same upstream CDN for identical bytes,
+// multiplying the request rate that CDN sees. Segments are immutable once published (the same
+// .ts/.m4s file never changes), so caching is safe; bounded by both a total-byte budget (LRU
+// eviction) and a short TTL so this stays a burst-absorbing cache, not a slow memory leak. Only
+// covers non-Range, known-content-length requests under a sane per-segment size cap - anything
+// else (a Range request, or a response with no content-length) falls through to the existing
+// uncached streaming path unchanged, same as before this cache existed.
+const SEGMENT_CACHE_TTL_MS = 90 * 1000;
+const SEGMENT_CACHE_MAX_TOTAL_BYTES = 150 * 1024 * 1024;
+const SEGMENT_CACHE_MAX_ENTRY_BYTES = 8 * 1024 * 1024;
+const segmentCache = new Map(); // targetUrl -> { buffer, contentType, contentLength, cachedAt }
+let segmentCacheTotalBytes = 0;
+// Collapses concurrent requests for the SAME not-yet-cached URL into one upstream fetch instead
+// of a thundering herd - registered before the fetch starts, so this closes the race a plain
+// cache (checked only after the fact) would miss.
+const segmentFetchInFlight = new Map(); // targetUrl -> Promise<entry | null>
+
+function getCachedSegment(url) {
+    const entry = segmentCache.get(url);
+    if (!entry) return null;
+    if (Date.now() - entry.cachedAt > SEGMENT_CACHE_TTL_MS) {
+        segmentCache.delete(url);
+        segmentCacheTotalBytes -= entry.buffer.length;
+        return null;
+    }
+    // Touch for recency (simple LRU: re-insert so it's last in iteration order).
+    segmentCache.delete(url);
+    segmentCache.set(url, entry);
+    return entry;
+}
+
+function storeCachedSegment(url, entry) {
+    if (entry.buffer.length > SEGMENT_CACHE_MAX_ENTRY_BYTES) return;
+    segmentCache.set(url, entry);
+    segmentCacheTotalBytes += entry.buffer.length;
+    while (segmentCacheTotalBytes > SEGMENT_CACHE_MAX_TOTAL_BYTES && segmentCache.size > 0) {
+        const oldestKey = segmentCache.keys().next().value;
+        const oldest = segmentCache.get(oldestKey);
+        segmentCache.delete(oldestKey);
+        segmentCacheTotalBytes -= oldest.buffer.length;
+    }
+}
+
+// Fetches one segment fully into memory (with the same retry-on-transient-failure behavior as
+// the main uncached path) so it can be served to every concurrent/future requester of the same
+// URL without a second upstream round trip. Bails out (returns null) BEFORE consuming the
+// stream for anything that turns out not cacheable (too large, unknown length, non-200) -
+// the caller then falls through to the existing uncached streaming path for that one request.
+async function fetchAndCacheSegment(targetUrl, refererBase, originBase, req) {
+    const headers = {
+        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': refererBase,
+        'Origin': originBase,
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9'
+    };
+    let response;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            response = await axios({ method: 'GET', url: targetUrl, responseType: 'stream', timeout: 20000, headers });
+            break;
+        } catch (err) {
+            const status = err.response?.status;
+            const retryable = !status || status === 429 || status >= 500;
+            if (!retryable || attempt === 3) throw err;
+            console.warn(`[Proxy] transient upstream ${status || err.code || 'failure'}; retrying cacheable segment fetch (${attempt}/3)`);
+            await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+        }
+    }
+    if (response.status !== 200) {
+        response.data?.resume?.(); // drain politely instead of leaving the socket dangling
+        return null;
+    }
+    // Many of these CDNs (Cloudflare-fronted ones especially) serve segments with
+    // transfer-encoding: chunked and NO Content-Length header at all - confirmed live
+    // 2026-09-06, this is the NORMAL case here, not an edge case, so the size cap has to be
+    // enforced while accumulating rather than checked upfront from a header that often won't
+    // exist. Aborts (and stays uncached) the moment the running total would exceed the cap,
+    // rather than buffering something unbounded into memory.
+    const contentType = (response.headers['content-type'] || '').toLowerCase() || 'video/mp2t';
+    const chunks = [];
+    let total = 0;
+    let tooLarge = false;
+    try {
+        await new Promise((resolve, reject) => {
+            let timer = setTimeout(onStall, STREAM_STALL_TIMEOUT_MS);
+            function onStall() {
+                const err = new Error('stalled');
+                response.data.destroy(err);
+            }
+            response.data.on('data', (chunk) => {
+                total += chunk.length;
+                if (total > SEGMENT_CACHE_MAX_ENTRY_BYTES) {
+                    tooLarge = true;
+                    clearTimeout(timer);
+                    response.data.destroy();
+                    return;
+                }
+                chunks.push(chunk);
+                clearTimeout(timer);
+                timer = setTimeout(onStall, STREAM_STALL_TIMEOUT_MS);
+            });
+            response.data.once('end', () => { clearTimeout(timer); resolve(); });
+            response.data.once('error', (err) => { clearTimeout(timer); if (tooLarge) resolve(); else reject(err); });
+            response.data.once('close', () => { clearTimeout(timer); if (tooLarge) resolve(); });
+        });
+    } catch (err) {
+        throw err;
+    }
+    if (tooLarge) return null;
+    const entry = {
+        buffer: Buffer.concat(chunks),
+        contentType,
+        contentLength: total,
+        cachedAt: Date.now()
+    };
+    storeCachedSegment(targetUrl, entry);
+    return entry;
+}
+
+function sendCachedSegment(res, decodedLeaseId, req, entry) {
+    try {
+        chargePlaybackBytes(decodedLeaseId, entry.buffer.length);
+    } catch (err) {
+        recordPlaybackLeaseViolation(req, err);
+        return res.status(429).send('Playback byte limit reached');
+    }
+    res.setHeader('Content-Type', entry.contentType || 'video/mp2t');
+    res.setHeader('Content-Length', entry.buffer.length);
+    return res.send(entry.buffer);
+}
+
 function pipeLeaseMedia(source, res, leaseId, contentLength) {
     // Do not let an upstream reset turn into an unhandled stream error. The caller has already
     // authenticated the lease; this is only transport cleanup, not a new authorization path.
@@ -11752,6 +11887,33 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     const refererBase = refererOverride ? refererOverride.replace(/\/?$/, '/') : 'https://vidtube.site/';
     const originBase = refererBase.replace(/\/$/, '');
     const isM3u8 = forcePlaylist || targetUrl.includes('.m3u8');
+
+    // Try the shared segment cache before ever touching the upstream CDN - see its own comment
+    // above for why (multiple distinct viewers on the same popular episode collapse into one
+    // upstream fetch instead of one each). Scoped to plain, full-body segment requests only; a
+    // Range request falls straight through to the existing uncached path below unchanged.
+    if (isMediaDataRequest && !isM3u8 && !req.headers['range']) {
+        const cached = getCachedSegment(targetUrl);
+        if (cached) return sendCachedSegment(res, decodedLeaseId, req, cached);
+
+        let fetchPromise = segmentFetchInFlight.get(targetUrl);
+        if (!fetchPromise) {
+            fetchPromise = fetchAndCacheSegment(targetUrl, refererBase, originBase, req);
+            segmentFetchInFlight.set(targetUrl, fetchPromise);
+            fetchPromise.finally(() => {
+                if (segmentFetchInFlight.get(targetUrl) === fetchPromise) segmentFetchInFlight.delete(targetUrl);
+            }).catch(() => {});
+        }
+        try {
+            const entry = await fetchPromise;
+            if (entry) return sendCachedSegment(res, decodedLeaseId, req, entry);
+            // Not cacheable after all (too large) or the shared fetch failed - fall through to
+            // the normal uncached path below for this one request instead of failing everyone
+            // who happened to be waiting on it.
+        } catch (err) {
+            // Same fallthrough reasoning - try the request fresh via the uncached path.
+        }
+    }
 
     try {
         // VidTube/Neko occasionally returns a transient 429/5xx for an individual HLS

@@ -67,26 +67,41 @@ const EnhancedSearch = {
                 }
             }
         });
+
+        // Clicking anywhere outside the input AND outside the results panel itself closes it,
+        // same as clearing the query does - a click on the panel's own items still needs to
+        // reach their onclick (selectMovie) first, so only closes here if the click landed
+        // truly outside both.
+        document.addEventListener('click', (e) => {
+            const resultsMenu = document.getElementById('searchResults');
+            if (!resultsMenu || !resultsMenu.classList.contains('active')) return;
+            if (searchInput.contains(e.target) || resultsMenu.contains(e.target)) return;
+            this.closeResults();
+        });
     },
-    
+
+    // Same close-the-dropdown behavior handleSearch's empty-query branch already used - shared
+    // here so the outside-click handler in setupSearchInput() can trigger the exact same thing.
+    closeResults() {
+        const resultsMenu = document.getElementById('searchResults');
+        const searchBox = document.querySelector('.search-box');
+        if (resultsMenu) resultsMenu.classList.remove('active');
+        if (searchBox) searchBox.classList.remove('expanded');
+    },
+
     handleSearch(query) {
         clearTimeout(this.searchTimeout);
         console.log('[EnhancedSearch] User searched for:', query);
         this.currentQuery = query;
-        
+
         const resultsMenu = document.getElementById('searchResults');
         const searchBox = document.querySelector('.search-box');
-        
+
         if (query.length === 0) {
-            if (resultsMenu) {
-                resultsMenu.classList.remove('active');
-            }
-            if (searchBox) {
-                searchBox.classList.remove('expanded');
-            }
+            this.closeResults();
             return;
         }
-        
+
         if (searchBox) {
             searchBox.classList.add('expanded');
         }
@@ -147,7 +162,13 @@ const EnhancedSearch = {
     displayResults(movies, query) {
         const resultsMenu = document.getElementById('searchResults');
         if (!resultsMenu) return;
-        
+
+        // No poster from TMDB almost always means the title barely exists (unreleased, fan-made,
+        // or so obscure it's not worth showing) - rather than fall back to our own logo as a
+        // placeholder image (confusing, looks like a broken/empty result), just drop it from the
+        // list entirely.
+        movies = movies.filter(item => !!item.poster);
+
         if (movies.length === 0) {
             resultsMenu.innerHTML = `
                 <div class="search-empty">
@@ -180,7 +201,10 @@ const EnhancedSearch = {
         const safeText = escapeHtml(text);
         if (!query) return safeText;
         const regex = new RegExp(`(${escapeRegExp(escapeHtml(query))})`, 'gi');
-        return safeText.replace(regex, '<mark style="background: var(--accent-primary); color: white; padding: 2px 4px; border-radius: 2px;">$1</mark>');
+        // No horizontal padding - 4px on each side was visually shoving the very next
+        // (unhighlighted) character away from the match, reading like a stray space had been
+        // inserted mid-title (e.g. "Solo Levelin" + gap + "g" for a "solo levelin" query).
+        return safeText.replace(regex, '<mark style="background: var(--accent-primary); color: white; padding: 2px 0; border-radius: 2px;">$1</mark>');
     },
     
     // Get search suggestions

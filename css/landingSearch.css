@@ -1,0 +1,358 @@
+/* Standalone landing/search page (html/landingSearch.html) - deliberately its own small
+   stylesheet rather than folding into the ~10k-line css/style.css, since this page has nothing
+   in common with the rest of the site's layout (no sidebar nav, no player, no cards grid). */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+html, body.landing-body {
+    height: 100%;
+}
+
+body.landing-body {
+    background: #000 url('/img/landing-search.png') center center / cover no-repeat fixed;
+    color: #fff;
+    display: flex;
+    /* Dead-centered (both axes) - unlike anikoto.cz's own fixed top-offset, OUR background art
+       is a hand making a square framing gesture that sits roughly centered in the source image,
+       so the card needs to land in the middle of the viewport to actually fall inside that
+       frame, not just below the top of the page. */
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 32px;
+}
+
+.landing-wrap {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.landing-card {
+    width: 100%;
+    /* anikoto.cz's actual card (confirmed against the live site) is 1200px wide but only ~396px
+       tall - a wide, SHORT bar, not a tall block. Keeping this compact is what lets it sit inside
+       the background art's hand-frame instead of spilling out below it. */
+    max-width: 1000px;
+    /* A definite height, not auto - without this, #searchResults' top:0/bottom:0 (see below) has
+       no definite containing-block height to resolve against, so it falls back to sizing itself
+       off its own CONTENT (the results list) instead of actually stretching to fill the column.
+       Grows to 2x while a search is active (see the :has() rule below) - transitioning THIS
+       definite value is what makes that growth animate smoothly instead of popping, since
+       .landing-card-right's own height just tracks it via flex stretch every frame. */
+    min-height: 300px;
+    transition: min-height 0.35s ease;
+    display: flex;
+    /* Slightly transparent so the background art reads through instead of a flat card - the
+       blur keeps the text legible over busy artwork without needing a fully opaque backdrop. */
+    background: rgba(10, 10, 14, 0.62);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+}
+
+.landing-card:has(#searchResults.active) {
+    min-height: 700px;
+}
+
+.landing-card-left,
+.landing-card-right {
+    padding: 26px 28px;
+}
+
+.landing-card-left {
+    flex: 0 0 40%;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    /* No backdrop-filter here - blurring (with or without brightness()) the genuinely dark
+       artwork behind this column made it look worse, not better. Plain tint only. */
+    background: rgba(20, 20, 26, 0.2);
+}
+
+.landing-card-right {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    justify-content: center;
+    /* Anchors #searchResults once landingSearch.js re-parents it in here (see below). */
+    position: relative;
+}
+
+/* enhancedSearch.js's shared dropdown normally renders as .search-results-modal - a
+   near-full-viewport fixed overlay (see style.css), sized for the persistent site nav bar, not
+   this compact card. landingSearch.js moves the element itself into .landing-card-right; this
+   bounds it to that block instead of covering the whole page. An ID selector already outranks
+   style.css's class-only rule, so no !important fight needed. */
+#searchResults.search-results-modal {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-height: none;
+    margin: 0;
+    z-index: 5;
+}
+
+/* style.css's own .search-results-menu background is !important, so this needs !important too
+   to win - an ID selector still outranks it on specificity once both are in the same
+   !important bucket. Applies everywhere on this page, not just mobile/active-search. */
+#searchResults {
+    background: rgba(10, 10, 10, 0) !important;
+}
+
+/* While results are showing, the overlay sits on top of - but the original heading/paragraph
+   text is still there underneath it. Turning it black keeps any of it that peeks through
+   (edges, transparency) from reading as light text fighting the dropdown's own content.
+   Direct-child (>) selectors ONLY, not a descendant combinator - #searchResults is now itself a
+   child of .landing-card-right (see landingSearch.js), and its own internal text (.search-info
+   p, result titles, etc.) needs to stay whatever color the dropdown's own styling gives it, not
+   get swept up by this and go unreadably black too. */
+.landing-card-right:has(#searchResults.active) > h1,
+.landing-card-right:has(#searchResults.active) > h2,
+.landing-card-right:has(#searchResults.active) > p,
+.landing-card-right:has(#searchResults.active) > a {
+    color: #000;
+}
+/* .landing-card-right p strong's own explicit white further down always wins over inherited
+   color, no matter how specific the parent rule above is - strong needs its own explicit
+   override here too. */
+.landing-card-right:has(#searchResults.active) > p strong {
+    color: #000;
+}
+
+.landing-logo-svg {
+    /* Reverted the viewBox crop attempt - it clipped the actual "A" glyph in real rendering
+       despite matching a getBBox() measurement taken from an isolated test page, so back to the
+       original, known-good viewBox and width. A plain positional shift instead: moves the whole
+       (unclipped, uncropped) logo left to visually compensate for the blank space baked into its
+       viewBox - can't delete/clip any real content no matter how far off the number is, unlike
+       messing with the viewBox itself. */
+    width: 190px;
+    height: auto;
+    display: block;
+    margin-bottom: 4px;
+    margin-left: -35px;
+}
+
+.landing-search-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    padding: 9px 14px;
+    transition: border-color 0.18s, background 0.18s;
+}
+
+.landing-search-box:focus-within {
+    border-color: #f96d00;
+    background: rgba(255, 255, 255, 0.09);
+}
+
+.landing-search-icon {
+    width: 17px;
+    height: 17px;
+    flex-shrink: 0;
+    color: #999;
+}
+
+.landing-search-box input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: #fff;
+    font-size: 0.88rem;
+}
+
+.landing-search-box input::placeholder {
+    color: #888;
+}
+
+/* type="search" inputs get a native clear-("x")-button in Chromium/WebKit - not something we
+   styled, and it doesn't match the rest of the box's look. */
+.landing-search-box input::-webkit-search-cancel-button,
+.landing-search-box input::-webkit-search-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+    display: none;
+}
+
+.landing-search-tip {
+    font-size: 0.74rem;
+    line-height: 1.45;
+    color: #999;
+    font-style: italic;
+}
+
+.landing-search-tip strong {
+    color: #ff9b40;
+    font-style: normal;
+}
+
+.landing-popular {
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: #bbb;
+}
+
+.landing-popular strong {
+    color: #fff;
+}
+
+.landing-popular-term {
+    background: none;
+    border: none;
+    padding: 0;
+    color: #ff9b40;
+    font-size: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.landing-popular-term:hover {
+    text-decoration: underline;
+}
+
+.landing-cta-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    margin-top: auto;
+    background: #f96d00;
+    color: #000;
+    font-weight: 700;
+    font-size: 0.85rem;
+    padding: 9px 16px;
+    border-radius: 9px;
+    text-decoration: none;
+    transition: background 0.18s, transform 0.13s;
+}
+
+.landing-cta-btn:hover {
+    background: #ff8a1f;
+    transform: translateY(-2px);
+}
+
+/* Hidden by default everywhere - only shown at <=900px while a search is active (see that media
+   query), replacing the left column's own Visit Home for that one case. */
+.landing-cta-btn-searching {
+    display: none;
+    align-self: center;
+    margin: 0 20px 20px;
+}
+
+.landing-cta-arrow {
+    transition: transform 0.18s;
+}
+
+.landing-cta-btn:hover .landing-cta-arrow {
+    transform: translateX(3px);
+}
+
+.landing-card-right h1 {
+    font-size: 1.3rem;
+    font-weight: 800;
+    line-height: 1.25;
+    margin-bottom: 2px;
+}
+
+.landing-card-right h2 {
+    font-size: 0.98rem;
+    font-weight: 700;
+    color: #ff9b40;
+    margin-top: 4px;
+}
+
+.landing-card-right p {
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: #ddd;
+}
+
+.landing-card-right p strong {
+    color: #fff;
+}
+
+.landing-card-right a {
+    color: #ff9b40;
+    text-decoration: underline;
+}
+
+.landing-card-right a:hover {
+    color: #ffb35f;
+}
+
+@media (max-width: 900px) {
+    body.landing-body {
+        background: url('/img/landing-search-mob.jpg') center center / cover no-repeat fixed;
+    }
+    .landing-card {
+        flex-direction: column;
+        max-width: 640px;
+    }
+    .landing-card-left {
+        border-right: none;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    /* Mobile, and ONLY while a search is actually active - strip it down to logo, search box,
+       results dropdown and the CTA. Otherwise (not searching yet) the tip/popular-list/why-
+       choose text all still show normally, same as any other width. #searchResults itself (a
+       direct child of .landing-card-right, appended there by landingSearch.js) is excluded from
+       the right-column hide below, since that's the one thing in there meant to stay. */
+    .landing-card:has(#searchResults.active) .landing-search-tip,
+    .landing-card:has(#searchResults.active) .landing-popular {
+        display: none;
+    }
+    .landing-card:has(#searchResults.active) .landing-card-right > h1,
+    .landing-card:has(#searchResults.active) .landing-card-right > h2,
+    .landing-card:has(#searchResults.active) .landing-card-right > p {
+        display: none;
+    }
+    .landing-card:has(#searchResults.active) .landing-card-right {
+        margin-bottom: 20px;
+    }
+    /* Swap the left column's Visit Home for the one that lives directly under .landing-card -
+       at this width the card is already column-flex, so that one naturally lands below the
+       results panel instead of up in the (now text-less) left column. */
+    .landing-card:has(#searchResults.active) .landing-card-left > .landing-cta-btn {
+        display: none;
+    }
+    .landing-card:has(#searchResults.active) > .landing-cta-btn-searching {
+        display: inline-flex;
+        align-self: end;
+    }
+}
+
+@media (max-width: 460px) {
+    body.landing-body {
+        padding: 16px;
+    }
+    .landing-card-left,
+    .landing-card-right {
+        padding: 22px 20px;
+    }
+    .landing-logo-svg {
+        width: 110px;
+    }
+    .landing-card-right h1 {
+        font-size: 1.15rem;
+    }
+}

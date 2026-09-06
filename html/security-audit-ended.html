@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Security audit threshold reached</title>
+  <title>BOOP — security audit ended</title>
+  <link rel="icon" href="/img/LOGO_Short.svg">
   <style>
     :root { color-scheme: dark; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #090b10; color: #f4f7fb; font-family: Inter, Segoe UI, Arial, sans-serif; }
@@ -16,11 +17,11 @@
 </head>
 <body>
   <main>
-    <div class="tag">Local security audit</div>
-    <h1>Playback-integrity threshold reached</h1>
-    <p>Multiple playback tripwires were triggered from this client/network during the active scoring window.</p>
-    <p>This development/LAN instance is audit-only, so it has not blocked you. In production, with honeypot enforcement enabled, this client would now be temporarily blocked.</p>
-    <code>Audit test complete — inspect Backend/security-honeypot-events.jsonl for the event trail.</code>
+    <div class="tag">BOOP · playback security audit</div>
+    <h1>You hit too many landmines.</h1>
+    <p>Your recent playback requests crossed the suspicious-activity threshold and the administrator has been alerted.</p>
+    <p>This local development instance is audit-only, so it has shown this notice instead of applying a real ban. On a public deployment with enforcement enabled, playback from this network would be temporarily blocked.</p>
+    <code>Audit ended. Stop probing protected playback routes and contact the site administrator if this was unexpected.</code>
   </main>
 </body>
 </html>
