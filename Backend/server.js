@@ -2590,6 +2590,89 @@ function watchForStreamStall(stream, res, context) {
     stream.once('error', cleanup);
 }
 
+// --- Outbound IP pool for upstream segment relays (future - not live yet) --------------------
+// UltaHost is provisioning 8 dedicated IPs for this box specifically to round-robin the two
+// upstream axios calls in /api/m3u8-proxy across (fetchAndCacheSegment's cached path, and the
+// main uncached playlist/segment/Range path below it) - not provisioned yet, so this is just the
+// plumbing now rather than a refactor of both call sites later. OUTBOUND_IP_POOL empty (as it is
+// today) makes nextOutboundHttpsAgent() a no-op (returns undefined, axios falls back to its
+// default agent/local address exactly as it does today) - populating the array with the 8 real
+// IPs once they exist is the only change needed to turn this on; no call site changes required.
+const OUTBOUND_IP_POOL = []; // fill with the 8 UltaHost IPs once provisioned, e.g. ['1.2.3.4', ...]
+let _outboundIpRoundRobinIndex = 0;
+const _outboundHttpsAgentByIp = new Map(); // ip -> https.Agent, reused rather than rebuilt per request
+function nextOutboundHttpsAgent() {
+    if (OUTBOUND_IP_POOL.length === 0) return undefined;
+    const ip = OUTBOUND_IP_POOL[_outboundIpRoundRobinIndex % OUTBOUND_IP_POOL.length];
+    _outboundIpRoundRobinIndex++;
+    let agent = _outboundHttpsAgentByIp.get(ip);
+    if (!agent) {
+        agent = new https.Agent({ localAddress: ip, keepAlive: true });
+        _outboundHttpsAgentByIp.set(ip, agent);
+    }
+    return agent;
+}
+
+// --- Upstream fetch adapter: axios by default, got-scraping for hosts that need TLS/HTTP2
+// fingerprint impersonation to get past their own bot management ------------------------------
+// Currently just MegaPlay's CDN (cdn.imgnex.top - see the MEGAPLAY EXTRACTION section far below
+// for the full story: confirmed live that a plain axios/curl request gets a 403 even with a
+// fully valid, freshly-signed token, while the identical request through got-scraping succeeds -
+// this is specifically a TLS/HTTP2-fingerprint check, not anything about the request's headers
+// or the token). got-scraping is already a dependency, already used elsewhere in this file for
+// kinogo.mu's own similar protection (see getGotScraping() near the RU Movie section) - reused
+// here rather than adding a second copy of the same capability.
+//
+// axios and got-scraping have different response/error shapes; this normalizes both to axios'
+// own {status, data, headers} (and, on failure, an axios-shaped `err.response.status`) so
+// /api/m3u8-proxy's existing retry loops and playlist/segment handling - written against axios -
+// don't need to know or care which client actually served a given request.
+//
+// NOTE: does not go through nextOutboundHttpsAgent() above - got's own agent/proxy options don't
+// take a plain Node https.Agent the way axios does. Fine for now since OUTBOUND_IP_POOL is empty
+// anyway; when the UltaHost IPs are wired up, got-scraping-routed hosts will need their own
+// localAddress plumbing (got's `context`/`agent` options support it, just a different shape).
+const GOT_SCRAPING_HOSTS = new Set(['cdn.imgnex.top']);
+
+function hostNeedsGotScraping(url) {
+    try { return GOT_SCRAPING_HOSTS.has(new URL(url).hostname); } catch { return false; }
+}
+
+async function fetchUpstream(url, { headers, responseType, timeout, rangeHeader }) {
+    const fullHeaders = rangeHeader ? { ...headers, Range: rangeHeader } : headers;
+    if (!hostNeedsGotScraping(url)) {
+        return axios({ method: 'GET', url, headers: fullHeaders, responseType, timeout, httpsAgent: nextOutboundHttpsAgent() });
+    }
+    // got's own RequestError/HTTPError shape is `err.response.statusCode`, not axios'
+    // `err.response.status` - remapped in both branches below so the existing
+    // `err.response?.status` retry checks at both call sites keep working unchanged either way.
+    const normalizeGotError = (err) => {
+        if (err.response && typeof err.response.statusCode === 'number' && typeof err.response.status !== 'number') {
+            err.response.status = err.response.statusCode;
+        }
+        return err;
+    };
+    const gotScraping = await getGotScraping();
+    if (responseType === 'stream') {
+        return new Promise((resolve, reject) => {
+            const stream = gotScraping.stream(url, { headers: fullHeaders, timeout: { request: timeout } });
+            stream.on('response', (res) => resolve({ status: res.statusCode, headers: res.headers, data: stream }));
+            stream.on('error', (err) => reject(normalizeGotError(err)));
+        });
+    }
+    try {
+        const res = await gotScraping(url, {
+            headers: fullHeaders,
+            timeout: { request: timeout },
+            responseType: responseType === 'text' ? 'text' : 'buffer',
+            throwHttpErrors: false
+        });
+        return { status: res.statusCode, headers: res.headers, data: res.body };
+    } catch (err) {
+        throw normalizeGotError(err);
+    }
+}
+
 // --- Short-lived in-memory cache for HLS media segments (see /api/m3u8-proxy) ---------------
 // Several distinct viewers frequently request the exact same upstream segment within a short
 // window (a popular episode dropping and several people watching close together) - without
@@ -2652,7 +2735,7 @@ async function fetchAndCacheSegment(targetUrl, refererBase, originBase, req) {
     let response;
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            response = await axios({ method: 'GET', url: targetUrl, responseType: 'stream', timeout: 20000, headers });
+            response = await fetchUpstream(targetUrl, { headers, responseType: 'stream', timeout: 20000 });
             break;
         } catch (err) {
             const status = err.response?.status;
@@ -11931,20 +12014,18 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         let upstreamFailure;
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-                response = await axios({
-                    method: 'GET',
-                    url: targetUrl,
+                response = await fetchUpstream(targetUrl, {
                     // Keep media segments streaming. Buffering an untrusted segment in an ArrayBuffer
                     // lets a relay turn a few requests into a memory spike; playlists remain small text.
                     responseType: isM3u8 ? 'text' : 'stream',
                     timeout: 20000,
+                    rangeHeader: req.headers['range'],
                     headers: {
                         'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                         'Referer': refererBase,
                         'Origin': originBase,
                         'Accept': '*/*',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                        ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {})
+                        'Accept-Language': 'en-US,en;q=0.9'
                     }
                 });
                 break;
@@ -18299,7 +18380,7 @@ app.get('/api/t1m-subtitle-vtt', async (req, res) => {
     }
 });
 
-// --- T1M (api.shows.st, English movies/TV) --------------------------------------------------
+// --- T1M (api.tungtungtungtungsahur.app, formerly api.shows.st - English movies/TV) ----------
 // Discovered live via a manual DevTools capture of player.vidlove.cc's "Archer Queen" server -
 // unlike Kino's vidsrcme flow (encrypted stream_urls needing a WASM decrypt step), this API
 // hands back a fully plaintext, ready-to-play HLS master playlist directly in the JSON response
@@ -18310,7 +18391,14 @@ app.get('/api/t1m-subtitle-vtt', async (req, res) => {
 // buildM3u8ProxyUrl's forcePlaylist flag (see its own comment) for exactly the one level that
 // needs it (media playlist); segments fall through to the same URL-based detection as always,
 // since they genuinely aren't playlists.
-const T1M_ORIGIN = 'https://api.shows.st';
+// api.shows.st was Cloudflare-suspended zone-wide (confirmed live: every request, curl AND a
+// real Chromium browser alike, gets Cloudflare's own "Website Access Blocked - Terms of Service
+// violations" page for the zone "shows.st" - not a bot/WAF challenge, the zone itself is gone).
+// player.vidlove.cc (the actual player - see this section's own comment below) now points its
+// own pre-resolve script at api.tungtungtungtungsahur.app instead, same exact API shape
+// (?mode=json&sources=vidapi, same {source:{url,manifest}} response), confirmed live via a
+// DevTools capture of player.vidlove.cc/embed/movie/293660 - just a domain swap on their end.
+const T1M_ORIGIN = 'https://api.tungtungtungtungsahur.app';
 const T1M_REFERER = 'https://player.vidlove.cc/';
 const t1mSourceCache = new Map(); // `${type}:${tmdbId}:${season}:${episode}` -> { data, resolvedAt }
 const T1M_CACHE_TTL_MS = 3 * 60 * 60 * 1000; // same order as Kino's own cache lifetime
@@ -18320,7 +18408,12 @@ async function fetchT1mSources(type, tmdbId, season, episode) {
         ? `${T1M_ORIGIN}/tv?id=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}&mode=json&sources=vidapi`
         : `${T1M_ORIGIN}/movie?id=${encodeURIComponent(tmdbId)}&mode=json&sources=vidapi`;
     const res = await axios.get(url, {
-        headers: { 'User-Agent': KINO_UA, 'Accept': 'application/json' },
+        // The new domain 403s a bare request with no Referer/Origin (confirmed live: identical
+        // request minus these two headers gets a plain-text 403, not a Cloudflare page - this is
+        // the origin's own app-level check, same idea as MegaPlay/KAA requiring a Referer).
+        // T1M_REFERER doubles as both here - it's already the value every downstream
+        // segment/variant fetch sends via buildT1mMasterManifestUrl below.
+        headers: { 'User-Agent': KINO_UA, 'Accept': 'application/json', 'Referer': T1M_REFERER, 'Origin': T1M_REFERER.replace(/\/$/, '') },
         timeout: 15000
     });
     const manifest = res.data?.source?.manifest;
@@ -18624,8 +18717,8 @@ app.get('/api/animepahe/:malId/:ep/:type', async (req, res) => {
 //  9b0. MEGAPLAY EXTRACTION (real stream, not just an iframe embed)
 // =========================================
 // megaplay.buzz gives us the embed page at /stream/mal/{malId}/{ep}/{sub|dub} (that's what
-// 9b1 below hands the frontend to iframe). Unpacking it to a real stream turned out to be
-// two plain requests, no browser and no crypto:
+// 9b1 below hands the frontend to iframe). Unpacking it to a real stream is two plain requests,
+// no browser needed for the API calls themselves:
 //
 //   1. GET /stream/mal/{malId}/{ep}/{lang}  -> HTML carrying data-id="<numeric id>".
 //      A Referer header is REQUIRED - without one the site answers its "Error 410, file not
@@ -18633,20 +18726,89 @@ app.get('/api/animepahe/:malId/:ep/:type', async (req, res) => {
 //      is easy to misdiagnose. Any referer works (verified with megaplay's own, ours, and an
 //      unrelated domain), which is also why the plain iframe embed works fine in a browser -
 //      browsers always send one.
-//   2. GET /stream/getSources?id=<data-id>  -> plain, UNENCRYPTED JSON:
-//        { sources: { file: "https://cdn.../master.m3u8" },
-//          tracks:  [ { file: "...eng-2.vtt", label: "English", kind: "captions" } ],
-//          intro:   { start: 31,   end: 111 },
-//          outro:   { start: 1376, end: 1447 } }
+//   2. GET /stream/getSources?id=<data-id>  -> JSON:
+//        { tracks: [ { file: "...eng-2.vtt", label: "English", kind: "captions" } ],
+//          intro:  { start: 31,   end: 111 },
+//          outro:  { start: 1376, end: 1447 },
+//          enc:    "<base64url ciphertext>" }
+//      Used to be a plain `sources: { file: "..." }` field instead of `enc` (confirmed live,
+//      2026-09-07: megaplay switched to this shape at some point, breaking every existing
+//      request with no warning). `enc` decrypts to `{"file":"https://cdn.../master.m3u8"}` via
+//      AES-256-CBC with a FIXED key/iv pulled straight out of megaplay's own client bundle
+//      (megaplay.buzz/lib/newclient.min.js, functions D()/w() - key is the UTF-8 bytes of the
+//      17-char string below, zero-padded to 32 bytes for AES-256; iv is the UTF-8 bytes of the
+//      16-char string below, used as-is) - see decryptMegaplaySource. Confirmed this is the
+//      exact same URL the old plain `sources.file` used to hand back directly, not a decoy.
 //
-// The playlist itself 403s without `Referer: https://megaplay.buzz/`, hence proxyRef.
-// Worth noting this gives us strictly MORE than the iframe did: subtitle tracks and real
-// intro/outro skip markers (the same shape the KAA skip-button UI already consumes), plus
-// it drops megaplay's own ad scripts (app.main.js is almost entirely ad loading).
+// The decrypted `file` URL above isn't itself enough - cdn.imgnex.top additionally requires a
+// `?token=` query param, or every request (any client, browser included, cold-navigated with no
+// prior session) gets rejected. Recovered live by hooking window.crypto.subtle.importKey/sign
+// via Puppeteer BEFORE megaplay's own player code ran (no manual deobfuscation of their
+// (deliberately obfuscated) client bundle needed) - it's a plain HMAC-SHA256-signed timestamp:
+//   token = base64url(ts|dirPath) + "." + base64url(HMAC-SHA256(secret, ts|dirPath))
+// where dirPath is the CDN path with the trailing filename (master.m3u8) stripped, and ts is
+// the current unix timestamp. Verified byte-for-byte against a real captured (payload,
+// signature) pair using the key below - exact match, not a guess.
+//
+// A correctly-signed token alone still isn't sufficient, though: cdn.imgnex.top additionally
+// TLS/HTTP2-fingerprints the request itself - confirmed live that a fully valid, freshly-signed
+// token gets a flat 403 via plain axios/curl, while the IDENTICAL token succeeds (200, real HLS
+// manifest) via got-scraping (already a dependency, already used elsewhere in this file for
+// kinogo.mu's own similar protection). No persistent/stateful browser session is needed for
+// this despite how it looked at first - see fetchUpstream() above, which already routes
+// cdn.imgnex.top through got-scraping automatically for every consumer of this URL.
 const MEGAPLAY_ORIGIN = 'https://megaplay.buzz';
 const megaplaySourceCache = new Map(); // `${malId}:${ep}:${lang}` -> { data, resolvedAt }
 const megaplayInFlight = new Map();
 const MEGAPLAY_CACHE_TTL_MS = 60 * 60 * 1000;
+const MEGAPLAY_ENC_KEY_STR = 'i?LMTAx0Q6,:}50U'; // zero-padded to 32 bytes -> AES-256 key
+const MEGAPLAY_ENC_IV_STR = "W0;27ToaUpl_P%'c"; // used as-is, 16 bytes -> AES-CBC iv
+const MEGAPLAY_TOKEN_HMAC_SECRET = 'MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s';
+
+function base64UrlEncode(buf) {
+    return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Appends a freshly-signed ?token= to a decrypted cdn.imgnex.top file URL - see this section's
+// own comment above for the exact scheme. Minted fresh per call (not cached alongside the
+// stream URL itself) since it's cheap to compute and the timestamp needs to stay current.
+function signMegaplayCdnUrl(fileUrl) {
+    try {
+        const u = new URL(fileUrl);
+        const dirPath = u.pathname.replace(/^\/anime\//, '').replace(/\/[^/]+$/, '');
+        const payloadStr = `${Math.floor(Date.now() / 1000)}|${dirPath}`;
+        const sig = crypto.createHmac('sha256', MEGAPLAY_TOKEN_HMAC_SECRET).update(payloadStr, 'utf8').digest();
+        const token = `${base64UrlEncode(Buffer.from(payloadStr, 'utf8'))}.${base64UrlEncode(sig)}`;
+        u.searchParams.set('token', token);
+        return u.href;
+    } catch (err) {
+        console.warn('[MegaPlay] Failed to sign CDN URL, leaving unsigned (will likely 403):', err.message);
+        return fileUrl;
+    }
+}
+
+function decryptMegaplaySource(encB64url) {
+    if (typeof encB64url !== 'string' || !encB64url) return null;
+    try {
+        const b64 = encB64url.replace(/-/g, '+').replace(/_/g, '/');
+        const padded = b64 + '===='.slice((b64.length + 3) % 4);
+        const cipherBuf = Buffer.from(padded, 'base64');
+        const key = Buffer.alloc(32);
+        Buffer.from(MEGAPLAY_ENC_KEY_STR, 'utf8').copy(key);
+        const iv = Buffer.from(MEGAPLAY_ENC_IV_STR, 'utf8');
+        const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+        const out = Buffer.concat([decipher.update(cipherBuf), decipher.final()]);
+        const parsed = JSON.parse(out.toString('utf8'));
+        return typeof parsed?.file === 'string' ? signMegaplayCdnUrl(parsed.file) : null;
+    } catch (err) {
+        // A decrypt failure here means megaplay changed the key/iv/cipher again, not that this
+        // particular episode is unavailable - surfaced as a distinct log line so a future break
+        // of THIS mechanism doesn't get misread as "megaplay has no source" like the original
+        // format change did.
+        console.warn('[MegaPlay] enc decrypt failed (key/iv may have changed again):', err.message);
+        return null;
+    }
+}
 
 async function fetchMegaplaySources(malId, episode, lang) {
     const embedUrl = `${MEGAPLAY_ORIGIN}/stream/mal/${encodeURIComponent(malId)}/${encodeURIComponent(episode)}/${encodeURIComponent(lang)}`;
@@ -18673,10 +18835,11 @@ async function fetchMegaplaySources(malId, episode, lang) {
         timeout: 15000
     });
     const j = srcRes.data;
-    // sources is usually an object, but the player's own code also handles an array form.
+    // sources is the OLD plain shape (kept as a fallback in case megaplay ever reverts or
+    // A/B-tests it back); enc is the current encrypted shape - see this section's own comment.
     const file = typeof j?.sources?.file === 'string'
         ? j.sources.file
-        : (Array.isArray(j?.sources) && j.sources[0]?.file) || null;
+        : (Array.isArray(j?.sources) && j.sources[0]?.file) || decryptMegaplaySource(j?.enc) || null;
     if (!file) {
         const err = new Error('megaplay returned no source file');
         err.megaplayConfirmedAbsent = true;
