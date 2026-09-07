@@ -907,3 +907,147 @@ all - it only verifies the decrypt+sign step succeeds, never actually fetches th
 so it will keep reporting healthy regardless of whether real playback works. The only real test
 is watching an episode in movieInfo directly.
 
+==================================================================================================
+
+## Follow-up 9: SOLVED - trustWatch was the actual missing piece all along
+
+User retested from production with the browser relay in place: same `502` / `manifestLoadError`,
+this time captured with full detail showing the underlying upstream response was `403`. So the
+persistent-browser theory failed from BOTH this sandbox AND production - a genuinely important
+negative result (see decision below), not another IP-reputation artifact.
+
+**Before accepting "browser session context isn't it either," ruled out one thing my own test
+had gotten wrong:** every browser-relay test so far warmed the page up on megaplay.buzz's bare
+*root*, never the actual per-episode embed page (`/stream/mal/{id}/{ep}/{lang}`) a real viewer's
+browser would be sitting on - meaning the auto-attached Referer on the in-page fetch never
+matched a genuine embed page. Retested with the page navigated to the EXACT correct embed URL
+before fetching:
+```js
+await page.goto('https://megaplay.buzz/stream/mal/52299/1/sub', ...);  // exact embed page, not root
+await page.evaluate(url => fetch(url)..., signedMasterUrl);
+```
+**Still `403`.** Ruled out too - genuinely not about which page the browser is "on."
+
+**Decided to go back to first principles: re-examine the ORIGINAL successful real-browser trace
+from Follow-up 2, request-by-request, for anything not yet replicated.** Two calls stood out that
+every single reconstruction attempt (curl, got-scraping, the browser relay) had silently ignored:
+```
+POST https://megaplay.buzz/stream/trustWatch  -> 200
+GET  https://megaplay.buzz/domains?h=<hour>   -> 200
+```
+Neither is a video request. `trustWatch` in particular, by name, smelled like exactly the kind of
+session/authorization step that could be the real gate - and earlier static analysis of
+`newclient.min.js` had already turned up an `ae()`/`oe()` AES-encrypt/decrypt pair used for
+something separate from the segment-decrypt mechanism, never chased down at the time.
+
+**Command (full natural-flow capture - letting the REAL page's own JS drive everything, not a
+manual reconstruction, with every request/response to trustWatch/domains/imgnex logged):**
+```js
+await page.goto('https://megaplay.buzz/');
+await page.evaluate(() => location.href = 'https://megaplay.buzz/stream/mal/52299/1/sub');
+```
+**Result: every single cdn.imgnex.top request succeeded (200), master manifest included** - in
+the SAME sandbox, on the SAME burned IP, moments after my own manual reconstruction (same
+architecture, same page, same warm-up) had failed. The only real difference: this let the actual
+megaplay.buzz page JS run untouched, instead of driving my own hand-written fetch() calls.
+Confirmed via the captured trustWatch POST body:
+```
+{"p":"pF-UhrxHz0pYv_it-xoUaoOlu-BTXVpkiXsEYjtmy4c"}
+```
+an encrypted blob, sent twice, roughly 10s apart, before/during the successful CDN requests.
+
+**Command (extracting the actual key material for this SEPARATE crypto context from
+newclient.min.js, around the `ae()`/`oe()`/`W()`/`$()` functions found earlier):**
+```js
+node -e '... search for "function W(e,t){" and print surrounding 2200 chars ...'
+```
+**Found the config object literal, verbatim:**
+```js
+O = String(E.pick(["trustWatchUrl","TRUST_WATCH_URL"], "/stream/trustWatch")),
+D = String(E.pick(["trustEncKey","TRUST_ENC_KEY"], "MegaPlayTrustKey1")),
+U = String(E.pick(["trustAesKey","TRUST_AES_KEY"], "i?LMTAx0Q6,:}50U")),
+S = String(E.pick(["trustAesIv","TRUST_AES_IV"], "W0;27ToaUpl_P%'c")),
+```
+**The trustWatch AES key/IV are the literal SAME strings already recovered for segment
+decryption** (`i?LMTAx0Q6,:}50U` / `W0;27ToaUpl_P%'c`, from Follow-up 3) - one shared secret,
+reused for two different purposes. `ae(payload)` = AES-256-CBC-encrypt(JSON.stringify(payload))
+-> base64url; `oe(response)` = the reverse. Real client sends `{"action":"status"}` on first
+call.
+
+**Command (the real test - call trustWatch once, then fetch the CDN with COMPLETELY PLAIN
+axios - no got-scraping, no browser, nothing special):**
+```js
+const p = megaplayTrustEncrypt({ action: 'status' });
+await axios.post('https://megaplay.buzz/stream/trustWatch', { p }, {...});
+// then just:
+await axios.get(signedMasterUrl, {...});
+```
+**Result: `200`, real `#EXTM3U` manifest.** And the DECRYPTED trustWatch response itself was the
+final confirmation:
+```json
+{
+  "is_enable": false, "update_enable": true, "td": 0, "days3": 0, "days7": 0,
+  "proxy_domain_map": { "fallback": "p.akirax.buzz", "fallback_re": "/anime/" },
+  "rules": { "full_7d_min": 50, "full_3d_min": 30, "soft_today_min": 10, ... },
+  "server_ip": "5.34.5.34",
+  "bootstrap": true
+}
+```
+**`server_ip` is this sandbox's OWN real outbound IP, echoed back exactly** (matches the
+`ifconfig.me`/`ipapi.co` result from Follow-up 2's very first check). **trustWatch is a plain
+IP-registration/session-bootstrap handshake, not a TLS-fingerprint or bot-management check at
+all.** The server was never evaluating how sophisticated the requesting client looked - it was
+checking whether that IP had recently "checked in." Every earlier theory in this investigation
+(TLS fingerprinting, connection freshness, real browser session context) was solving a problem
+that didn't exist; the actual gate was this one small, unauthenticated, undocumented handshake.
+
+**Command (verified not a fluke - repeated on a second, independent title):**
+```js
+// Bleach malId 269 ep1 dub - trustWatch, then plain axios CDN fetch
+```
+**Result: `200` again, consistently.**
+
+### Fix applied (Backend/server.js)
+- `megaplayTrustEncrypt(obj)` - the AES-256-CBC encrypt half of the `ae()`/`oe()` mechanism,
+  reusing the already-known `MEGAPLAY_ENC_KEY_STR`/`MEGAPLAY_ENC_IV_STR` constants (same secret,
+  confirmed shared between both purposes).
+- `callMegaplayTrustWatch()` - POSTs `{"action":"status"}` (encrypted) to `/stream/trustWatch`,
+  tolerant of failure (logs a warning, never throws/crashes the server).
+- Wired as a recurring `setInterval` in the server startup block (every 20s, called once
+  immediately too) - IP-scoped per the `server_ip` finding above, so ONE global heartbeat for
+  the whole backend keeps every user's MegaPlay traffic authorized, not something tied to
+  individual requests/sessions. 20s is a deliberately conservative guess at a safe cadence (real
+  client observed re-sending roughly every ~10s) - not a confirmed exact expiry window; worth
+  shortening first if MegaPlay ever silently degrades again after working for a while.
+- **`fetchUpstream` simplified back down to a plain axios passthrough for every host** - the
+  got-scraping/browser-relay special-casing for cdn.imgnex.top is no longer needed now that
+  trustWatch is the real fix. `getMegaplayBrowserPage`/`fetchViaMegaplayBrowser` (Follow-up 8)
+  are left defined but unused - a real, working fallback if trustWatch itself ever stops being
+  sufficient, not deleted, just off the hot path. `BROWSER_RELAY_HOSTS` is now an empty Set as
+  the explicit off-switch.
+- Split the "needs browser relay" host-check (now unused/empty) from a separate
+  `hostNeedsMegaplaySigning`/`MEGAPLAY_CDN_SIGNING_HOSTS` check (still `cdn.imgnex.top`, still
+  required) - the HMAC token-signing fix from Follow-up 3/5 is a SEPARATE, still-necessary
+  requirement, not something trustWatch replaces.
+- Upgraded `runMegaplayHealthCheck` to actually fetch the resolved CDN URL and verify a real
+  `#EXTM3U` manifest comes back, instead of only checking that decrypt+sign produced a URL
+  string - the old version would have kept reporting "healthy" through this entire outage.
+
+**Command (final verification - restarted the backend for real, waited for the upgraded health
+check to run against the actual live server, not a standalone script):**
+```bash
+curl -sk https://localhost:3000/api/public/provider-status
+```
+**Result:**
+```json
+{ "mega": { "ok": true, "checkedAt": ..., "detail": null } }
+```
+**Confirmed healthy from the real running server process, trustWatch heartbeat active, from this
+same sandbox IP that had been failing all evening.**
+
+**Status: SOLVED.** MegaPlay/MVP is fully fixed. `node --check` clean, backend restarted running
+the fix live, health check upgraded to actually catch a regression if this ever breaks again.
+Awaiting final confirmation from the user watching a real episode in movieInfo, but every
+mechanical piece - decrypt, HMAC signing, and now trustWatch - is independently verified working
+end-to-end through the real server process.
+

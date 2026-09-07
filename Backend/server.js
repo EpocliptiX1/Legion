@@ -2613,47 +2613,35 @@ function nextOutboundHttpsAgent() {
     return agent;
 }
 
-// --- Upstream fetch adapter: axios by default, a persistent real browser for hosts that need
-// actual browser session context to get past their own bot management -------------------------
-// Currently just MegaPlay's CDN (cdn.imgnex.top - see investigation-t1m-megaplay-2026-09-07.md
-// for the full story). Tried, in order, and confirmed EACH ONE INDIVIDUALLY insufficient on its
-// own: (1) got-scraping's TLS/HTTP2 fingerprint impersonation alone - still rejected fully valid,
-// freshly-signed requests; (2) a shared long-lived connection pool on top of that - no change.
-// What's left, by elimination: this needs a request that genuinely originates from a real,
-// continuously-live Chromium session, not merely one disguised to look like it - see
-// fetchViaMegaplayBrowser (MEGAPLAY EXTRACTION section, far below) for that implementation.
-//
-// axios and the browser relay have different response/error shapes; this normalizes both to
-// axios' own {status, data, headers} (and, on failure, an axios-shaped `err.response.status`) so
-// /api/m3u8-proxy's existing retry loops and playlist/segment handling - written against axios -
-// don't need to know or care which path actually served a given request.
-//
-// NOTE: does not go through nextOutboundHttpsAgent() above - the browser relay has its own
-// separate network stack entirely, unrelated to Node's own agent/localAddress options. When the
-// UltaHost IPs land, routing the persistent browser's own traffic through one of them is a
-// separate, real question (Chromium's own proxy config, not anything here).
-const BROWSER_RELAY_HOSTS = new Set(['cdn.imgnex.top']);
+// --- Upstream fetch adapter: plain axios for everything ---------------------------------------
+// Used to special-case cdn.imgnex.top (MegaPlay's CDN) through got-scraping, then a persistent
+// real browser (see fetchViaMegaplayBrowser/getMegaplayBrowserPage further down, and
+// investigation-t1m-megaplay-2026-09-07.md for the full story) chasing what looked like a
+// TLS-fingerprint/bot-management block. Neither was the actual problem: the real gate turned out
+// to be trustWatch (see that section's own comment) - a plain IP/session registration heartbeat,
+// unrelated to how sophisticated the requesting client looks. Once that's called, a completely
+// plain axios request succeeds - confirmed live, repeatedly, across different titles. This
+// function is back to a simple axios passthrough as a result; fetchViaMegaplayBrowser/
+// getMegaplayBrowserPage are kept defined (unused for now) as a real, working fallback in case
+// trustWatch itself ever stops being sufficient - not deleted, just not on the hot path.
+const BROWSER_RELAY_HOSTS = new Set(); // kept as a hook, currently empty - see comment above
 
 function hostNeedsBrowserRelay(url) {
     try { return BROWSER_RELAY_HOSTS.has(new URL(url).hostname); } catch { return false; }
 }
 
+// Separate from hostNeedsBrowserRelay above - MegaPlay's CDN still needs its own signed ?token=
+// on every request (the trustWatch fix above is a DIFFERENT, additional requirement, not a
+// replacement for this one) regardless of which HTTP client ends up fetching it.
+const MEGAPLAY_CDN_SIGNING_HOSTS = new Set(['cdn.imgnex.top']);
+
+function hostNeedsMegaplaySigning(url) {
+    try { return MEGAPLAY_CDN_SIGNING_HOSTS.has(new URL(url).hostname); } catch { return false; }
+}
+
 async function fetchUpstream(url, { headers, responseType, timeout, rangeHeader }) {
     const fullHeaders = rangeHeader ? { ...headers, Range: rangeHeader } : headers;
-    if (!hostNeedsBrowserRelay(url)) {
-        return axios({ method: 'GET', url, headers: fullHeaders, responseType, timeout, httpsAgent: nextOutboundHttpsAgent() });
-    }
-    const { status, contentType, buffer } = await fetchViaMegaplayBrowser(url, timeout);
-    if (status < 200 || status >= 300) {
-        const err = new Error(`Response code ${status}`);
-        err.response = { status, statusCode: status, headers: { 'content-type': contentType } };
-        throw err;
-    }
-    const responseHeaders = { 'content-type': contentType, 'content-length': String(buffer.length) };
-    if (responseType === 'stream') {
-        return { status, headers: responseHeaders, data: Readable.from(buffer) };
-    }
-    return { status, headers: responseHeaders, data: responseType === 'text' ? buffer.toString('utf8') : buffer };
+    return axios({ method: 'GET', url, headers: fullHeaders, responseType, timeout, httpsAgent: nextOutboundHttpsAgent() });
 }
 
 // --- Short-lived in-memory cache for HLS media segments (see /api/m3u8-proxy) ---------------
@@ -12045,7 +12033,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             // fixes every level of the chain from one place.
             const resolveUri = (uri) => {
                 const resolved = new URL(uri, targetUrl).href;
-                return hostNeedsBrowserRelay(resolved) ? signMegaplayCdnUrl(resolved) : resolved;
+                return hostNeedsMegaplaySigning(resolved) ? signMegaplayCdnUrl(resolved) : resolved;
             };
             const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null, req.sessionId, decodedLeaseId, false, decoded.scope);
 
@@ -18047,6 +18035,17 @@ async function runMegaplayHealthCheck() {
     try {
         const data = await fetchMegaplaySources(ANIME_HEALTH_CHECK_MAL_ID, 1, 'dub');
         if (!data?.stream) throw new Error('no stream in response');
+        // Actually fetch the resolved CDN URL, not just check that decrypt+sign produced one -
+        // this is the step every earlier version of this check skipped, so it kept reporting
+        // healthy through the entire trustWatch outage this session dug into. Cheap: one plain
+        // GET, same client every real request now uses (see fetchUpstream's own comment).
+        const cdnCheck = await axios.get(data.stream, {
+            headers: { 'User-Agent': KINO_UA, 'Referer': `${MEGAPLAY_ORIGIN}/` },
+            timeout: 15000, validateStatus: () => true
+        });
+        if (cdnCheck.status !== 200 || !String(cdnCheck.data).trim().startsWith('#EXTM3U')) {
+            throw new Error(`CDN fetch returned ${cdnCheck.status}, expected a real #EXTM3U manifest`);
+        }
         logHealthStatus('[MVP/MegaPlay Health] OK');
         setProviderStatus('mega', true);
     } catch (err) {
@@ -18768,6 +18767,48 @@ const MEGAPLAY_TOKEN_HMAC_SECRET = 'MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s';
 function base64UrlEncode(buf) {
     return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
+
+// --- trustWatch: the REAL missing piece, found in newclient.min.js's own config object
+// (E.pick(["trustWatchUrl",...], "/stream/trustWatch"), E.pick(["trustAesKey",...], the SAME
+// key string as MEGAPLAY_ENC_KEY_STR above - confirmed live, both point at the literal string
+// "i?LMTAx0Q6,:}50U") - every earlier attempt in this investigation (got-scraping's TLS
+// fingerprint, a shared connection pool, a full persistent stealth-browser session replaying
+// the exact embed page) turned out to be solving the wrong problem. Confirmed live: POSTing
+// this ONE encrypted heartbeat, then fetching the CDN with a completely plain axios call - no
+// browser, no fingerprint impersonation, nothing special - returns a real 200 manifest. The
+// decrypted trustWatch RESPONSE even echoes back `server_ip` (confirmed live: matched this
+// box's own real outbound IP exactly) - this is a plain IP/session registration handshake, not
+// anything about how sophisticated the requesting client looks. cdn.imgnex.top rejects an IP
+// that hasn't recently "checked in" here, and accepts one that has, regardless of what's asking.
+function megaplayTrustEncrypt(obj) {
+    const key = Buffer.alloc(32);
+    Buffer.from(MEGAPLAY_ENC_KEY_STR, 'utf8').copy(key);
+    const iv = Buffer.from(MEGAPLAY_ENC_IV_STR, 'utf8');
+    const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+    return base64UrlEncode(Buffer.concat([cipher.update(JSON.stringify(obj), 'utf8'), cipher.final()]));
+}
+
+let megaplayTrustLastOkAt = null;
+async function callMegaplayTrustWatch() {
+    try {
+        const p = megaplayTrustEncrypt({ action: 'status' });
+        await axios.post(`${MEGAPLAY_ORIGIN}/stream/trustWatch`, { p }, {
+            headers: { 'User-Agent': KINO_UA, 'Referer': `${MEGAPLAY_ORIGIN}/`, 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
+            timeout: 10000
+        });
+        megaplayTrustLastOkAt = Date.now();
+    } catch (err) {
+        console.warn('[MegaPlay] trustWatch heartbeat failed (CDN access may lapse):', err.message);
+    }
+}
+// IP-scoped, not per-session/per-user (confirmed: the response echoes THIS SERVER'S OWN ip, not
+// a per-request token) - one global heartbeat for the whole backend keeps every user's MegaPlay
+// traffic authorized, not something to call per-request or per-title. Real client observed
+// re-sending this roughly every ~10s during active playback (presumably to keep trust from
+// expiring mid-episode); this interval is a deliberately conservative guess at a safe cadence,
+// not a confirmed exact expiry window - if MegaPlay starts failing again after working for a
+// while, shortening this is the first thing to try before assuming something else broke.
+const MEGAPLAY_TRUST_WATCH_INTERVAL_MS = 20 * 1000;
 
 // Appends a freshly-signed ?token= to a decrypted cdn.imgnex.top file URL - see this section's
 // own comment above for the exact scheme. Minted fresh per call (not cached alongside the
@@ -23105,6 +23146,14 @@ const server = app.listen(PORT, 'localhost', () => {
     setTimeout(runRuAnimeHealthCheck, 80000);
     setInterval(runT1mHealthCheck, ANIME_HEALTH_CHECK_INTERVAL_MS);
     setTimeout(runT1mHealthCheck, 100000);
+
+    // MegaPlay trustWatch heartbeat - IP-scoped (see its own comment), so this ONE recurring
+    // call keeps cdn.imgnex.top access authorized for every user's MegaPlay traffic, not
+    // something tied to any individual request. Started immediately (no stagger needed - a
+    // single lightweight POST, nothing like the real extraction chains above).
+    console.log(`   MegaPlay trustWatch heartbeat: every ${MEGAPLAY_TRUST_WATCH_INTERVAL_MS / 1000}s`);
+    setInterval(callMegaplayTrustWatch, MEGAPLAY_TRUST_WATCH_INTERVAL_MS);
+    callMegaplayTrustWatch();
 
     console.log(`   Finished-show schedule audit: every ${FINISHED_SHOW_AUDIT_INTERVAL_MS / 3600000}h`);
     setInterval(runFinishedShowScheduleAudit, FINISHED_SHOW_AUDIT_INTERVAL_MS);
