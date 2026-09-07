@@ -843,3 +843,67 @@ clearer explanation of option 2 as context for a future session rather than buil
   them blocking each other. Not scoped in detail yet - that's the honest starting point for
   whenever this gets picked back up.
 
+==================================================================================================
+
+## Follow-up 8: implemented the persistent-browser relay - and got a result that reopens the whole question
+
+User asked to actually build the persistent-browser relay described above and wire it into the
+real movieInfo playback path so it could be tested live, rather than leaving it as a described
+next step - explicitly noting that if a real browser session ALSO fails, "maybe it's not the CDN
+after all."
+
+**Built:**
+- `getMegaplayBrowserPage()` - launches ONE stealth Puppeteer browser + page (same launch-arg
+  profile as Kino's own `runKinoExtractionViaBrowser`, minus the WebGL/console patches Kino
+  needs for a different reason), kept alive as a module-level singleton (not per-request, not
+  per-page-load - genuinely persistent), auto-relaunches if the page/browser dies. Navigates to
+  `https://megaplay.buzz/` once on first launch to warm up on their own origin before ever being
+  asked to fetch anything from cdn.imgnex.top - matches the one combination confirmed live
+  earlier in this investigation to have actually played real video (Follow-up 2).
+- `fetchViaMegaplayBrowser(url)` - runs `fetch()` from INSIDE that persistent page's own JS
+  context via `page.evaluate`, so the request genuinely originates from a real, continuously-live
+  Chromium network stack rather than anything Node sends. Binary bodies round-trip as base64
+  (CDP's own transport is JSON - no way to hand back a raw Buffer directly).
+- `fetchUpstream` now routes `cdn.imgnex.top` through this instead of got-scraping entirely
+  (renamed `GOT_SCRAPING_HOSTS`/`hostNeedsGotScraping` -> `BROWSER_RELAY_HOSTS`/
+  `hostNeedsBrowserRelay` throughout, including the manifest-rewrite call site) - wraps the
+  returned buffer in a `Readable` for the stream branch so `/api/m3u8-proxy`'s existing
+  piping/retry code needed no further changes.
+
+**Command (mechanical sanity check - launch, navigate, in-page fetch, all working correctly
+independent of MegaPlay's own blocking):**
+```js
+await page.goto('https://megaplay.buzz/', ...);           // OK, real page title returned
+await page.evaluate(() => fetch('https://cdn.imgnex.top/robots.txt')...);  // OK, 200, real bytes
+```
+**Result: works correctly.** The plumbing itself is sound.
+
+**Command (the real test - a genuinely signed, fresh master.m3u8 URL, fetched from INSIDE the
+same persistent page, after a real `megaplay.buzz` navigation):**
+```js
+await page.goto('https://megaplay.buzz/', { waitUntil: 'domcontentloaded' });
+await page.evaluate(url => fetch(url).then(r => r.text()), signedMasterUrl);
+```
+**Result: `403`, same plain `openresty` error page as every other attempt tonight.** A real,
+warmed-up, stealth-patched Chromium session - not disguised, genuinely real - got rejected
+identically to every non-browser attempt.
+
+**This is a significant result: it means either (a) real browser session context ISN'T actually
+the missing piece after all, reopening the question the user raised themselves, or (b) this
+sandbox's own IP is now blocked so comprehensively that NOTHING from this specific machine can
+get through anymore, regardless of how legitimate the client looks - which would mean every
+"confirmed" result from this environment for the last several hours (including the very tests
+that established the browser-session theory in the first place) needs to be treated as
+possibly confounded by IP reputation rather than a real signal about MegaPlay's actual
+requirements.** Cannot distinguish between these two from here - this sandbox has no way to test
+from a different IP.
+
+**Status:** the browser relay is built, wired into the real playback path (`/api/m3u8-proxy` via
+`fetchUpstream`), and mechanically verified correct - `node --check` clean, backend restarted
+running it live. Whether it actually plays MegaPlay depends entirely on a real test from
+production's own IP, which is the only remaining source of an uncorrupted signal at this point.
+Note: the existing MVP health check (`runMegaplayHealthCheck`) does NOT exercise this new path at
+all - it only verifies the decrypt+sign step succeeds, never actually fetches the resulting URL -
+so it will keep reporting healthy regardless of whether real playback works. The only real test
+is watching an episode in movieInfo directly.
+

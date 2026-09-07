@@ -22,7 +22,7 @@ const rateLimit = require('express-rate-limit');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { Transform } = require('stream');
+const { Transform, Readable } = require('stream');
 const { Kwik } = require('@consumet/extensions/dist/extractors');
 const { getAnimeSkipTimestamps } = require('./AnimeSkipService');
 const puppeteerExtra = require('puppeteer-extra');
@@ -2613,110 +2613,47 @@ function nextOutboundHttpsAgent() {
     return agent;
 }
 
-// --- Upstream fetch adapter: axios by default, got-scraping for hosts that need TLS/HTTP2
-// fingerprint impersonation to get past their own bot management ------------------------------
-// Currently just MegaPlay's CDN (cdn.imgnex.top - see the MEGAPLAY EXTRACTION section far below
-// for the full story: confirmed live that a plain axios/curl request gets a 403 even with a
-// fully valid, freshly-signed token, while the identical request through got-scraping succeeds -
-// this is specifically a TLS/HTTP2-fingerprint check, not anything about the request's headers
-// or the token). got-scraping is already a dependency, already used elsewhere in this file for
-// kinogo.mu's own similar protection (see getGotScraping() near the RU Movie section) - reused
-// here rather than adding a second copy of the same capability.
+// --- Upstream fetch adapter: axios by default, a persistent real browser for hosts that need
+// actual browser session context to get past their own bot management -------------------------
+// Currently just MegaPlay's CDN (cdn.imgnex.top - see investigation-t1m-megaplay-2026-09-07.md
+// for the full story). Tried, in order, and confirmed EACH ONE INDIVIDUALLY insufficient on its
+// own: (1) got-scraping's TLS/HTTP2 fingerprint impersonation alone - still rejected fully valid,
+// freshly-signed requests; (2) a shared long-lived connection pool on top of that - no change.
+// What's left, by elimination: this needs a request that genuinely originates from a real,
+// continuously-live Chromium session, not merely one disguised to look like it - see
+// fetchViaMegaplayBrowser (MEGAPLAY EXTRACTION section, far below) for that implementation.
 //
-// axios and got-scraping have different response/error shapes; this normalizes both to axios'
-// own {status, data, headers} (and, on failure, an axios-shaped `err.response.status`) so
+// axios and the browser relay have different response/error shapes; this normalizes both to
+// axios' own {status, data, headers} (and, on failure, an axios-shaped `err.response.status`) so
 // /api/m3u8-proxy's existing retry loops and playlist/segment handling - written against axios -
-// don't need to know or care which client actually served a given request.
+// don't need to know or care which path actually served a given request.
 //
-// NOTE: does not go through nextOutboundHttpsAgent() above - got's own agent/proxy options don't
-// take a plain Node https.Agent the way axios does. Fine for now since OUTBOUND_IP_POOL is empty
-// anyway; when the UltaHost IPs are wired up, got-scraping-routed hosts will need their own
-// localAddress plumbing (got's `context`/`agent` options support it, just a different shape).
-const GOT_SCRAPING_HOSTS = new Set(['cdn.imgnex.top']);
+// NOTE: does not go through nextOutboundHttpsAgent() above - the browser relay has its own
+// separate network stack entirely, unrelated to Node's own agent/localAddress options. When the
+// UltaHost IPs land, routing the persistent browser's own traffic through one of them is a
+// separate, real question (Chromium's own proxy config, not anything here).
+const BROWSER_RELAY_HOSTS = new Set(['cdn.imgnex.top']);
 
-function hostNeedsGotScraping(url) {
-    try { return GOT_SCRAPING_HOSTS.has(new URL(url).hostname); } catch { return false; }
+function hostNeedsBrowserRelay(url) {
+    try { return BROWSER_RELAY_HOSTS.has(new URL(url).hostname); } catch { return false; }
 }
-
-// A single, long-lived, shared connection pool for every got-scraping-routed request (currently
-// just cdn.imgnex.top) - deliberately NOT a fresh Agent per request or per call site. Node's
-// default keep-alive (via got-scraping's own built-in agent) only holds a connection open for
-// ~1s of idle time, so any two of our requests spaced further apart than that - completely
-// normal for real HLS segment fetches during playback, which arrive as separate incoming
-// requests to OUR OWN /api/m3u8-proxy whenever the client's buffer needs the next one, not all
-// at once - paid for a brand-new TLS handshake every single time, making every request look like
-// a fresh, unknown client to whatever's evaluating trust/reputation on the other end (see this
-// section's MEGAPLAY comment for the fuller story). Confirmed live: with this same Agent shared
-// across two otherwise-identical requests to cdn.imgnex.top, a 12-second gap between them still
-// reused the underlying connection (second request's total time dropped from ~339ms to ~84ms,
-// consistent with skipping a fresh TCP+TLS handshake) - a real, cheap step toward looking like
-// one continuing session instead of a new stranger on every request, well short of running an
-// actual persistent browser tab (ruled out earlier as real, separate work).
-const megaplayCdnAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 60000, maxSockets: 32 });
 
 async function fetchUpstream(url, { headers, responseType, timeout, rangeHeader }) {
     const fullHeaders = rangeHeader ? { ...headers, Range: rangeHeader } : headers;
-    if (!hostNeedsGotScraping(url)) {
+    if (!hostNeedsBrowserRelay(url)) {
         return axios({ method: 'GET', url, headers: fullHeaders, responseType, timeout, httpsAgent: nextOutboundHttpsAgent() });
     }
-    // got's own RequestError/HTTPError shape is `err.response.statusCode`, not axios'
-    // `err.response.status` - remapped in both branches below so the existing
-    // `err.response?.status` retry checks at both call sites keep working unchanged either way.
-    const normalizeGotError = (err) => {
-        if (err.response && typeof err.response.statusCode === 'number' && typeof err.response.status !== 'number') {
-            err.response.status = err.response.statusCode;
-        }
-        return err;
-    };
-    const gotScraping = await getGotScraping();
+    const { status, contentType, buffer } = await fetchViaMegaplayBrowser(url, timeout);
+    if (status < 200 || status >= 300) {
+        const err = new Error(`Response code ${status}`);
+        err.response = { status, statusCode: status, headers: { 'content-type': contentType } };
+        throw err;
+    }
+    const responseHeaders = { 'content-type': contentType, 'content-length': String(buffer.length) };
     if (responseType === 'stream') {
-        return new Promise((resolve, reject) => {
-            const stream = gotScraping.stream(url, { headers: fullHeaders, timeout: { request: timeout }, agent: { https: megaplayCdnAgent } });
-            stream.on('response', (res) => {
-                // got's stream mode NEVER fires 'error' for an HTTP-level failure (confirmed
-                // live, 2026-09-07: a 403 response fires 'response' with statusCode 403, then
-                // delivers the error page's own body as ordinary stream data, then ends
-                // normally - 'error' is reserved for network/transport failures only, unlike
-                // the promise API's throwHttpErrors). Every consumer of this function's stream
-                // branch (both /api/m3u8-proxy call sites) has always relied on axios throwing
-                // for a non-2xx before it ever sees a response object, so this has to be
-                // checked explicitly here rather than left to the caller - mirrors axios' own
-                // default validateStatus (200-299 only).
-                if (res.statusCode < 200 || res.statusCode >= 300) {
-                    stream.resume(); // drain the error body so the socket doesn't hang
-                    const err = new Error(`Response code ${res.statusCode}`);
-                    err.response = { status: res.statusCode, statusCode: res.statusCode, headers: res.headers };
-                    reject(err);
-                    return;
-                }
-                resolve({ status: res.statusCode, headers: res.headers, data: stream });
-            });
-            stream.on('error', (err) => reject(normalizeGotError(err)));
-        });
+        return { status, headers: responseHeaders, data: Readable.from(buffer) };
     }
-    try {
-        // throwHttpErrors: true is REQUIRED here, explicitly - got-scraping's own preset
-        // overrides plain got's default (true) back to false, confirmed live (2026-09-07) by
-        // testing both with and without this line present: identical behavior either way until
-        // explicitly forced true. The calling code (this whole file, everywhere it uses axios)
-        // has never itself checked response.status before treating a manifest response body as
-        // real manifest text - it has always relied on the HTTP client throwing on a non-2xx so
-        // the surrounding try/catch retry loop handles it. Leaving this false/default was a real
-        // bug: a genuine upstream 403 error page came back as an ordinary 200-shaped
-        // `{status, data}` with no exception raised, so hls.js received a Cloudflare/error HTML
-        // page trying to be parsed as an m3u8 manifest ("no EXTM3U delimiter") instead of the
-        // retry loop ever seeing it.
-        const res = await gotScraping(url, {
-            headers: fullHeaders,
-            timeout: { request: timeout },
-            responseType: responseType === 'text' ? 'text' : 'buffer',
-            throwHttpErrors: true,
-            agent: { https: megaplayCdnAgent }
-        });
-        return { status: res.statusCode, headers: res.headers, data: res.body };
-    } catch (err) {
-        throw normalizeGotError(err);
-    }
+    return { status, headers: responseHeaders, data: responseType === 'text' ? buffer.toString('utf8') : buffer };
 }
 
 // --- Short-lived in-memory cache for HLS media segments (see /api/m3u8-proxy) ---------------
@@ -12108,7 +12045,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             // fixes every level of the chain from one place.
             const resolveUri = (uri) => {
                 const resolved = new URL(uri, targetUrl).href;
-                return hostNeedsGotScraping(resolved) ? signMegaplayCdnUrl(resolved) : resolved;
+                return hostNeedsBrowserRelay(resolved) ? signMegaplayCdnUrl(resolved) : resolved;
             };
             const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null, req.sessionId, decodedLeaseId, false, decoded.scope);
 
@@ -18871,6 +18808,87 @@ function decryptMegaplaySource(encB64url) {
         console.warn('[MegaPlay] enc decrypt failed (key/iv may have changed again):', err.message);
         return null;
     }
+}
+
+// --- Persistent browser session for cdn.imgnex.top (last resort - see
+// investigation-t1m-megaplay-2026-09-07.md's own history: correct token signing, a shared
+// long-lived connection pool, and got-scraping's TLS/HTTP2 fingerprinting all individually
+// verified working, and NONE of it was enough on its own - cdn.imgnex.top still rejected fully
+// valid, freshly-signed requests from both this sandbox's IP and production's own separate IP)
+// --------------------------------------------------------------------------------------------
+// ONE Chromium page, launched once and kept alive indefinitely (NOT per-request - a per-request
+// launch was ruled out early as too expensive for this box's CPU budget, and Kino's own existing
+// per-extraction launch/kill pattern is exactly what's insufficient here). Every real segment
+// fetch for every user runs through this SAME page's own `fetch()`, so it genuinely originates
+// from a real, continuously warm Chromium network stack (the one thing a Node HTTP client -
+// however well TLS-fingerprinted - can never actually be) instead of merely looking like one.
+let megaplayPagePromise = null;
+
+async function getMegaplayBrowserPage() {
+    if (megaplayPagePromise) return megaplayPagePromise;
+    megaplayPagePromise = (async () => {
+        const browser = await puppeteer.launch({
+            headless: true,
+            args: [
+                '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
+                '--disable-dev-shm-usage', '--disable-extensions',
+                '--disable-background-networking', '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding',
+                '--disable-breakpad', '--disable-component-update', '--disable-sync',
+                '--no-first-run', '--mute-audio'
+            ]
+        });
+        const page = await browser.newPage();
+        await page.setUserAgent(KINO_UA);
+        await page.evaluateOnNewDocument(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        });
+        // One real navigation to warm the page up on megaplay.buzz's own origin before it's
+        // ever asked to fetch anything from cdn.imgnex.top - matches how a real viewer's
+        // session actually forms (confirmed live, earlier in this investigation: a Puppeteer
+        // page that loaded megaplay.buzz first, then same-origin-navigated to the embed URL,
+        // successfully played real video; a page that skipped straight to a deep URL never did).
+        await page.goto(`${MEGAPLAY_ORIGIN}/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        // If the page/browser dies (crash, OOM, manually closed) the next call should relaunch
+        // rather than keep handing out a promise for a page that no longer exists.
+        page.on('close', () => { if (megaplayPagePromise) megaplayPagePromise = null; });
+        browser.on('disconnected', () => { megaplayPagePromise = null; });
+        console.log('[MegaPlay Browser] persistent page ready');
+        return page;
+    })().catch(err => {
+        megaplayPagePromise = null;
+        throw err;
+    });
+    return megaplayPagePromise;
+}
+
+// Fetches a URL from INSIDE the persistent page's own JS context via page.evaluate + fetch() -
+// the request is issued by real Chromium, not Node, using whatever connection/session state the
+// page has already built up. CDP's own transport is JSON, so a binary body has to round-trip as
+// base64 (no way to hand back a raw Buffer directly) - fine for HLS segment sizes, would need a
+// different approach (e.g. CDP's Fetch/Network domains streaming to disk) for much larger files.
+async function fetchViaMegaplayBrowser(url, timeoutMs = 20000) {
+    const page = await getMegaplayBrowserPage();
+    const result = await Promise.race([
+        page.evaluate(async (fetchUrl) => {
+            try {
+                const res = await fetch(fetchUrl);
+                const buf = await res.arrayBuffer();
+                const bytes = new Uint8Array(buf);
+                let binary = '';
+                const CHUNK = 0x8000; // avoid a giant single call to String.fromCharCode.apply
+                for (let i = 0; i < bytes.length; i += CHUNK) {
+                    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+                }
+                return { status: res.status, contentType: res.headers.get('content-type') || '', bodyBase64: btoa(binary) };
+            } catch (err) {
+                return { fetchError: String(err && err.message || err) };
+            }
+        }, url),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('fetchViaMegaplayBrowser timed out')), timeoutMs))
+    ]);
+    if (result.fetchError) throw new Error(`[MegaPlay Browser] in-page fetch failed: ${result.fetchError}`);
+    return { status: result.status, contentType: result.contentType, buffer: Buffer.from(result.bodyBase64, 'base64') };
 }
 
 async function fetchMegaplaySources(malId, episode, lang) {
