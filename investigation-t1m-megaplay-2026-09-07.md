@@ -1085,3 +1085,34 @@ attempts at 500ms-1s spacing should cover most real cases, but this is a probabi
 not a guarantee. If MegaPlay still shows occasional failures after this, the next lever to pull
 is more attempts and/or shorter backoff specifically for this host, not a new investigation.
 
+==================================================================================================
+
+## Follow-up 11: found a real, structural bug - a fourth, distinct root cause
+
+movieInfo worked reliably after Follow-up 10's retry fix. `/embed` (apidocs.html's playground)
+still failed **consistently - 4 reloads, 4 failures**, each request burning the full 3-attempt
+retry loop (2+ seconds) before giving up. That's a different shape than probabilistic flakiness
+(which should occasionally succeed even on repeat attempts) - pointed at something structural
+specific to `/embed`, not more of the same noise.
+
+**Root cause: `resolveMegaplaySourcesCached` caches the SIGNED stream URL, token included, for
+up to an hour (`MEGAPLAY_CACHE_TTL_MS`).** The CDN token carries a timestamp the CDN checks
+(Follow-up 3/9) - a cache HIT was handing out whatever token got baked in at cache-WRITE time,
+correct in the first seconds after a fresh resolve but increasingly stale the longer that entry
+sat cached. movieInfo mostly worked because it was usually the one causing a fresh resolve
+(cache miss); `/embed`, tested afterward against the exact same `malId`/`episode`/`lang`
+movieInfo had just resolved, was almost always a cache HIT replaying an already-stale token.
+
+**Fix applied:** `resolveMegaplaySourcesCached`'s cache-hit branch now re-signs `cached.data.stream`
+via `signMegaplayCdnUrl()` on every retrieval, not just on a fresh fetch. Verified
+`signMegaplayCdnUrl` re-signing an ALREADY-signed URL correctly *replaces* the token
+(`URLSearchParams.set`, not append) rather than producing a duplicate `?token=&token=` - confirmed
+via a standalone test (one `token=` occurrence in the output, not two). Cheap fix - one more HMAC
+computation per retrieval, no extra network round trip, cache still saves the real work (the
+embed page fetch + getSources + AES decrypt), only the cheap final signing step happens fresh
+every time now.
+
+**Status:** shipped, `node --check` clean, backend restarted running it. This is a genuinely
+different, structural bug from Follow-up 10's probabilistic CDN flakiness - both needed fixing,
+neither one would have caught the other's failure mode.
+

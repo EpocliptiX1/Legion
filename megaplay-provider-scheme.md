@@ -66,6 +66,11 @@ Clean reference doc. For the full messy reverse-engineering trail (dead ends inc
 - Both `/api/m3u8-proxy` retry loops (`fetchAndCacheSegment`, and the main uncached path) treat
   a `403` from `cdn.imgnex.top` as retryable (step 7) via `hostNeedsMegaplaySigning()` — scoped
   to this host only, every other provider still treats `403` as permanent.
+- `resolveMegaplaySourcesCached()` re-signs the cached `stream` URL's token **on every
+  retrieval**, cache hit or not — not just when freshly resolved. The cache (up to 1 hour, see
+  `MEGAPLAY_CACHE_TTL_MS`) saves the real work (embed page + getSources + AES decrypt); only the
+  cheap HMAC signing step happens fresh every time, since step 4's token carries a timestamp the
+  CDN checks and a long-cached entry would otherwise hand out an increasingly stale one.
 - `fetchUpstream()` — plain axios passthrough for every host, MegaPlay included. (An earlier,
   now-unnecessary version of this routed MegaPlay's CDN through `got-scraping` and then a
   persistent stealth-browser relay, chasing a TLS-fingerprint theory that turned out to be

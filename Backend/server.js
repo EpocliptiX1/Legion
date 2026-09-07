@@ -18990,7 +18990,18 @@ function resolveMegaplaySourcesCached(malId, episode, lang) {
     const key = `${malId}:${episode}:${lang}`;
     const cached = megaplaySourceCache.get(key);
     if (cached && (Date.now() - cached.resolvedAt) < MEGAPLAY_CACHE_TTL_MS) {
-        return Promise.resolve(cached.data);
+        // The cached `stream` URL's ?token= was signed once, at cache-write time -
+        // MEGAPLAY_CACHE_TTL_MS is an hour, and the CDN's token carries a timestamp it checks,
+        // so serving a cache hit as-is hands out an increasingly stale token the longer this
+        // entry has sat cached. Confirmed live (2026-09-07): this is exactly why movieInfo (a
+        // fresh resolve, most of the time) worked while apidocs.html's /embed playground (almost
+        // always a cache HIT on the same malId/episode/lang movieInfo had just resolved minutes
+        // earlier) failed consistently, four reloads in a row. signMegaplayCdnUrl re-signing an
+        // already-signed URL correctly REPLACES the old token (URLSearchParams.set, not append),
+        // so this is safe to call on every retrieval regardless of whether it's already signed -
+        // cheap (one HMAC), and the only way a long-lived cache entry keeps producing a token
+        // that's actually good for "right now."
+        return Promise.resolve({ ...cached.data, stream: signMegaplayCdnUrl(cached.data.stream) });
     }
     if (megaplayInFlight.has(key)) return megaplayInFlight.get(key);
 
