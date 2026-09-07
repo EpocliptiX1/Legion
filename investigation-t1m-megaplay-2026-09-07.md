@@ -1051,3 +1051,37 @@ Awaiting final confirmation from the user watching a real episode in movieInfo, 
 mechanical piece - decrypt, HMAC signing, and now trustWatch - is independently verified working
 end-to-end through the real server process.
 
+==================================================================================================
+
+## Follow-up 10: trustWatch helps a lot, but doesn't make it bulletproof - added retry-on-403
+
+Two real playback failures reported after trustWatch shipped - one on apidocs.html's `/embed`
+playground, one (more concerning) on movieInfo itself, the exact path already confirmed working
+minutes earlier. Both surfaced as `/api/m3u8-proxy` `502`s wrapping an upstream `403` from
+cdn.imgnex.top - backend's own `[Proxy Error]` log confirmed several of these in a row.
+
+**Mapped the real behavior empirically instead of guessing again:** called `trustWatch` once,
+then tested the CDN every 10s for a full minute:
+```
+t+0s: 200   t+10s: 200   t+20s: 200   t+30s: 403   t+40s: 200   t+50s: 200   t+60s: 403
+```
+**No clean expiry window - genuine, real flakiness even moments after a fresh trust
+registration.** trustWatch is necessary (without it, every request fails) but not sufficient on
+its own (with it, most requests succeed, some still don't) - this CDN's own behavior has been
+noisy/inconsistent all session (Follow-up 1's original observation), and that noise turns out to
+still be there even once the real gate (trustWatch) is accounted for.
+
+**Fix applied:** both `/api/m3u8-proxy` retry loops (`fetchAndCacheSegment`'s cached-segment path,
+and the main uncached playlist/segment path) now treat a `403` from `cdn.imgnex.top` specifically
+as retryable, same 3-attempt/backoff structure already used for `429`/`5xx`. Every OTHER provider
+keeps `403` as permanent/non-retryable (an actually-expired token or bad Referer elsewhere really
+won't succeed on retry) - this is scoped via `hostNeedsMegaplaySigning(targetUrl)`, not a global
+change to error handling.
+
+**Status:** shipped, `node --check` clean, backend restarted running it. Not independently
+re-verified against a live failure yet (the flakiness is inherently hard to reproduce on demand)
+- the mapped 10s-interval data above suggests isolated single failures, not long runs, so 3
+attempts at 500ms-1s spacing should cover most real cases, but this is a probabilistic mitigation,
+not a guarantee. If MegaPlay still shows occasional failures after this, the next lever to pull
+is more attempts and/or shorter backoff specifically for this host, not a new investigation.
+

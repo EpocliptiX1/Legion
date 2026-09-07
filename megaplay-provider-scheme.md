@@ -44,6 +44,13 @@ Clean reference doc. For the full messy reverse-engineering trail (dead ends inc
    No special client needed. Plain `axios`/`fetch`/`curl` all work identically, as long as step
    5 has run recently for this server's IP.
 
+7. **Retry on `403` — it's genuinely flaky, even with trustWatch running.**
+   Mapped empirically: same IP, same fresh trustWatch call, testing every 10s for a minute
+   still got `200, 200, 200, 403, 200, 200, 403`. No clean expiry window — real, ongoing
+   noise from the CDN itself. trustWatch is necessary but not sufficient; a `403` here is
+   *not* a permanent rejection the way it is for every other provider (an actually-expired
+   token elsewhere really won't succeed on retry — this one usually will).
+
 ## What's actually running in this codebase
 
 - `signMegaplayCdnUrl()` — step 4.
@@ -56,6 +63,9 @@ Clean reference doc. For the full messy reverse-engineering trail (dead ends inc
   media-playlist/segment URL discovered inside a manifest (step 4's "every URL needs its own
   token" requirement), recursing naturally since a media playlist is proxied through the same
   code path again when the client requests it.
+- Both `/api/m3u8-proxy` retry loops (`fetchAndCacheSegment`, and the main uncached path) treat
+  a `403` from `cdn.imgnex.top` as retryable (step 7) via `hostNeedsMegaplaySigning()` — scoped
+  to this host only, every other provider still treats `403` as permanent.
 - `fetchUpstream()` — plain axios passthrough for every host, MegaPlay included. (An earlier,
   now-unnecessary version of this routed MegaPlay's CDN through `got-scraping` and then a
   persistent stealth-browser relay, chasing a TLS-fingerprint theory that turned out to be

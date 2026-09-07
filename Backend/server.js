@@ -2710,7 +2710,13 @@ async function fetchAndCacheSegment(targetUrl, refererBase, originBase, req) {
             break;
         } catch (err) {
             const status = err.response?.status;
-            const retryable = !status || status === 429 || status >= 500;
+            // MegaPlay's CDN (cdn.imgnex.top) specifically gets a 403 treated as retryable too -
+            // confirmed live (2026-09-07) this is genuinely transient there: mapping repeated
+            // requests against a freshly-trustWatch'd IP over a full minute got 200/200/200/403/
+            // 200/200/403 - no clean expiry window, just real flakiness even moments after a
+            // fresh trust registration. Every OTHER provider keeps 403 as permanent/non-retryable
+            // (a genuinely expired token or bad Referer there really won't succeed on retry).
+            const retryable = !status || status === 429 || status >= 500 || (status === 403 && hostNeedsMegaplaySigning(targetUrl));
             if (!retryable || attempt === 3) throw err;
             console.warn(`[Proxy] transient upstream ${status || err.code || 'failure'}; retrying cacheable segment fetch (${attempt}/3)`);
             await new Promise(resolve => setTimeout(resolve, 500 * attempt));
@@ -12003,7 +12009,10 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             } catch (err) {
                 upstreamFailure = err;
                 const status = err.response?.status;
-                const retryable = !status || status === 429 || status >= 500;
+                // See fetchAndCacheSegment's own comment on this same condition - MegaPlay's CDN
+                // 403 is genuinely transient (confirmed live, not a permanent rejection), unlike
+                // every other provider where it means an actually-expired token.
+                const retryable = !status || status === 429 || status >= 500 || (status === 403 && hostNeedsMegaplaySigning(targetUrl));
                 if (!retryable || attempt === 3) throw err;
                 console.warn(`[Proxy] transient upstream ${status || err.code || 'failure'}; retrying chunk (${attempt}/3)`);
                 await new Promise(resolve => setTimeout(resolve, 500 * attempt));
