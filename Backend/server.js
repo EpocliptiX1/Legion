@@ -2638,6 +2638,22 @@ function hostNeedsGotScraping(url) {
     try { return GOT_SCRAPING_HOSTS.has(new URL(url).hostname); } catch { return false; }
 }
 
+// A single, long-lived, shared connection pool for every got-scraping-routed request (currently
+// just cdn.imgnex.top) - deliberately NOT a fresh Agent per request or per call site. Node's
+// default keep-alive (via got-scraping's own built-in agent) only holds a connection open for
+// ~1s of idle time, so any two of our requests spaced further apart than that - completely
+// normal for real HLS segment fetches during playback, which arrive as separate incoming
+// requests to OUR OWN /api/m3u8-proxy whenever the client's buffer needs the next one, not all
+// at once - paid for a brand-new TLS handshake every single time, making every request look like
+// a fresh, unknown client to whatever's evaluating trust/reputation on the other end (see this
+// section's MEGAPLAY comment for the fuller story). Confirmed live: with this same Agent shared
+// across two otherwise-identical requests to cdn.imgnex.top, a 12-second gap between them still
+// reused the underlying connection (second request's total time dropped from ~339ms to ~84ms,
+// consistent with skipping a fresh TCP+TLS handshake) - a real, cheap step toward looking like
+// one continuing session instead of a new stranger on every request, well short of running an
+// actual persistent browser tab (ruled out earlier as real, separate work).
+const megaplayCdnAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 60000, maxSockets: 32 });
+
 async function fetchUpstream(url, { headers, responseType, timeout, rangeHeader }) {
     const fullHeaders = rangeHeader ? { ...headers, Range: rangeHeader } : headers;
     if (!hostNeedsGotScraping(url)) {
@@ -2655,7 +2671,7 @@ async function fetchUpstream(url, { headers, responseType, timeout, rangeHeader 
     const gotScraping = await getGotScraping();
     if (responseType === 'stream') {
         return new Promise((resolve, reject) => {
-            const stream = gotScraping.stream(url, { headers: fullHeaders, timeout: { request: timeout } });
+            const stream = gotScraping.stream(url, { headers: fullHeaders, timeout: { request: timeout }, agent: { https: megaplayCdnAgent } });
             stream.on('response', (res) => {
                 // got's stream mode NEVER fires 'error' for an HTTP-level failure (confirmed
                 // live, 2026-09-07: a 403 response fires 'response' with statusCode 403, then
@@ -2694,7 +2710,8 @@ async function fetchUpstream(url, { headers, responseType, timeout, rangeHeader 
             headers: fullHeaders,
             timeout: { request: timeout },
             responseType: responseType === 'text' ? 'text' : 'buffer',
-            throwHttpErrors: true
+            throwHttpErrors: true,
+            agent: { https: megaplayCdnAgent }
         });
         return { status: res.statusCode, headers: res.headers, data: res.body };
     } catch (err) {

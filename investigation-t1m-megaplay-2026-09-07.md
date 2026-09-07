@@ -734,3 +734,68 @@ moment-to-moment blocking behavior, which cannot be cleanly tested further from 
 environment's now-likely-burned IP - needs a real retest from production's own (different)
 egress IP to get a clean read.
 
+==================================================================================================
+
+## Follow-up 7: user retested from production, still 502 - connection-reuse fix (last resort before a full browser)
+
+User retested live from their own production server (not this sandbox) - still failed, this time
+with `manifestLoadError` / `code 502 Bad Gateway` from `/api/m3u8-proxy` itself. That's actually
+correct behavior from Follow-up 6's fix (a real upstream failure now surfaces as a clean 502
+instead of corrupted fake-200 content) - but confirms the underlying block is not specific to
+this sandbox's IP: production's own (different) egress IP is also being rejected by
+cdn.imgnex.top, consistently.
+
+User pointed out they can still watch megaplay.buzz via a plain iframe from their own residential
+connection - i.e. not personally IP-banned - and asked whether the "every request is a fresh,
+independent connection" behavior noted in the prior explanation could be changed, as a cheaper
+step short of a full persistent-browser relay (explicitly called out as last-resort only).
+
+**Theory:** a real browser session keeps ONE continuous, warm TLS connection alive across an
+entire page load (embed page -> JS -> manifest -> every segment); our backend's got-scraping
+calls, by contrast, use got-scraping's own default keep-alive, which only holds a connection open
+for ~1s of idle time - well under the real gap between separate incoming segment requests during
+actual playback. If Cloudflare-style bot management scores trust partly on connection/session
+continuity (not just IP or request correctness, both already confirmed fine on their own), every
+one of our requests looking like a brand-new stranger regardless of how many came before it could
+plausibly be part of what's being flagged.
+
+**Command (testing whether a dedicated, long-lived, shared `https.Agent` actually achieves
+connection reuse through got-scraping, independent of whether it helps with blocking):**
+```js
+const agent = new https.Agent({ keepAlive: true, keepAliveMsecs: 60000, maxSockets: 32 });
+await gotScraping(url, { agent: { https: agent } });          // request 1
+await sleep(12000);
+await gotScraping(url, { agent: { https: agent } });          // request 2, 12s later
+```
+**Result:** request 1 total time ~339ms, request 2 (12 seconds later) ~84ms - consistent with
+skipping a fresh TCP+TLS handshake on the second request. Confirmed real connection/TLS-session
+reuse is achievable this way, and that got-scraping accepts a plain Node `https.Agent` via its
+own `agent: { https }` option without breaking its browser-fingerprinting (headers/TLS profile
+otherwise unaffected).
+
+**Fix applied:** `megaplayCdnAgent` - one shared, module-level `https.Agent` (60s keep-alive,
+32 max sockets), wired into BOTH `fetchUpstream` got-scraping call sites (stream and non-stream
+branches) via `agent: { https: megaplayCdnAgent }`. Every request this backend makes to
+cdn.imgnex.top - across every user, every segment, indefinitely - now shares and reuses the same
+warm connection pool instead of each one independently negotiating its own fresh TLS session.
+
+**Command (sanity check against the real endpoint with the new agent - confirms the wiring is
+mechanically correct, NOT a signal on whether it actually helps with blocking):**
+```js
+await gotScraping(signedMasterUrl, { agent: { https: agent }, ... });
+```
+**Result: `403`, well-formed Cloudflare block page** - same as every other request from this
+environment recently. Does not indicate the fix is wrong; this environment's own IP is still the
+confounding variable (Follow-up 5/6's "likely burned from volume" theory, now reinforced by the
+user's own iframe test showing THEIR residential IP is not blocked at all). Could not get a clean
+success/failure signal on connection-reuse's actual effect from here - genuinely needs a real
+retest from production's own egress IP, which doesn't carry this sandbox's accumulated request
+history against this specific CDN.
+
+**Status:** connection-reuse implemented and verified mechanically correct (real TLS/TCP reuse
+confirmed independent of this CDN). Whether it meaningfully changes MegaPlay's blocking behavior
+is unverified and can only be judged from production's own retest. This was explicitly discussed
+as the cheap "last resort before a full persistent-browser relay" - if this doesn't move the
+needle, the persistent-browser approach (one long-lived stealth Puppeteer tab, real segment
+relay through it, real engineering effort) remains the next real step, not yet started.
+
