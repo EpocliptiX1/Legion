@@ -2656,16 +2656,45 @@ async function fetchUpstream(url, { headers, responseType, timeout, rangeHeader 
     if (responseType === 'stream') {
         return new Promise((resolve, reject) => {
             const stream = gotScraping.stream(url, { headers: fullHeaders, timeout: { request: timeout } });
-            stream.on('response', (res) => resolve({ status: res.statusCode, headers: res.headers, data: stream }));
+            stream.on('response', (res) => {
+                // got's stream mode NEVER fires 'error' for an HTTP-level failure (confirmed
+                // live, 2026-09-07: a 403 response fires 'response' with statusCode 403, then
+                // delivers the error page's own body as ordinary stream data, then ends
+                // normally - 'error' is reserved for network/transport failures only, unlike
+                // the promise API's throwHttpErrors). Every consumer of this function's stream
+                // branch (both /api/m3u8-proxy call sites) has always relied on axios throwing
+                // for a non-2xx before it ever sees a response object, so this has to be
+                // checked explicitly here rather than left to the caller - mirrors axios' own
+                // default validateStatus (200-299 only).
+                if (res.statusCode < 200 || res.statusCode >= 300) {
+                    stream.resume(); // drain the error body so the socket doesn't hang
+                    const err = new Error(`Response code ${res.statusCode}`);
+                    err.response = { status: res.statusCode, statusCode: res.statusCode, headers: res.headers };
+                    reject(err);
+                    return;
+                }
+                resolve({ status: res.statusCode, headers: res.headers, data: stream });
+            });
             stream.on('error', (err) => reject(normalizeGotError(err)));
         });
     }
     try {
+        // throwHttpErrors: true is REQUIRED here, explicitly - got-scraping's own preset
+        // overrides plain got's default (true) back to false, confirmed live (2026-09-07) by
+        // testing both with and without this line present: identical behavior either way until
+        // explicitly forced true. The calling code (this whole file, everywhere it uses axios)
+        // has never itself checked response.status before treating a manifest response body as
+        // real manifest text - it has always relied on the HTTP client throwing on a non-2xx so
+        // the surrounding try/catch retry loop handles it. Leaving this false/default was a real
+        // bug: a genuine upstream 403 error page came back as an ordinary 200-shaped
+        // `{status, data}` with no exception raised, so hls.js received a Cloudflare/error HTML
+        // page trying to be parsed as an m3u8 manifest ("no EXTM3U delimiter") instead of the
+        // retry loop ever seeing it.
         const res = await gotScraping(url, {
             headers: fullHeaders,
             timeout: { request: timeout },
             responseType: responseType === 'text' ? 'text' : 'buffer',
-            throwHttpErrors: false
+            throwHttpErrors: true
         });
         return { status: res.statusCode, headers: res.headers, data: res.body };
     } catch (err) {

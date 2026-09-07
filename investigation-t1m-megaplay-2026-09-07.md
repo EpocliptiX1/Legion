@@ -654,3 +654,83 @@ live and, if it still fails, sharing the browser console's own JS errors (hls.js
 error code/reason on fatal failure) rather than just the network panel, which would pinpoint this
 far better than another round of guessing.
 
+==================================================================================================
+
+## Follow-up 6: user retested, hls.js console error pinpointed a THIRD bug (this one mine)
+
+User retested live, still failed, and this time shared the actual hls.js fatal error from the
+browser console instead of just the network panel - much more useful signal:
+```
+[KickAssAnime(HLS)] { type: 'networkError', details: 'manifestParsingError', fatal: true,
+  url: 'https://localhost:3000/api/m3u8-proxy?token=Gef7Q...', error: 'Error: no EXTM3U delimiter',
+  networkDetails: { readyState: 4, status: 9364(?), ... }, response: { loaded: 9364, total: 9364 } }
+```
+hls.js received a 200 from OUR OWN `/api/m3u8-proxy` (not an error status), but the body it got
+back was 9364 bytes of something that doesn't start with `#EXTM3U` - not a manifest at all.
+
+**Root cause: a real bug in `fetchUpstream()` itself (Follow-up 3/4/5's own new code), not
+anything MegaPlay-side.** `got-scraping` overrides plain `got`'s own default of
+`throwHttpErrors: true` back to `false` in its own preset (confirmed live by testing the exact
+same request with the option omitted vs explicitly set - identical behavior either way until
+forced). Every other piece of code in this file that uses axios has always relied on the HTTP
+client throwing on a non-2xx response before reaching any manifest-parsing logic - none of it
+ever explicitly checks `response.status` itself. Since the non-stream branch of `fetchUpstream`
+left `throwHttpErrors` unset, a genuine upstream 403 (or any error) from `cdn.imgnex.top` came
+back as an ordinary `{status: 403, data: '<html>...error page...</html>'}` with NO exception
+raised - the calling code in `/api/m3u8-proxy`'s `isM3u8` branch has no status check of its own
+(never needed one before, given axios' behavior), so it just tried to parse that error page's
+HTML as if it were an m3u8 manifest and handed the (broken) result straight to hls.js as a 200.
+
+**Command (confirming the override empirically):**
+```js
+await gotScraping(url, { responseType: 'text' });                      // throws? NO
+await gotScraping(url, { responseType: 'text', throwHttpErrors: true }); // throws? YES
+```
+Same URL, same 403 upstream response, different outcome purely based on this one option.
+
+**Fix 1: force `throwHttpErrors: true` explicitly** on the non-stream branch, overriding
+got-scraping's own preset back to the behavior every existing caller already assumes.
+
+**Second, worse instance of the same bug found while fixing the first: the STREAM branch (real
+segment data, not just manifests) has no `throwHttpErrors` concept to even set - it's a
+promise-API-only option.** Tested directly:
+```js
+const stream = gotScraping.stream(url); // a 403 URL, no token
+stream.on('response', res => console.log(res.statusCode)); // fires: 403
+stream.on('data', chunk => ...);                            // ALSO fires: delivers the error page's own bytes
+stream.on('error', ...);                                     // never fires at all for HTTP-level errors
+```
+**got's stream mode never signals an HTTP error via the 'error' event, regardless of
+throwHttpErrors - only network/transport failures reach it.** My original stream-branch code
+resolved unconditionally on the `'response'` event with whatever `statusCode` came back,
+meaning a segment fetch that got blocked would have been piped straight to the video element as
+if it were 200 real segment bytes - the exact same silent-failure shape as the manifest bug,
+just for actual video data instead of playlist text.
+
+**Fix 2: explicit status check inside the stream branch's `'response'` handler** - for anything
+outside 200-299, drain the stream and reject with an axios-shaped error (`err.response.status`)
+instead of resolving, mirroring axios' own default `validateStatus`.
+
+**Command (verifying both fixes reject correctly against a real 403, and that the CDN's
+already-documented inconsistent blocking is still present as background context):**
+```js
+// non-stream: throwHttpErrors:true -> throws, err.response.statusCode === 403  (confirmed)
+// stream: manual statusCode check -> would reject, statusCode === 403           (confirmed)
+```
+Both confirmed correct. Retested a genuinely fresh, correctly-signed master.m3u8 request several
+times afterward to also confirm the SUCCESS path still works end-to-end post-fix - got a
+consistent 403 on every attempt this time, unlike earlier in this same investigation (where an
+identical class of request succeeded repeatedly). Almost certainly this session's own testing IP
+finally accumulating enough reputation damage from the sheer volume of requests sent to this CDN
+over the course of this investigation (flagged as a real risk back in Follow-up 1's Process
+Notes) - not a sign the fix is wrong, since the fix's own *error-handling* behavior (throwing/
+rejecting correctly on a 403) was independently verified working in isolation above, separate
+from whether any given real request happens to land or not. Stopped probing this CDN further
+from this environment at this point - diminishing, possibly actively harmful returns.
+
+**Status:** both `fetchUpstream` bugs fixed and verified in isolation (error paths now behave
+correctly). Whether MegaPlay is now genuinely watchable end-to-end depends on this CDN's own
+moment-to-moment blocking behavior, which cannot be cleanly tested further from this
+environment's now-likely-burned IP - needs a real retest from production's own (different)
+egress IP to get a clean read.
+
