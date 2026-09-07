@@ -44,12 +44,19 @@ Clean reference doc. For the full messy reverse-engineering trail (dead ends inc
    No special client needed. Plain `axios`/`fetch`/`curl` all work identically, as long as step
    5 has run recently for this server's IP.
 
-7. **Retry on `403` — it's genuinely flaky, even with trustWatch running.**
+7. **Retry on `403` — it's genuinely flaky, even with trustWatch running, and the flakiness
+   comes in bursts, not a flat rate.**
    Mapped empirically: same IP, same fresh trustWatch call, testing every 10s for a minute
    still got `200, 200, 200, 403, 200, 200, 403`. No clean expiry window — real, ongoing
    noise from the CDN itself. trustWatch is necessary but not sufficient; a `403` here is
    *not* a permanent rejection the way it is for every other provider (an actually-expired
    token elsewhere really won't succeed on retry — this one usually will).
+   A separate controlled test (5 fresh requests, 1s apart) measured ~20% failure — but real
+   `/embed` traffic twice burned all 3 retry attempts in a row, ~0.8% odds at a flat 20% rate.
+   Reads as temporary escalated blocking during bursts of activity, not steady noise —
+   MegaPlay's CDN gets 6 attempts now, not 3 (still just this host; capped backoff so total
+   wait stays under hls.js's own 20s loader timeout). This is a mitigation for the CDN's own
+   flakiness, not a fix for it — 100% success isn't guaranteed.
 
 ## What's actually running in this codebase
 

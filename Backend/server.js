@@ -2704,22 +2704,25 @@ async function fetchAndCacheSegment(targetUrl, refererBase, originBase, req) {
         'Accept-Language': 'en-US,en;q=0.9'
     };
     let response;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    // MegaPlay's CDN gets more attempts than everyone else - confirmed live (2026-09-07) its
+    // 403 rate isn't flat/random, it comes in bursts (a controlled 5-in-a-row test measured
+    // ~20% failure, yet two separate real /embed requests both burned all 3 attempts and still
+    // failed - odds of that at a flat 20% rate are under 1%, so this reads as temporary
+    // escalated blocking, not steady noise). More tries buys more chances to land outside a
+    // burst window; every other provider's 403 is still permanent, so their attempt count is
+    // unaffected.
+    const isMegaplayCdn = hostNeedsMegaplaySigning(targetUrl);
+    const maxAttempts = isMegaplayCdn ? 6 : 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
             response = await fetchUpstream(targetUrl, { headers, responseType: 'stream', timeout: 20000 });
             break;
         } catch (err) {
             const status = err.response?.status;
-            // MegaPlay's CDN (cdn.imgnex.top) specifically gets a 403 treated as retryable too -
-            // confirmed live (2026-09-07) this is genuinely transient there: mapping repeated
-            // requests against a freshly-trustWatch'd IP over a full minute got 200/200/200/403/
-            // 200/200/403 - no clean expiry window, just real flakiness even moments after a
-            // fresh trust registration. Every OTHER provider keeps 403 as permanent/non-retryable
-            // (a genuinely expired token or bad Referer there really won't succeed on retry).
-            const retryable = !status || status === 429 || status >= 500 || (status === 403 && hostNeedsMegaplaySigning(targetUrl));
-            if (!retryable || attempt === 3) throw err;
-            console.warn(`[Proxy] transient upstream ${status || err.code || 'failure'}; retrying cacheable segment fetch (${attempt}/3)`);
-            await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+            const retryable = !status || status === 429 || status >= 500 || (status === 403 && isMegaplayCdn);
+            if (!retryable || attempt === maxAttempts) throw err;
+            console.warn(`[Proxy] transient upstream ${status || err.code || 'failure'}; retrying cacheable segment fetch (${attempt}/${maxAttempts})`);
+            await new Promise(resolve => setTimeout(resolve, Math.min(500 * attempt, 2000)));
         }
     }
     if (response.status !== 200) {
@@ -11989,7 +11992,11 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         // expired token or a bad Referer; those are permanent for this stream.
         let response;
         let upstreamFailure;
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        // See fetchAndCacheSegment's own comment on this same pattern - MegaPlay's CDN gets more
+        // attempts since its 403 comes in bursts, not as a flat rate.
+        const isMegaplayCdn = hostNeedsMegaplaySigning(targetUrl);
+        const maxAttempts = isMegaplayCdn ? 6 : 3;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 response = await fetchUpstream(targetUrl, {
                     // Keep media segments streaming. Buffering an untrusted segment in an ArrayBuffer
@@ -12009,13 +12016,10 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             } catch (err) {
                 upstreamFailure = err;
                 const status = err.response?.status;
-                // See fetchAndCacheSegment's own comment on this same condition - MegaPlay's CDN
-                // 403 is genuinely transient (confirmed live, not a permanent rejection), unlike
-                // every other provider where it means an actually-expired token.
-                const retryable = !status || status === 429 || status >= 500 || (status === 403 && hostNeedsMegaplaySigning(targetUrl));
-                if (!retryable || attempt === 3) throw err;
-                console.warn(`[Proxy] transient upstream ${status || err.code || 'failure'}; retrying chunk (${attempt}/3)`);
-                await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+                const retryable = !status || status === 429 || status >= 500 || (status === 403 && isMegaplayCdn);
+                if (!retryable || attempt === maxAttempts) throw err;
+                console.warn(`[Proxy] transient upstream ${status || err.code || 'failure'}; retrying chunk (${attempt}/${maxAttempts})`);
+                await new Promise(resolve => setTimeout(resolve, Math.min(500 * attempt, 2000)));
             }
         }
         if (!response) throw upstreamFailure || new Error('Upstream proxy request failed');

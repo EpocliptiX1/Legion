@@ -1116,3 +1116,33 @@ every time now.
 different, structural bug from Follow-up 10's probabilistic CDN flakiness - both needed fixing,
 neither one would have caught the other's failure mode.
 
+==================================================================================================
+
+## Follow-up 12: /embed still failing after Follow-up 11 - the flakiness isn't flat, it comes in bursts
+
+Retested with Follow-up 11's fix live: `/embed` still failed, and both attempts burned the FULL
+3-attempt retry loop (2.10s and 1.91s total - matches 3 attempts + the loop's own backoff
+schedule exactly) before giving up.
+
+**Ran a controlled measurement to sanity-check the retry math:** 5 fresh-signed requests, 1s
+apart, same title/params as the failing `/embed` test - 4/5 succeeded (~20% failure rate). At a
+flat 20% rate, the odds of 3 retries ALL failing are `0.2^3` = 0.8% - yet it happened on two
+separate real `/embed` requests in a row. **That's not consistent with steady random noise - it
+reads as temporary, bursty escalated blocking** (plausible given the sheer request volume both
+this sandbox and production have sent this CDN over the course of one evening).
+
+**Fix applied:** MegaPlay's CDN now gets 6 retry attempts instead of 3 (both `/api/m3u8-proxy`
+retry loops, gated the same way via `hostNeedsMegaplaySigning`) - more chances to land outside a
+burst window. Backoff capped at 2s per step (`Math.min(500 * attempt, 2000)`, was unbounded
+`500 * attempt`) so 6 attempts doesn't balloon total wait time past what hls.js's own loader
+timeout (20s, confirmed from the captured browser error object) can tolerate - worst case is
+roughly 6 requests' own latency plus ~9s of capped backoff, comfortably under that.
+
+**Status:** shipped, `node --check` clean, backend restarted. Honest framing for whoever reads
+this next: this is a mitigation, not a fix for the underlying flakiness itself - the CDN's own
+behavior is still noisy and outside this codebase's control. If MegaPlay keeps failing even with
+6 attempts, that means either the burst windows last longer than ~9s of retrying can cover, or
+the failure rate during a burst is high enough that even 6 tries isn't enough - both would point
+toward needing a genuinely different strategy (e.g. backing off entirely and surfacing a
+"try again in a moment" state to the viewer) rather than more retries being the answer.
+
