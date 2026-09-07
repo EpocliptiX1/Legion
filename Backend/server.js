@@ -7943,7 +7943,13 @@ const ALLOWED_PROXY_HOSTS = [
     // MegaPlay's OWN subtitle CDN (confirmed live 2026-09-05: rejected the same way kryntal.top
     // was - MegaPlay serves its own tracks off this host for some titles, e.g.
     // cdn.imgnex.top/anime/.../subtitles/eng-2.vtt).
-    'imgnex.top'
+    'imgnex.top',
+    // Neko/VidTube's manifest/segment CDN rotates hosts (seen live 2026-09-07: cdn-105.streamzone1.site
+    // for one resolve, s1.akirax.buzz - already covered above - for another, same underlying
+    // content). /api/m3u8-proxy itself has no allowlist so this didn't block that path, but
+    // added preemptively in case Neko ever serves a subtitle track off this host too - same class
+    // of gap kryntal.top/imgnex.top above both hit once already before being added here.
+    'streamzone1.site'
 ];
 let proxyDebugPrinted = false;
 
@@ -18087,6 +18093,20 @@ async function runNekoHealthCheck() {
         const epInfo = await resolveAnikotoEpisodeCached(ANIME_HEALTH_CHECK_TITLE, 1, 1);
         const sources = await resolveNekoStreamSources({ serverToken: epInfo.serverToken, audio: 'dub', baseHeaders: epInfo.baseHeaders });
         if (!sources?.stream) throw new Error('no stream in response');
+        // Actually fetch the resolved CDN URL, not just check that resolution produced one -
+        // confirmed live (2026-09-07): Neko's resolve step can succeed while the specific CDN
+        // host it happens to route to (these rotate - e.g. cdn-105.streamzone1.site vs
+        // s1.akirax.buzz for the same underlying content) silently stalls (connects, sends
+        // headers, then never delivers body bytes) rather than erroring outright. A plain
+        // resolve-only check would have reported "healthy" through exactly that failure, same
+        // gap MegaPlay's check had before it was upgraded for the same reason.
+        const cdnCheck = await axios.get(sources.stream, {
+            headers: { 'User-Agent': KINO_UA, 'Referer': sources.proxyRef || 'https://vidtube.site/' },
+            timeout: 15000, validateStatus: () => true
+        });
+        if (cdnCheck.status !== 200 || !String(cdnCheck.data).trim().startsWith('#EXTM3U')) {
+            throw new Error(`CDN fetch returned ${cdnCheck.status}, expected a real #EXTM3U manifest`);
+        }
         logHealthStatus('[Neko Health] OK');
         setProviderStatus('neko', true);
     } catch (err) {
