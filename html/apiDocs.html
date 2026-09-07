@@ -55,6 +55,10 @@
                 <a href="#embed-playground">Test Your Embed</a>
             </div>
             <div class="docs-nav-group">
+                <h4>Status</h4>
+                <a href="#server-status">Server Status</a>
+            </div>
+            <div class="docs-nav-group">
                 <h4>Info</h4>
                 <a href="#support">Questions &amp; Support</a>
                 <a href="#last-updated">Last Updated</a>
@@ -568,6 +572,20 @@ iframe.src = '/embed/movie/293660?startAt=' + resumeAt;</pre>
                 <div class="playground-card" id="playgroundInlineMount"></div>
             </section>
 
+            <section class="docs-section" id="server-status">
+                <h2>Server Status</h2>
+                <p>
+                    Live status for every provider behind <code>server=</code> - see
+                    <a href="#providers">Providers</a> for what each one covers. Checked
+                    server-side on a timer against a fixed, known-good title (not on page load),
+                    so this reflects whether the provider itself is actually reachable right now,
+                    not just this browser's own network.
+                </p>
+                <div class="provider-status-grid" id="providerStatusGrid">
+                    <p class="provider-status-loading">Checking servers...</p>
+                </div>
+            </section>
+
             <section class="docs-section" id="support">
                 <h2>Questions &amp; Support</h2>
                 <p>
@@ -982,6 +1000,56 @@ iframe.src = '/embed/movie/293660?startAt=' + resumeAt;</pre>
             var fixedMount = document.getElementById('playgroundFixedMount');
             if (inlineMount) { inlineMount.innerHTML = renderPlaygroundCard('inline'); initPlayground('inline'); }
             if (fixedMount) { fixedMount.innerHTML = renderPlaygroundCard('fixed'); initPlayground('fixed'); }
+        })();
+
+        // Server Status (#server-status) - reads /api/public/provider-status, which is a plain
+        // in-memory table the backend fills in from real health checks run on its own timer at
+        // startup (see server.js's "Anime + T1M provider health checks" / Kino / Kinogo health
+        // check sections) - this just renders whatever it last found, no live scrape happens on
+        // page load. Refetched every 60s while the tab is open so a status change (either
+        // direction) shows up here without a manual reload.
+        (function () {
+            var grid = document.getElementById('providerStatusGrid');
+            if (!grid) return;
+
+            function timeAgo(ts) {
+                if (!ts) return 'never checked yet';
+                var s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+                if (s < 60) return s + 's ago';
+                var m = Math.floor(s / 60);
+                if (m < 60) return m + 'm ago';
+                var h = Math.floor(m / 60);
+                return h + 'h ago';
+            }
+
+            function render(providers) {
+                var order = ['mega', 'kaa', 'neko', 'ruAnime', 'kino', 't1m', 'ruMovie'];
+                grid.innerHTML = order.map(function (key) {
+                    var p = providers[key];
+                    if (!p) return '';
+                    var state = p.ok === true ? 'up' : (p.ok === false ? 'down' : 'pending');
+                    var stateLabel = p.ok === true ? 'Operational' : (p.ok === false ? 'Down' : 'Checking...');
+                    return '' +
+                        '<div class="provider-status-card provider-status-' + state + '">' +
+                            '<div class="provider-status-dot"></div>' +
+                            '<div class="provider-status-info">' +
+                                '<div class="provider-status-name">' + p.label + ' <span class="provider-status-scope">' + p.scope + '</span></div>' +
+                                '<div class="provider-status-state">' + stateLabel + ' &middot; ' + timeAgo(p.checkedAt) + '</div>' +
+                                (p.ok === false && p.detail ? '<div class="provider-status-detail">' + p.detail.replace(/[<>&]/g, function (c) { return { '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]; }) + '</div>' : '') +
+                            '</div>' +
+                        '</div>';
+                }).join('');
+            }
+
+            function load() {
+                fetch('/api/public/provider-status')
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) { if (data && data.ok) render(data.providers); })
+                    .catch(function () { /* leave whatever last rendered, or the initial loading text */ });
+            }
+
+            load();
+            setInterval(load, 60000);
         })();
     </script>
 </body>

@@ -960,6 +960,12 @@ animeCacheDb.serialize(() => {
             }
         }
     });
+    // mal_id lookups (getAnimeCacheAltTitles' Tier 1 in the RU-MV title-matching fallback,
+    // and every existing caller that only has a mal_id in hand) had no index at all before this -
+    // anilist_id is the table's primary key so it was already covered, but mal_id was a full
+    // table scan every time. Cheap today at ~2500 rows, worth not letting scale into a real cost
+    // as the cache keeps growing.
+    animeCacheDb.run(`CREATE INDEX IF NOT EXISTS idx_anime_cache_mal_id ON anime_cache(mal_id)`);
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS anime_row_cache (
             row_key TEXT NOT NULL,
@@ -16473,6 +16479,36 @@ function splitTitleSegments(title) {
     return segments.length > 1 ? segments : [];
 }
 
+// anime_cache already carries romaji_title/native_title/english_title for ~2500 shows (backfilled
+// by every other AniList-touching flow in this file - homepage rows, season groups, badges,
+// etc.), so it's a free, instant, zero-network alt-title source for the fallback below - checked
+// BEFORE either a live AniList call or a live MAL scrape, not just when both of those fail.
+// Confirmed live: this row already existed for Solo Leveling (romaji_title "Ore dake Level Up na
+// Ken") from an unrelated earlier request, well before this fallback chain ever ran for it.
+// Keyed by mal_id first since that's what every caller here actually has in hand; anilist_id is
+// a secondary key for the rare caller that only has that. tmdb_id is deliberately NOT used as a
+// lookup key - this table's own tmdb_id column has been observed to disagree with the real TMDB
+// id for a title whose mal_id/anilist_id both matched cleanly (a separate, pre-existing data
+// quality issue in whatever wrote that column, not something to propagate into a new bug here).
+function getAnimeCacheAltTitles(malId, anilistId) {
+    return new Promise((resolve) => {
+        if (!malId && !anilistId) return resolve(null);
+        const clauses = [];
+        const params = [];
+        if (malId) { clauses.push('mal_id = ?'); params.push(Number(malId)); }
+        if (anilistId) { clauses.push('anilist_id = ?'); params.push(Number(anilistId)); }
+        animeCacheDb.get(
+            `SELECT english_title, romaji_title, native_title FROM anime_cache WHERE ${clauses.join(' OR ')} LIMIT 1`,
+            params,
+            (err, row) => {
+                if (err || !row) return resolve(null);
+                const titles = [row.romaji_title, row.native_title, row.english_title].filter(Boolean);
+                resolve(titles.length ? titles : null);
+            }
+        );
+    });
+}
+
 async function resolveAnimegoAniboom(rawTitle, season, { malId = null, tmdbId = null } = {}) {
     const headers = { 'User-Agent': NEWSTREAM_UA, 'Referer': 'https://animego.me/' };
 
@@ -16532,10 +16568,38 @@ async function resolveAnimegoAniboom(rawTitle, season, { malId = null, tmdbId = 
                         resolvedMalId = resolvedMalId || ids.malId || null;
                     }
                 }
-                const media = await aniListGetMediaBasic({ anilistId, malId: resolvedMalId });
-                const altTitles = [media?.title?.romaji, media?.title?.native, media?.title?.english].filter(Boolean);
+                // Tier 1: anime_cache - instant, zero-network, already has this title most of
+                // the time (see getAnimeCacheAltTitles' own comment). Tier 2: live AniList.
+                // Tier 3: live MAL scrape, only reached if both of the above came up empty (e.g.
+                // AniList is down AND this particular title was never cached locally).
+                let altTitles = await getAnimeCacheAltTitles(resolvedMalId, anilistId) || [];
+                if (!altTitles.length) {
+                    let media = null;
+                    try {
+                        media = await aniListGetMediaBasic({ anilistId, malId: resolvedMalId });
+                    } catch (err) {
+                        // AniList's GraphQL API has real, whole-site outages (confirmed live: a
+                        // blanket 403 "temporarily disabled due to severe stability issues" with
+                        // every request, not just this title) - not just this one title being
+                        // missing from their catalog. Fall through to the MAL scrape below
+                        // instead of letting an AniList-wide outage silently disable RU-MV for
+                        // every anime whose animego card only carries a Russian + romaji title
+                        // (no English), the exact case a plain title-similarity check can't
+                        // bridge on its own.
+                        console.warn('[NewStream] AniList lookup failed, falling back to MAL scrape:', err.message || err);
+                    }
+                    altTitles = [media?.title?.romaji, media?.title?.native, media?.title?.english].filter(Boolean);
+                }
+                if (!altTitles.length && resolvedMalId) {
+                    try {
+                        const malDetails = await fetchMalAnimeDetails(resolvedMalId);
+                        altTitles = [malDetails?.titleNative, malDetails?.titleEn].filter(Boolean);
+                    } catch (err) {
+                        console.warn('[NewStream] MAL title fallback also failed:', err.message || err);
+                    }
+                }
                 if (altTitles.length) {
-                    console.log(`[NewStream] "${rawTitle}" S${season} - retrying with season-specific AniList titles:`, altTitles);
+                    console.log(`[NewStream] "${rawTitle}" S${season} - retrying with season-specific alt titles:`, altTitles);
                     for (const alt of altTitles) {
                         const variants = [alt, ...splitTitleSegments(alt)];
                         for (const v of variants) {
@@ -16554,7 +16618,7 @@ async function resolveAnimegoAniboom(rawTitle, season, { malId = null, tmdbId = 
                     scored = scoreCandidates(candidates, titleVariants);
                 }
             } catch (err) {
-                console.warn('[NewStream] AniList title fallback failed:', err.message || err);
+                console.warn('[NewStream] Season-title fallback failed:', err.message || err);
             }
         }
     }
@@ -17743,6 +17807,36 @@ function resolveKinoCached(cacheKey, resolver) {
     return p;
 }
 
+// --- Provider status (apidocs.html "Server Status" section) ------------------------------
+// One shared in-memory table every real playback-provider health check below writes into,
+// tested once at server startup (not on every apidocs.html page load - a real visitor
+// shouldn't pay for six live scrapes just to read the docs) and re-checked on each check's own
+// timer after that. /api/public/provider-status just hands this object back as-is.
+// Keys match the `server=` values used across /embed/* and the Providers table in apidocs.html.
+const providerHealthStatus = {
+    kino:    { label: 'Kino',  scope: 'movie/TV', ok: null, checkedAt: null, detail: null },
+    t1m:     { label: 'T1M',   scope: 'movie/TV', ok: null, checkedAt: null, detail: null },
+    ruMovie: { label: 'RU MV', scope: 'movie/TV', ok: null, checkedAt: null, detail: null },
+    mega:    { label: 'MVP',   scope: 'anime',    ok: null, checkedAt: null, detail: null },
+    kaa:     { label: 'KaF',   scope: 'anime',    ok: null, checkedAt: null, detail: null },
+    neko:    { label: 'Neko',  scope: 'anime',    ok: null, checkedAt: null, detail: null },
+    ruAnime: { label: 'RU MV', scope: 'anime',    ok: null, checkedAt: null, detail: null }
+};
+function setProviderStatus(key, ok, detail) {
+    const entry = providerHealthStatus[key];
+    if (!entry) return; // unknown key - shouldn't happen, but never throw out of a health check over it
+    entry.ok = ok;
+    entry.checkedAt = Date.now();
+    entry.detail = ok ? null : (detail || 'unknown error');
+}
+// Public, read-only, no auth - same trust level as the other /api/public/* routes (episode
+// progress, tmdb mapping). Never echoes anything beyond ok/checkedAt/detail per provider - no
+// internal URLs, ids, or stack traces leak through `detail` (every setProviderStatus call above
+// only ever passes err.message, already just a short human string with no upstream body in it).
+app.get('/api/public/provider-status', (req, res) => {
+    res.json({ ok: true, providers: providerHealthStatus });
+});
+
 // --- Kino health check -------------------------------------------------------------------
 // vidsrcme.ru has quietly broken Kino before (a TLS/browser fingerprint check started
 // silently aborting our extraction with no error on their end - see the stealth plugin
@@ -17772,11 +17866,13 @@ async function runKinoHealthCheck() {
         // extraction every time, not report "healthy" off a stale cached success.
         await runKinoExtraction(`movie/${KINO_HEALTH_CHECK_TMDB_ID}`, 'movie');
         logHealthStatus(`[Kino Health] OK (${Date.now() - startedAt}ms)`);
+        setProviderStatus('kino', true);
     } catch (err) {
         const banner = '!'.repeat(70);
         logHealthStatus(`\n${banner}\n⚠️  ⚠️  ⚠️   KINO IS DOWN   ⚠️  ⚠️  ⚠️\n${banner}`);
         logHealthStatus(`[Kino Health] Extraction failed: ${err.message}`);
         logHealthStatus(`${banner}\n`);
+        setProviderStatus('kino', false, err.message);
     } finally {
         kinoHealthCheckRunning = false;
     }
@@ -17837,13 +17933,105 @@ async function runKinogoHealthCheck() {
 
     if (failures.length === 0) {
         logHealthStatus(`[Kinogo Health] OK (${Date.now() - startedAt}ms)`);
+        setProviderStatus('ruMovie', true);
     } else {
         const banner = '!'.repeat(70);
         logHealthStatus(`\n${banner}\n⚠️  ⚠️  ⚠️   KINOGO/CINEMAR (RU-MV) IS BROKEN   ⚠️  ⚠️  ⚠️\n${banner}`);
         failures.forEach(f => logHealthStatus(`[Kinogo Health] ${f}`));
         logHealthStatus(`${banner}\n`);
+        setProviderStatus('ruMovie', false, failures.join('; '));
     }
     kinogoHealthCheckRunning = false;
+}
+
+// --- Anime + T1M provider health checks ----------------------------------------------------
+// Same idea as Kino/Kinogo above, extended to the anime providers and T1M - nothing was
+// checking these before this feature, so a provider going down silently kept looking exactly
+// like a normal "this specific episode/audio isn't available" 502 (see resolvePublicEmbedAnimeSource
+// above) until enough users reported it to notice a pattern. Solo Leveling (tmdbId 127532,
+// malId 52299, anilistId 151807) is reused as the fixed test title for every anime provider
+// check here - confirmed present on all four providers, same "always available" role Deadpool 2
+// plays for Kino/T1M above.
+// Dub is used everywhere a provider needs a language, not sub - a provider can legitimately lack
+// a SUB track for a given episode (MegaPlay is dub-first) without being down at all, so testing
+// sub here would produce exactly the kind of false "provider is down" noise these checks exist
+// to avoid; dub is the one language every one of these providers reliably carries for episode 1.
+const ANIME_HEALTH_CHECK_TMDB_ID = 127532; // Solo Leveling
+const ANIME_HEALTH_CHECK_MAL_ID = 52299;
+const ANIME_HEALTH_CHECK_TITLE = 'Solo Leveling';
+const T1M_HEALTH_CHECK_TMDB_ID = 293660; // Deadpool 2, same fixed movie Kino's own check uses
+const ANIME_HEALTH_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+
+async function runMegaplayHealthCheck() {
+    try {
+        const data = await fetchMegaplaySources(ANIME_HEALTH_CHECK_MAL_ID, 1, 'dub');
+        if (!data?.stream) throw new Error('no stream in response');
+        logHealthStatus('[MVP/MegaPlay Health] OK');
+        setProviderStatus('mega', true);
+    } catch (err) {
+        logHealthStatus(`[MVP/MegaPlay Health] FAILED: ${err.message}`);
+        setProviderStatus('mega', false, err.message);
+    }
+}
+
+async function runKaaHealthCheck() {
+    try {
+        const raw = await resolveKickAssAnimeSources({
+            malId: ANIME_HEALTH_CHECK_MAL_ID, tmdbId: ANIME_HEALTH_CHECK_TMDB_ID, itemType: 'tv',
+            episodeNumber: 1, audioType: 'dub', frontendTitle: ANIME_HEALTH_CHECK_TITLE, season: 1
+        });
+        if (!raw?.sources?.length) throw new Error('no sources in response');
+        logHealthStatus('[KaF Health] OK');
+        setProviderStatus('kaa', true);
+    } catch (err) {
+        logHealthStatus(`[KaF Health] FAILED: ${err.message}`);
+        setProviderStatus('kaa', false, err.message);
+    }
+}
+
+async function runNekoHealthCheck() {
+    try {
+        const epInfo = await resolveAnikotoEpisodeCached(ANIME_HEALTH_CHECK_TITLE, 1, 1);
+        const sources = await resolveNekoStreamSources({ serverToken: epInfo.serverToken, audio: 'dub', baseHeaders: epInfo.baseHeaders });
+        if (!sources?.stream) throw new Error('no stream in response');
+        logHealthStatus('[Neko Health] OK');
+        setProviderStatus('neko', true);
+    } catch (err) {
+        logHealthStatus(`[Neko Health] FAILED: ${err.message}`);
+        setProviderStatus('neko', false, err.message);
+    }
+}
+
+async function runRuAnimeHealthCheck() {
+    try {
+        const info = await resolveAnimegoAniboomCached(ANIME_HEALTH_CHECK_TITLE, 1, { malId: ANIME_HEALTH_CHECK_MAL_ID, tmdbId: ANIME_HEALTH_CHECK_TMDB_ID });
+        const translations = Array.isArray(info?.translations) ? info.translations.slice(0, 4) : [];
+        let streamUrl = null;
+        for (const t of translations) {
+            try {
+                streamUrl = await fetchAniboomStream(info.aniboomId, info.parentEncoded, 1, t.id);
+                if (streamUrl) break;
+            } catch (_) { /* try the next translation */ }
+        }
+        if (!streamUrl) throw new Error('no playable translation');
+        logHealthStatus('[RU-MV Anime Health] OK');
+        setProviderStatus('ruAnime', true);
+    } catch (err) {
+        logHealthStatus(`[RU-MV Anime Health] FAILED: ${err.message}`);
+        setProviderStatus('ruAnime', false, err.message);
+    }
+}
+
+async function runT1mHealthCheck() {
+    try {
+        const data = await fetchT1mSources('movie', T1M_HEALTH_CHECK_TMDB_ID, null, null);
+        if (!data?.manifest) throw new Error('no manifest in response');
+        logHealthStatus('[T1M Health] OK');
+        setProviderStatus('t1m', true);
+    } catch (err) {
+        logHealthStatus(`[T1M Health] FAILED: ${err.message}`);
+        setProviderStatus('t1m', false, err.message);
+    }
 }
 
 app.get('/api/movie-kino-log', async (req, res) => {
@@ -22656,6 +22844,23 @@ const server = app.listen(PORT, 'localhost', () => {
     console.log(`   Kinogo (RU-MV) health check: every ${KINOGO_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
     setInterval(runKinogoHealthCheck, KINOGO_HEALTH_CHECK_INTERVAL_MS);
     setTimeout(runKinogoHealthCheck, 8000);
+
+    // Anime provider + T1M health checks (feeds /api/public/provider-status, shown on
+    // apidocs.html's Server Status section) - staggered 20s apart for the same reason the four
+    // calls above are staggered at all: starting five real scrape/extraction chains in the same
+    // tick creates local resource contention and a burst-request pattern against several
+    // third-party targets at once, neither of which reflects whether a provider is actually up.
+    console.log(`   Anime/T1M provider health checks: every ${ANIME_HEALTH_CHECK_INTERVAL_MS / 60000}min`);
+    setInterval(runMegaplayHealthCheck, ANIME_HEALTH_CHECK_INTERVAL_MS);
+    setTimeout(runMegaplayHealthCheck, 20000);
+    setInterval(runKaaHealthCheck, ANIME_HEALTH_CHECK_INTERVAL_MS);
+    setTimeout(runKaaHealthCheck, 40000);
+    setInterval(runNekoHealthCheck, ANIME_HEALTH_CHECK_INTERVAL_MS);
+    setTimeout(runNekoHealthCheck, 60000);
+    setInterval(runRuAnimeHealthCheck, ANIME_HEALTH_CHECK_INTERVAL_MS);
+    setTimeout(runRuAnimeHealthCheck, 80000);
+    setInterval(runT1mHealthCheck, ANIME_HEALTH_CHECK_INTERVAL_MS);
+    setTimeout(runT1mHealthCheck, 100000);
 
     console.log(`   Finished-show schedule audit: every ${FINISHED_SHOW_AUDIT_INTERVAL_MS / 3600000}h`);
     setInterval(runFinishedShowScheduleAudit, FINISHED_SHOW_AUDIT_INTERVAL_MS);
