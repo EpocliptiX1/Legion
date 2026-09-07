@@ -11922,6 +11922,18 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         decoded = decryptProxyTarget(req.query.token);
         verifyProxySession(req, decoded);
         targetUrl = decoded.url;
+        // MegaPlay's CDN token was signed once, at whatever moment resolveMegaplaySourcesCached
+        // last ran (page-render time for the FIRST request in a chain) - baked as a static value
+        // into this proxy token from then on. Fine when the gap between minting and actual use
+        // is small (movieInfo's flow), but confirmed live (2026-09-07): /embed's own
+        // proof-of-work gate + fresh hls.js/Plyr script loading adds real, consistent delay
+        // before the browser ever uses this URL - by then the token had gone stale, a
+        // deterministic failure (not the CDN's usual burst-flakiness), and switching IPs (VPN)
+        // made no difference since it was never an IP problem. Re-signing here, at the moment
+        // the request actually arrives, closes the SAME gap resolveUri's own re-sign already
+        // closes for sub-resource URLs discovered inside a manifest (see that comment) - this is
+        // the one spot neither covered, the very first request in the chain.
+        if (hostNeedsMegaplaySigning(targetUrl)) targetUrl = signMegaplayCdnUrl(targetUrl);
         refererOverride = decoded.referer || undefined;
         decodedLeaseId = decoded.leaseId;
         forcePlaylist = !!decoded.forcePlaylist;
