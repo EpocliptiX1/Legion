@@ -799,3 +799,47 @@ as the cheap "last resort before a full persistent-browser relay" - if this does
 needle, the persistent-browser approach (one long-lived stealth Puppeteer tab, real segment
 relay through it, real engineering effort) remains the next real step, not yet started.
 
+**Retested from production after this fix: still `502 Bad Gateway`, same `manifestLoadError`.**
+Connection reuse did not change the outcome. Closing this investigation's live-testing for
+tonight per explicit user direction (see the decision below) - not chasing this further right
+now.
+
+==================================================================================================
+
+## Decision: MVP stays flagged down, no further building tonight
+
+Given to the user as three options: (1) leave MVP flagged down and move on, (2) build the
+persistent-browser-session relay now, (3) wait and retest later today. User's answer: option 1
+(leave it down), explicitly rejected option 3 ("no later, it's already late"), and asked for a
+clearer explanation of option 2 as context for a future session rather than building it tonight.
+
+**Where this actually stands, plainly:**
+- **Confirmed solid, real fixes, all verified working:** T1M (dead domain migration), Kino,
+  RU-MV (both movie/TV and anime), KaF, Neko - all 7 non-MVP/T1M-adjacent providers healthy.
+  MegaPlay's own encryption (AES) and CDN token signing (HMAC) are both correctly solved and
+  verified byte-exact - not in question, and worth keeping regardless of what happens with the
+  CDN block itself.
+- **Two real bugs found and fixed along the way, unrelated to the CDN block itself, still worth
+  having shipped:** the master-manifest-only signing gap (Follow-up 5) and the silent
+  HTTP-error-swallowing bug in `fetchUpstream` (Follow-up 6) - both would have caused real,
+  confusing failures (or worse, silently-corrupted playback) even once the CDN block itself is
+  eventually solved, so leaving them in place was correct regardless of tonight's outcome.
+- **Unsolved: cdn.imgnex.top rejects this backend's requests categorically** - not an IP
+  reputation issue (production's own real egress IP still gets 403/502, and the user's own
+  residential connection can watch megaplay.buzz fine via a plain iframe), not a request-
+  correctness issue (fully valid, freshly-signed tokens still get rejected), and not simply
+  "fresh connection every time" (a real, verified shared warm connection pool didn't change the
+  outcome either). What's left, by elimination: this most likely requires the actual browser
+  session context itself (JS execution, real navigation history, whatever Cloudflare/the origin
+  is scoring that a stateless HTTP client - however well-disguised - fundamentally cannot fake).
+- **Next real step, not started:** a persistent stealth-Puppeteer browser tab (using the
+  puppeteer-extra + stealth plugin already in this codebase, currently only used for Kino's
+  one-shot page-load fallback) kept alive long-term and used to relay real segment traffic for
+  many different users/requests, rather than launched fresh per request (ruled out early as too
+  expensive for this box's CPU budget) or per page-load (Kino's existing pattern - insufficient
+  here, per this whole investigation). Real engineering effort: the browser process itself,
+  health-checking/restart logic for when it inevitably gets flagged or crashes, and safely
+  routing many concurrent users' segment requests through one browser's network stack without
+  them blocking each other. Not scoped in detail yet - that's the honest starting point for
+  whenever this gets picked back up.
+
