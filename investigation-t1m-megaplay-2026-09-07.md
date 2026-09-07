@@ -602,3 +602,55 @@ than retrofitting every upstream axios call site later. Added purely inert scaff
 - No behavior change today (pool is empty) - confirmed via `node --check` only, this doesn't
   need a live test until real IPs exist to test with.
 
+==================================================================================================
+
+## Follow-up 5: real-world retest failed - a second bug found (unsigned sub-resource URLs)
+
+User restarted the backend themselves and tried Solo Leveling on MVP through the actual site.
+Symptom: loading spinner, Plyr attaches, never actually plays. Browser network panel: one
+`/api/m3u8-proxy` request (206, media, hls.js-initiated) succeeded, two subtitle `/api/proxy-stream`
+requests succeeded, then a `blob:` entry failed with 0 bytes. Backend terminal showed only the
+subtitle-track requests logged, nothing obviously wrong.
+
+**Root cause found by re-reading the manifest-rewrite code (`/api/m3u8-proxy`'s `isM3u8`
+branch):**
+```js
+const resolveUri = (uri) => new URL(uri, targetUrl).href;
+```
+This resolves a relative URI (e.g. a media-playlist or segment filename found inside a parent
+manifest) against `targetUrl` - but `new URL(relative, base)` does NOT carry the base URL's own
+query string over to the result. Every embedded URL from Follow-up 2/3's signed master.m3u8
+request (which correctly HAD `?token=...`) was being resolved to a version with NO token at all
+before being handed to the client - the master manifest itself was signed and worked, but
+everything the master manifest points to (the real media playlist, and by extension every real
+segment) was going out unsigned.
+
+**Fix applied:** `resolveUri` now re-signs any resolved URL whose host is in `GOT_SCRAPING_HOSTS`
+(currently just `cdn.imgnex.top`) via `signMegaplayCdnUrl`, reusing the same function from
+Follow-up 3. Since a media playlist is itself proxied back through this exact same `isM3u8`
+branch when the client requests it next, this recurses naturally and covers segment URLs too -
+one fix point for the whole chain (master -> media playlist -> segments).
+
+**Command (isolated test: the exact same relative-URL-resolve the old code did, vs. the fix,
+against a real captured master/media-playlist pair):**
+```js
+const resolved = new URL('index-f1-v1-a1.m3u8', masterUrl).href;   // OLD: no token
+const resigned = signMegaplayCdnUrl(resolved);                      // FIXED: re-signed
+```
+**Result: both returned `200` via got-scraping at the moment of testing** - inconclusive on
+whether missing signing is really what caused the user's specific failure, given the CDN's
+already-documented inconsistent/adaptive blocking behavior (Follow-up 1/2). Could not get a
+cleaner signal: this codebase's own anti-scraping nonce gate on `/api/anime-megaplay-log` blocks
+scripted end-to-end testing (confirmed: `403 {"error":"Missing resolve nonce"}` on a bare axios
+call, same protection encountered testing T1M earlier), and the Browser tool used throughout this
+investigation still can't reach `https://localhost:3000` (known limitation, unrelated to this bug).
+
+**Honest status:** the missing-token-on-sub-resources bug is real and fixed (confirmed via direct
+code reading, not just live-test inference) - unsigned requests to this CDN are fragile at best
+given everything else observed about it, so this needed fixing regardless of whether it was THE
+cause of this specific failed playback. Backend restarted with the fix (`node --check` clean).
+**Not yet confirmed against the user's original exact failure** - next step is the user retrying
+live and, if it still fails, sharing the browser console's own JS errors (hls.js logs a specific
+error code/reason on fatal failure) rather than just the network panel, which would pinpoint this
+far better than another round of guessing.
+

@@ -12046,7 +12046,24 @@ app.get('/api/m3u8-proxy', async (req, res) => {
             // Resolve against targetUrl (not just its directory) so domain-root-relative
             // paths (e.g. vidsrcme's "/pl/<hash>/index.m3u8") resolve correctly instead
             // of getting naively concatenated onto the directory prefix.
-            const resolveUri = (uri) => new URL(uri, targetUrl).href;
+            //
+            // MegaPlay's CDN (cdn.imgnex.top) needs its OWN signed ?token= on every single
+            // request, not just the one that arrived here (see signMegaplayCdnUrl's own
+            // comment) - a plain relative-URL resolve drops targetUrl's query string entirely
+            // (new URL() doesn't inherit it), so every media-playlist/segment URL discovered
+            // inside a master manifest was going out completely unsigned. Confirmed live: a
+            // real browser's own continuous session papered over this during earlier testing
+            // (its master-manifest fetch's validity extended to the same session's later
+            // requests), but this stateless per-request relay gets no such grace - the master
+            // manifest loaded fine, then every subsequent media-playlist/segment request 403'd,
+            // which is exactly "shows the player, never actually plays." Re-signing here (this
+            // recurses naturally: a media playlist is itself proxied through this same isM3u8
+            // branch, so its OWN embedded segment URLs get resolved+re-signed the same way)
+            // fixes every level of the chain from one place.
+            const resolveUri = (uri) => {
+                const resolved = new URL(uri, targetUrl).href;
+                return hostNeedsGotScraping(resolved) ? signMegaplayCdnUrl(resolved) : resolved;
+            };
             const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null, req.sessionId, decodedLeaseId, false, decoded.scope);
 
             const rewrittenM3u8 = response.data.split('\n').map(line => {
