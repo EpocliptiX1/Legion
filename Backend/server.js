@@ -19027,15 +19027,66 @@ function megaplayTrustEncrypt(obj) {
     return base64UrlEncode(Buffer.concat([cipher.update(JSON.stringify(obj), 'utf8'), cipher.final()]));
 }
 
+function megaplayTrustDecrypt(encB64url) {
+    const key = Buffer.alloc(32);
+    Buffer.from(MEGAPLAY_ENC_KEY_STR, 'utf8').copy(key);
+    const iv = Buffer.from(MEGAPLAY_ENC_IV_STR, 'utf8');
+    const b64 = String(encB64url).replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '===='.slice((b64.length + 3) % 4);
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+    const out = Buffer.concat([decipher.update(Buffer.from(padded, 'base64')), decipher.final()]);
+    return JSON.parse(out.toString('utf8'));
+}
+
+// enc_i - found in newclient.min.js's own bundle (2026-09-08): the REAL client sends its own
+// self-detected public IP (client-side, presumably WebRTC/STUN) as a second, independent signal
+// alongside whatever IP the connection physically arrives from (trustWatch's response echoes
+// that back as server_ip). A real, unproxied browser's self-reported IP and its actual connecting
+// IP naturally match; anything relayed through a proxy either can't produce a matching value or,
+// like our own heartbeat until now, sends nothing at all - about as clean a "this isn't a normal
+// browser" signal as it gets, and it lines up with days3/days7 always reading 0 (no persistent
+// identity ever established for their side to accumulate trust against). Algorithm confirmed
+// straight from their own minified bundle: XOR each character against a repeating key, then
+// base64url-encode - reused their own default key since nothing overrides it in the config this
+// site actually serves (confirmed live by decoding a real captured enc_i value back to a plain
+// IPv4). We can only ever honestly send OUR OWN real IP here - not some other value - since
+// sending anything that doesn't match the IP MegaPlay sees us connecting FROM (server_ip below)
+// would create exactly the mismatch this signal looks built to catch, which is strictly worse
+// than sending nothing.
+const MEGAPLAY_TRUST_ENC_KEY = 'MegaPlayTrustKey1';
+function encodeMegaplayTrustIp(ip) {
+    const key = MEGAPLAY_TRUST_ENC_KEY;
+    let xored = '';
+    for (let i = 0; i < ip.length; i++) {
+        xored += String.fromCharCode(ip.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+    }
+    return base64UrlEncode(Buffer.from(xored, 'binary'));
+}
+
 let megaplayTrustLastOkAt = null;
+// Learned from trustWatch's own response (server_ip) rather than an external IP-lookup service -
+// self-consistent by construction, and updates automatically if this box's outbound IP ever
+// changes. Null until the first successful heartbeat - matches the real client's own observed
+// behavior (its first-ever heartbeat also went out with no enc_i, only gaining one from the
+// second call onward once it had something to report).
+let megaplayTrustKnownIp = null;
 async function callMegaplayTrustWatch() {
     try {
-        const p = megaplayTrustEncrypt({ action: 'status' });
-        await axios.post(`${MEGAPLAY_ORIGIN}/stream/trustWatch`, { p }, {
+        const payload = { action: 'status' };
+        if (megaplayTrustKnownIp) payload.enc_i = encodeMegaplayTrustIp(megaplayTrustKnownIp);
+        const p = megaplayTrustEncrypt(payload);
+        const res = await axios.post(`${MEGAPLAY_ORIGIN}/stream/trustWatch`, { p }, {
             headers: { 'User-Agent': KINO_UA, 'Referer': `${MEGAPLAY_ORIGIN}/`, 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
             timeout: 10000
         });
         megaplayTrustLastOkAt = Date.now();
+        try {
+            const decoded = megaplayTrustDecrypt(res.data?.p);
+            if (decoded?.server_ip) megaplayTrustKnownIp = decoded.server_ip;
+        } catch (decodeErr) {
+            // Response shape changed or key rotated - heartbeat itself still succeeded (200), so
+            // don't treat this as a failure, just skip updating the learned IP this round.
+        }
     } catch (err) {
         console.warn('[MegaPlay] trustWatch heartbeat failed (CDN access may lapse):', err.message);
     }

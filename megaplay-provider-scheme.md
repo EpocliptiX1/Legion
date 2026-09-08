@@ -30,15 +30,31 @@ Clean reference doc. For the full messy reverse-engineering trail (dead ends inc
    NOT cover the media-playlist/segment URLs discovered inside it. Each one must be re-signed
    individually (same recipe, same dirPath, fresh timestamp).
 
-5. **Register your IP with `trustWatch` — this is the actual gate.**
+5. **Register your IP with `trustWatch` — necessary, but (2026-09-08 update) not the whole
+   gate.**
    `POST https://megaplay.buzz/stream/trustWatch`
-   Body: `{"p": "<encrypted>"}`, same AES-256-CBC key/IV as step 3, encrypting the JSON
-   `{"action":"status"}` before base64url-encoding it.
-   The response, once decrypted the same way, echoes back `server_ip` — literally your own
-   outbound IP. **This is a plain IP/session registration heartbeat.** Nothing before this in
-   the pipeline actually requires anything about the client (browser, TLS fingerprint, User-
-   Agent) — a completely plain HTTP client works fine, as long as this call has been made
-   recently for the requesting IP.
+   Body: `{"p": "<encrypted>"}`, same AES-256-CBC key/IV as step 3, encrypting a JSON object
+   before base64url-encoding it.
+   The response, once decrypted the same way, echoes back several fields - not just
+   `server_ip` (your own outbound IP): `is_enable` (bool), `td`/`days3`/`days7` (minutes-watched
+   counters), and a `rules` object shaped like a watch-time credit quota
+   (`full_7d_min`/`full_3d_min`/`soft_today_min`/`soft_session_min`/`ep_credit_min`). When
+   `is_enable` is `false`, the CDN 403s regardless of how correct everything else in this
+   pipeline is - confirmed live, repeatedly, including with a genuine browser-fingerprinted
+   client (`got-scraping`), which changed nothing. This is NOT a TLS-fingerprint/bot-detection
+   gate; it reads and behaves like an actual watch-time credit system.
+   The plaintext request also carries an **`enc_i` field** (found in `newclient.min.js`, their
+   own client bundle) once a prior heartbeat has returned a `server_ip` to reuse: the client's
+   own self-detected public IP (client-side, presumably WebRTC/STUN), XOR-encoded against the
+   literal key `"MegaPlayTrustKey1"` then base64url-encoded (`ye()` in their bundle - decoded a
+   real captured value back to a plain IPv4 to confirm). A real, unproxied browser's
+   self-reported IP naturally matches the IP the connection physically arrives from; a bare
+   heartbeat with no `enc_i` at all (what this codebase sent until 2026-09-08) is about as clean
+   a "not a normal browser" signal as it gets. Now sent on every heartbeat after the first,
+   using the IP `server_ip` last echoed back (the only value that can't create a mismatch).
+   **Confirmed this does NOT flip `is_enable` instantly** - the credit fields read as something
+   that accumulates over real elapsed time, not a switch a single correctly-shaped request
+   flips. Left running; whether it earns real trust over days is still open.
 
 6. **Fetch the signed CDN URL with a normal HTTP client.**
    No special client needed. Plain `axios`/`fetch`/`curl` all work identically, as long as step
@@ -63,9 +79,11 @@ Clean reference doc. For the full messy reverse-engineering trail (dead ends inc
 - `signMegaplayCdnUrl()` — step 4.
 - `decryptMegaplaySource()` — step 3, calls `signMegaplayCdnUrl()` before returning.
 - `fetchMegaplaySources()` — steps 1–2, calls `decryptMegaplaySource()` on the `enc` field.
-- `megaplayTrustEncrypt()` / `callMegaplayTrustWatch()` — step 5, run as a recurring
-  `setInterval` (every 20s) at server startup — ONE global heartbeat, not per-request, since
-  the trust is IP-scoped, not session-scoped.
+- `megaplayTrustEncrypt()` / `megaplayTrustDecrypt()` / `callMegaplayTrustWatch()` — step 5, run
+  as a recurring `setInterval` (every 20s) at server startup — ONE global heartbeat, not
+  per-request, since the trust is IP-scoped, not session-scoped. `callMegaplayTrustWatch()` now
+  also decrypts its own response (previously discarded) to learn `server_ip`, and
+  `encodeMegaplayTrustIp()` builds the `enc_i` field from it for the next heartbeat.
 - `resolveUri()` inside `/api/m3u8-proxy`'s manifest-rewrite logic — re-signs every
   media-playlist/segment URL discovered inside a manifest (step 4's "every URL needs its own
   token" requirement), recursing naturally since a media playlist is proxied through the same
