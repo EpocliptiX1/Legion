@@ -9832,6 +9832,35 @@ html.cc-bg-on .plyr__caption {
 .anime-download-panel__hsub {
     display: none;
 }
+/* VidV's own file list (#dlVidvaultRow) can carry a lot more buttons than every other row here
+   (up to ~5 file options plus one per subtitle language, 15+ total for a well-subbed episode) -
+   the shared .anime-download-panel__group column layout above reads fine for 3-5 buttons but
+   turns into an unreasonably long single-column list at that count, worse on mobile where the
+   whole panel is already narrow. Wraps into a real grid instead - fixed-column-count on mobile
+   (2 columns fits this panel's narrow width better than an auto-fill minmax that would still
+   collapse to 1 on a small viewport), auto-fill on wider screens.
+   dlVidvaultWrap itself spans the full row width (not chained to the other columns' narrower
+   flex-basis) since its own content needs the room. */
+#dlVidvaultWrap {
+    width: 100%;
+    flex: 1 1 100%;
+}
+#dlVidvaultRow.anime-download-panel__group {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 6px;
+}
+#dlVidvaultRow .audio-btn {
+    width: 100%;
+    white-space: normal;
+    line-height: 1.25;
+    padding: 8px 10px;
+}
+@media (max-width: 520px) {
+    #dlVidvaultRow.anime-download-panel__group {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
 .anime-download-panel__burn {
     min-width: 180px;
     max-width: 260px;

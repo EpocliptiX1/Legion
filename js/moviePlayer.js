@@ -4896,6 +4896,18 @@ document.addEventListener('DOMContentLoaded', function() {
         // no separate finalization step, no ffmpeg/compression on this device at all (the whole
         // point - an external downloader for when the device itself is too weak to mux/compress
         // an HLS stream reasonably).
+        // vidvault's own API is inconsistent about the shape of `size` per title/episode -
+        // confirmed live: sometimes a raw byte count ("110650662"), sometimes an already
+        // human-formatted string ("148.85 MB") for the exact same response. Never guess wrong
+        // into a literal "NaN MB" on screen - anything unparseable just shows no size at all.
+        function formatVidvaultSize(size) {
+            if (size == null || size === '') return '';
+            if (typeof size === 'string' && /[a-zA-Z]/.test(size)) return size; // already formatted, e.g. "148.85 MB"
+            const bytes = Number(size);
+            if (!Number.isFinite(bytes) || bytes <= 0) return '';
+            return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+        }
+
         let dlVidvaultLoadToken = 0;
         async function dlRenderVidvaultOptions() {
             const row = document.getElementById('dlVidvaultRow');
@@ -4924,9 +4936,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 for (const opt of data.options) {
                     const btn = document.createElement('button');
                     btn.className = 'audio-btn';
-                    const sizeLabel = typeof opt.size === 'string' && !opt.size.includes('MB')
-                        ? `${(Number(opt.size) / (1024 * 1024)).toFixed(0)} MB`
-                        : (opt.size || '');
+                    const sizeLabel = formatVidvaultSize(opt.size);
                     btn.textContent = `${opt.label}${sizeLabel ? ` (${sizeLabel})` : ''}`;
                     btn.addEventListener('click', () => {
                         // Setting location.href to our own download route (Content-Disposition:
@@ -4964,14 +4974,21 @@ document.addEventListener('DOMContentLoaded', function() {
             const qualityWrap = document.getElementById('dlQualityWrap');
             const langWrap = document.getElementById('dlLanguageWrap');
             const burnWrap = document.getElementById('dlBurnWrap');
+            const compressionWrap = document.getElementById('dlCompressionWrap');
             const vidvaultWrap = document.getElementById('dlVidvaultWrap');
             const goWrap = document.querySelector('.anime-download-panel__go');
             const isVidvault = dlSource === 'vidvault';
             // Kiwi links are picked by quality directly (no burn step, no per-server switch),
             // so quality still applies to it - it's everything else in this row that doesn't.
-            // VidV has none of these - its own button list IS the download, see dlVidvaultWrap.
+            // VidV has none of these - its own button list IS the download, see dlVidvaultWrap -
+            // including compression, which every other source here always showed regardless of
+            // source (pre-existing, out of scope here) but genuinely makes no sense for VidV:
+            // there's no ffmpeg step on our side at all for it, compressing would mean
+            // downloading the file just to re-encode it locally, defeating the entire point of
+            // an external downloader.
             if (qualityWrap) qualityWrap.style.display = isVidvault ? 'none' : 'block';
             if (burnWrap) burnWrap.style.display = (dlSource === 'external' || isVidvault) ? 'none' : 'block';
+            if (compressionWrap) compressionWrap.style.display = isVidvault ? 'none' : 'block';
             // RU-MV is a single Russian audio track - the whole app already hides the SUB/DUB
             // row for it (subDubToggleRow in updateSource) for the same reason.
             if (langWrap) langWrap.style.display = (dlSource === 'rumv' || isVidvault) ? 'none' : 'block';
@@ -5577,7 +5594,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvRuMovie', 'srvKino', 'srvT1mM', 'srvVrM']);
         const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvT1mTV', 'srvVrTv']);
-        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1']);
+        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1', 'srvVr1']);
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',
             animeTV: 'ⓘ Currently supports nearly all series and animes. Sub/dub switching may be unstable for most anime titles.',

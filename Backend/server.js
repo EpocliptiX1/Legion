@@ -19668,7 +19668,25 @@ app.get('/api/anime-vidvault-download', async (req, res) => {
         const picked = kind === 'subtitle' ? subtitles.find(s => s.id === optionId) : options.find(o => o.id === optionId);
         if (!picked?.url) throw new Error('That download option is no longer available - try again');
 
-        const upstream = await axios.get(picked.url, { responseType: 'stream', timeout: 30000 });
+        // vidvault's own file CDNs (bcdnw.hakunaymatata.com for MP4, the Cloudflare Workers for
+        // MKV) return a genuine, transient 429/403 on a real fraction of otherwise-identical
+        // requests - same character as MegaPlay's CDN (see megaplay-provider-scheme.md) rather
+        // than a hard per-download block. A few retries with light backoff covers that without
+        // making the user manually re-click.
+        let upstream, lastErr;
+        for (let attempt = 1; attempt <= 4; attempt++) {
+            try {
+                upstream = await axios.get(picked.url, { responseType: 'stream', timeout: 30000 });
+                lastErr = null;
+                break;
+            } catch (err) {
+                lastErr = err;
+                const status = err.response?.status;
+                if (!(status === 429 || status === 403 || !status || status >= 500) || attempt === 4) break;
+                await new Promise(resolve => setTimeout(resolve, Math.min(500 * attempt, 2000)));
+            }
+        }
+        if (lastErr) throw lastErr;
         const ext = kind === 'subtitle' ? 'srt' : (picked.format === 'mp4' ? 'mp4' : 'mkv');
         const safeLabel = String(picked.label || picked.lang || 'download').replace(/[^a-z0-9]+/gi, '_');
         res.setHeader('Content-Type', upstream.headers['content-type'] || (kind === 'subtitle' ? 'text/plain' : 'video/x-matroska'));
