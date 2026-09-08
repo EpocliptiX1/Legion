@@ -18067,16 +18067,31 @@ async function runMegaplayHealthCheck() {
         const data = await fetchMegaplaySources(ANIME_HEALTH_CHECK_MAL_ID, 1, 'dub');
         if (!data?.stream) throw new Error('no stream in response');
         // Actually fetch the resolved CDN URL, not just check that decrypt+sign produced one -
-        // this is the step every earlier version of this check skipped, so it kept reporting
-        // healthy through the entire trustWatch outage this session dug into. Cheap: one plain
-        // GET, same client every real request now uses (see fetchUpstream's own comment).
-        const cdnCheck = await axios.get(data.stream, {
-            headers: { 'User-Agent': KINO_UA, 'Referer': `${MEGAPLAY_ORIGIN}/` },
-            timeout: 15000, validateStatus: () => true
-        });
-        if (cdnCheck.status !== 200 || !String(cdnCheck.data).trim().startsWith('#EXTM3U')) {
-            throw new Error(`CDN fetch returned ${cdnCheck.status}, expected a real #EXTM3U manifest`);
+        // an earlier version of this check skipped this step, so it kept reporting healthy
+        // through the entire trustWatch outage that took a whole session to track down.
+        //
+        // Retries here too (up to 6, same as the real relay - see /api/m3u8-proxy's own
+        // MegaPlay-specific retry comment) - confirmed live (2026-09-08): this CDN's 403s come
+        // in bursts, not as a flat rate, and a single-attempt check landing on a bad moment was
+        // reporting "Down" on the status page for a whole 30min interval even while real viewers
+        // (who get the 6-attempt relay) were loading fine. Re-signs fresh each attempt, same as
+        // a real request would - a stale token from an earlier attempt is a different failure
+        // mode than the CDN's own flakiness and re-signing costs nothing to rule out.
+        let cdnCheck, lastErr;
+        for (let attempt = 1; attempt <= 6; attempt++) {
+            const url = attempt === 1 ? data.stream : signMegaplayCdnUrl(data.stream);
+            cdnCheck = await axios.get(url, {
+                headers: { 'User-Agent': KINO_UA, 'Referer': `${MEGAPLAY_ORIGIN}/` },
+                timeout: 15000, validateStatus: () => true
+            });
+            if (cdnCheck.status === 200 && String(cdnCheck.data).trim().startsWith('#EXTM3U')) {
+                lastErr = null;
+                break;
+            }
+            lastErr = new Error(`CDN fetch returned ${cdnCheck.status}, expected a real #EXTM3U manifest`);
+            if (attempt < 6) await new Promise(resolve => setTimeout(resolve, Math.min(500 * attempt, 2000)));
         }
+        if (lastErr) throw lastErr;
         logHealthStatus('[MVP/MegaPlay Health] OK');
         setProviderStatus('mega', true);
     } catch (err) {
@@ -18438,11 +18453,16 @@ app.get('/api/t1m-subtitle-vtt', async (req, res) => {
 // api.shows.st was Cloudflare-suspended zone-wide (confirmed live: every request, curl AND a
 // real Chromium browser alike, gets Cloudflare's own "Website Access Blocked - Terms of Service
 // violations" page for the zone "shows.st" - not a bot/WAF challenge, the zone itself is gone).
-// player.vidlove.cc (the actual player - see this section's own comment below) now points its
+// player.vidlove.cc (the actual player - see this section's own comment below) then pointed its
 // own pre-resolve script at api.tungtungtungtungsahur.app instead, same exact API shape
 // (?mode=json&sources=vidapi, same {source:{url,manifest}} response), confirmed live via a
 // DevTools capture of player.vidlove.cc/embed/movie/293660 - just a domain swap on their end.
-const T1M_ORIGIN = 'https://api.tungtungtungtungsahur.app';
+// That domain got zone-suspended too (2026-09-08, confirmed live: same "Website Access Blocked"
+// page on every path, not just this endpoint - identical pattern to shows.st above). Current
+// domain found the same way as before: player.vidlove.cc's own root page now references
+// api.vidlove.cc directly (their own primary domain, not a rotating throwaway subdomain this
+// time) - confirmed live, same API shape, real #EXTM3U manifest + subtitles for a real movie.
+const T1M_ORIGIN = 'https://api.vidlove.cc';
 const T1M_REFERER = 'https://player.vidlove.cc/';
 const t1mSourceCache = new Map(); // `${type}:${tmdbId}:${season}:${episode}` -> { data, resolvedAt }
 const T1M_CACHE_TTL_MS = 3 * 60 * 60 * 1000; // same order as Kino's own cache lifetime
