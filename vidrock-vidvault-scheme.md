@@ -88,13 +88,16 @@ file if you skip their UI and call the API directly.
     `{id, format, label, size}` - the real presigned URL is stripped server-side, never sent to
     the client) and `GET /api/anime-vidvault-download?id=...` (relays the real file with a
     proper `Content-Disposition: attachment` header). The download route always resolves FRESH
-    (bypasses the info route's own cache) right before the actual file fetch - MKV/MKV v2 links
-    can go stale within that cache's window, same class of bug MegaPlay's CDN token needed
-    fixing for. Verified live: real subtitle file downloaded end-to-end with correct headers.
-    **MP4 downloads are a known, unresolved limitation** - their real download URL requires
-    going through a Cloudflare Worker (`dl.gemlelispe.workers.dev`) that blocks every
-    non-browser client tested, TLS-fingerprint impersonation included - see the investigation
-    doc for the full trail. MKV/MKV v2/subtitles work through the direct relay as built.
+    (bypasses the info route's own cache) right before the actual file fetch. The actual file
+    fetch also needs a real `User-Agent`/`Referer` pair - it was going out with neither for a
+    while (axios' bare default UA reads as an obvious non-browser request to these
+    Cloudflare-fronted Workers), which was the real cause of MKV's own 403s, not staleness.
+    **MKV and MKV v2 are fully working, verified end-to-end** (byte-exact size, real EBML magic
+    bytes on the downloaded file). **MP4 downloads are a known, unresolved limitation** - their
+    real download URL requires going through a different Cloudflare Worker
+    (`dl.gemlelispe.workers.dev`) that blocks every non-browser client tested even WITH proper
+    headers, TLS-fingerprint impersonation included - see the investigation doc for the full
+    trail. Subtitles work fine too.
   - Frontend: a `VidV` button in `#dlSourceRow` alongside Kiwi. Unlike every other download
     source here (which pick a quality/language/burn config and hit ONE "Download" button),
     VidV's own list of already-complete files (MP4 at whatever resolutions this episode has,

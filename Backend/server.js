@@ -19675,15 +19675,19 @@ app.get('/api/anime-vidvault-download', async (req, res) => {
         const picked = kind === 'subtitle' ? subtitles.find(s => s.id === optionId) : options.find(o => o.id === optionId);
         if (!picked?.url) throw new Error('That download option is no longer available - try again');
 
-        // vidvault's own file CDNs (bcdnw.hakunaymatata.com for MP4, the Cloudflare Workers for
-        // MKV) return a genuine, transient 429/403 on a real fraction of otherwise-identical
-        // requests - same character as MegaPlay's CDN (see megaplay-provider-scheme.md) rather
-        // than a hard per-download block. A few retries with light backoff covers that without
-        // making the user manually re-click.
+        // This request was going out with NO headers at all - no User-Agent, no Referer - a
+        // dead giveaway non-browser request to any Cloudflare-fronted CDN, and confirmed live
+        // (2026-09-08) to be the real cause of MKV's own 403s: the exact same URL succeeded
+        // immediately via a plain curl carrying a normal browser User-Agent + Referer, then
+        // 403'd through this route seconds later with neither set. Not upstream flakiness at
+        // all for MKV specifically - just an obvious omission here. (MP4's own block is
+        // separate and confirmed real regardless of headers - see this section's own comment
+        // further up and the investigation doc's MP4 Worker findings.)
+        const fileHeaders = { 'User-Agent': KINO_UA, 'Referer': VIDVAULT_REFERER };
         let upstream, lastErr;
         for (let attempt = 1; attempt <= 4; attempt++) {
             try {
-                upstream = await axios.get(picked.url, { responseType: 'stream', timeout: 30000 });
+                upstream = await axios.get(picked.url, { responseType: 'stream', timeout: 30000, headers: fileHeaders });
                 lastErr = null;
                 break;
             } catch (err) {

@@ -304,3 +304,51 @@ link and actually using it, same fix class as MegaPlay's Follow-up 5.
 just a mitigation). MP4 remains a known limitation - needs either a real persistent-browser
 relay (unverified whether that would even clear this specific Worker's check) or accepting it
 as unavailable through this codebase for now.
+
+==================================================================================================
+
+## Follow-up: MKV's real cause was much simpler - a missing-headers bug in our own code
+
+User retested: MKV still `403`, one path still `429`. The cache-freshness fix above was real and
+worth having, but wasn't the actual cause of MKV's failures.
+
+**Command (the decisive test - fetch the EXACT same URL our backend had just failed on, via
+plain curl with normal headers, seconds later):**
+```bash
+curl -D - -o out.mkv "https://mkv.wt1zl0r2ox.workers.dev/d/<id>" \
+  -A "Mozilla/5.0 ... Chrome/120.0.0.0 Safari/537.36" -H "Referer: https://vidvault.ru/"
+```
+**Result: `200 OK`, real 63.9MB file, correct `Content-Disposition`.** The URL itself was
+completely fine, immediately, no waiting. So the earlier "cached/stale" theory was wrong for
+this specific failure - something in OUR OWN relay was different from a plain curl call.
+
+**Found it by re-reading the actual fetch:**
+```js
+upstream = await axios.get(picked.url, { responseType: 'stream', timeout: 30000 });
+```
+**No `headers` object at all.** No User-Agent, no Referer - axios' bare default User-Agent
+string (`axios/x.x.x`) on a request to a Cloudflare-fronted Worker, which is exactly the kind of
+obviously-non-browser signature that gets flagged. Every one of this file's OTHER upstream fetch
+calls sets at least a `User-Agent`/`Referer` pair - this one route simply never did.
+
+**Fix:** added `headers: { 'User-Agent': KINO_UA, 'Referer': VIDVAULT_REFERER }` to the actual
+file-fetch call in `/api/anime-vidvault-download`.
+
+**Command (verification through the real running backend, not a standalone script):**
+```bash
+curl "https://localhost:3000/api/anime-vidvault-download?tmdbId=37854&season=1&episode=1&id=mkv-0"
+curl "...&id=mkv-v2"
+```
+**Result: both `200`, byte-exact `Content-Length` match (63,914,789 and 156,076,253 respectively),
+real EBML magic bytes (`1A 45 DF A3`) confirmed on both downloaded files - genuinely valid MKVs,
+not truncated or corrupted.**
+
+**Correcting the record:** the earlier "MKV links can go stale" theory was a real, defensible
+fix on its own merits (matches a real pattern seen elsewhere this project), but it was NOT what
+was actually breaking MKV downloads for the user - this missing-headers bug was. Worth keeping
+both fixes; the caching one just wasn't the one that mattered here.
+
+**Status: MKV and MKV v2 fully fixed and verified working end-to-end.** MP4 remains the one
+known, unresolved limitation (the Cloudflare Worker JS-challenge block documented above,
+unrelated to this headers bug - MP4's own code path was never missing headers, it fails even
+with them).
