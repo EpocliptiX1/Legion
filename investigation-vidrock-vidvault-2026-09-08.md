@@ -220,8 +220,87 @@ service focused purely on direct-download links rather than streaming.
 
 ==================================================================================================
 
-## Status
+## Status (initial)
 
 Both providers fully reverse-engineered and verified live, end-to-end, real content confirmed for
 both. Implementation (backend resolver functions + frontend UI wiring) tracked separately - see
 commit history from 2026-09-08 for what actually shipped.
+
+==================================================================================================
+
+## Follow-up: MP4 downloads genuinely blocked, MKV v2 was a caching bug - two separate problems
+
+User reported after real-world testing: MKV v2 gave a `403`, everything else (MP4, other MKV)
+gave `429` - "unless it's the sub file", which always worked. My first assumption (IP-level rate
+limiting, per the MegaPlay precedent) was wrong: user loaded `https://vidvault.ru/tv/127532/1/1`
+directly on their own connection with zero issues - ruling out IP reputation entirely, same
+"wrong assumption" shape as MegaPlay's early theories, just caught faster this time.
+
+**Command (re-reading vidvault's own bundle for how a real download click actually builds the
+URL, instead of assuming the raw `download-proxy` response field IS the download URL):**
+```bash
+grep -oE '.{300}\.mp4Data.{400}' vidvault_bundle.js
+```
+**Result - the real client-side logic, verbatim:**
+```js
+if (k?.downloads) for (const N of k.downloads) N.size && N.url && s.push({
+  ..., url: `${Bo}/${encodeURIComponent(N.url)}?n=${a}`   // Bo = "https://dl.gemlelispe.workers.dev"
+});
+if (k?.captions) { ... url: `${nC}/?url=${encodeURIComponent($.url)}&title=${...}` }  // nC = sub worker
+// mkvData.files[0].url and mkvV2Data.url are used DIRECTLY, no wrapping
+```
+**MP4 downloads route through a Cloudflare Worker relay** (`dl.gemlelispe.workers.dev`), not the
+raw `bcdnw.hakunaymatata.com` URL - the actual API response field was never meant to be fetched
+directly. Subtitles route through a different worker too, though the raw URL already worked fine
+standalone in earlier testing (worker likely optional/cosmetic there, or subtitles just aren't as
+strictly gated). MKV and MKV v2 are used as-is by their own frontend, matching what this codebase
+already does.
+
+**Command (testing the real MP4 flow through the Worker):**
+```js
+const workerUrl = `https://dl.gemlelispe.workers.dev/${encodeURIComponent(rawUrl)}?n=${title}`;
+```
+**Result: `427 Forbidden`** (a non-standard code, clearly the Worker's own custom response) -
+progress (past the plain 429 the raw URL gave), but still blocked.
+
+**Command (systematically ruling out every HTTP-layer explanation):**
+- Exact page Referer (`/tv/127532/1/1`, not just `/`) - still 427.
+- Full `Sec-Fetch-Site`/`Sec-Fetch-Mode`/`Sec-Fetch-Dest`/`Sec-Fetch-User` navigation headers,
+  manually set - still 427.
+- A completely fresh URL, single attempt, zero prior testing on it - still 427 (rules out
+  replay-detection on a reused token).
+- **`got-scraping` (TLS/HTTP2 fingerprint impersonation - the exact tool that solved MegaPlay's
+  CDN block) - still 427.** This is the key finding: unlike MegaPlay, no HTTP-layer trick gets
+  past this Worker, including the one that worked for a near-identical-looking problem last
+  session. Reads as an actual Cloudflare JS challenge (real JS execution required, not just
+  request shape/TLS fingerprint) - a materially different, harder class of block than anything
+  else encountered this week.
+
+**Decision (with the user): do not chase MP4 further right now.** Explicitly declined rebuilding
+a persistent-browser relay for this specific case given the cost/uncertain payoff (every
+HTTP-layer trick already failed, including the one MegaPlay needed - no strong reason to expect
+even a real browser session would fare differently without testing it, and that's real
+engineering time). MP4 stays as a known, flagged limitation for now.
+
+**Command (re-investigating MKV v2's `403`/`404` instead, on the user's correction that it's a
+separate issue - their own site was also slow/inconsistent for that specific episode):**
+```bash
+curl "https://mkv2.<hash>.workers.dev/d/<id>" -H "Referer: https://vidvault.ru/"
+```
+**Result: `404`, body `"Invalid or expired download link"`.** A genuine, honest error - not a
+bot-block shape at all. Confirmed the underlying `download-proxy` response is CACHED on
+vidvault's own side (`cached: true`, identical `sign`/`t` values across repeated calls) - meaning
+this specific link had already been sitting stale for a while by the time anything fetched it,
+matching the exact same "signed URL goes stale before actual use" bug MegaPlay's own CDN token
+needed fixing for.
+
+**Fix applied:** `/api/anime-vidvault-download` now calls `fetchVidvaultDownloadInfo` directly
+(bypassing `resolveVidvaultDownloadInfoCached`'s 30-minute cache) right before the actual file
+fetch - `/api/anime-vidvault-info` (just for listing what's available) keeps the cached version,
+since a stale LIST isn't harmful the way a stale FILE URL is. Minimizes the gap between minting a
+link and actually using it, same fix class as MegaPlay's Follow-up 5.
+
+**Status:** MKV/MKV v2/subtitles should now be meaningfully more reliable (real bug fixed, not
+just a mitigation). MP4 remains a known limitation - needs either a real persistent-browser
+relay (unverified whether that would even clear this specific Worker's check) or accepting it
+as unavailable through this codebase for now.

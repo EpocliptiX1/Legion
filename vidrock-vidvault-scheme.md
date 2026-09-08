@@ -51,10 +51,16 @@ file if you skip their UI and call the API directly.
    - `mkvV2Data` → a single object (not an array) `{size, quality, language, country, url}` —
      "MKV v2 Downloads (Embedded Subtitles)".
 
-   Every `url` in every category above is **already directly fetchable** the moment
-   `download-proxy` returns it — no decryption (unlike vidrock), no further signing. The
-   token/proxy dance exists only to generate these links server-side, not to gate the files
-   themselves.
+   MKV and MKV v2 URLs are **directly fetchable** as-is (matches their own frontend). **MP4 is
+   not** — their own frontend routes it through a Cloudflare Worker relay instead:
+   `https://dl.gemlelispe.workers.dev/{encodeURIComponent(rawUrl)}?n={title}`. That Worker
+   blocks every non-browser client tested (plain requests, exact headers, TLS/HTTP2 fingerprint
+   impersonation via `got-scraping`) with a `427` — genuinely different from MegaPlay's block,
+   looks like a real Cloudflare JS challenge rather than anything spoofable at the HTTP layer.
+   **MP4 downloads are a known, unresolved limitation** as of 2026-09-08 — not attempted further
+   given the cost/uncertain payoff (see the investigation doc's own Follow-up section).
+   Subtitles route through their own worker too but the raw URL already worked fine directly in
+   testing.
 
 ## What got built (2026-09-08)
 
@@ -81,10 +87,14 @@ file if you skip their UI and call the API directly.
     `flattenVidvaultOptions` + `GET /api/anime-vidvault-info` (returns a flat list of
     `{id, format, label, size}` - the real presigned URL is stripped server-side, never sent to
     the client) and `GET /api/anime-vidvault-download?id=...` (relays the real file with a
-    proper `Content-Disposition: attachment` header). Verified live: real subtitle file
-    downloaded end-to-end with correct headers; video-file verification hit this session's own
-    accumulated rate-limiting on vidvault's CDN (confirmed independently, not a code bug - see
-    the investigation doc).
+    proper `Content-Disposition: attachment` header). The download route always resolves FRESH
+    (bypasses the info route's own cache) right before the actual file fetch - MKV/MKV v2 links
+    can go stale within that cache's window, same class of bug MegaPlay's CDN token needed
+    fixing for. Verified live: real subtitle file downloaded end-to-end with correct headers.
+    **MP4 downloads are a known, unresolved limitation** - their real download URL requires
+    going through a Cloudflare Worker (`dl.gemlelispe.workers.dev`) that blocks every
+    non-browser client tested, TLS-fingerprint impersonation included - see the investigation
+    doc for the full trail. MKV/MKV v2/subtitles work through the direct relay as built.
   - Frontend: a `VidV` button in `#dlSourceRow` alongside Kiwi. Unlike every other download
     source here (which pick a quality/language/burn config and hit ONE "Download" button),
     VidV's own list of already-complete files (MP4 at whatever resolutions this episode has,

@@ -19663,7 +19663,14 @@ app.get('/api/anime-vidvault-download', async (req, res) => {
     const kind = req.query.kind === 'subtitle' ? 'subtitle' : 'video';
     if (!tmdbId || !optionId) return res.status(400).json({ ok: false, error: 'tmdbId and id are required' });
     try {
-        const raw = await resolveVidvaultDownloadInfoCached('tv', tmdbId, season, episode);
+        // Deliberately NOT the cached resolver here (unlike /api/anime-vidvault-info, which is
+        // fine reusing a stale list just to LIST what's available) - confirmed live (2026-09-08):
+        // at least MKV v2 links can genuinely go stale/not-ready within the same window this
+        // cache would otherwise serve them from ("Invalid or expired download link", a real,
+        // honest 404 from their own CDN - not a bot block). Always resolving fresh right before
+        // the actual file fetch keeps the gap between minting and using a link as small as
+        // possible, same fix MegaPlay's own token needed for the exact same reason.
+        const raw = await fetchVidvaultDownloadInfo('tv', tmdbId, season, episode);
         const { options, subtitles } = flattenVidvaultOptions(raw);
         const picked = kind === 'subtitle' ? subtitles.find(s => s.id === optionId) : options.find(o => o.id === optionId);
         if (!picked?.url) throw new Error('That download option is no longer available - try again');
