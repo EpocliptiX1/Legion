@@ -18212,6 +18212,135 @@ app.get('/api/tv-kino-log', async (req, res) => {
     }
 });
 
+// --- VidRock (vidrock.net) - new movie/TV server, entirely separate from Kino/T1M/MegaPlay ---
+// Own API, own CDN, own crypto - confirmed live (2026-09-08) via their own JS bundle, no shared
+// infrastructure with anything else in this file. See vidrock-vidvault-scheme.md for the clean
+// writeup, investigation-vidrock-vidvault-2026-09-08.md for the full reverse-engineering trail.
+//
+// GET https://vidrock.net/api/movie/{tmdbId} or /tv/{tmdbId}/{season}/{episode} returns one
+// entry per named server (Nova/Atlas/Luna/Orion/Astra seen so far, varies by title):
+//   { "<name>": { url: "<AES-256-GCM ciphertext, base64url>", language, flag, type: "hls"|"mp4" } }
+// or { url: null, type: null } for a server with nothing for this title - not an error.
+const VIDROCK_ORIGIN = 'https://vidrock.net';
+const VIDROCK_REFERER = 'https://vidrock.net/';
+// Static key, found in plaintext in vidrock's own client bundle (assets/index-*.js) - decodes
+// via hex, not base64. Decoded url = IV(12 bytes) + AES-256-GCM ciphertext + authTag(16 bytes).
+const VIDROCK_AES_KEY_HEX = '7f3e9c2a8b5d1f4e6a9c3b7d2e5f8a1c4b6d9e2f5a8c1b4d7e9f2a5c8b1d4e7f';
+
+function decryptVidrockUrl(encoded) {
+    const b64 = String(encoded).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = Buffer.from(b64 + '='.repeat((4 - b64.length % 4) % 4), 'base64');
+    if (raw.length < 28) throw new Error('VidRock ciphertext too short');
+    const key = Buffer.from(VIDROCK_AES_KEY_HEX, 'hex');
+    const iv = raw.subarray(0, 12);
+    const authTag = raw.subarray(raw.length - 16);
+    const ciphertext = raw.subarray(12, raw.length - 16);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(authTag);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+}
+
+// Resolves every server VidRock offers for a title, decrypted, in whatever order their API
+// returned them - null/no-source servers filtered out. Caller picks which one to actually use
+// (currently: first hls server, falling back to first mp4 - see resolveVidrockBestSource).
+async function resolveVidrockServers(type, tmdbId, season, episode) {
+    const path = type === 'tv' ? `tv/${tmdbId}/${season}/${episode}` : `movie/${tmdbId}`;
+    const res = await axios.get(`${VIDROCK_ORIGIN}/api/${path}`, {
+        headers: { 'User-Agent': KINO_UA, 'Referer': VIDROCK_REFERER },
+        timeout: 15000
+    });
+    const servers = [];
+    for (const [name, entry] of Object.entries(res.data || {})) {
+        if (!entry || typeof entry !== 'object' || !entry.url) continue;
+        try {
+            servers.push({ name, url: decryptVidrockUrl(entry.url), type: entry.type, language: entry.language || null });
+        } catch (err) {
+            console.warn(`[VidRock] Failed to decrypt server "${name}":`, err.message);
+        }
+    }
+    return servers;
+}
+
+// One default pick for the plain VR server button - prefers hls (matches how every other
+// provider here serves an HLS master playlist through /api/m3u8-proxy) over mp4. VidRock offers
+// several named servers per title (kept in mind for a future multi-server picker, same idea as
+// the site's own multi-server UI elsewhere) - resolveVidrockServers above already returns the
+// full list for whenever that's worth surfacing; this just isn't that yet.
+async function resolveVidrockBestSource(type, tmdbId, season, episode) {
+    const servers = await resolveVidrockServers(type, tmdbId, season, episode);
+    if (!servers.length) throw new Error('VidRock has no server for this title');
+    const hls = servers.find(s => s.type === 'hls');
+    return hls || servers[0];
+}
+
+app.get('/api/movie-vr-log', async (req, res) => {
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    if (!tmdbId) return res.status(400).json({ ok: false, error: 'tmdbId is required' });
+    try {
+        const source = await resolveVidrockBestSource('movie', tmdbId, null, null);
+        return res.json({
+            ok: true,
+            stream: buildM3u8ProxyUrl(source.url, VIDROCK_REFERER, req.sessionId),
+            server: source.name
+        });
+    } catch (err) {
+        console.error('[VidRock] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: 'Stream unavailable' });
+    }
+});
+
+app.get('/api/tv-vr-log', async (req, res) => {
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    const season = parseInt(req.query.season || '1', 10);
+    const episode = parseInt(req.query.episode || req.query.ep || '1', 10);
+    if (!tmdbId) return res.status(400).json({ ok: false, error: 'tmdbId is required' });
+    try {
+        const source = await resolveVidrockBestSource('tv', tmdbId, season, episode);
+        return res.json({
+            ok: true,
+            stream: buildM3u8ProxyUrl(source.url, VIDROCK_REFERER, req.sessionId),
+            server: source.name
+        });
+    } catch (err) {
+        console.error('[VidRock TV] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: 'Stream unavailable' });
+    }
+});
+
+// VidRock offers anime too - keyed the same way as its regular TV entries (plain TMDB
+// id/season/episode, no MAL id involved), so this is the same resolver as /api/tv-vr-log above,
+// just under the anime naming convention this codebase's other anime routes use and with the
+// same skip-intro/outro lookup those routes already carry (title/season/episode-keyed, not
+// provider-specific, same as /api/anime-new-log's own skipSegments).
+app.get('/api/anime-vr-log', async (req, res) => {
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    const rawTitle = req.query.title || '';
+    const season = parseInt(req.query.season || '1', 10);
+    const episode = parseInt(req.query.episode || req.query.ep || '1', 10);
+    if (!tmdbId) return res.status(400).json({ ok: false, error: 'tmdbId is required' });
+
+    let skipSegments = [];
+    try {
+        skipSegments = await getAnimeSkipTimestamps({ title: rawTitle, season, episode });
+    } catch (skipErr) {
+        console.warn('[AnimeSkip] VidRock skip lookup failed:', skipErr.message || skipErr);
+    }
+    skipSegments = Array.isArray(skipSegments) ? skipSegments : [];
+
+    try {
+        const source = await resolveVidrockBestSource('tv', tmdbId, season, episode);
+        return res.json({
+            ok: true,
+            stream: buildM3u8ProxyUrl(source.url, VIDROCK_REFERER, req.sessionId),
+            server: source.name,
+            skipSegments
+        });
+    } catch (err) {
+        console.error('[VidRock Anime] Error:', err.message);
+        return res.status(err.status || 500).json({ ok: false, error: 'Stream unavailable' });
+    }
+});
+
 // --- Kino subtitles (OpenSubtitles, via the same lookup vidsrcme's own player uses) ---
 // vidsrcme's client-side subtitles.js doesn't pull captions from the encrypted
 // stream_urls/WASM path at all -- it does its own independent lookup: grab the
@@ -19428,6 +19557,126 @@ app.get('/api/anime-megaplay-download', async (req, res) => {
         });
     } catch (err) {
         console.error('[MegaPlay Download] Error:', err.message);
+        if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
+        else res.end();
+    }
+});
+
+// --- VidVault (vidvault.ru) - direct MP4/MKV downloads, no HLS muxing needed ------------------
+// Unlike every download route above (which has to fetch a master playlist, pick a variant, then
+// stitch every .ts segment together server-side), vidvault hands back an already-complete,
+// presigned, directly-fetchable file per quality/format - see vidrock-vidvault-scheme.md for the
+// full shape. This is the "external downloader" the user asked for specifically to avoid
+// client-side ffmpeg muxing being the bottleneck on weaker devices - the file IS the download,
+// no transcoding step on either side.
+const VIDVAULT_ORIGIN = 'https://vidvault.ru';
+const VIDVAULT_REFERER = 'https://vidvault.ru/';
+const vidvaultDownloadCache = new Map(); // `${type}:${tmdbId}:${season}:${episode}` -> { data, resolvedAt }
+const VIDVAULT_CACHE_TTL_MS = 30 * 60 * 1000; // presigned URLs are time-limited - shorter than a typical resolve cache
+
+async function fetchVidvaultDownloadInfo(type, tmdbId, season, episode) {
+    const tokenRes = await axios.get(`${VIDVAULT_ORIGIN}/api/get-token`, {
+        headers: { 'User-Agent': KINO_UA, 'Referer': VIDVAULT_REFERER },
+        timeout: 15000
+    });
+    const token = tokenRes.data?.t;
+    if (!token) throw new Error('VidVault returned no request token');
+    const res = await axios.post(`${VIDVAULT_ORIGIN}/api/download-proxy`,
+        { type, tmdbId, season, episode },
+        {
+            headers: { 'User-Agent': KINO_UA, 'Referer': VIDVAULT_REFERER, 'Content-Type': 'application/json', 'x-request-token': token },
+            timeout: 20000
+        }
+    );
+    return res.data;
+}
+
+function resolveVidvaultDownloadInfoCached(type, tmdbId, season, episode) {
+    const key = `${type}:${tmdbId}:${season}:${episode}`;
+    const cached = vidvaultDownloadCache.get(key);
+    if (cached && (Date.now() - cached.resolvedAt) < VIDVAULT_CACHE_TTL_MS) return Promise.resolve(cached.data);
+    return fetchVidvaultDownloadInfo(type, tmdbId, season, episode).then(data => {
+        vidvaultDownloadCache.set(key, { data, resolvedAt: Date.now() });
+        return data;
+    });
+}
+
+// Flattens vidvault's three independent response shapes (mp4Data/mkvData/mkvV2Data, each with
+// its own field layout - confirmed live, see the investigation doc) into one list the frontend
+// can render as plain buttons, each with a stable `id` this file's own download route below can
+// look back up without re-exposing the real presigned URL to the client at any point.
+function flattenVidvaultOptions(raw) {
+    const options = [];
+    const mp4Downloads = raw?.mp4Data?.downloadInfo?.data?.downloads;
+    if (Array.isArray(mp4Downloads)) {
+        for (const d of mp4Downloads) {
+            if (!d?.url) continue;
+            options.push({ id: `mp4-${d.resolution}`, format: 'mp4', label: `MP4 ${d.resolution}p`, size: d.size, url: d.url });
+        }
+    }
+    const mkvFiles = raw?.mkvData?.files;
+    if (Array.isArray(mkvFiles)) {
+        mkvFiles.forEach((f, i) => {
+            if (!f?.url) return;
+            options.push({ id: `mkv-${i}`, format: 'mkv', label: 'MKV (embedded subs)', size: f.size, url: f.url });
+        });
+    }
+    if (raw?.mkvV2Data?.url) {
+        const v2 = raw.mkvV2Data;
+        options.push({ id: 'mkv-v2', format: 'mkv-v2', label: `MKV v2${v2.quality ? ' ' + v2.quality : ''} (embedded subs)`, size: v2.size, url: v2.url });
+    }
+    const captions = raw?.mp4Data?.downloadInfo?.data?.captions;
+    const subtitles = Array.isArray(captions)
+        ? captions.filter(c => c?.url).map(c => ({ id: `sub-${c.lan}`, lang: c.lan, label: c.lanName || c.lan, size: c.size, url: c.url }))
+        : [];
+    return { options, subtitles };
+}
+
+app.get('/api/anime-vidvault-info', async (req, res) => {
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    const season = parseInt(req.query.season || '1', 10);
+    const episode = parseInt(req.query.episode || req.query.ep || '1', 10);
+    if (!tmdbId) return res.status(400).json({ ok: false, error: 'tmdbId is required' });
+    try {
+        const raw = await resolveVidvaultDownloadInfoCached('tv', tmdbId, season, episode);
+        const { options, subtitles } = flattenVidvaultOptions(raw);
+        if (!options.length) throw new Error('VidVault has no downloads for this episode');
+        // Strip the real presigned url out of what the client sees - only `id` goes out, the
+        // frontend requests the actual file through /api/anime-vidvault-download below by id.
+        // The whole point of this feature is a clean one-click download through OUR OWN domain;
+        // handing the real vidvault/CDN URL straight to the browser here would undermine that
+        // (bypasses our own Content-Disposition/filename handling, and exposes their upstream
+        // infra directly instead of only from server-side code).
+        const strip = ({ url, ...rest }) => rest;
+        res.json({ ok: true, options: options.map(strip), subtitles: subtitles.map(strip) });
+    } catch (err) {
+        console.error('[VidVault Info] Error:', err.message);
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+app.get('/api/anime-vidvault-download', async (req, res) => {
+    const tmdbId = req.query.tmdbId ? parseInt(req.query.tmdbId, 10) : null;
+    const season = parseInt(req.query.season || '1', 10);
+    const episode = parseInt(req.query.episode || req.query.ep || '1', 10);
+    const optionId = String(req.query.id || '');
+    const kind = req.query.kind === 'subtitle' ? 'subtitle' : 'video';
+    if (!tmdbId || !optionId) return res.status(400).json({ ok: false, error: 'tmdbId and id are required' });
+    try {
+        const raw = await resolveVidvaultDownloadInfoCached('tv', tmdbId, season, episode);
+        const { options, subtitles } = flattenVidvaultOptions(raw);
+        const picked = kind === 'subtitle' ? subtitles.find(s => s.id === optionId) : options.find(o => o.id === optionId);
+        if (!picked?.url) throw new Error('That download option is no longer available - try again');
+
+        const upstream = await axios.get(picked.url, { responseType: 'stream', timeout: 30000 });
+        const ext = kind === 'subtitle' ? 'srt' : (picked.format === 'mp4' ? 'mp4' : 'mkv');
+        const safeLabel = String(picked.label || picked.lang || 'download').replace(/[^a-z0-9]+/gi, '_');
+        res.setHeader('Content-Type', upstream.headers['content-type'] || (kind === 'subtitle' ? 'text/plain' : 'video/x-matroska'));
+        res.setHeader('Content-Disposition', `attachment; filename="anime_${tmdbId}_s${season}e${episode}_${safeLabel}.${ext}"`);
+        if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
+        upstream.data.pipe(res);
+    } catch (err) {
+        console.error('[VidVault Download] Error:', err.message);
         if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
         else res.end();
     }
