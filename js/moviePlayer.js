@@ -1778,6 +1778,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     <button class="audio-btn" data-dl-source="kaa">KaF</button>
                                     <button class="audio-btn" data-dl-source="megaplay">MVP</button>
                                     <button class="audio-btn" data-dl-source="rumv">RU-MV</button>
+                                    <button class="audio-btn" data-dl-source="vr">VR</button>
                                     <button class="audio-btn" data-dl-source="external">Kiwi (Direct MP4)</button>
                                     <button class="audio-btn" data-dl-source="vidvault">VidV</button>
                                 </div>
@@ -4661,7 +4662,11 @@ document.addEventListener('DOMContentLoaded', function() {
             kaa:      { server: 'srvPahe1', provider: 'kickassanime', fn: 'downloadKAAEpisode' },
             megaplay: { server: 'srvMega1', provider: 'megaplay',     fn: 'downloadKinoEpisode' },
             neko:     { server: 'srvNeko1', provider: 'nekostream',   fn: 'downloadKinoEpisode' },
-            rumv:     { server: 'srvNew1',  provider: 'newstream',    fn: 'downloadKAAEpisode' }
+            rumv:     { server: 'srvNew1',  provider: 'newstream',    fn: 'downloadKAAEpisode' },
+            // VidRock (VR) - same shape as MegaPlay/NekoStream: audio+video already muxed into
+            // one HLS variant, no separate #EXT-X-MEDIA audio track to pick (loadVrAnimeVideo
+            // sets provider: 'vidrock', borrows KaF's subtitles the same way MegaPlay/Neko do).
+            vr:       { server: 'srvVr1',   provider: 'vidrock',      fn: 'downloadKinoEpisode' }
         };
 
         const dlPanel = document.getElementById('animeDownloadPanel');
@@ -5001,9 +5006,10 @@ document.addEventListener('DOMContentLoaded', function() {
             if (qualityWrap) qualityWrap.style.display = isVidvault ? 'none' : 'block';
             if (burnWrap) burnWrap.style.display = (dlSource === 'external' || isVidvault) ? 'none' : 'block';
             if (compressionWrap) compressionWrap.style.display = isVidvault ? 'none' : 'block';
-            // RU-MV is a single Russian audio track - the whole app already hides the SUB/DUB
-            // row for it (subDubToggleRow in updateSource) for the same reason.
-            if (langWrap) langWrap.style.display = (dlSource === 'rumv' || isVidvault) ? 'none' : 'block';
+            // RU-MV and VR are both single-audio-track sources (Russian dub / "original" resp.)
+            // - the whole app already hides the SUB/DUB row for both (subDubToggleRow in
+            // updateSource) for the same reason, no separate audio playlist to pick between.
+            if (langWrap) langWrap.style.display = (dlSource === 'rumv' || dlSource === 'vr' || isVidvault) ? 'none' : 'block';
             if (vidvaultWrap) vidvaultWrap.style.display = isVidvault ? 'block' : 'none';
             if (goWrap) goWrap.style.display = isVidvault ? 'none' : 'flex';
             if (isVidvault) { dlRenderVidvaultOptions(); return; }
@@ -5111,21 +5117,24 @@ document.addEventListener('DOMContentLoaded', function() {
             const info = DL_SOURCE_INFO[dlSource];
             if (!info) return;
 
+            // RU-MV and VR are both single-audio-track sources (no SUB/DUB choice to match) -
+            // same reasoning as dlSyncRowsForSource's langWrap check above.
+            const isSingleAudioSource = dlSource === 'rumv' || dlSource === 'vr';
             // A source is only actually ready when its audio matches too. Previously a Neko
             // DUB episode with SUB selected here passed this provider-only check and the
             // downloader consumed the existing dub playlist while the panel said "SUB".
             const alreadyActive = window.currentServer === info.server &&
                 window.currentVideo?.provider === info.provider &&
-                (dlSource === 'rumv' || window.currentVideo?.audio === dlLang);
+                (isSingleAudioSource || window.currentVideo?.audio === dlLang);
             if (!alreadyActive) {
                 setStatus(`Switching to ${dlSource === 'rumv' ? 'RU-MV' : dlSource.toUpperCase()}...`);
-                if (dlSource !== 'rumv') {
+                if (!isSingleAudioSource) {
                     currentAudioMode = dlLang;
                     window.currentAudioType = dlLang;
                     applyAudioButtonState(dlLang);
                 }
                 updateSource(info.server);
-                const ready = await waitForProvider(info.provider, dlSource === 'rumv' ? null : dlLang);
+                const ready = await waitForProvider(info.provider, isSingleAudioSource ? null : dlLang);
                 if (!ready) {
                     setStatus(`${dlSource.toUpperCase()} didn't load in time - try again or pick another source.`);
                     return;

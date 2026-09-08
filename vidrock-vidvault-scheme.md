@@ -65,21 +65,36 @@ file if you skip their UI and call the API directly.
 ## What got built (2026-09-08)
 
 - **VR (vidrock)** — new server button, movie/TV/anime, same tier as Kino/T1M/RU-MV:
-  - Backend: `decryptVidrockUrl` / `resolveVidrockServers` / `resolveVidrockBestSource` (picks
-    the first `hls` server, falling back to the first `mp4`) in `Backend/server.js`, exposed via
-    `GET /api/movie-vr-log`, `/api/tv-vr-log`, `/api/anime-vr-log` (the anime route also carries
-    skip-intro/outro markers, same as every other anime server). All three wrap the real stream
-    through `buildM3u8ProxyUrl` exactly like Kino/T1M - the browser never sees vidrock's own CDN
-    URL. Verified live end-to-end through the real relay.
+  - Backend: `decryptVidrockUrl` / `resolveVidrockServers` / `resolveVidrockBestSource` in
+    `Backend/server.js`, exposed via `GET /api/movie-vr-log`, `/api/tv-vr-log`,
+    `/api/anime-vr-log` (the anime route also carries skip-intro/outro markers, same as every
+    other anime server). All three wrap the real stream through `buildM3u8ProxyUrl` exactly like
+    Kino/T1M - the browser never sees vidrock's own CDN URL. Verified live end-to-end through
+    the real relay, including an actual segment fetch.
+  - `resolveVidrockBestSource()` prefers `hls` over `mp4` but (2026-09-08) no longer just grabs
+    the first `hls` entry - confirmed live that a freshly-decrypted VidRock server URL can 404
+    moments later (each named server's CDN edge, e.g. `cdn.ngcorp.dad`, is a different
+    third-party host we don't control, not something cached/stale on our end). It now verifies
+    each `hls` candidate actually resolves (`GET` + real `#EXTM3U` check) before committing,
+    falling through to the next named server and only dropping to an `mp4` candidate (`HEAD`
+    check) if no `hls` server verifies. Segments served through these playlists sometimes come
+    back with a PNG magic-number prefix and `Content-Type: image/png` from
+    `p16-sg.tiktokcdn.com` - that's VidRock disguising video chunks as images on TikTok's own
+    CDN (evasion, not a bug on our end); hls.js plays the bytes regardless of what the container
+    looks like at the front.
   - Frontend (`js/moviePlayer.js`): `srvVrM` (movie), `srvVrTv` (TV), `srvVr1` (anime) buttons,
     right next to Kino/T1M/MVP. `loadVrVideo()` (movie/TV) and `loadVrAnimeVideo()` (anime,
     borrows KaF's subtitles the same way MegaPlay/Neko do since vidrock carries none of its
     own). VidRock has no sub/dub toggle (one audio track per server) - the SUB/DUB row hides
-    for `srvVr1` the same way it already does for RU-MV.
+    for `srvVr1` the same way it already does for RU-MV. VR also joined the anime download
+    panel's own `#dlSourceRow` (`DL_SOURCE_INFO.vr`, 2026-09-08) - it had never been added there
+    despite being a real streaming server like MVP/Neko - same shape as those two (audio+video
+    already muxed, no separate SUB/DUB track), downloads through `downloadKinoEpisode`.
   - Multiple named servers per title (Nova/Atlas/Luna/Orion/Astra) are resolved server-side but
-    NOT yet surfaced as a picker - `/api/*-vr-log` just picks one and plays it, same "one button,
-    best pick" behavior every other server here already has. `resolveVidrockServers()` already
-    returns the full list if a multi-server picker is ever worth building later.
+    NOT yet surfaced as a picker - `/api/*-vr-log` just picks one (now the first one that
+    verifies, see above) and plays it, same "one button, best pick" behavior every other server
+    here already has. `resolveVidrockServers()` already returns the full list if a multi-server
+    picker is ever worth building later.
 
 - **VidV (vidvault)** — new download source in the anime download panel, next to NekoStream/KaF/
   MVP/RU-MV/Kiwi:

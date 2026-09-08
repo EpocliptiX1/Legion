@@ -18270,16 +18270,52 @@ async function resolveVidrockServers(type, tmdbId, season, episode) {
     return servers;
 }
 
+// Confirmed live (2026-09-08): a VidRock server's decrypted URL can 404 moments after a fresh
+// decrypt - not a caching/staleness issue on our end (nothing here caches it), the individual
+// CDN edge (cdn.ngcorp.dad and friends - a different host per named server, not owned by us) is
+// just unreliable per-server. Cheaply verify a candidate actually resolves before committing to
+// it, rather than surfacing "Stream unavailable" the moment the first-picked server happens to
+// be the dead one this time - VidRock hands back several named servers per title specifically so
+// there's somewhere to fall back to.
+async function verifyVidrockSourceReachable(source) {
+    try {
+        if (source.type === 'hls') {
+            const res = await axios.get(source.url, {
+                headers: { 'User-Agent': KINO_UA, 'Referer': VIDROCK_REFERER },
+                timeout: 8000, validateStatus: () => true
+            });
+            return res.status === 200 && typeof res.data === 'string' && res.data.includes('#EXTM3U');
+        }
+        // mp4 - a HEAD is enough to confirm the CDN edge actually has this object right now,
+        // without pulling the whole file just to check.
+        const res = await axios.head(source.url, {
+            headers: { 'User-Agent': KINO_UA, 'Referer': VIDROCK_REFERER },
+            timeout: 8000, validateStatus: () => true
+        });
+        return res.status >= 200 && res.status < 400;
+    } catch (err) {
+        return false;
+    }
+}
+
 // One default pick for the plain VR server button - prefers hls (matches how every other
-// provider here serves an HLS master playlist through /api/m3u8-proxy) over mp4. VidRock offers
-// several named servers per title (kept in mind for a future multi-server picker, same idea as
-// the site's own multi-server UI elsewhere) - resolveVidrockServers above already returns the
-// full list for whenever that's worth surfacing; this just isn't that yet.
+// provider here serves an HLS master playlist through /api/m3u8-proxy) over mp4, and now tries
+// EVERY hls candidate (falling through to mp4 only if none of them verify) rather than trusting
+// whichever one happened to come first in VidRock's own response order. VidRock offers several
+// named servers per title (kept in mind for a future multi-server picker, same idea as the
+// site's own multi-server UI elsewhere) - resolveVidrockServers above already returns the full
+// list for whenever that's worth surfacing; this just isn't that yet.
 async function resolveVidrockBestSource(type, tmdbId, season, episode) {
     const servers = await resolveVidrockServers(type, tmdbId, season, episode);
     if (!servers.length) throw new Error('VidRock has no server for this title');
-    const hls = servers.find(s => s.type === 'hls');
-    return hls || servers[0];
+    const ordered = [...servers.filter(s => s.type === 'hls'), ...servers.filter(s => s.type !== 'hls')];
+    for (const candidate of ordered) {
+        if (await verifyVidrockSourceReachable(candidate)) return candidate;
+    }
+    // Nothing verified reachable - return the first candidate anyway so the caller's own error
+    // path (and the real upstream error, not just a generic "no server") still surfaces.
+    console.warn('[VidRock] No server verified reachable, returning first candidate unverified', { type, tmdbId, season, episode, tried: ordered.map(s => s.name) });
+    return ordered[0];
 }
 
 app.get('/api/movie-vr-log', async (req, res) => {
