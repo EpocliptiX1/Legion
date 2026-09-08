@@ -9839,11 +9839,16 @@ html.cc-bg-on .plyr__caption {
    whole panel is already narrow. Wraps into a real grid instead - fixed-column-count on mobile
    (2 columns fits this panel's narrow width better than an auto-fill minmax that would still
    collapse to 1 on a small viewport), auto-fill on wider screens.
-   dlVidvaultWrap itself spans the full row width (not chained to the other columns' narrower
-   flex-basis) since its own content needs the room. */
+   #animeDownloadPanel .anime-download-panel__row ITSELF is a CSS grid with 6 fixed column
+   tracks (one per the panel's original 6 children - see that rule above), not flex -
+   `flex: 1 1 100%` on dlVidvaultWrap was a pure no-op there and it was just landing in
+   whatever narrow implicit cell grid auto-placement gave it, same problem the subtitle
+   divider label below had. `grid-column: 1 / -1` is the actual way to span every column in a
+   grid parent - used on both dlVidvaultWrap itself (so its row gets the full panel width to
+   work with) and the "Subtitles" divider inside it (so file options and subtitle buttons
+   don't get squeezed into whatever single narrow auto-placed column they'd otherwise land in). */
 #dlVidvaultWrap {
-    width: 100%;
-    flex: 1 1 100%;
+    grid-column: 1 / -1;
 }
 #dlVidvaultRow.anime-download-panel__group {
     display: grid;
@@ -9855,6 +9860,10 @@ html.cc-bg-on .plyr__caption {
     white-space: normal;
     line-height: 1.25;
     padding: 8px 10px;
+}
+#dlVidvaultRow .anime-download-panel__label {
+    grid-column: 1 / -1;
+    margin-top: 6px;
 }
 @media (max-width: 520px) {
     #dlVidvaultRow.anime-download-panel__group {
