@@ -352,3 +352,65 @@ both fixes; the caching one just wasn't the one that mattered here.
 known, unresolved limitation (the Cloudflare Worker JS-challenge block documented above,
 unrelated to this headers bug - MP4's own code path was never missing headers, it fails even
 with them).
+
+==================================================================================================
+
+## Follow-up: attempted a real-browser CDP relay for MP4 - proved the opposite of the premise
+
+User: MKV alone isn't enough (files that large take ~40min to download; most casual viewers
+expect MP4, not MKV) - worth actually building the heavier real-browser approach for MP4
+specifically, reusing/generalizing the persistent-page pattern already built for MegaPlay.
+
+**First, a design problem the MegaPlay pattern doesn't have:** MegaPlay's browser relay
+(`fetchViaMegaplayBrowser`) fetches from INSIDE the page via `page.evaluate(() => fetch(url))`
+and round-trips the bytes as base64 through CDP - fine for HLS segment-sized chunks, not
+remotely viable for a 100-200MB MP4 (CDP is JSON-based; base64-encoding a file that size and
+holding both encoded and decoded copies in memory is a real problem, not just slow).
+
+**Second, and more fundamental: real navigation, not fetch, is required at all.** Tested an
+in-page `fetch()` to the Worker URL from a page already loaded on vidvault.ru:
+```js
+await page.evaluate(url => fetch(url, { method: 'HEAD' }), workerUrl);
+```
+**Result: `TypeError: Failed to fetch`** - a CORS failure. `dl.gemlelispe.workers.dev` is a
+different origin from `vidvault.ru` with no CORS headers permitting this, so even a real browser
+CAN'T use `fetch()`/XHR for this - the real download flow has to be a top-level navigation (what
+an `<a href>` click actually does), which sidesteps CORS but also can't be read back via
+`page.evaluate()` at all (a navigated-away page has no JS context left to hand bytes back
+through). This ruled out the entire "page.evaluate + fetch + base64" technique regardless of
+file size - a structurally different capture method was needed: CDP's `Network` domain
+(`Network.responseReceived` + `Network.getResponseBody`), which observes network traffic
+independent of what the page's own JS can access.
+
+**Command (validating the CDP capture mechanism works at all, before drawing any conclusion
+about whether MP4 itself would pass through it):**
+```js
+const cdp = await page.target().createCDPSession();
+await cdp.send('Network.enable');
+cdp.on('Network.responseReceived', (params) => { if (params.response.url === targetUrl) {...} });
+await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+const body = await cdp.send('Network.getResponseBody', { requestId });
+```
+Tested first against a URL known to work moments earlier via plain axios (the exact MKV URL just
+fixed and verified above) - **`403`**. The capture mechanism itself functioned correctly (a real
+CDP response event was received, with a real - if wrong - status code), but **a genuine
+Puppeteer/Chromium navigation got blocked on a URL that plain axios+headers succeeds on, from
+the same machine, moments apart.**
+
+**This is the opposite of every assumption this whole browser-relay direction was built on.**
+Real browser automation (even with the stealth plugin already used for Kino/MegaPlay) is being
+detected and blocked MORE aggressively than a plain, well-headed HTTP request here - not less.
+Whatever Cloudflare/this site's bot management is keying on, it isn't "does this look like a
+real browser" in the way MegaPlay's problem effectively was; something about Puppeteer/CDP
+itself (protocol artifacts, timing, or some other automation tell the stealth plugin doesn't
+cover) is actively worse-scored than a plain curl/axios request with reasonable headers.
+
+**Decision: stopped building the CDP relay immediately** once this became clear, rather than
+finishing a pipeline already proven to be pursuing the wrong direction. No code shipped from
+this follow-up - purely a dead end, but a useful one to have ruled out concretely rather than
+half-built and left uncertain.
+
+**Status: MP4 remains unsolved.** What's actually different about `dl.gemlelispe.workers.dev`
+(blocks both plain HTTP-with-headers AND real Puppeteer identically) vs `mkv.*.workers.dev`
+(blocks Puppeteer but not plain HTTP) is an open question with no working theory right now - not
+simply "needs a browser," since a browser makes it worse, not better.
