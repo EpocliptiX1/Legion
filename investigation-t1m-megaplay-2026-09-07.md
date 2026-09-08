@@ -1146,3 +1146,49 @@ the failure rate during a burst is high enough that even 6 tries isn't enough - 
 toward needing a genuinely different strategy (e.g. backing off entirely and surfacing a
 "try again in a moment" state to the viewer) rather than more retries being the answer.
 
+
+## Follow-up (2026-09-08): MVP failing again - decrypted trustWatch's own response, found the real signal
+
+User reported MVP (MegaPlay) failing live while `<iframe src="https://megaplay.buzz/stream/s-2/1/sub">`
+loads fine directly in a real browser - "are we getting silently detected?" Worth checking for
+real rather than re-assuming the old fingerprint theory, since that one was already tested and
+ruled out (see the section above - trustWatch alone was confirmed sufficient, repeatedly, no
+browser/got-scraping needed).
+
+**Command (manually replicating callMegaplayTrustWatch, decrypting its own response instead of
+discarding it like the real function does):**
+```js
+const p = megaplayTrustEncrypt({ action: 'status' });
+const res = await axios.post('https://megaplay.buzz/stream/trustWatch', { p }, { headers: {...} });
+console.log(decrypt(res.data.p)); // AES-256-CBC, same key/iv as MEGAPLAY_ENC_KEY_STR/IV_STR
+```
+**Result:**
+```json
+{"is_enable":false,"update_enable":true,"td":0,"days3":0,"days7":0,
+ "proxy_domain_map":{"fallback":"p.akirax.buzz","fallback_re":"/anime/"},
+ "rules":{"full_7d_min":50,"full_3d_min":30,"soft_today_min":10,"soft_session_min":2,
+          "ep_credit_min":3,"upload_batch_min":5},
+ "server_ip":"135.136.11.49","bootstrap":true}
+```
+`server_ip` matches this box's own real outbound IP exactly (confirmed via `ifconfig.me`/
+`api.ipify.org` separately) - so the IP-registration side is fine, we ARE talking to the right
+endpoint as the right IP. The actual signal is `"is_enable": false` sitting right there in
+trustWatch's own response, alongside a `rules` object that reads like a watch-time/credit quota
+system (`full_7d_min`/`full_3d_min`/`soft_today_min`/`soft_session_min`/`ep_credit_min` - minutes
+thresholds, not request-count ones).
+
+**Working theory, not yet fully confirmed:** `callMegaplayTrustWatch()` only ever sends a bare
+`{action:'status'}` ping - no episode id, no session id, no playback-progress payload. A real
+embed page's own JS almost certainly sends richer heartbeats as an episode actually plays
+(matching field names like `ep_credit_min`/`soft_session_min`), accruing whatever credit
+`is_enable` gates on. Our heartbeat may never earn any credit at all regardless of how often it
+fires, or whatever credit existed got drained by a day of resolve-only testing (many titles
+resolved, zero real "minutes played" reported back) with nothing offsetting it. This is NOT the
+old fingerprint/detection story - the response is telling us outright, in plain JSON, not hiding
+behind a generic block page.
+
+**Not yet done:** capturing the real embed page's own network traffic (its actual trustWatch
+payload shape during real playback) to confirm what a "credit-earning" heartbeat actually looks
+like, and whether `is_enable` recovers on its own over time or needs an explicit richer payload
+to flip back to true. Flagged to the user rather than guessing further into a live 3rd-party
+quota system without a confirmed shape for what it expects.
