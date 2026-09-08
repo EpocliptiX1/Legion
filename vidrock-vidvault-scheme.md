@@ -56,14 +56,43 @@ file if you skip their UI and call the API directly.
    token/proxy dance exists only to generate these links server-side, not to gate the files
    themselves.
 
-## What to build
+## What got built (2026-09-08)
 
-- **VR (vidrock)**: a new server option in the movie/TV player, same tier as Kino/T1M/RU-MV —
-  resolves via steps 1–3 above, feeds the real decrypted `.m3u8`/`.mp4` URL through our own
-  `/api/m3u8-proxy` exactly like every other provider (never expose the raw vidrock/CDN URL to
-  the browser). Keep in mind vidrock has multiple named servers per title (Nova/Atlas/Luna/
-  Orion/Astra) — worth surfacing more than one if useful, same idea as our own multi-server UI.
-- **VidV (vidvault)**: a new button in the download panel, alongside NekoStream's — one click
-  fetches step 1–2's real links server-side and hands the user a direct file, no iframe, no
-  redirect, no ads. Surface whichever of MP4/MKV/MKV v2/captions came back for that title,
-  matching the reference screenshot's own layout (separate sections per format/quality).
+- **VR (vidrock)** — new server button, movie/TV/anime, same tier as Kino/T1M/RU-MV:
+  - Backend: `decryptVidrockUrl` / `resolveVidrockServers` / `resolveVidrockBestSource` (picks
+    the first `hls` server, falling back to the first `mp4`) in `Backend/server.js`, exposed via
+    `GET /api/movie-vr-log`, `/api/tv-vr-log`, `/api/anime-vr-log` (the anime route also carries
+    skip-intro/outro markers, same as every other anime server). All three wrap the real stream
+    through `buildM3u8ProxyUrl` exactly like Kino/T1M - the browser never sees vidrock's own CDN
+    URL. Verified live end-to-end through the real relay.
+  - Frontend (`js/moviePlayer.js`): `srvVrM` (movie), `srvVrTv` (TV), `srvVr1` (anime) buttons,
+    right next to Kino/T1M/MVP. `loadVrVideo()` (movie/TV) and `loadVrAnimeVideo()` (anime,
+    borrows KaF's subtitles the same way MegaPlay/Neko do since vidrock carries none of its
+    own). VidRock has no sub/dub toggle (one audio track per server) - the SUB/DUB row hides
+    for `srvVr1` the same way it already does for RU-MV.
+  - Multiple named servers per title (Nova/Atlas/Luna/Orion/Astra) are resolved server-side but
+    NOT yet surfaced as a picker - `/api/*-vr-log` just picks one and plays it, same "one button,
+    best pick" behavior every other server here already has. `resolveVidrockServers()` already
+    returns the full list if a multi-server picker is ever worth building later.
+
+- **VidV (vidvault)** — new download source in the anime download panel, next to NekoStream/KaF/
+  MVP/RU-MV/Kiwi:
+  - Backend: `fetchVidvaultDownloadInfo` / `resolveVidvaultDownloadInfoCached` /
+    `flattenVidvaultOptions` + `GET /api/anime-vidvault-info` (returns a flat list of
+    `{id, format, label, size}` - the real presigned URL is stripped server-side, never sent to
+    the client) and `GET /api/anime-vidvault-download?id=...` (relays the real file with a
+    proper `Content-Disposition: attachment` header). Verified live: real subtitle file
+    downloaded end-to-end with correct headers; video-file verification hit this session's own
+    accumulated rate-limiting on vidvault's CDN (confirmed independently, not a code bug - see
+    the investigation doc).
+  - Frontend: a `VidV` button in `#dlSourceRow` alongside Kiwi. Unlike every other download
+    source here (which pick a quality/language/burn config and hit ONE "Download" button),
+    VidV's own list of already-complete files (MP4 at whatever resolutions this episode has,
+    MKV, MKV v2, one button per subtitle language) renders dynamically in `#dlVidvaultWrap`
+    (`dlRenderVidvaultOptions()`) - clicking any one of them **is** the download
+    (`window.location.href` to `/api/anime-vidvault-download`, which triggers a native browser
+    download via `Content-Disposition` and never navigates away - no new tab, no redirect, no
+    ads). The quality/language/burn/compression rows and the normal "Download" button all hide
+    while VidV is selected, since none of them apply - this is the direct-file external
+    downloader path specifically requested to avoid client-side ffmpeg being the bottleneck on
+    weaker devices.

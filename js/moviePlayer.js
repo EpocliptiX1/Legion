@@ -1715,6 +1715,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <div class="server-group">
                             <button id="srvKino" class="server-btn active">Kino</button>
                             <button id="srvT1mM" class="server-btn">T1M</button>
+                            <button id="srvVrM" class="server-btn">VR</button>
                             <button id="server2embed" class="server-btn">2Embed</button>
                             <button id="srvRuMovie" class="server-btn">
                                 RU - MV <img src="https://upload.wikimedia.org/wikipedia/commons/f/f3/Flag_of_Russia.svg" alt="RU" style="width:16px;height:11px;vertical-align:middle;margin-left:2px;">
@@ -1731,6 +1732,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         <div class="server-group">
                             <button id="srvKinoTv" class="server-btn">Kino</button>
                             <button id="srvT1mTV" class="server-btn">T1M</button>
+                            <button id="srvVrTv" class="server-btn">VR</button>
                             <button id="srvMegaTV" class="server-btn">MegaCloud (S1)</button>
                             <button id="srvRuTv" class="server-btn">
                                 RU - MV <img src="https://upload.wikimedia.org/wikipedia/commons/f/f3/Flag_of_Russia.svg" alt="RU" style="width:16px;height:11px;vertical-align:middle;margin-left:2px;">
@@ -1753,6 +1755,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 RU - MV <img src="https://upload.wikimedia.org/wikipedia/commons/f/f3/Flag_of_Russia.svg" alt="RU" style="width:16px;height:11px;vertical-align:middle;margin-left:2px;">
                             </button>
                             <button id="srvMega1" class="server-btn">MVP</button>
+                            <button id="srvVr1" class="server-btn">VR</button>
                         </div>
                         <div id="subDubToggleRow" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                             <button id="btnSub" class="audio-btn active">SUB</button>
@@ -1776,6 +1779,13 @@ document.addEventListener('DOMContentLoaded', function() {
                                     <button class="audio-btn" data-dl-source="megaplay">MVP</button>
                                     <button class="audio-btn" data-dl-source="rumv">RU-MV</button>
                                     <button class="audio-btn" data-dl-source="external">Kiwi (Direct MP4)</button>
+                                    <button class="audio-btn" data-dl-source="vidvault">VidV</button>
+                                </div>
+                            </div>
+                            <div id="dlVidvaultWrap" style="display:none;">
+                                <div class="anime-download-panel__label">VidV files</div>
+                                <div class="server-group anime-download-panel__group" id="dlVidvaultRow">
+                                    <span class="anime-download-panel__status" id="dlVidvaultStatus">Select VidV to load files...</span>
                                 </div>
                             </div>
                             <div id="dlLanguageWrap">
@@ -2157,7 +2167,10 @@ document.addEventListener('DOMContentLoaded', function() {
             srv111Movies: '111Movies: Extra Source',
             srvMoviesApiM: 'MoviesAPI: Extra Source',
             srv111MoviesM: '111Movies: Extra Source',
-            srvMega1: 'MVP: Anime MAL-based stream'
+            srvMega1: 'MVP: Anime MAL-based stream',
+            srvVrM: 'VR: HLS/MP4 stream, movies only',
+            srvVrTv: 'VR: HLS/MP4 stream, TV shows only',
+            srvVr1: 'VR: HLS/MP4 stream (no sub/dub toggle)'
         };
         // function showLimitToast2(message) {
         //     const existing = document.querySelector('.limit-toast');
@@ -3931,6 +3944,138 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
+        // VidRock (vidrock.net) - entirely separate infra from Kino/T1M (own API, own AES-GCM
+        // crypto - see vidrock-vidvault-scheme.md). Same shape as loadT1mVideo above, just
+        // against /api/movie-vr-log / /api/tv-vr-log. VidRock offers several named servers per
+        // title server-side (Nova/Atlas/Luna/Orion/Astra) - this always plays whichever one
+        // /api/*-vr-log picked (prefers hls), same "one button, best pick" behavior every other
+        // server on this page already gives; `data.server` is returned if a future multi-server
+        // picker ever wants to surface the name.
+        async function loadVrVideo(episode, season) {
+            const myGen = playbackRequestGen;
+            const infoDiv = document.getElementById('serverInfoText');
+
+            try {
+                stopKaaContinueWatching();
+                if (!watchHistoryCache && typeof window.getActivityUID === 'function') {
+                    const activityUID = window.getActivityUID();
+                    await fetchWatchHistory(activityUID, tmdbId).then(setWatchHistoryCache);
+                }
+
+                if (infoDiv) infoDiv.textContent = 'VR: Resolving stream...';
+                const endpoint = isSeries ? '/api/tv-vr-log' : '/api/movie-vr-log';
+                const query = new URLSearchParams({ tmdbId: tmdbId || '' });
+                if (isSeries) {
+                    query.set('season', season || 1);
+                    query.set('episode', episode || 1);
+                }
+                const res = await fetch(`${endpoint}?${query.toString()}`);
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data?.ok || !data.stream) {
+                    if (infoDiv) infoDiv.textContent = `VR: ${data?.error || 'Stream unavailable.'}`;
+                    return false;
+                }
+
+                if (myGen !== playbackRequestGen) return false;
+                const ok = showVideoPlayer(
+                    data.stream,
+                    [],
+                    {
+                        provider: 'vidrock',
+                        title: document.getElementById('title')?.textContent.trim() || '',
+                        season,
+                        episode,
+                        audio: 'en'
+                    }
+                );
+
+                if (ok) {
+                    const episodeKey = isSeries ? buildEpisodeKey(season, episode) : 'movie';
+                    const videoEl = document.getElementById('moviePlayerVideo');
+                    if (videoEl) {
+                        const resumeSeconds = getWatchHistoryResumeSeconds(episodeKey);
+                        if (Number.isFinite(resumeSeconds) && resumeSeconds > 5) {
+                            showKaaResumeOverlay(episodeKey, resumeSeconds, () => applyResumeToVideo(videoEl, resumeSeconds), () => {});
+                        }
+                        const activityUID = typeof window.getActivityUID === 'function' ? window.getActivityUID() : null;
+                        startKaaContinueWatching(videoEl, {
+                            episodeKey,
+                            userUID: activityUID,
+                            movieId: tmdbId,
+                            itemType: isSeries ? 'tv' : 'movie'
+                        });
+                    }
+                }
+
+                if (infoDiv) {
+                    infoDiv.textContent = ok
+                        ? `VR: Loaded (${data.server || 'server'})`
+                        : 'VR: HLS playback is not supported in this browser.';
+                }
+                return ok;
+            } catch (err) {
+                console.error('[VidRock] playback error:', err);
+                if (infoDiv) infoDiv.textContent = 'VR: Failed to load stream.';
+                return false;
+            }
+        }
+
+        // Same idea as loadVrVideo above, but for anime (server=srvVr1) - /api/anime-vr-log
+        // instead, which also carries skip-intro/outro markers same as every other anime server
+        // here. VidRock doesn't expose a sub/dub choice the way KaF/Neko/MegaPlay do (each
+        // server just has whatever single audio track it has - "language" per server, not a
+        // toggle) - same treatment as RU-MV (srvNew1): the SUB/DUB row gets hidden while this
+        // server is active rather than pretending a toggle exists that does nothing.
+        async function loadVrAnimeVideo(episode, season) {
+            const myGen = playbackRequestGen;
+            const infoDiv = document.getElementById('serverInfoText');
+
+            try {
+                stopKaaContinueWatching();
+                if (!watchHistoryCache && typeof window.getActivityUID === 'function') {
+                    const activityUID = window.getActivityUID();
+                    await fetchWatchHistory(activityUID, tmdbId).then(setWatchHistoryCache);
+                }
+
+                if (infoDiv) infoDiv.textContent = 'VR: Resolving stream...';
+                const title = animeTitle || document.getElementById('title')?.textContent.trim() || '';
+                const query = new URLSearchParams({
+                    tmdbId: tmdbId || '', title, season: season || 1, episode: episode || 1
+                });
+                const res = await fetch(`/api/anime-vr-log?${query.toString()}`);
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data?.ok || !data.stream) {
+                    if (infoDiv) infoDiv.textContent = `VR: ${data?.error || 'Stream unavailable.'}`;
+                    return false;
+                }
+
+                currentKaaSkipMarkers = Array.isArray(data.skipSegments) ? data.skipSegments : [];
+                currentKaaSkipSegments = buildKaaPlaybackSegments(currentKaaSkipMarkers, 0);
+                window.currentKaaSkipSegments = currentKaaSkipSegments;
+
+                if (myGen !== playbackRequestGen) return false;
+                const borrowedSubtitles = await fetchKaaSubtitlesForEpisode(episode, 'sub', season);
+                if (myGen !== playbackRequestGen) return false;
+
+                const ok = showVideoPlayer(data.stream, borrowedSubtitles, {
+                    provider: 'vidrock',
+                    title: document.getElementById('title')?.textContent.trim() || 'Unknown Anime',
+                    season, episode, audio: 'original'
+                });
+
+                if (infoDiv) {
+                    infoDiv.textContent = ok
+                        ? `VR: Loaded (${data.server || 'server'})${currentKaaSkipMarkers.length ? ' · skip markers' : ''}`
+                        : 'VR: HLS playback is not supported in this browser.';
+                }
+                return ok;
+            } catch (err) {
+                console.error('[VidRock Anime] playback error:', err);
+                if (infoDiv) infoDiv.textContent = 'VR: Failed to load stream.';
+                return false;
+            }
+        }
+
         // Small anchored menu letting the user pick a quality instead of always getting the
         // best one - one instance reused for both RU movie and RU TV downloads. Built as a
         // plain positioned <div> (no existing dropdown component on this page to reuse) styled
@@ -4240,7 +4385,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             updateKaaControlsVisibility();
             const subDubRow = document.getElementById('subDubToggleRow');
-            if (subDubRow) subDubRow.style.display = server === 'srvNew1' ? 'none' : 'flex';
+            if (subDubRow) subDubRow.style.display = (server === 'srvNew1' || server === 'srvVr1') ? 'none' : 'flex';
             const seasonSelectEl = document.getElementById('seasonSelect');
             const selectedSeason = seasonSelectEl?.value || 1;
             let s = selectedSeason === 'all'
@@ -4369,6 +4514,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 loadT1mVideo(e, s);
                 return;
             }
+            if (server === 'srvVrM' || server === 'srvVrTv') {
+                document.querySelectorAll('.server-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.id === server);
+                });
+                showServerInfo(server);
+                loadVrVideo(e, s);
+                return;
+            }
             if (server === 'srvPahe1') {
                 document.querySelectorAll('.server-btn').forEach(btn => {
                     btn.classList.toggle('active', btn.id === server);
@@ -4416,6 +4569,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 const audioType = currentAudioMode === 'dub' ? 'dub' : 'sub';
                 loadMegaPlayFrame(e, audioType).then(ok => {
                     if (!ok && infoDiv) infoDiv.textContent = 'MVP: Failed to load. Try another source.';
+                });
+            } else if (logicalServer === 'srvVr1') {
+                url = '__async__';
+                showIframePlayer('about:blank');
+                const infoDiv = document.getElementById('serverInfoText');
+                if (infoDiv) infoDiv.textContent = 'VR: Loading...';
+                loadVrAnimeVideo(e, s).then(ok => {
+                    if (!ok && infoDiv) infoDiv.textContent = 'VR: Failed to load. Try another source.';
                 });
             }
 
@@ -4726,17 +4887,97 @@ document.addEventListener('DOMContentLoaded', function() {
             dlApplyLiveAvailability();
         };
 
+        // VidVault (vidvault.ru) - "VidV" download source, entirely different shape from every
+        // other source in this panel: it hands back a real list of already-complete files
+        // (multiple MP4 resolutions, MKV, MKV v2, one .srt per subtitle language - see
+        // vidrock-vidvault-scheme.md) instead of one HLS stream to pick a quality/burn config
+        // for. So instead of quality/language/burn rows + one "Download" button, VidV gets its
+        // own dynamically-populated button list (dlVidvaultWrap) - each button IS the download,
+        // no separate finalization step, no ffmpeg/compression on this device at all (the whole
+        // point - an external downloader for when the device itself is too weak to mux/compress
+        // an HLS stream reasonably).
+        let dlVidvaultLoadToken = 0;
+        async function dlRenderVidvaultOptions() {
+            const row = document.getElementById('dlVidvaultRow');
+            const statusEl = document.getElementById('dlVidvaultStatus');
+            if (!row) return;
+            if (!tmdbId) {
+                row.innerHTML = '';
+                if (statusEl) { row.appendChild(statusEl); statusEl.textContent = 'TMDB ID unavailable for this title.'; }
+                return;
+            }
+            const myToken = ++dlVidvaultLoadToken;
+            const seasonSelectEl = document.getElementById('seasonSelect');
+            const season = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || 1;
+            const episode = document.getElementById('episodeSelect')?.value
+                || document.getElementById('episodeNum')?.textContent || 1;
+            row.innerHTML = '<span class="anime-download-panel__status">Loading files...</span>';
+            try {
+                const res = await fetch(`/api/anime-vidvault-info?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`);
+                const data = await res.json().catch(() => ({}));
+                if (myToken !== dlVidvaultLoadToken) return; // a newer episode/season change already superseded this
+                if (!res.ok || !data?.ok || !data.options?.length) {
+                    row.innerHTML = `<span class="anime-download-panel__status">${data?.error || 'No VidV files for this episode.'}</span>`;
+                    return;
+                }
+                row.innerHTML = '';
+                for (const opt of data.options) {
+                    const btn = document.createElement('button');
+                    btn.className = 'audio-btn';
+                    const sizeLabel = typeof opt.size === 'string' && !opt.size.includes('MB')
+                        ? `${(Number(opt.size) / (1024 * 1024)).toFixed(0)} MB`
+                        : (opt.size || '');
+                    btn.textContent = `${opt.label}${sizeLabel ? ` (${sizeLabel})` : ''}`;
+                    btn.addEventListener('click', () => {
+                        // Setting location.href to our own download route (Content-Disposition:
+                        // attachment on the response) triggers a plain native browser download
+                        // and stays on this page - no new tab, no redirect, no ads, exactly the
+                        // "click a button, get a file" flow this was built for.
+                        window.location.href = `/api/anime-vidvault-download?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}&id=${encodeURIComponent(opt.id)}`;
+                    });
+                    row.appendChild(btn);
+                }
+                if (data.subtitles?.length) {
+                    const subLabel = document.createElement('div');
+                    subLabel.className = 'anime-download-panel__label';
+                    subLabel.style.width = '100%';
+                    subLabel.style.marginTop = '6px';
+                    subLabel.textContent = 'Subtitles';
+                    row.appendChild(subLabel);
+                    for (const sub of data.subtitles) {
+                        const btn = document.createElement('button');
+                        btn.className = 'audio-btn';
+                        btn.textContent = sub.label;
+                        btn.addEventListener('click', () => {
+                            window.location.href = `/api/anime-vidvault-download?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}&id=${encodeURIComponent(sub.id)}&kind=subtitle`;
+                        });
+                        row.appendChild(btn);
+                    }
+                }
+            } catch (err) {
+                if (myToken !== dlVidvaultLoadToken) return;
+                row.innerHTML = '<span class="anime-download-panel__status">Could not load VidV files.</span>';
+            }
+        }
+
         const dlSyncRowsForSource = () => {
             const qualityWrap = document.getElementById('dlQualityWrap');
             const langWrap = document.getElementById('dlLanguageWrap');
             const burnWrap = document.getElementById('dlBurnWrap');
+            const vidvaultWrap = document.getElementById('dlVidvaultWrap');
+            const goWrap = document.querySelector('.anime-download-panel__go');
+            const isVidvault = dlSource === 'vidvault';
             // Kiwi links are picked by quality directly (no burn step, no per-server switch),
             // so quality still applies to it - it's everything else in this row that doesn't.
-            if (qualityWrap) qualityWrap.style.display = 'block';
-            if (burnWrap) burnWrap.style.display = (dlSource === 'external') ? 'none' : 'block';
+            // VidV has none of these - its own button list IS the download, see dlVidvaultWrap.
+            if (qualityWrap) qualityWrap.style.display = isVidvault ? 'none' : 'block';
+            if (burnWrap) burnWrap.style.display = (dlSource === 'external' || isVidvault) ? 'none' : 'block';
             // RU-MV is a single Russian audio track - the whole app already hides the SUB/DUB
             // row for it (subDubToggleRow in updateSource) for the same reason.
-            if (langWrap) langWrap.style.display = (dlSource === 'rumv') ? 'none' : 'block';
+            if (langWrap) langWrap.style.display = (dlSource === 'rumv' || isVidvault) ? 'none' : 'block';
+            if (vidvaultWrap) vidvaultWrap.style.display = isVidvault ? 'block' : 'none';
+            if (goWrap) goWrap.style.display = isVidvault ? 'none' : 'flex';
+            if (isVidvault) { dlRenderVidvaultOptions(); return; }
             if (dlLang === 'hsub' && dlSource !== 'neko') {
                 dlLang = 'sub';
                 document.querySelectorAll('#dlLanguageRow [data-dl-lang]').forEach(b =>
@@ -5334,8 +5575,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const btnDownloadSub = document.getElementById('btnDownloadSub');
         const btnDownloadDub = document.getElementById('btnDownloadDub');
 
-        const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvRuMovie', 'srvKino', 'srvT1mM']);
-        const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvT1mTV']);
+        const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvRuMovie', 'srvKino', 'srvT1mM', 'srvVrM']);
+        const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvT1mTV', 'srvVrTv']);
         const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1']);
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',
