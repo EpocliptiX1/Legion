@@ -98,14 +98,24 @@ file if you skip their UI and call the API directly.
     (`dl.gemlelispe.workers.dev`) that blocks every non-browser client tested even WITH proper
     headers, TLS-fingerprint impersonation included - see the investigation doc for the full
     trail. Subtitles work fine too.
+  - Both VidV routes are gated by the same resolve-nonce + per-session/per-network budget every
+    other internal resolver route carries (`RESOLVE_GATED_PATHS` in `Backend/server.js` and
+    `Backend/middleware.js`) - added 2026-09-08, they weren't originally. See the investigation
+    doc's own follow-up section for why that required the frontend change below too (a plain
+    navigation can't carry the nonce header the gate needs).
   - Frontend: a `VidV` button in `#dlSourceRow` alongside Kiwi. Unlike every other download
     source here (which pick a quality/language/burn config and hit ONE "Download" button),
     VidV's own list of already-complete files (MP4 at whatever resolutions this episode has,
     MKV, MKV v2, one button per subtitle language) renders dynamically in `#dlVidvaultWrap`
-    (`dlRenderVidvaultOptions()`) - clicking any one of them **is** the download
-    (`window.location.href` to `/api/anime-vidvault-download`, which triggers a native browser
-    download via `Content-Disposition` and never navigates away - no new tab, no redirect, no
-    ads). The quality/language/burn/compression rows and the normal "Download" button all hide
-    while VidV is selected, since none of them apply - this is the direct-file external
-    downloader path specifically requested to avoid client-side ffmpeg being the bottleneck on
-    weaker devices.
+    (`dlRenderVidvaultOptions()`) - clicking any one of them **is** the download. Originally a
+    bare `window.location.href` to `/api/anime-vidvault-download`; now goes through
+    `window.downloadVidvaultEpisode()` (`js/downloadEpisode.js`, added 2026-09-08) instead - a
+    real `fetch()` with byte-progress readout into the same download dock/modal UI
+    `downloadKAAEpisode`/`downloadKinoEpisode` use, then a `Blob` -> `<a download>` -> click.
+    No FFmpeg step runs (VidV's files are already complete, nothing to mux/burn/compress - same
+    reasoning as before), only the download MECHANISM was borrowed from those two functions, not
+    an actual transcode. Still no new tab, no redirect, no ads - same one-click intent, just
+    routed through the same pipeline (and gate) every other download source already uses. The
+    quality/language/burn/compression rows and the normal "Download" button all hide while VidV
+    is selected, since none of them apply - this is the direct-file external downloader path
+    specifically requested to avoid client-side ffmpeg being the bottleneck on weaker devices.

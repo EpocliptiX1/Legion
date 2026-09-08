@@ -1933,7 +1933,16 @@ const RESOLVE_GATED_PATHS = [
     '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
     '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
     '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
-    '/api/t1m-servers'
+    '/api/t1m-servers',
+    // VidVault ("VidV") - direct-file downloads, added 2026-09-08. Same gap as every route
+    // above before this list existed: no login, no per-request cost beyond CPU/bandwidth, an
+    // unauthenticated script could otherwise pull the whole catalog through these two routes
+    // with zero browser involvement. -info is cheap (list-only, no file transfer) but still
+    // gated - it's the same VidVault upstream call -download makes anyway, no reason to leave
+    // it as a free scouting route. -download itself moved off a bare `location.href` navigation
+    // to a real fetch() specifically so it could carry this gate's nonce header - see
+    // downloadVidvaultEpisode in js/downloadEpisode.js.
+    '/api/anime-vidvault-info', '/api/anime-vidvault-download'
 ];
 app.use(RESOLVE_GATED_PATHS, requireResolveNonce);
 // Every real resolver response also carries a session-bound decoy URL in a response header.

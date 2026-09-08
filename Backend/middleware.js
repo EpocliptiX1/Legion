@@ -125,7 +125,10 @@ const embedLimiter = rateLimit({
 const RESOLVE_GATED_PATHS = [
     '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
     '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
-    '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download'
+    '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
+    // Kept in sync with server.js's own RESOLVE_GATED_PATHS - see that file's comment for why
+    // VidVault's two routes joined this list.
+    '/api/anime-vidvault-info', '/api/anime-vidvault-download'
 ];
 const resolveLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,

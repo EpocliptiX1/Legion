@@ -1598,9 +1598,111 @@ function mergeSegments(segments) {
     return merged;
 }
 
+// VidVault ("VidV") - unlike KAA/Kino above, the file behind `downloadUrl` is already a
+// complete, finished MP4/MKV - vidvault does the muxing on their end, there is nothing here
+// for FFmpeg to do. What this DOES borrow from the other two is the actual DOWNLOAD MECHANISM:
+// fetch() with a real byte-progress readout into the same dock/modal UI, then a Blob->anchor
+// save - not a bare `window.location.href` navigation. That switch matters for two concrete
+// reasons, not just visual consistency: (1) a plain navigation can't carry the X-Resolve-Nonce
+// header moviePlayer.js's wrapped window.fetch attaches to every gated resolve route (see its
+// RESOLVE_GATED_PATHS list) - now that /api/anime-vidvault-download is gated the same as every
+// other resolver, only a real fetch() can pass it - and (2) it gives the user the same
+// progress/ETA feedback every other download source already has instead of a silent redirect.
+async function downloadVidvaultEpisode(downloadUrl, meta = {}) {
+    if (downloadInProgress) {
+        if (typeof window.showLimitToast === 'function') {
+            window.showLimitToast('A download is already in progress. Please wait for it to finish.');
+        }
+        return;
+    }
+    downloadedBytes = 0;
+    downloadInProgress = true;
+    const task = createDownloadTaskCard({
+        title: meta.title || 'Unknown Anime',
+        episode: meta.episode || '',
+        season: meta.season || '',
+        thumbnail: meta.thumbnail || '/img/LOGO_Short.svg'
+    });
+    const setTaskStatus = (text) => { task.setStatus(text); setDownloadStatus(text); };
+    ensureDownloadModal();
+    showDownloadModal();
+    setDownloadProcessingHeading('Download');
+    document.getElementById('downloadSegmentText').textContent = meta.label || '';
+
+    try {
+        console.log('[Download][VidVault] start', { downloadUrl, meta });
+        setTaskStatus('Requesting file from VidV...');
+        const res = await fetch(downloadUrl);
+        if (!res.ok) {
+            const body = await res.clone().json().catch(() => null);
+            throw new Error(body?.error || `Download failed (HTTP ${res.status})`);
+        }
+
+        const totalBytes = parseInt(res.headers.get('Content-Length') || '', 10) || 0;
+        const disposition = res.headers.get('Content-Disposition') || '';
+        const filenameMatch = disposition.match(/filename="?([^"]+)"?/i);
+        const filename = filenameMatch ? filenameMatch[1] : (meta.filename || 'vidvault_download');
+
+        setTaskStatus('Downloading file...');
+        const reader = res.body.getReader();
+        const chunks = [];
+        let received = 0;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.byteLength;
+            downloadedBytes = received;
+            const percent = totalBytes ? Math.min(100, (received / totalBytes) * 100) : 0;
+            task.setCombinedProgress(percent);
+            const mb = (received / (1024 * 1024)).toFixed(1);
+            const totalMb = totalBytes ? (totalBytes / (1024 * 1024)).toFixed(1) : null;
+            const sizeLabel = `${mb} MB${totalMb ? ` / ${totalMb} MB` : ''}`;
+            task.setSubline(sizeLabel);
+            document.getElementById('downloadSizeText').textContent = `Downloaded: ${mb} MB`;
+            if (totalBytes) document.getElementById('downloadProgressBar').style.width = `${percent}%`;
+        }
+        console.log('[Download][VidVault] fetched OK', { bytes: received, filename });
+
+        const blob = new Blob(chunks, { type: res.headers.get('Content-Type') || 'application/octet-stream' });
+        if (blob.size === 0) throw new Error('VidV returned an empty file');
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+        setTaskStatus('Download complete!');
+        downloadInProgress = false;
+        task.finish(true);
+        window.recordDownloadHistory({
+            item_type: 'anime',
+            title: meta.title,
+            thumbnail: meta.thumbnail,
+            season: meta.season,
+            episode: meta.episode
+        });
+        setTimeout(() => { hideDownloadModal(); }, 1000);
+    } catch (err) {
+        console.error('[Download][VidVault] FAILED', { name: err?.name, message: err?.message, stack: err?.stack, downloadUrl });
+        setTaskStatus(`Download failed: ${err?.message || 'unknown error'}`);
+        if (typeof window.showLimitToast === 'function') {
+            window.showLimitToast(`Download failed: ${err?.message || 'unknown error'}`);
+        }
+        downloadInProgress = false;
+        task.finish(false);
+        setTimeout(hideDownloadModal, 2000);
+    }
+}
+
 // Global exposes
 window.downloadKAAEpisode = downloadKAAEpisode;
 window.downloadKinoEpisode = downloadKinoEpisode;
+window.downloadVidvaultEpisode = downloadVidvaultEpisode;
 // Exposed for callers that need a status modal before starting a download.
 window.ensureDownloadModal = ensureDownloadModal;
 window.updateDownloadButtons = updateDownloadButtons;

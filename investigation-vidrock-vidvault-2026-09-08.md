@@ -414,3 +414,50 @@ half-built and left uncertain.
 (blocks both plain HTTP-with-headers AND real Puppeteer identically) vs `mkv.*.workers.dev`
 (blocks Puppeteer but not plain HTTP) is an open question with no working theory right now - not
 simply "needs a browser," since a browser makes it worse, not better.
+
+## Follow-up: VidV download mechanism rebuilt onto the real download pipeline + resolve-nonce gate
+
+The user pointed out the VidV download buttons should work "the same shit KAA and the others
+work, the ffmpeg way" - i.e. not a bare `window.location.href` navigation to our own proxy
+route, but the same fetch()-driven pipeline `downloadKAAEpisode`/`downloadKinoEpisode` already
+use (download dock card, progress bar, `recordDownloadHistory`, a Blob->anchor save at the end).
+VidV's own files are already complete MP4/MKV (no HLS muxing, no subtitle burn, no compression -
+already established, see the scheme doc) so there's genuinely no FFmpeg step to run here; what
+actually got borrowed was the DOWNLOAD MECHANISM, not FFmpeg itself.
+
+**Why this mattered beyond visual consistency:** separately, `/api/anime-vidvault-info` and
+`/api/anime-vidvault-download` had never been added to `RESOLVE_GATED_PATHS`
+(server.js/middleware.js) - the resolve-nonce + per-session/per-network budget gate every other
+internal resolver route (anime-kaa-servers, anime-megaplay-log, movie/tv-kino-log, etc.) already
+carries specifically to raise the bar against a plain curl/script pulling the catalog with zero
+browser involvement (see that gate's own top-of-section comment, ~server.js:1795). VidV's two
+routes were sitting there ungated this whole time. Fixing that required BOTH changes together -
+a bare `location.href` navigation cannot set the `X-Resolve-Nonce` custom header the gate
+requires, only `fetch()` can, and moviePlayer.js's `window.fetch` wrapper already auto-attaches
+that header to any URL matching its own `RESOLVE_GATED_PATHS` list. So: gate the routes
+server-side, add them to the wrapper's list client-side, and switch every VidV download button
+from `location.href` to `window.downloadVidvaultEpisode(url, meta)` (new function,
+`js/downloadEpisode.js`) - a real `fetch()` with byte-progress readout into the existing modal,
+then `Blob` -> `<a download>` -> click, same shape as the other two download functions' final
+steps.
+
+**Files touched:**
+- `js/downloadEpisode.js` - new `downloadVidvaultEpisode(downloadUrl, meta)`, exposed as
+  `window.downloadVidvaultEpisode`.
+- `js/moviePlayer.js` - `dlRenderVidvaultOptions()`'s two button click handlers (file downloads
+  and subtitle downloads) now call `window.downloadVidvaultEpisode` instead of setting
+  `location.href`; the file's own `RESOLVE_GATED_PATHS` list (top of file, drives the
+  `window.fetch` nonce-attaching wrapper) gained both VidV routes.
+- `Backend/server.js` - `RESOLVE_GATED_PATHS` (~line 1932) gained
+  `/api/anime-vidvault-info`/`/api/anime-vidvault-download`.
+- `Backend/middleware.js` - same list, kept in sync (used for `resolveLimiter`'s edge rate cap).
+
+**Not done:** VR (vidrock) streaming resolve routes (`/api/movie-vr-log`, `/api/tv-vr-log`,
+`/api/anime-vr-log`) are NOT in `RESOLVE_GATED_PATHS` either, same gap, not in scope of what was
+asked this round - worth doing in a later pass.
+
+Public `apidocs.html` was deliberately NOT touched for this - its `#providers`/`#security`
+sections only document the embeddable `?server=` surface (`/embed/*`), and VidV isn't
+embeddable (download-only, no stream) or part of that public contract at all. Documenting the
+resolve-nonce mechanism itself publicly would also just hand a scraper the exact bar it needs to
+clear. This round's writeup lives here and in `vidrock-vidvault-scheme.md` instead.

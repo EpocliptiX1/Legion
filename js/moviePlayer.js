@@ -10,7 +10,7 @@
         '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
         '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
         '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
-        '/api/t1m-servers'
+        '/api/t1m-servers', '/api/anime-vidvault-info', '/api/anime-vidvault-download'
     ];
     let noncePromise = null;
     function ensureResolveNonce() {
@@ -4939,11 +4939,18 @@ document.addEventListener('DOMContentLoaded', function() {
                     const sizeLabel = formatVidvaultSize(opt.size);
                     btn.textContent = `${opt.label}${sizeLabel ? ` (${sizeLabel})` : ''}`;
                     btn.addEventListener('click', () => {
-                        // Setting location.href to our own download route (Content-Disposition:
-                        // attachment on the response) triggers a plain native browser download
-                        // and stays on this page - no new tab, no redirect, no ads, exactly the
-                        // "click a button, get a file" flow this was built for.
-                        window.location.href = `/api/anime-vidvault-download?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}&id=${encodeURIComponent(opt.id)}`;
+                        // Goes through window.downloadVidvaultEpisode (downloadEpisode.js) now,
+                        // not a bare location.href navigation - same fetch+blob download pipeline
+                        // every other source here uses (progress bar, dock card, download
+                        // history), and the only way to carry the X-Resolve-Nonce header this
+                        // route is now gated behind (see RESOLVE_GATED_PATHS above) - a plain
+                        // navigation can't set custom headers at all.
+                        const url = `/api/anime-vidvault-download?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}&id=${encodeURIComponent(opt.id)}`;
+                        window.downloadVidvaultEpisode?.(url, {
+                            title: animeTitle || document.getElementById('title')?.textContent.trim() || 'Unknown Anime',
+                            thumbnail: window.currentAnimePosterThumb,
+                            season, episode, label: opt.label
+                        });
                     });
                     row.appendChild(btn);
                 }
@@ -4959,7 +4966,12 @@ document.addEventListener('DOMContentLoaded', function() {
                         btn.className = 'audio-btn';
                         btn.textContent = sub.label;
                         btn.addEventListener('click', () => {
-                            window.location.href = `/api/anime-vidvault-download?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}&id=${encodeURIComponent(sub.id)}&kind=subtitle`;
+                            const url = `/api/anime-vidvault-download?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}&id=${encodeURIComponent(sub.id)}&kind=subtitle`;
+                            window.downloadVidvaultEpisode?.(url, {
+                                title: animeTitle || document.getElementById('title')?.textContent.trim() || 'Unknown Anime',
+                                thumbnail: window.currentAnimePosterThumb,
+                                season, episode, label: sub.label
+                            });
                         });
                         row.appendChild(btn);
                     }
