@@ -1249,3 +1249,48 @@ running; whether this earns real trust over days is still an open question, not 
 (Aside, testing-environment-only: this sandbox's own outbound IP rotated mid-investigation -
 `135.136.11.49` earlier, `5.34.1.208` later. Not something the real deployed server, with its own
 stable IP, would experience.)
+
+## Follow-up (2026-09-09): four separate MegaPlay anti-abuse mechanisms, mapped
+
+MVP actually worked live this morning (5 retried chunks, then real segment fetches succeeded) -
+first real evidence the enc_i fix (or just the known bursty pattern) can clear on its own.
+
+Separately, a night of live browser/mobile/emulator testing (real desktop Chrome, real Android
+Chrome, Bluestacks, a real phone, a sister test from an entirely different country) all showed
+the identical pattern: only the Android Google apps built-in browser consistently works, nothing
+else does, regardless of network/IP/country - ruling out IP reputation and per-device history as
+the explanation (Bluestacks had zero prior history and still worked once).
+
+Found the real, documented answer by inspecting a second real embedding site
+(ryurei.in - `https://www.ryurei.in/watch/8800?ep=1` - has NSFW ads, use caution). Their own bundle wraps MegaPlay
+through a local /megaplay.html page instead of a raw iframe, with this comment straight from
+their source:
+
+> MegaPlay's app.main.js injects its OWN Monetag popunder into the player unless
+> document.referrer contains one of the domains in its allowlist (fetched from
+> megaplay.buzz/domains, base64 JSON; the list includes anikoto.* ...). The check is a SUBSTRING
+> match on the referrer... The player itself is NOT sandboxed - their SandboxDetector (also in
+> app.main.js) refuses sandboxed embeds, which is the old "410" problem.
+
+Fetched `https://megaplay.buzz/domains` directly - real, live, base64-encoded JSON array of 60
+allowlisted domains (anikoto.cz genuinely on it, confirming the earlier Referer test). This maps
+out FOUR separate, independent MegaPlay anti-abuse mechanisms this investigation has now hit at
+different points, previously conflated as one thing:
+
+1. **Page-load "missing referer" wall** (`Error - MegaPlay`, HTTP 200 body text) - needs ANY
+   non-empty Referer header, any domain. Confirmed via curl many times.
+2. **Ad-popunder domain allowlist** - fetched from `/domains`, substring-matched against
+   `document.referrer`. Cosmetic only (skips an injected ad), unrelated to playback.
+3. **`SandboxDetector`** (their own name for it, in `app.main.js`) - rejects genuinely
+   HTML5-sandboxed iframes (the `sandbox` attribute), independently producing the same "410"
+   page text as #1. Not triggered by anything we do (we never set `sandbox` on an iframe, and
+   our own pipeline never puts megaplay.buzz in a real iframe at all).
+4. **The `is_enable` trust/credit gate** (see the section above) - the one that actually blocks
+   real playback for us. Confirmed AGAIN just now: using a genuinely allowlisted Referer domain
+   (`https://anikoto.cz/`) on the real CDN fetch still returned a clean `403`. This gate is fully
+   independent of referrer domain identity - #2s allowlist does not touch it.
+
+**Net effect: the ad-popunder/SandboxDetector discovery, while real and confirmed, does not
+move the actual problem.** #4 remains exactly where it was - a day/credit-based gate this
+investigation has not found a server-side lever for. The "only the Google app works" pattern
+from tonights browser testing is not explained by any of #1-3 either; still unresolved.
