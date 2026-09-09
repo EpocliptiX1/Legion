@@ -4161,8 +4161,13 @@ document.addEventListener('DOMContentLoaded', function() {
         // wrapper every other provider on this page uses, just without hls.js in the middle.
         async function showAllanimeMsePlayer(sources, metadata) {
             hidePlayerLoadingOverlay();
-            const renderGeneration = playerRenderGeneration;
+            // resetSharedVideoPlayer() itself increments playerRenderGeneration - capturing
+            // renderGeneration BEFORE calling it (as an earlier version of this function did)
+            // means every "did a newer request supersede this one" check below would compare
+            // against an already-stale value from the moment it was captured, silently bailing
+            // out every time with no error - exactly what showVideoPlayer's own ordering avoids.
             resetSharedVideoPlayer();
+            const renderGeneration = playerRenderGeneration;
             const video = document.getElementById('moviePlayerVideo');
             if (!video) return false;
 
