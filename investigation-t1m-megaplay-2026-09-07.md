@@ -1390,3 +1390,64 @@ itself sends `X-Frame-Options: SAMEORIGIN`, but that's very likely just Cloudfla
 challenge-page template (animepahe.pw's own real site embeds this exact same kwik.cx content in
 iframes for its real users, so kwik.cx must allow framing from somewhere) - genuinely couldn't
 confirm this from a server-side test. Needs a live browser test.
+
+## Follow-up (2026-09-09): real browser DOES clear kwik.cx's Cloudflare challenge - but /e/ embed pages are unreliable, not a general fallback for /f/ download links
+
+User chose "go dig into kwik.cx's real extraction" after confirming the raw-iframe approach is
+dead (`ERR_BLOCKED_BY_RESPONSE` - kwik.cx explicitly refuses to be framed, confirmed via Chrome's
+unambiguous anti-framing error code, separate from the Cloudflare challenge issue).
+
+**Command (real headless Chromium, same puppeteer-extra + stealth plugin already proven against
+MegaPlay earlier this session, navigating a freshly-resolved kwik.cx/e/{token} URL and capturing
+network requests):**
+```js
+await page.goto(embedUrl, { waitUntil: 'networkidle2' });
+// captured any request matching .m3u8/.mp4/owocdn/vault-
+```
+**Result (Attack on Titan ep1, malId 16498):** genuinely worked. Real player rendered (Play/
+Rewind/Settings/PIP controls), real title
+(`AnimePahe_Shingeki_no_Kyojin_-_01_BD_1080p_MTBB.mp4`), and a real HLS master playlist request
+captured: `https://vault-13.owocdn.top/stream/13/07/.../uwu.m3u8`. **Confirms Puppeteer + stealth
+CAN clear kwik.cx's Cloudflare challenge** - the earlier assumption (from the raw-iframe attempt)
+that this challenge was fundamentally unbeatable server-side wasn't quite right; a real browser
+context handles it fine, same as it does for MegaPlay.
+
+**Command (testing whether the captured owocdn.top CDN URL is independently fetchable, i.e.
+whether ONLY kwik.cx needs the browser or the actual video CDN does too):**
+```bash
+curl "https://vault-13.owocdn.top/stream/.../uwu.m3u8" -H "Referer: https://kwik.cx/"
+```
+**Result:** `403`, genuine Cloudflare "Attention Required!" challenge - **the real video CDN is
+ALSO Cloudflare-protected**, independently of kwik.cx's own challenge. Getting the m3u8 URL via a
+browser doesn't mean it can be relayed server-side afterward; the CDN itself needs the same
+browser-clearable treatment.
+
+**Command (testing whether the successful /f/ -> /e/ pattern generalizes - a genuinely fresh
+mapper resolve into three more untested titles, immediately followed by the same capture):**
+```js
+// Solo Leveling (52299) - the ORIGINAL /e/ token from hours earlier: real kwik "404 NOT FOUND"
+//   page (their own styling, not Cloudflare) - this specific token had simply expired
+// A user-confirmed-fresh /f/ link (kwik.cx/f/MivYvNGPlmVE, verified working via our own
+//   existing Kiwi download flow): /f/ itself got stuck on an ACTIVE Cloudflare interstitial
+//   ("Just a moment...") that never auto-cleared even after 24s of polling - inconsistent with
+//   the AoT success; /e/ for the SAME token: clean kwik "Not Found", not blocked
+// One Piece (21) and Death Note (1535), fresh mapper resolve -> /e/ each: both clean kwik
+//   "Not Found" pages too
+```
+**Result: 3 of 4 tested titles' /e/ pages don't exist at all (kwik's own genuine 404, not a
+block) - only Attack on Titan's did.** `/f/` (download) and `/e/` (embed/stream) are evidently
+NOT just two URL shapes for the same resource - `/e/` appears to be a genuinely separate,
+not-always-present resource, existing for some files and not others (unclear why AoT specifically
+had one - possibly older/promotional content, unrelated to our resolve chain at all rather than
+something the mapper/shortlink flow reliably produces).
+
+**Status: proven POSSIBLE (real playback captured once, real browser genuinely clears the
+challenge), but NOT reliable as a general mechanism** - the `/f/` -> `/e/` conversion the shipped
+`/api/anime-pahe-embed` route currently does will 404 for most titles, not just occasionally.
+Given this, that route/button is currently unreliable in a worse way than "doesn't work" - it
+will silently fail for most titles while occasionally succeeding, which is confusing rather than
+honest about the limitation. Not yet decided how to proceed - options discussed with the user:
+dig into animepahe.pw's own real site (Puppeteer can apparently reach sites like this now,
+unlike a plain curl) to find whatever ACTUAL mechanism their own player uses to get a stream
+URL (possibly unrelated to the /f//e/ kwik pattern entirely), or pull the current unreliable
+feature back.
