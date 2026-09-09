@@ -1294,3 +1294,43 @@ different points, previously conflated as one thing:
 move the actual problem.** #4 remains exactly where it was - a day/credit-based gate this
 investigation has not found a server-side lever for. The "only the Google app works" pattern
 from tonights browser testing is not explained by any of #1-3 either; still unresolved.
+
+## Feature (2026-09-09): raw MegaPlay embed server added, using the discovered referrer trick
+
+User proposed a genuinely different fix: instead of continuing to chase the is_enable credit
+gate for our own proxied path, add a SEPARATE anime server that embeds MegaPlay's OWN raw
+player directly - sidesteps our servers involvement in the actual video fetch entirely (the
+viewers own browser talks to megaplay.buzz directly, same shape as anikoto/ryurei), and uses
+the referrer-substring trick found in the previous section (`?ref=anixtv.me` in a same-origin
+wrapper page + `referrerpolicy="unsafe-url"` on the iframe) to skip their ad popunder too.
+
+Re-fetched `megaplay.buzz/domains` live to reconfirm `anixtv.me` is genuinely on the current
+allowlist before building anything - it is.
+
+**Built:**
+- `html/megaplay-embed.html` - small static wrapper page (no backend route needed). Reads
+  `malId`/`ep`/`lang` from its own query string, builds the real `megaplay.buzz/stream/mal/...`
+  iframe with `referrerpolicy="unsafe-url"`. This page own URL carries `?ref=anixtv.me` so the
+  substring the browser hands MegaPlay as Referer (this pages OWN full URL, thanks to
+  unsafe-url) contains an allowlisted domain.
+- `js/moviePlayer.js` - new anime server button `srvMegaEmbed1` ("MegaPlay", distinct from the
+  existing `srvMega1`/"MVP" which stays exactly as-is - this is an addition, not a replacement).
+  `loadMegaplayEmbedVideo()` calls the existing `showIframePlayer()` path (already shared with
+  movie/TV's iframe-based servers, just never used for anime before now) pointed at the wrapper
+  page. Added to `animeDubBtns` (the only Set that gets click handlers attached - see the
+  standing gotcha noted earlier in this file) and the `serverInfo` tooltip map. Deliberately kept
+  OUT of the SUB/DUB-row-hiding list (unlike VR/RU-MV) since MegaPlay's raw embed format genuinely
+  does take a lang=sub/dub segment, unlike those two single-audio-track providers.
+
+**Worth noting - this codebase used to have exactly this kind of raw MegaPlay iframe fallback
+and deliberately removed it** (see `loadMegaPlayFrame`'s own comment: "The legacy /api/stream/mal
+iframe resolver was deliberately removed: it exposed the upstream provider entry point to
+anyone, bypassing this player and its session-bound stream proxy"). This new button is NOT that
+reverted - its a separate, clearly-labeled, explicitly opt-in server the user can pick instead of
+MVP, not a silent fallback path MVP itself falls into. Flagged to the user before building, who
+confirmed the tradeoff (no skip markers, no quality picker, no proxy protection) is acceptable in
+exchange for reliability + no ads.
+
+**Not yet verified:** whether the referrer trick actually skips the ad popunder in a real
+browser - that check is client-side JS (`document.referrer`) inside MegaPlay's own bundle, not
+something curl can observe. Needs a real live test.

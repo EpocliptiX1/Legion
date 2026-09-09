@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>MegaPlay</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; }
+  iframe { width: 100vw; height: 100vh; border: 0; display: block; }
+</style>
+</head>
+<body>
+<!-- MegaPlay's own app.main.js injects an ad popunder (Monetag) into the player unless
+     document.referrer contains one of a small set of allowlisted partner domains (fetched
+     client-side from megaplay.buzz/domains, a live base64 JSON list - confirmed real, includes
+     anixtv.me among ~60 others). The check is a plain substring match on the referrer string,
+     not an origin check - so this page's OWN url just needs to literally CONTAIN one of those
+     domains somewhere (the ?ref= query param below), and referrerpolicy="unsafe-url" on the
+     iframe makes the browser hand MegaPlay this page's full URL (not just our own origin) as
+     Referer. Confirmed live 2026-09-09 - see investigation-t1m-megaplay-2026-09-07.md.
+     This is a raw third-party embed, not our own resolved/proxied stream - MegaPlay's own
+     player UI, branding and controls, no skip markers, no quality picker, no session-bound
+     proxy protection. Deliberate, explicit tradeoff (see moviePlayer.js's srvMegaEmbed1) for
+     when the proxied MVP path is unreliable and the ads are the bigger complaint. -->
+<script>
+  (function () {
+    var params = new URLSearchParams(location.search);
+    var malId = params.get('malId');
+    var ep = params.get('ep') || '1';
+    var lang = params.get('lang') === 'dub' ? 'dub' : 'sub';
+    if (!malId) {
+      document.body.textContent = 'Missing malId.';
+      return;
+    }
+    var f = document.createElement('iframe');
+    f.src = 'https://megaplay.buzz/stream/mal/' + encodeURIComponent(malId) + '/' + encodeURIComponent(ep) + '/' + lang;
+    f.setAttribute('allow', 'autoplay; fullscreen; picture-in-picture');
+    f.setAttribute('allowfullscreen', 'true');
+    f.setAttribute('scrolling', 'no');
+    f.setAttribute('referrerpolicy', 'unsafe-url');
+    document.body.appendChild(f);
+  })();
+</script>
+</body>
+</html>

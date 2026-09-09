@@ -103,6 +103,30 @@ Clean reference doc. For the full messy reverse-engineering trail (dead ends inc
   file, unused, kept as a real working fallback in case `trustWatch` itself ever stops being
   enough.)
 
+## Raw embed alternative (2026-09-09): `srvMegaEmbed1` / "MegaPlay"
+
+Separate from everything above. Instead of resolving+proxying a real stream, this server just
+embeds MegaPlay's own player iframe directly - the viewer's own browser talks to
+`megaplay.buzz`, our backend is never involved in fetching video at all, so the `is_enable`
+credit gate above is fully sidestepped (it's their infrastructure's own problem to grant real
+browsers trust, not ours to fake). Trade-off: their own branding/controls, no skip markers, no
+quality picker, no session-bound proxy protection on this path.
+
+- `html/megaplay-embed.html` - static wrapper page, no backend route. Builds
+  `megaplay.buzz/stream/mal/{malId}/{ep}/{sub|dub}` in an iframe with
+  `referrerpolicy="unsafe-url"`. Its own URL carries `?ref=anixtv.me` - MegaPlay's own
+  `app.main.js` does a plain substring check on whatever Referer it receives against a live
+  allowlist (`GET megaplay.buzz/domains`, base64 JSON, confirmed real) to decide whether to
+  inject an ad popunder; `unsafe-url` hands it this wrapper page's full URL (not just origin),
+  so the `anixtv.me` substring is present and the ad gets skipped. See
+  `investigation-t1m-megaplay-2026-09-07.md`'s two most recent follow-ups for the full trail.
+- `js/moviePlayer.js` - `loadMegaplayEmbedVideo()`, wired as `srvMegaEmbed1` in the anime
+  server dispatch, reusing `showIframePlayer()` (previously only used for movie/TV's own
+  iframe-based servers). Kept as an addition alongside `srvMega1`/MVP, not a replacement or a
+  silent fallback MVP drops into - the codebase had exactly this kind of raw iframe once before
+  and deliberately removed it (see `loadMegaPlayFrame`'s own comment); this is a new, explicit,
+  user-facing choice, not a revival of that.
+
 ## Constants (all currently correct, as of 2026-09-07)
 
 | Name | Value | Used for |

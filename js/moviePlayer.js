@@ -1756,6 +1756,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             </button>
                             <button id="srvMega1" class="server-btn">MVP</button>
                             <button id="srvVr1" class="server-btn">VR</button>
+                            <button id="srvMegaEmbed1" class="server-btn">MegaPlay</button>
                         </div>
                         <div id="subDubToggleRow" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                             <button id="btnSub" class="audio-btn active">SUB</button>
@@ -2171,7 +2172,8 @@ document.addEventListener('DOMContentLoaded', function() {
             srvMega1: 'MVP: Anime MAL-based stream',
             srvVrM: 'VR: HLS/MP4 stream, movies only',
             srvVrTv: 'VR: HLS/MP4 stream, TV shows only',
-            srvVr1: 'VR: HLS/MP4 stream (no sub/dub toggle)'
+            srvVr1: 'VR: HLS/MP4 stream (no sub/dub toggle)',
+            srvMegaEmbed1: 'MegaPlay: MegaPlay\'s own raw player, no skip markers/quality picker - use MVP for that'
         };
         // function showLimitToast2(message) {
         //     const existing = document.querySelector('.limit-toast');
@@ -4077,6 +4079,33 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
+        // MegaPlay's own RAW player (server=srvMegaEmbed1) - deliberately different from
+        // srvMega1/MVP above, which resolves+proxies the real stream through our own player
+        // (skip markers, real subtitle tracks, no ads, session-bound proxy). This one embeds
+        // MegaPlay's own iframe as-is via html/megaplay-embed.html (a small same-origin wrapper
+        // whose own URL carries a ?ref= matching one of MegaPlay's real allowlisted partner
+        // domains - see that file's own comment and investigation-t1m-megaplay-2026-09-07.md for
+        // why that skips their ad popunder). Explicit tradeoff, not a replacement for MVP: their
+        // own branding/controls, no skip markers, no quality picker, and - since the browser
+        // fetches the actual video directly from megaplay.buzz rather than through our backend -
+        // none of our own session-bound stream protection applies to this path at all. Exists
+        // because MVP's own CDN is unreliable enough right now that "MegaPlay's own player,
+        // ad-free, but no UI control" was explicitly preferred over "our player, ad-free and
+        // full control, but sometimes doesn't load at all".
+        function loadMegaplayEmbedVideo(episode, audioType) {
+            if (!malId) {
+                const infoDiv = document.getElementById('serverInfoText');
+                if (infoDiv) infoDiv.textContent = 'MegaPlay: MAL ID unavailable for this title.';
+                return false;
+            }
+            const lang = audioType === 'dub' ? 'dub' : 'sub';
+            const url = `/html/megaplay-embed.html?ref=anixtv.me&malId=${encodeURIComponent(malId)}&ep=${encodeURIComponent(episode)}&lang=${lang}`;
+            showIframePlayer(url);
+            const infoDiv = document.getElementById('serverInfoText');
+            if (infoDiv) infoDiv.textContent = `MegaPlay: Loaded [${lang.toUpperCase()}] - their own player, no skip markers/quality picker.`;
+            return true;
+        }
+
         // Small anchored menu letting the user pick a quality instead of always getting the
         // best one - one instance reused for both RU movie and RU TV downloads. Built as a
         // plain positioned <div> (no existing dropdown component on this page to reuse) styled
@@ -4579,6 +4608,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 loadVrAnimeVideo(e, s).then(ok => {
                     if (!ok && infoDiv) infoDiv.textContent = 'VR: Failed to load. Try another source.';
                 });
+            } else if (logicalServer === 'srvMegaEmbed1') {
+                url = '__async__';
+                const audioType = currentAudioMode === 'dub' ? 'dub' : 'sub';
+                loadMegaplayEmbedVideo(e, audioType);
             }
 
             if (isAnime && currentAudioMode === 'dub' && url && url !== '__async__') {
@@ -5615,7 +5648,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvRuMovie', 'srvKino', 'srvT1mM', 'srvVrM']);
         const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvT1mTV', 'srvVrTv']);
-        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1', 'srvVr1']);
+        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1', 'srvVr1', 'srvMegaEmbed1']);
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',
             animeTV: 'ⓘ Currently supports nearly all series and animes. Sub/dub switching may be unstable for most anime titles.',
