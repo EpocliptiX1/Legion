@@ -10,7 +10,8 @@
         '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
         '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
         '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
-        '/api/t1m-servers', '/api/anime-vidvault-info', '/api/anime-vidvault-download'
+        '/api/t1m-servers', '/api/anime-vidvault-info', '/api/anime-vidvault-download',
+        '/api/anime-allanime-log'
     ];
     let noncePromise = null;
     function ensureResolveNonce() {
@@ -1757,6 +1758,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             <button id="srvMega1" class="server-btn">MVP</button>
                             <button id="srvVr1" class="server-btn">VR</button>
                             <button id="srvMegaEmbed1" class="server-btn">MegaPlay</button>
+                            <button id="srvAllAnime1" class="server-btn">AllAnime</button>
                         </div>
                         <div id="subDubToggleRow" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                             <button id="btnSub" class="audio-btn active">SUB</button>
@@ -2173,7 +2175,8 @@ document.addEventListener('DOMContentLoaded', function() {
             srvVrM: 'VR: HLS/MP4 stream, movies only',
             srvVrTv: 'VR: HLS/MP4 stream, TV shows only',
             srvVr1: 'VR: HLS/MP4 stream (no sub/dub toggle)',
-            srvMegaEmbed1: 'MegaPlay: MegaPlay\'s own raw player, no skip markers/quality picker - use MVP for that'
+            srvMegaEmbed1: 'MegaPlay: MegaPlay\'s own raw player, no skip markers/quality picker - use MVP for that',
+            srvAllAnime1: 'AllAnime: real sub/dub source, no subtitles yet (ASS format not supported for live playback)'
         };
         // function showLimitToast2(message) {
         //     const existing = document.querySelector('.limit-toast');
@@ -4106,6 +4109,150 @@ document.addEventListener('DOMContentLoaded', function() {
             return true;
         }
 
+        // AllAnime (server=srvAllAnime1) - genuinely different from every other anime server
+        // here: the backend hands back separate video-only and audio-only fMP4 files (real
+        // Bilibili-style DASH - see allanime-provider-scheme.md) instead of one ready HLS/MP4
+        // URL, so this can't just call showVideoPlayer() like every other provider - needs its
+        // own MediaSource Extensions (MSE) setup combining both buffers client-side.
+        // Deliberately no subtitle rendering yet - AllAnime's own tracks are ASS format, needing
+        // a real subtitle renderer this codebase doesn't have for LIVE playback (only the
+        // download path's ffmpeg.wasm/libass burn step can handle ASS today) - a known, flagged
+        // gap, not an oversight. No download support wired up for this source either yet.
+        async function loadAllanimeVideo(episode, audioType) {
+            const myGen = playbackRequestGen;
+            const infoDiv = document.getElementById('serverInfoText');
+            const title = animeTitle || document.getElementById('title')?.textContent.trim() || '';
+            if (!title) {
+                if (infoDiv) infoDiv.textContent = 'AllAnime: title unavailable.';
+                return false;
+            }
+            const seasonSelectEl = document.getElementById('seasonSelect');
+            const season = seasonSelectEl?.dataset?.playSeason || seasonSelectEl?.value || 1;
+            const lang = audioType === 'dub' ? 'dub' : 'sub';
+            try {
+                const res = await fetch(`/api/anime-allanime-log?title=${encodeURIComponent(title)}&malId=${encodeURIComponent(malId || '')}&ep=${encodeURIComponent(episode)}&lang=${lang}`);
+                const data = await res.json().catch(() => ({}));
+                if (myGen !== playbackRequestGen) return false;
+                if (!res.ok || !data?.ok || !data.videoUrl) {
+                    if (infoDiv) infoDiv.textContent = `AllAnime: ${data?.error || 'Stream unavailable.'}`;
+                    return false;
+                }
+                const ok = await showAllanimeMsePlayer(data, {
+                    title: document.getElementById('title')?.textContent.trim() || 'Unknown Anime',
+                    season, episode, audio: audioType
+                });
+                if (myGen !== playbackRequestGen) return false;
+                if (infoDiv) infoDiv.textContent = ok
+                    ? `AllAnime: Loaded [${lang.toUpperCase()}] (${data.provider})`
+                    : 'AllAnime: Failed to start playback.';
+                return ok;
+            } catch (err) {
+                console.error('[AllAnime] playback error:', err);
+                if (infoDiv) infoDiv.textContent = 'AllAnime: Failed to load stream.';
+                return false;
+            }
+        }
+
+        // Combines separate video-only + audio-only fMP4 files into one playable stream via
+        // MediaSource Extensions. Each URL is a single COMPLETE file (not time-chunked
+        // segments, confirmed via the backend's own resolution - see allanime-provider-scheme.md
+        // Part 5), so this is a one-shot "fetch the whole file, append the whole buffer" per
+        // track, not real segmented adaptive streaming. Reuses the same shared <video>/Plyr
+        // wrapper every other provider on this page uses, just without hls.js in the middle.
+        async function showAllanimeMsePlayer(sources, metadata) {
+            hidePlayerLoadingOverlay();
+            const renderGeneration = playerRenderGeneration;
+            resetSharedVideoPlayer();
+            const video = document.getElementById('moviePlayerVideo');
+            if (!video) return false;
+
+            window.currentDownloadContext = {
+                title: metadata.title, season: metadata.season, episode: metadata.episode,
+                thumbnail: window.currentAnimePosterThumb || '/img/LOGO_Short.svg'
+            };
+            window.currentVideo = {
+                playlist: sources.videoUrl, subtitles: [], provider: 'allanime',
+                title: metadata.title, season: metadata.season, episode: metadata.episode, audio: metadata.audio,
+                videoElement: video, hls: null
+            };
+
+            if (!window.MediaSource) {
+                console.error('[AllAnime] MediaSource Extensions not supported in this browser');
+                return false;
+            }
+
+            const matchedQuality = sources.qualities?.find(q => q.url === sources.videoUrl);
+            const videoMime = `video/mp4; codecs="${matchedQuality?.codecs || 'avc1.640032'}"`;
+            const audioMime = 'audio/mp4; codecs="mp4a.40.2"';
+            if (!MediaSource.isTypeSupported(videoMime)) {
+                console.error('[AllAnime] unsupported video codec:', videoMime);
+                return false;
+            }
+
+            const mediaSource = new MediaSource();
+            video.style.display = 'block';
+            video.src = URL.createObjectURL(mediaSource);
+
+            const appendBuffer = (sourceBuffer, data) => new Promise((resolve, reject) => {
+                const onUpdateEnd = () => { sourceBuffer.removeEventListener('updateend', onUpdateEnd); resolve(); };
+                sourceBuffer.addEventListener('updateend', onUpdateEnd);
+                sourceBuffer.addEventListener('error', reject, { once: true });
+                try { sourceBuffer.appendBuffer(data); } catch (e) { reject(e); }
+            });
+
+            try {
+                await new Promise((resolve, reject) => {
+                    mediaSource.addEventListener('sourceopen', async () => {
+                        if (renderGeneration !== playerRenderGeneration) { resolve(); return; }
+                        try {
+                            const [videoBuf, audioBuf] = await Promise.all([
+                                fetch(sources.videoUrl).then(r => r.arrayBuffer()),
+                                sources.audioUrl ? fetch(sources.audioUrl).then(r => r.arrayBuffer()) : Promise.resolve(null)
+                            ]);
+                            if (renderGeneration !== playerRenderGeneration) { resolve(); return; }
+
+                            const videoSb = mediaSource.addSourceBuffer(videoMime);
+                            await appendBuffer(videoSb, videoBuf);
+
+                            if (audioBuf) {
+                                if (!MediaSource.isTypeSupported(audioMime)) throw new Error('unsupported audio codec: ' + audioMime);
+                                const audioSb = mediaSource.addSourceBuffer(audioMime);
+                                await appendBuffer(audioSb, audioBuf);
+                            }
+
+                            if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+                            resolve();
+                        } catch (err) {
+                            reject(err);
+                        }
+                    }, { once: true });
+                });
+            } catch (err) {
+                console.error('[AllAnime] MSE setup failed:', err);
+                return false;
+            }
+
+            if (renderGeneration !== playerRenderGeneration) return false;
+
+            video.onended = () => {
+                const episodeSelect = document.getElementById('episodeSelect');
+                if (!episodeSelect) return;
+                episodeSelect.value = String(Number(episodeSelect.value || 0) + 1);
+                updateSource(currentServer);
+            };
+
+            if (window.plyrInstance) { try { window.plyrInstance.destroy(); } catch (e) {} }
+            window.plyrInstance = new Plyr(video, {
+                controls: ['rewind', 'play', 'fast-forward', 'mute', 'volume', 'progress', 'current-time', 'duration', 'settings', 'pip', 'fullscreen'],
+                settings: ['speed']
+            });
+            movePlyrTopControls();
+            replaceSkipIcons(window.plyrInstance);
+            wireDoubleClickZones(window.plyrInstance, video);
+
+            return true;
+        }
+
         // AnimePahe's own raw player (srvPaheEmbed1) was built and shipped here on 2026-09-09,
         // then pulled the same day - kwik.cx's /e/ (embed) pages only exist for episodes some
         // other real viewer already streamed through AnimePahe's own site before, something
@@ -4620,6 +4767,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 url = '__async__';
                 const audioType = currentAudioMode === 'dub' ? 'dub' : 'sub';
                 loadMegaplayEmbedVideo(e, audioType);
+            } else if (logicalServer === 'srvAllAnime1') {
+                url = '__async__';
+                showPlayerLoadingOverlay();
+                const infoDiv = document.getElementById('serverInfoText');
+                if (infoDiv) infoDiv.textContent = 'AllAnime: Loading...';
+                const audioType = currentAudioMode === 'dub' ? 'dub' : 'sub';
+                loadAllanimeVideo(e, audioType).then(ok => {
+                    if (!ok && infoDiv) infoDiv.textContent = 'AllAnime: Failed to load. Try another source.';
+                });
             }
 
             if (isAnime && currentAudioMode === 'dub' && url && url !== '__async__') {
@@ -5656,7 +5812,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvRuMovie', 'srvKino', 'srvT1mM', 'srvVrM']);
         const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvT1mTV', 'srvVrTv']);
-        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1', 'srvVr1', 'srvMegaEmbed1']);
+        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1', 'srvVr1', 'srvMegaEmbed1', 'srvAllAnime1']);
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',
             animeTV: 'ⓘ Currently supports nearly all series and animes. Sub/dub switching may be unstable for most anime titles.',
