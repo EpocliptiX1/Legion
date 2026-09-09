@@ -1933,7 +1933,7 @@ const RESOLVE_GATED_PATHS = [
     '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
     '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
     '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
-    '/api/t1m-servers',
+    '/api/t1m-servers', '/api/anime-pahe-embed',
     // VidVault ("VidV") - direct-file downloads, added 2026-09-08. Same gap as every route
     // above before this list existed: no login, no per-request cost beyond CPU/bandwidth, an
     // unauthenticated script could otherwise pull the whole catalog through these two routes
@@ -19497,6 +19497,63 @@ app.get('/api/anime-spd-log', async (req, res) => {
 
 */
 
+// Shared by /api/anime-download-links and /api/anime-pahe-embed below - both need the exact
+// same (malId, episode) -> {providers, sub, dub} resolution (mapper call + per-quality
+// shortlink resolve), just presented differently (a picker of every quality/provider vs. one
+// best pick for a raw player embed). Was duplicated inline in the download route until the
+// embed route needed the identical data - factored out rather than copy-pasting a second mapper
+// call, one cache entry now serves both.
+function pickBestPaheQuality(obj) {
+    const order = ['1080p', '720p', '480p', '360p'];
+    for (const q of order) if (obj[q]) return obj[q];
+    return Object.values(obj)[0] || null;
+}
+async function resolvePaheRawLinks(malId, episode) {
+    const key = `${malId}:${episode}`;
+    const cachedEntry = animeDownloadLinkCache.get(key);
+    if (cachedEntry && (Date.now() - cachedEntry.resolvedAt) < ANIME_DL_CACHE_TTL_MS) {
+        return { raw: cachedEntry.raw, cached: true };
+    }
+
+    // Third path segment is the unvalidated timestamp - any truthy value works.
+    const r = await axios.get(`${ANIME_DL_MAPPER_ORIGIN}/api/mal/${encodeURIComponent(malId)}/${encodeURIComponent(episode)}/1`, {
+        headers: {
+            'User-Agent': KINO_UA,
+            'Origin': 'https://anikoto.cz',
+            'Referer': 'https://anikoto.cz/',
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        timeout: 15000
+    });
+
+    // Shape: { "<Provider>": { sub: { download: { "360p": url, ... } }, dub: {...} }, status: {...} }
+    const providers = Object.keys(r.data || {}).filter(k => k !== 'status');
+    const merged = { sub: {}, dub: {} };
+    for (const prov of providers) {
+        for (const audio of ['sub', 'dub']) {
+            const dl = r.data[prov]?.[audio]?.download;
+            if (dl && typeof dl === 'object') {
+                // Keyed by quality ("360p"/"720p"/"1080p"), NOT by provider - a subtlety
+                // that already caused a bug in the existing Neko code path.
+                for (const [quality, url] of Object.entries(dl)) {
+                    if (typeof url === 'string' && url && !merged[audio][quality]) {
+                        const cleanUrl = await resolvePaheShortlink(url);
+                        merged[audio][quality] = cleanUrl;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!pickBestPaheQuality(merged.sub) && !pickBestPaheQuality(merged.dub)) {
+        throw new Error('no download links available for this episode');
+    }
+
+    const raw = { providers, sub: merged.sub, dub: merged.dub };
+    animeDownloadLinkCache.set(key, { raw, resolvedAt: Date.now() });
+    return { raw, cached: false };
+}
+
 app.get('/api/anime-download-links', async (req, res) => {
     const malId = String(req.query.malId || '').trim();
     const episode = String(req.query.episode || req.query.ep || '1').trim();
@@ -19520,12 +19577,9 @@ app.get('/api/anime-download-links', async (req, res) => {
         }
         return out;
     };
-    const pickBest = (obj) => {
-        const order = ['1080p', '720p', '480p', '360p'];
-        for (const q of order) if (obj[q]) return obj[q];
-        return Object.values(obj)[0] || null;
-    };
-    const respondFromRaw = (raw, cached) => {
+
+    try {
+        const { raw, cached } = await resolvePaheRawLinks(malId, episode);
         const proxiedSub = proxyQuality(raw.sub);
         const proxiedDub = proxyQuality(raw.dub);
         res.json({
@@ -19533,58 +19587,42 @@ app.get('/api/anime-download-links', async (req, res) => {
             providers: raw.providers,
             sub: proxiedSub,
             dub: proxiedDub,
-            bestSub: pickBest(proxiedSub),
-            bestDub: pickBest(proxiedDub),
+            bestSub: pickBestPaheQuality(proxiedSub),
+            bestDub: pickBestPaheQuality(proxiedDub),
             cached
         });
-    };
-
-    const key = `${malId}:${episode}`;
-    const cachedEntry = animeDownloadLinkCache.get(key);
-    if (cachedEntry && (Date.now() - cachedEntry.resolvedAt) < ANIME_DL_CACHE_TTL_MS) {
-        return respondFromRaw(cachedEntry.raw, true);
-    }
-
-    try {
-        // Third path segment is the unvalidated timestamp - any truthy value works.
-        const r = await axios.get(`${ANIME_DL_MAPPER_ORIGIN}/api/mal/${encodeURIComponent(malId)}/${encodeURIComponent(episode)}/1`, {
-            headers: {
-                'User-Agent': KINO_UA,
-                'Origin': 'https://anikoto.cz',
-                'Referer': 'https://anikoto.cz/',
-                'X-Requested-With': 'XMLHttpRequest'
-            },
-            timeout: 15000
-        });
-
-        // Shape: { "<Provider>": { sub: { download: { "360p": url, ... } }, dub: {...} }, status: {...} }
-        const providers = Object.keys(r.data || {}).filter(k => k !== 'status');
-        const merged = { sub: {}, dub: {} };
-        for (const prov of providers) {
-            for (const audio of ['sub', 'dub']) {
-                const dl = r.data[prov]?.[audio]?.download;
-                if (dl && typeof dl === 'object') {
-                    // Keyed by quality ("360p"/"720p"/"1080p"), NOT by provider - a subtlety
-                    // that already caused a bug in the existing Neko code path.
-                    for (const [quality, url] of Object.entries(dl)) {
-                        if (typeof url === 'string' && url && !merged[audio][quality]) {
-                            const cleanUrl = await resolvePaheShortlink(url);
-                            merged[audio][quality] = cleanUrl;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!pickBest(merged.sub) && !pickBest(merged.dub)) throw new Error('no download links available for this episode');
-
-        // Raw provider URLs only - see respondFromRaw above for why tokenizing happens per
-        // request instead of here.
-        const raw = { providers, sub: merged.sub, dub: merged.dub };
-        animeDownloadLinkCache.set(key, { raw, resolvedAt: Date.now() });
-        respondFromRaw(raw, false);
     } catch (err) {
         console.error('[Anime Downloads] Error:', err.message);
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// AnimePahe/Kiwi as a genuine STREAMING server (srvPaheEmbed1 / "AnimePahe", 2026-09-09) - not
+// the disabled SPD1 attempt above (that needed a third-party Cloudflare Worker,
+// download992.workers.dev, to extract a raw stream URL server-side; confirmed live that worker
+// is now broken - "Kwik link not found" on a link independently confirmed fresh and valid).
+// This takes the same approach that already works for MegaPlay's own raw-embed server
+// (srvMegaEmbed1): don't fight kwik.cx's Cloudflare challenge server-side at all, hand the
+// browser a session-bound redirect straight to kwik's own /e/ (embed) page and let it clear the
+// challenge the way it already does for every real AnimePahe viewer. Reuses
+// resolvePaheRawLinks() (same cache, same mapper call as the download route above) rather than
+// a second live resolve.
+app.get('/api/anime-pahe-embed', async (req, res) => {
+    const malId = String(req.query.malId || '').trim();
+    const episode = String(req.query.episode || req.query.ep || '1').trim();
+    const audio = String(req.query.lang || req.query.audio || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
+    if (!malId) return res.status(400).json({ ok: false, error: 'malId is required' });
+    try {
+        const { raw } = await resolvePaheRawLinks(malId, episode);
+        const picked = pickBestPaheQuality(raw[audio]) || pickBestPaheQuality(raw.sub) || pickBestPaheQuality(raw.dub);
+        if (!picked) throw new Error('no stream available for this episode');
+        // kwik.cx serves a download page at /f/{token} and a player-only page at /e/{token} for
+        // the exact same token - the embed route wants the latter (no download UI/chrome to
+        // fight, matches how animepahe.pw's own site embeds it).
+        const embedUrl = picked.replace('/f/', '/e/');
+        res.json({ ok: true, embedUrl: buildDownloadRedirectUrl(embedUrl, 'https://kwik.cx/', req.sessionId) });
+    } catch (err) {
+        console.error('[AnimePahe Embed] Error:', err.message);
         res.status(500).json({ ok: false, error: err.message });
     }
 });

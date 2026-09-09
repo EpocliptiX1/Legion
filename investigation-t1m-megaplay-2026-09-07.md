@@ -1334,3 +1334,59 @@ exchange for reliability + no ads.
 **Not yet verified:** whether the referrer trick actually skips the ad popunder in a real
 browser - that check is client-side JS (`document.referrer`) inside MegaPlay's own bundle, not
 something curl can observe. Needs a real live test.
+
+## Feature (2026-09-09): AnimePahe/Kiwi as a real streaming server, reusing the already-broken SPD1 groundwork
+
+User recalled a working AnimePahe integration once existed and flopped. Confirmed: the disabled
+`/api/anime-spd-log` block (see server.js, wrapped in a block comment) depended on a
+third-party, unmaintained Cloudflare Worker (`proud-dew-d754.download992.workers.dev`) to
+extract a raw stream URL from kwik.cx server-side, bypassing its own Cloudflare challenge.
+
+**Command (live-testing the still-active parts of the pipeline before touching any code):**
+```js
+// mapper.nekostream.site resolve (malId 52299, ep 1) -> real kwik.cx short links, both sub+dub
+// resolvePaheShortlink(shortLink) -> real kwik.cx/f/{token} URL
+// extractKwikStreamViaWorker(kwikUrl) -> the disabled worker
+```
+**Result:** mapper + shortlink resolve both still work fine, real sub AND dub links, all
+qualities. The worker itself: `500 "Kwik link not found"` on a link independently confirmed
+fresh and valid seconds earlier - the worker is broken, not the URL. Also independently
+reconfirmed raw `kwik.cx/f/...`/`kwik.cx/e/...` still return a genuine Cloudflare "Attention
+Required!" JS challenge to a plain server-side request - matches the existing code's own comment
+that this was never solvable server-side to begin with.
+
+**Same fix shape as MegaPlay's new raw-embed server (srvMegaEmbed1, same session): don't fight
+the challenge server-side at all - resolve everything we CAN do server-side (mapper +
+shortlink), then hand the browser a session-bound redirect straight to kwik's own `/e/{token}`
+embed page and let it clear the challenge the way it already does for every real AnimePahe
+viewer (the existing Kiwi DOWNLOAD buttons already rely on exactly this - unaffected by the
+broken worker the whole time).**
+
+**Built:**
+- `resolvePaheRawLinks(malId, episode)` - factored out of `/api/anime-download-links`'s own
+  inline logic (was duplicated once the embed route needed the identical data) - same cache
+  (`animeDownloadLinkCache`), same mapper call, shared by both routes now.
+- `GET /api/anime-pahe-embed?malId=&ep=&lang=` - picks the best quality for the requested
+  audio, converts `/f/` (download page) to `/e/` (player-only page, matches how animepahe.pw's
+  own site embeds it), wraps it via the existing `buildDownloadRedirectUrl` - returns a
+  session-bound `/api/download-redirect?token=...` URL, never the raw kwik.cx URL. Added to
+  `RESOLVE_GATED_PATHS` in both server.js and middleware.js.
+- `js/moviePlayer.js` - new anime server `srvPaheEmbed1` ("AnimePahe"). No wrapper HTML page
+  needed this time (unlike MegaPlay's - kwik.cx has no ad-referrer allowlist to game, just the
+  Cloudflare challenge) - `loadAnimePaheEmbedVideo()` runs the resolve fetch directly in
+  movieInfo's own JS (where the resolve-nonce-attaching window.fetch wrapper actually applies),
+  then points the shared `moviePlayerFrame` (via `showIframePlayer()`) straight at the returned
+  redirect URL. Added to `animeDubBtns` and the `serverInfo` tooltip map.
+
+**Verified live, full chain:** resolve-nonce gate correctly blocks an ungated request (`403
+Missing resolve nonce`); a properly-nonced request returns a real session-bound redirect URL;
+following that redirect lands on `302 -> https://kwik.cx/e/{token}`, a genuine live embed page.
+Everything server-side confirmed correct.
+
+**Not yet verified:** whether a real browser can actually clear kwik.cx's Cloudflare challenge
+inside OUR iframe and whether kwik.cx's real (post-challenge) content sends a restrictive
+`X-Frame-Options`/`frame-ancestors` that would block framing even then - the CHALLENGE page
+itself sends `X-Frame-Options: SAMEORIGIN`, but that's very likely just Cloudflare's own generic
+challenge-page template (animepahe.pw's own real site embeds this exact same kwik.cx content in
+iframes for its real users, so kwik.cx must allow framing from somewhere) - genuinely couldn't
+confirm this from a server-side test. Needs a live browser test.

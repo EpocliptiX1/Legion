@@ -10,7 +10,8 @@
         '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
         '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
         '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
-        '/api/t1m-servers', '/api/anime-vidvault-info', '/api/anime-vidvault-download'
+        '/api/t1m-servers', '/api/anime-vidvault-info', '/api/anime-vidvault-download',
+        '/api/anime-pahe-embed'
     ];
     let noncePromise = null;
     function ensureResolveNonce() {
@@ -1757,6 +1758,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             <button id="srvMega1" class="server-btn">MVP</button>
                             <button id="srvVr1" class="server-btn">VR</button>
                             <button id="srvMegaEmbed1" class="server-btn">MegaPlay</button>
+                            <button id="srvPaheEmbed1" class="server-btn">AnimePahe</button>
                         </div>
                         <div id="subDubToggleRow" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                             <button id="btnSub" class="audio-btn active">SUB</button>
@@ -2173,7 +2175,8 @@ document.addEventListener('DOMContentLoaded', function() {
             srvVrM: 'VR: HLS/MP4 stream, movies only',
             srvVrTv: 'VR: HLS/MP4 stream, TV shows only',
             srvVr1: 'VR: HLS/MP4 stream (no sub/dub toggle)',
-            srvMegaEmbed1: 'MegaPlay: MegaPlay\'s own raw player, no skip markers/quality picker - use MVP for that'
+            srvMegaEmbed1: 'MegaPlay: MegaPlay\'s own raw player, no skip markers/quality picker - use MVP for that',
+            srvPaheEmbed1: 'AnimePahe: AnimePahe\'s own raw player via kwik.cx, no skip markers/quality picker'
         };
         // function showLimitToast2(message) {
         //     const existing = document.querySelector('.limit-toast');
@@ -4106,6 +4109,42 @@ document.addEventListener('DOMContentLoaded', function() {
             return true;
         }
 
+        // AnimePahe's own RAW player (server=srvPaheEmbed1) - same idea as MegaPlay's raw embed
+        // above (their own player, no skip markers/quality picker, no proxy protection), but no
+        // wrapper page needed here - kwik.cx has no ad-referrer check to satisfy, just a
+        // Cloudflare challenge only a real browser can clear. The resolve step runs here (in
+        // movieInfo's own JS, where the resolve-nonce-attaching window.fetch wrapper at the top
+        // of this file actually applies) rather than in a separate iframe document, then the
+        // player frame navigates straight to the session-bound redirect URL the backend hands
+        // back - /api/anime-pahe-embed never returns the raw kwik.cx URL itself, only a token
+        // that 302s to it (same buildDownloadRedirectUrl pattern the existing Kiwi download
+        // buttons already use). See Backend/server.js's own comment on that route for why the
+        // disabled SPD1 attempt (a third-party Cloudflare Worker trying to extract a raw stream
+        // URL server-side) isn't what this uses - that worker is confirmed broken now anyway.
+        async function loadAnimePaheEmbedVideo(episode, audioType) {
+            const infoDiv = document.getElementById('serverInfoText');
+            if (!malId) {
+                if (infoDiv) infoDiv.textContent = 'AnimePahe: MAL ID unavailable for this title.';
+                return false;
+            }
+            const lang = audioType === 'dub' ? 'dub' : 'sub';
+            try {
+                const res = await fetch(`/api/anime-pahe-embed?malId=${encodeURIComponent(malId)}&ep=${encodeURIComponent(episode)}&lang=${lang}`);
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data?.ok || !data.embedUrl) {
+                    if (infoDiv) infoDiv.textContent = `AnimePahe: ${data?.error || 'Stream unavailable.'}`;
+                    return false;
+                }
+                showIframePlayer(data.embedUrl);
+                if (infoDiv) infoDiv.textContent = `AnimePahe: Loaded [${lang.toUpperCase()}] - their own player, no skip markers/quality picker.`;
+                return true;
+            } catch (err) {
+                console.error('[AnimePahe Embed] playback error:', err);
+                if (infoDiv) infoDiv.textContent = 'AnimePahe: Failed to load stream.';
+                return false;
+            }
+        }
+
         // Small anchored menu letting the user pick a quality instead of always getting the
         // best one - one instance reused for both RU movie and RU TV downloads. Built as a
         // plain positioned <div> (no existing dropdown component on this page to reuse) styled
@@ -4612,6 +4651,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 url = '__async__';
                 const audioType = currentAudioMode === 'dub' ? 'dub' : 'sub';
                 loadMegaplayEmbedVideo(e, audioType);
+            } else if (logicalServer === 'srvPaheEmbed1') {
+                url = '__async__';
+                showIframePlayer('about:blank');
+                const infoDiv = document.getElementById('serverInfoText');
+                if (infoDiv) infoDiv.textContent = 'AnimePahe: Loading...';
+                const audioType = currentAudioMode === 'dub' ? 'dub' : 'sub';
+                loadAnimePaheEmbedVideo(e, audioType).then(ok => {
+                    if (!ok && infoDiv) infoDiv.textContent = 'AnimePahe: Failed to load. Try another source.';
+                });
             }
 
             if (isAnime && currentAudioMode === 'dub' && url && url !== '__async__') {
@@ -5648,7 +5696,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const moviesBtns = new Set(['server2embed', 'srvMega', 'srvUp', 'srvT', 'serverSuperembed', 'srvMoviesApiM', 'srv111MoviesM', 'srvRuMovie', 'srvKino', 'srvT1mM', 'srvVrM']);
         const animeTVBtns = new Set(['srvKinoTv', 'srvMegaTV', 'srvRuTv', 'srvUpTV', 'srvTTV', 'srvMoviesApi', 'srv111Movies', 'srvT1mTV', 'srvVrTv']);
-        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1', 'srvVr1', 'srvMegaEmbed1']);
+        const animeDubBtns = new Set(['srvMega1', 'srvPahe1', 'srvNeko1', 'srvNew1', 'srvVr1', 'srvMegaEmbed1', 'srvPaheEmbed1']);
         const sectionToasts = {
             movies: 'ⓘ Currently supports movies and a few series',
             animeTV: 'ⓘ Currently supports nearly all series and animes. Sub/dub switching may be unstable for most anime titles.',
