@@ -128,8 +128,7 @@ const RESOLVE_GATED_PATHS = [
     '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
     // Kept in sync with server.js's own RESOLVE_GATED_PATHS - see that file's comment for why
     // VidVault's two routes joined this list.
-    '/api/anime-vidvault-info', '/api/anime-vidvault-download',
-    '/api/anime-pahe-embed'
+    '/api/anime-vidvault-info', '/api/anime-vidvault-download'
 ];
 const resolveLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
