@@ -1933,7 +1933,7 @@ const RESOLVE_GATED_PATHS = [
     '/api/anime-kaa-servers', '/api/anime-megaplay-log', '/api/anime-neko-log',
     '/api/movie-kino-log', '/api/tv-kino-log', '/api/movie-ru-log', '/api/tv-ru-log',
     '/api/anime-download-links', '/api/movie-ru-download', '/api/tv-ru-download',
-    '/api/t1m-servers',
+    '/api/t1m-servers', '/api/anime-allanime-log',
     // VidVault ("VidV") - direct-file downloads, added 2026-09-08. Same gap as every route
     // above before this list existed: no login, no per-request cost beyond CPU/bandwidth, an
     // unauthenticated script could otherwise pull the whole catalog through these two routes
@@ -18230,6 +18230,383 @@ app.get('/api/tv-kino-log', async (req, res) => {
 // entry per named server (Nova/Atlas/Luna/Orion/Astra seen so far, varies by title):
 //   { "<name>": { url: "<AES-256-GCM ciphertext, base64url>", language, flag, type: "hls"|"mp4" } }
 // or { url: null, type: null } for a server with nothing for this title - not an error.
+// --- AllAnime (mkissa.to / api.mkissa.net) - real, separately-maintained anime source ---------
+// Own encrypted API (GraphQL-shaped, persisted queries + a signed, time-boxed request token for
+// episode-source lookups), own CDN (Akamai-fronted Bilibili mirrors) - genuinely independent from
+// every other provider in this file. Ported from anipy-cli's own real, currently-maintained
+// Python provider (github.com/sdaqo/anipy-cli) - see allanime-provider-scheme.md for the full,
+// reproducible step-by-step recipe this is built from, and investigation-allanime-2026-09-09.md
+// for the trail (including why the reference project's own auto-generated key feed can't be
+// trusted directly - stale since 2026-08-03 as of this writing).
+//
+// The crypto values below (build_id/lane/epoch/query_hash/AES key) rotate - epoch on a real,
+// known ~weekly schedule the site itself reports (see allanimeCryptoState.switchAt), build_id/
+// query_hash unpredictably whenever the site deploys. Refreshed via allanimeCaptureCrypto()
+// below: a TRANSIENT (launch -> capture -> close, never kept running) headless Puppeteer session
+// that hooks the real page's own SubtleCrypto calls rather than statically deobfuscating their
+// JS - see the scheme doc for why. Scheduled at the real switchAt boundary, plus reactive
+// refresh on any AA_CRYPTO_STALE/PersistedQueryNotFound seen from real traffic.
+const ALLANIME_API_URL = 'https://api.mkissa.net/api';
+const ALLANIME_DAY_ORIGIN = 'https://allanime.day';
+const ALLANIME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+// Search/info use fixed persisted-query hashes that (unlike get_video's) have not needed
+// re-deriving during this investigation - if they ever start failing with
+// PersistedQueryNotFound too, re-derive them the same way allanimeResolveQueryHash() does below.
+const ALLANIME_SEARCH_QUERY_HASH = 'a24c500a1b765c68ae1d8dd85174931f661c71369c89b92b88b75a725afc471c';
+const ALLANIME_INFO_QUERY_HASH = '043448386c7a686bc2aabfbb6b80f6074e795d350df48015023b079527b0848a';
+const ALLANIME_PROVIDERS_ALLOWLIST = new Set(['Yt-mp4', 'S-Mp4', 'Uv-mp4', 'Luf-Mp4', 'Ak', 'Default', 'Mp4']);
+
+let allanimeCryptoState = null; // { buildId, lane, epoch, queryHash, keyHex, switchAt, capturedAt }
+let allanimeCryptoRefreshPromise = null; // collapses concurrent refreshes into one in-flight capture
+let allanimeCryptoRefreshTimer = null;
+
+function allanimeXorDecrypt(providerId) {
+    let out = '';
+    for (let i = 0; i < providerId.length; i += 2) {
+        out += String.fromCharCode(parseInt(providerId.slice(i, i + 2), 16) ^ 56);
+    }
+    return out;
+}
+
+// Pure-static extraction (no browser needed) - resolves the get_video GraphQL query's own
+// template-literal interpolations against other variables/helper functions in the same JS chunk,
+// then SHA256s the fully-resolved text. Direct port of keygen.py's own source_query_hash().
+function allanimeResolveQueryHash(chunkJs) {
+    const templates = [...chunkJs.matchAll(/(\nquery\([^`]*)`/g)].map(m => m[1]);
+    const template = templates.find(t => t.includes('sourceUrls') && t.includes('episode('));
+    if (!template) throw new Error('AllAnime: query template not found in chunk - site JS structure likely changed');
+
+    function resolve(tmpl, depth) {
+        if (depth > 6) return tmpl;
+        for (const name of [...tmpl.matchAll(/\$\{([^}]+)\}/g)].map(m => m[1])) {
+            let repl = '';
+            if (name.endsWith('()')) {
+                const fnName = name.slice(0, -2).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const fn = chunkJs.match(new RegExp(fnName + '\\s*=\\s*\\w+\\s*=>\\s*\\w+\\s*\\?\\s*`[^`]*`\\s*:\\s*`([^`]*)`'));
+                repl = fn ? resolve(fn[1], depth + 1) : '';
+            } else {
+                const escName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const v = chunkJs.match(new RegExp(escName + '\\s*=\\s*`([^`]*)`'));
+                repl = v ? resolve(v[1], depth + 1) : '';
+            }
+            tmpl = tmpl.split('${' + name + '}').join(repl);
+        }
+        return tmpl;
+    }
+
+    const query = resolve(template, 0);
+    if (query.includes('${')) throw new Error('AllAnime: unresolved query interpolation remains');
+    return crypto.createHash('sha256').update(query).digest('hex');
+}
+
+function allanimeBuildAareq({ buildId, lane, epoch, queryHash, keyHex }) {
+    const ts = Math.floor(Date.now() / 300000) * 300000;
+    const payload = JSON.stringify({ v: 1, ts, epoch, buildId, qh: queryHash, k: lane });
+    const iv = crypto.createHash('sha256').update(`${epoch}:${queryHash}:${ts}`).digest().subarray(0, 12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(keyHex, 'hex'), iv);
+    const ciphertext = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return Buffer.concat([Buffer.from([1]), iv, ciphertext, tag]).toString('base64');
+}
+
+function allanimeDecryptTobeparsed(tbp, keyHex) {
+    const raw = Buffer.from(tbp, 'base64');
+    const iv = raw.subarray(1, 13), ciphertext = raw.subarray(13, raw.length - 16), tag = raw.subarray(raw.length - 16);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(keyHex, 'hex'), iv);
+    decipher.setAuthTag(tag);
+    return JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8'));
+}
+
+// Raw call, no retry/refresh logic - used both by the real resolver below and to validate a
+// freshly-captured key before trusting it.
+async function allanimeGetVideoRaw({ showId, episodeString, translationType }, cryptoState) {
+    const aareq = allanimeBuildAareq(cryptoState);
+    const variables = { showId, translationType, episodeString };
+    const extensions = { persistedQuery: { version: 1, sha256Hash: cryptoState.queryHash }, aaReq: aareq, k: cryptoState.lane };
+    const res = await axios.get(ALLANIME_API_URL, {
+        params: { variables: JSON.stringify(variables), extensions: JSON.stringify(extensions) },
+        headers: { Referer: 'https://mkissa.to', Origin: 'https://mkissa.to', 'x-build-id': cryptoState.buildId, 'User-Agent': ALLANIME_UA },
+        timeout: 10000
+    });
+    if (res.data?.errors) {
+        const err = new Error(res.data.errors[0]?.message || 'AllAnime get_video error');
+        err.allanimeCode = res.data.errors[0]?.extensions?.code;
+        throw err;
+    }
+    let data = res.data.data;
+    if (data.tobeparsed) data = allanimeDecryptTobeparsed(data.tobeparsed, cryptoState.keyHex);
+    if (!data.episode) throw new Error('AllAnime: no episode data in response');
+    return data.episode;
+}
+
+async function allanimeTestKey(candidateState) {
+    try {
+        await allanimeGetVideoRaw({ showId: 'B6AMhLy6EQHDgYgBF', episodeString: '1', translationType: 'sub' }, candidateState);
+        return true;
+    } catch (err) {
+        return false;
+    }
+}
+
+function allanimeScheduleNextRefresh() {
+    clearTimeout(allanimeCryptoRefreshTimer);
+    if (!allanimeCryptoState) return;
+    // A safety margin before the real switchAt boundary, clamped to a sane [1h, 7d] range in
+    // case switchAt is ever missing or garbage - never fires immediately, never waits forever.
+    const delay = Math.min(Math.max(allanimeCryptoState.switchAt - Date.now() - 6 * 60 * 60 * 1000, 60 * 60 * 1000), 7 * 24 * 60 * 60 * 1000);
+    allanimeCryptoRefreshTimer = setTimeout(() => {
+        allanimeEnsureCrypto(true).catch(err => console.warn('[AllAnime] scheduled crypto refresh failed:', err.message));
+    }, delay).unref();
+}
+
+// Transient Puppeteer capture - launched fresh, closed immediately after, never kept running.
+// Only runs on the real ~weekly switchAt schedule plus reactive stale-signal triggers, so the
+// real per-launch Chromium cost stays a small, infrequent spike rather than a standing
+// background load (a lighter Node vm-sandbox alternative was considered - real, but carries
+// more engineering risk than this box's infrequent-enough usage here justifies; see the scheme
+// doc's own notes).
+async function allanimeCaptureCrypto() {
+    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+    try {
+        const page = await browser.newPage();
+        await page.setUserAgent(ALLANIME_UA);
+
+        await page.evaluateOnNewDocument(() => {
+            window.__allanimeCryptoLog = [];
+            const origImportKey = SubtleCrypto.prototype.importKey;
+            SubtleCrypto.prototype.importKey = function (format, keyData, algorithm, extractable, usages) {
+                try {
+                    const bytes = keyData instanceof ArrayBuffer ? new Uint8Array(keyData) : new Uint8Array(keyData.buffer || keyData);
+                    if (algorithm?.name === 'AES-GCM' && bytes.length === 32) {
+                        window.__allanimeCryptoLog.push(Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''));
+                    }
+                } catch (e) {}
+                return origImportKey.apply(this, arguments);
+            };
+        });
+
+        let buildId = null, lane = null, bootstrapData = null;
+        page.on('request', req => {
+            const hdrs = req.headers();
+            if (hdrs['x-build-id']) buildId = hdrs['x-build-id'];
+            const laneMatch = req.url().match(/[?&]k=(k[0-9]+)/);
+            if (laneMatch) lane = laneMatch[1];
+        });
+        page.on('response', async res => {
+            if (/client-crypto\/v1\/bootstrap/i.test(res.url())) {
+                try { bootstrapData = await res.json(); } catch (e) {}
+            }
+        });
+
+        // Any real anime page triggers the same bootstrap + key-import flow - this id (Solo
+        // Leveling on AllAnime) is just a fixed, known-real probe target, not special in any
+        // other way. If it ever leaves their catalog, swap for any other real show id.
+        await page.goto('https://mkissa.to/anime/B6AMhLy6EQHDgYgBF', { waitUntil: 'networkidle2', timeout: 30000 });
+
+        const cryptoLog = await page.evaluate(() => window.__allanimeCryptoLog).catch(() => []);
+        const candidateKeys = [...new Set(cryptoLog)];
+        if (!buildId || !lane || !bootstrapData || !candidateKeys.length) {
+            throw new Error(`AllAnime crypto capture incomplete: buildId=${buildId} lane=${lane} bootstrap=${!!bootstrapData} keys=${candidateKeys.length}`);
+        }
+
+        // query_hash: pure static extraction, no further browser interaction needed - fetch the
+        // site's current JS directly (same target-chunk heuristic as build_id/lane above).
+        const html = await axios.get('https://mkissa.to/', { headers: { 'User-Agent': ALLANIME_UA }, timeout: 10000 }).then(r => r.data);
+        const appMatch = html.match(/\/entry\/app\.[A-Za-z0-9_.-]+\.js/);
+        if (!appMatch) throw new Error('AllAnime: app.js reference not found on mkissa.to root - site structure likely changed');
+        const appJs = await axios.get(`https://cdn.mkissa.net/all/mk/_app/immutable${appMatch[0]}`, { headers: { 'User-Agent': ALLANIME_UA }, timeout: 10000 }).then(r => r.data);
+        const chunkPaths = [...appJs.matchAll(/"\.\.\/(chunks\/[A-Za-z0-9_.-]+\.js)"/g)].map(m => m[1]).slice(0, 5);
+        let queryHash = null;
+        for (const chunkPath of chunkPaths) {
+            const chunkJs = await axios.get(`https://cdn.mkissa.net/all/mk/_app/immutable/${chunkPath}`, { headers: { 'User-Agent': ALLANIME_UA }, timeout: 10000 }).then(r => r.data);
+            if (!(chunkJs.includes('VaildTranslationTypeEnumType') || chunkJs.includes('x-aa-boot'))) continue;
+            try { queryHash = allanimeResolveQueryHash(chunkJs); break; } catch (e) { /* try the next candidate chunk */ }
+        }
+        if (!queryHash) throw new Error('AllAnime: could not resolve query_hash from any candidate chunk - site JS structure likely changed');
+
+        // Test each captured key against a real request, keep whichever actually works - the
+        // page-load flow can import a key that's already about to be (or already is) superseded.
+        for (const keyHex of candidateKeys) {
+            const candidate = { buildId, lane, epoch: bootstrapData.epoch, queryHash, keyHex };
+            if (await allanimeTestKey(candidate)) {
+                allanimeCryptoState = {
+                    ...candidate,
+                    switchAt: bootstrapData.switchAt || (Date.now() + 6 * 24 * 60 * 60 * 1000),
+                    capturedAt: Date.now()
+                };
+                console.log('[AllAnime] crypto refreshed OK', { buildId, lane, epoch: bootstrapData.epoch, switchAt: allanimeCryptoState.switchAt });
+                allanimeScheduleNextRefresh();
+                return allanimeCryptoState;
+            }
+        }
+        throw new Error('AllAnime: none of the captured keys validated against a real request');
+    } finally {
+        await browser.close().catch(() => {});
+    }
+}
+
+// Lazily ensures fresh crypto state exists, collapsing concurrent callers into one real refresh
+// rather than launching several Puppeteer instances at once if multiple requests arrive together.
+async function allanimeEnsureCrypto(forceRefresh = false) {
+    if (allanimeCryptoState && !forceRefresh) return allanimeCryptoState;
+    if (allanimeCryptoRefreshPromise) return allanimeCryptoRefreshPromise;
+    allanimeCryptoRefreshPromise = allanimeCaptureCrypto().finally(() => { allanimeCryptoRefreshPromise = null; });
+    return allanimeCryptoRefreshPromise;
+}
+
+// Real resolver - ensures fresh crypto, retries once with a forced refresh if the site itself
+// reports the crypto as stale (its own explicit signal, not a guess).
+async function allanimeGetVideo(showId, episodeString, translationType) {
+    let cryptoState = await allanimeEnsureCrypto();
+    try {
+        return await allanimeGetVideoRaw({ showId, episodeString, translationType }, cryptoState);
+    } catch (err) {
+        if (err.allanimeCode === 'AA_CRYPTO_STALE' || /PersistedQueryNotFound/i.test(err.message)) {
+            console.warn('[AllAnime] crypto reported stale by a real request, forcing refresh:', err.message);
+            cryptoState = await allanimeEnsureCrypto(true);
+            return await allanimeGetVideoRaw({ showId, episodeString, translationType }, cryptoState);
+        }
+        throw err;
+    }
+}
+
+async function allanimeSearch(query) {
+    const variables = { search: { query }, limit: 26, page: 1, translationType: 'sub', countryOrigin: 'ALL' };
+    const extensions = { persistedQuery: { version: 1, sha256Hash: ALLANIME_SEARCH_QUERY_HASH } };
+    const res = await axios.post(ALLANIME_API_URL, { variables, extensions }, {
+        params: { variables: JSON.stringify(variables), extensions: JSON.stringify(extensions) },
+        headers: { Referer: 'https://allmanga.to/', 'Content-Type': 'application/json' },
+        timeout: 10000
+    });
+    return res.data?.data?.shows?.edges || [];
+}
+
+async function allanimeGetInfo(showId) {
+    const variables = { _id: showId };
+    const extensions = { persistedQuery: { version: 1, sha256Hash: ALLANIME_INFO_QUERY_HASH } };
+    const res = await axios.post(ALLANIME_API_URL, { variables: JSON.stringify(variables), extensions: JSON.stringify(extensions) }, {
+        params: { variables: JSON.stringify(variables), extensions: JSON.stringify(extensions) },
+        headers: { Referer: 'https://allmanga.to/' }, timeout: 10000
+    });
+    return res.data?.data?.show || null;
+}
+
+// AllAnime's search results only carry the native/romaji `name` (confirmed live - no
+// englishName on the search edges themselves), but this codebase's own titles are almost always
+// English (TMDB-sourced) - a plain name-similarity match against search results alone would
+// pick badly for most titles (e.g. "Solo Leveling" vs "Ore dake Level Up na Ken" score near
+// zero). Fetches get_info for the top few loosely-ranked candidates (which DOES carry
+// englishName/nativeName/altNames) and re-scores against those too - a bounded number of extra
+// round trips, only paid once per NEW title thanks to the caller's own cache.
+async function allanimeFindBestMatch(title) {
+    const results = await allanimeSearch(title);
+    if (!results.length) return null;
+    const lowerTitle = title.toLowerCase();
+
+    const roughlyScored = results.map(r => ({
+        r, score: stringSimilarity.compareTwoStrings(lowerTitle, (r.name || '').toLowerCase())
+    })).sort((a, b) => b.score - a.score);
+
+    const topCandidates = roughlyScored.slice(0, 5);
+    let best = null, bestScore = -1;
+    for (const { r } of topCandidates) {
+        let score = stringSimilarity.compareTwoStrings(lowerTitle, (r.name || '').toLowerCase());
+        try {
+            const info = await allanimeGetInfo(r._id);
+            const altNames = [info?.name, info?.englishName, info?.nativeName, ...(info?.alternative_names || [])]
+                .filter(Boolean).map(n => n.toLowerCase());
+            for (const alt of altNames) score = Math.max(score, stringSimilarity.compareTwoStrings(lowerTitle, alt));
+        } catch (e) { /* fall back to the rough name-only score for this candidate */ }
+        if (score > bestScore) { bestScore = score; best = r; }
+    }
+    return bestScore >= 0.4 ? { show: best, score: bestScore } : null;
+}
+
+// Resolves ONE episode's XOR-obfuscated sourceUrl into real, directly-fetchable CDN URLs -
+// separate video-only/audio-only fMP4 files (Bilibili-style DASH), not a single combined
+// stream. Tries every allowlisted provider in order rather than assuming "Ak" (seen most often
+// in testing) is always present or always the first one offered.
+async function allanimeResolveSource(episode) {
+    for (const provider of episode.sourceUrls || []) {
+        if (!ALLANIME_PROVIDERS_ALLOWLIST.has(provider.sourceName)) continue;
+        try {
+            if (provider.sourceUrl.includes('tools.fast4speed.rsvp')) {
+                // Already a direct, ready-to-use URL - confirmed short-lived (can 404 within
+                // minutes of being minted), so the caller must use this immediately, never cache it.
+                return { videoUrl: provider.sourceUrl, audioUrl: null, qualities: [], subtitles: [], provider: provider.sourceName };
+            }
+            const decryptedPath = allanimeXorDecrypt(provider.sourceUrl.replace(/--/g, '')).replace('clock', 'clock.json');
+            const clockRes = await axios.get(`${ALLANIME_DAY_ORIGIN}${decryptedPath}`, {
+                headers: { Referer: `${ALLANIME_DAY_ORIGIN}/` }, timeout: 10000
+            });
+            const link = clockRes.data?.links?.[0];
+            if (!link) continue;
+
+            if (link.dash && link.rawUrls) {
+                const vids = (link.rawUrls.vids || []).slice().sort((a, b) => (b.height || 0) - (a.height || 0));
+                const audios = (link.rawUrls.audios || []).slice().sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0));
+                // Prefer a widely-supported codec (avc1/h264) over hevc for the default pick -
+                // browser HEVC/MSE support is inconsistent, h264 is universally safe.
+                const h264Vids = vids.filter(v => /avc1/i.test(v.codecs || ''));
+                const bestVideo = h264Vids[0] || vids[0];
+                const bestAudio = audios[0];
+                if (!bestVideo) continue;
+                return {
+                    videoUrl: bestVideo.url, audioUrl: bestAudio?.url || null,
+                    qualities: (h264Vids.length ? h264Vids : vids).map(v => ({ url: v.url, height: v.height, codecs: v.codecs })),
+                    subtitles: (link.subtitles || []).map(s => ({ lang: s.lang, label: s.label, url: s.src, default: !!s.default })),
+                    duration: link.rawUrls.duration, provider: provider.sourceName
+                };
+            }
+            if (link.link) {
+                return {
+                    videoUrl: link.link, audioUrl: null, qualities: [],
+                    subtitles: (link.subtitles || []).map(s => ({ lang: s.lang, label: s.label, url: s.src, default: !!s.default })),
+                    provider: provider.sourceName
+                };
+            }
+        } catch (err) {
+            console.warn(`[AllAnime] provider ${provider.sourceName} failed to resolve:`, err.message);
+            // try the next allowlisted provider
+        }
+    }
+    return null;
+}
+
+const allanimeShowIdCache = new Map(); // `${malId||title}` -> { showId, resolvedAt }
+const ALLANIME_SHOWID_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+app.get('/api/anime-allanime-log', async (req, res) => {
+    const title = String(req.query.title || '').trim();
+    const malId = String(req.query.malId || '').trim();
+    const episode = String(req.query.ep || req.query.episode || '1').trim();
+    const lang = String(req.query.lang || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
+    if (!title) return res.status(400).json({ ok: false, error: 'title is required' });
+
+    try {
+        const cacheKey = malId || title.toLowerCase();
+        let showId;
+        const cached = allanimeShowIdCache.get(cacheKey);
+        if (cached && (Date.now() - cached.resolvedAt) < ALLANIME_SHOWID_CACHE_TTL_MS) {
+            showId = cached.showId;
+        } else {
+            const match = await allanimeFindBestMatch(title);
+            if (!match) throw new Error(`No confident AllAnime match found for "${title}"`);
+            showId = match.show._id;
+            allanimeShowIdCache.set(cacheKey, { showId, resolvedAt: Date.now() });
+        }
+
+        const episodeData = await allanimeGetVideo(showId, episode, lang);
+        const resolved = await allanimeResolveSource(episodeData);
+        if (!resolved) throw new Error('No playable AllAnime source found for this episode');
+
+        res.json({ ok: true, ...resolved, showId });
+    } catch (err) {
+        console.error('[AllAnime Log] Error:', err.message);
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
 const VIDROCK_ORIGIN = 'https://vidrock.net';
 const VIDROCK_REFERER = 'https://vidrock.net/';
 // Static key, found in plaintext in vidrock's own client bundle (assets/index-*.js) - decodes
