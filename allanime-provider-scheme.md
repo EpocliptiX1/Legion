@@ -400,12 +400,32 @@ implementation.
 
 ---
 
-## Part 6 — what's still unbuilt (as of 2026-09-09, see the investigation doc's own status section)
+## Part 6 — what got built (same session, after this runbook was first written)
 
-Everything above is proven, real, working code — but it lived in disposable one-off scripts
-during this investigation, not in `Backend/server.js`. Turning it into a real site feature still
-needs: a periodic Puppeteer refresh job (re-running Part 3 on a schedule, caching the results,
-since they rotate — this is exactly the job the upstream project's own now-dead CI used to do),
-a clean Node port of Parts 1/4/5 as real backend routes, and player-side handling for DASH-shaped
-multi-quality responses (most other providers in this codebase hand back one HLS URL; AllAnime
-hands back several raw quality-specific MP4 URLs instead).
+Everything in Parts 1–5 is now real, committed code, not disposable scripts:
+- `Backend/server.js` — `allanimeCaptureCrypto()` (Part 3b, transient Puppeteer),
+  `allanimeResolveQueryHash()` (Part 3c), `allanimeGetVideo()`/`allanimeGetVideoRaw()` (Part 4),
+  `allanimeResolveSource()` (Part 5), `allanimeSearch()`/`allanimeGetInfo()`/
+  `allanimeFindBestMatch()` (Part 1, plus englishName-aware re-scoring since this codebase's own
+  titles are English and AllAnime's search only returns romaji names), and the real route,
+  `GET /api/anime-allanime-log?title=&malId=&ep=&lang=`. Gated in `RESOLVE_GATED_PATHS` in both
+  `server.js` and `middleware.js`, same as every other internal resolver on this site.
+- `js/moviePlayer.js` — `srvAllAnime1`/"AllAnime" server button. `loadAllanimeVideo()` calls the
+  route above; `showAllanimeMsePlayer()` does the actual MediaSource Extensions playback (two
+  `SourceBuffer`s, one video one audio, each fed a single complete `fetch().arrayBuffer()` since
+  the URLs are whole files not time-chunked segments — confirmed in Part 5 above). Wraps the
+  same shared `<video>` element with Plyr, same as every other provider on the page.
+
+**Known, deliberate gaps in what shipped:** no subtitle rendering (AllAnime's tracks are ASS
+format — this codebase only has a real ASS/libass renderer in the offline ffmpeg.wasm download
+path, not for live playback), no download support wired up for this source, and no
+quality-switching UI (the resolver always picks the best available h264 quality automatically -
+`qualities[]` is returned by the backend and available for a future picker, just not surfaced
+yet).
+
+**Genuinely not yet verified:** real playback in an actual browser. The backend is independently
+proven correct (byte-verified real video via a direct curl test - see the investigation doc's
+final follow-up), but the client-side MSE wiring itself (SourceBuffer setup, codec matching,
+Plyr wrapping) has not been click-tested live - the Browser preview tool available this session
+cannot reach `https://localhost:3000`, a pre-existing, unrelated limitation. Needs a real user
+test before this can be called fully done.

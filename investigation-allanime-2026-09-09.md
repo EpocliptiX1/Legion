@@ -197,13 +197,21 @@ dependency being the site's own occasionally-changing internals (which the upstr
 own multi-month issue history shows happens every few weeks, requiring re-capture - a real
 ongoing maintenance cost, flagged to the user and accepted before starting this).
 
-**Not yet done (next session's work):**
-- A periodic (Puppeteer-based) background refresh job to keep `build_id`/`lane`/`epoch`/
-  `query_hash`/the AES key fresh automatically, rather than the values captured today going
-  stale the same way the upstream project's own abandoned feed did.
-- A clean Node.js port of the full pipeline as real `Backend/server.js` code (today's work was
-  all disposable one-off test scripts in `Backend/_*.js`, not committed).
-- Player integration - a new anime server, and specifically handling that AllAnime's real
-  response is DASH-shaped (`rawUrls.vids[]`, multiple quality URLs) rather than a single HLS
-  playlist like most other providers here - needs a different consumption path than the usual
-  `showVideoPlayer(m3u8Url, ...)` call.
+**Update, same session: all three "not yet done" items below were actually built and shipped.**
+- `allanimeCaptureCrypto()`/`allanimeEnsureCrypto()`/`allanimeScheduleNextRefresh()` in
+  `Backend/server.js` - the transient-Puppeteer refresh job, scheduled at the real `switchAt`
+  boundary plus reactive refresh on `AA_CRYPTO_STALE`/`PersistedQueryNotFound`.
+- `GET /api/anime-allanime-log` - the real Node port of the whole pipeline (search with
+  englishName-aware matching, get_video, decrypt, provider resolve). Verified live through the
+  real running route: cold capture ~28s (one-time, not per-request), subsequent calls ~3s.
+- `srvAllAnime1`/"AllAnime" in `js/moviePlayer.js` - a real MediaSource Extensions player
+  (separate video/audio SourceBuffers, since AllAnime hands back split DASH-style files, not one
+  HLS URL). No subtitle rendering yet (AllAnime's tracks are ASS, no live-playback renderer
+  exists in this codebase yet) and no download support - both deliberate, flagged gaps, not
+  oversights.
+
+**Genuinely not yet done:** the MSE player's client-side JS has NOT been verified in a real
+browser - the Browser preview tool available this session cannot reach `https://localhost:3000`
+(a pre-existing, unrelated limitation). The backend is independently proven correct (byte-verified
+real video bytes via curl); what's unconfirmed is specifically whether the SourceBuffer/codec/Plyr
+wiring on the frontend actually plays back correctly - needs a real live click-test.
