@@ -5009,6 +5009,64 @@ function activityAll(query, params) {
     });
 }
 
+// --- Central AniList gateway ------------------------------------------------------------------
+// Every graphql.anilist.co call in this file goes through anilistPost(). One place to put the
+// circuit breaker (below) and, later, the withAniListFallback() wrapper.
+//
+// AniList's API has been returning HTTP 403 "The AniList API has been temporarily disabled due
+// to severe stability issues." to datacenter-classified IPs for an open-ended stretch (their
+// own words; confirmed live). It's a deliberate "we turned it off", not a per-request rate
+// limit. Without a breaker every timer tick and cache miss re-hits it - log spam, wasted
+// latency, pointless load. On that signal we park ALL AniList calls for the cooldown and fail
+// fast; the first call after the cooldown is let through to probe for recovery, and any success
+// resets the breaker immediately.
+const ANILIST_ENDPOINT = 'https://graphql.anilist.co';
+const ANILIST_BREAKER_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+let _anilistBreakerUntil = 0;
+let _anilistBreakerReason = '';
+
+function anilistBreakerOpen() {
+    return Date.now() < _anilistBreakerUntil;
+}
+function tripAnilistBreaker(reason) {
+    const firstTrip = !anilistBreakerOpen();
+    _anilistBreakerUntil = Date.now() + ANILIST_BREAKER_COOLDOWN_MS;
+    _anilistBreakerReason = reason;
+    if (firstTrip) console.warn(`[AniList] circuit breaker OPEN for ${ANILIST_BREAKER_COOLDOWN_MS / 60000}min - ${reason}`);
+}
+function resetAnilistBreaker() {
+    if (_anilistBreakerUntil) console.log('[AniList] circuit breaker reset - API is responding again');
+    _anilistBreakerUntil = 0;
+    _anilistBreakerReason = '';
+}
+
+// Drop-in for `axios.post(ANILIST_ENDPOINT, body, cfg)` - returns the same axios response shape
+// (callers keep reading `response.data`). Throws with `err.anilistBreakerOpen = true` (no
+// `err.response`) while the breaker is open, so retry loops that key off `err.response.status`
+// naturally stop instead of hammering.
+async function anilistPost(body, { timeout = 15000 } = {}) {
+    if (anilistBreakerOpen()) {
+        const err = new Error(`AniList circuit breaker open: ${_anilistBreakerReason}`);
+        err.anilistBreakerOpen = true;
+        throw err;
+    }
+    try {
+        const response = await axios.post(ANILIST_ENDPOINT, body, {
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            timeout
+        });
+        resetAnilistBreaker();
+        return response;
+    } catch (err) {
+        const status = err.response?.status;
+        const bodyStr = JSON.stringify(err.response?.data || '');
+        if (status === 403 && /temporarily disabled|stability issues/i.test(bodyStr)) {
+            tripAnilistBreaker(`403 "${(err.response?.data?.errors?.[0]?.message || 'temporarily disabled').slice(0, 90)}"`);
+        }
+        throw err;
+    }
+}
+
 // Resolves a TMDB id to {anilistId} only if it's a known anime, using the same
 // resolver the rest of the site trusts (Fribb mapping -> cache -> Jikan lookup).
 async function resolveAnilistIdIfAnime(tmdbId) {
@@ -5077,18 +5135,14 @@ async function generateNewEpisodeNotifications(userUID) {
 
         let info;
         try {
-            const response = await axios.post(
-                'https://graphql.anilist.co',
-                {
+            const response = await anilistPost({
                     query: `query ($id: Int) { Media(id: $id, type: ANIME) {
                         title { romaji english native }
                         coverImage { large }
                         nextAiringEpisode { airingAt episode }
                     } }`,
                     variables: { id: anilistId }
-                },
-                { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }
-            );
+                }, { timeout: 15000 });
             info = response.data?.data?.Media;
         } catch (err) {
             console.warn('[Notifications] AniList nextAiringEpisode lookup failed', err.message);
@@ -8539,21 +8593,12 @@ async function searchAniListByTitle(title, year) {
         }
     `;
 
-    const response = await axios.post(
-        'https://graphql.anilist.co',
-        {
+    const response = await anilistPost({
             query,
             variables: {
                 search: title
             }
-        },
-        {
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            }
-        }
-    );
+        });
 
     const results = response.data?.data?.Page?.media || [];
     if (!Array.isArray(results) || results.length === 0) return null;
@@ -8935,11 +8980,7 @@ async function backfillAnimeCacheEnrichment() {
 
     const ids = rows.map(r => r.anilist_id);
     try {
-        const response = await axios.post(
-            'https://graphql.anilist.co',
-            { query: ANIME_CACHE_ENRICHMENT_QUERY, variables: { ids } },
-            { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 20000 }
-        );
+        const response = await anilistPost({ query: ANIME_CACHE_ENRICHMENT_QUERY, variables: { ids } }, { timeout: 20000 });
         const items = response.data?.data?.Page?.media || [];
         for (const item of items) {
             await animeCacheUpsertFromAniListItem(item);
@@ -9165,11 +9206,7 @@ async function fetchAniListRowFromAniList(rowKey, page = 1, perPage = 18) {
     `;
 
     console.log('[AniList Row Fetch] rowKey=', rowKey, 'variables=', variables);
-    const response = await axios.post(
-        'https://graphql.anilist.co',
-        { query, variables },
-        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' } }
-    );
+    const response = await anilistPost({ query, variables });
 
     if (response.data?.errors) {
         console.error('[AniList Row Fetch] GraphQL errors for', rowKey);
@@ -9321,11 +9358,7 @@ async function fetchAnimeLibraryFromAniList(filters, page, perPage) {
         yearMin: filters.yearMin ? Number(`${filters.yearMin}0101`) : undefined,
         yearMax: filters.yearMax ? Number(`${filters.yearMax}1231`) : undefined
     };
-    const response = await axios.post(
-        'https://graphql.anilist.co',
-        { query: ANIME_LIBRARY_QUERY, variables },
-        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' } }
-    );
+    const response = await anilistPost({ query: ANIME_LIBRARY_QUERY, variables });
     if (response.data?.errors) {
         throw new Error(response.data.errors.map(e => e.message).join('; '));
     }
@@ -9458,17 +9491,13 @@ const TIMELINE_ROW_QUERY = `
 `;
 
 async function fetchTimelineRowFromAniList(startYear, endYear) {
-    const response = await axios.post(
-        'https://graphql.anilist.co',
-        {
+    const response = await anilistPost({
             query: TIMELINE_ROW_QUERY,
             variables: {
                 startMin: Number(`${startYear}0101`),
                 startMax: Number(`${endYear}1231`)
             }
-        },
-        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
-    );
+        }, { timeout: 15000 });
     if (response.data?.errors) {
         throw new Error(response.data.errors.map(e => e.message).join('; '));
     }
@@ -9676,11 +9705,7 @@ async function aniListGetMediaBasic({ anilistId, malId }) {
     if (anilistId) variables.id = anilistId;
     if (malId) variables.idMal = malId;
 
-    const response = await axios.post(
-        'https://graphql.anilist.co',
-        { query, variables },
-        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
-    );
+    const response = await anilistPost({ query, variables }, { timeout: 15000 });
     return response.data?.data?.Media || null;
 }
 
@@ -10358,11 +10383,7 @@ async function fetchAniListDaySchedule(dateIso) {
     const dayStartSec = Math.floor(new Date(`${dateIso}T00:00:00Z`).getTime() / 1000);
     const dayEndSec = dayStartSec + 86400 - 1;
 
-    const response = await axios.post(
-        'https://graphql.anilist.co',
-        { query: ANILIST_AIRING_SCHEDULE_QUERY, variables: { page: 1, from: dayStartSec, to: dayEndSec } },
-        { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
-    );
+    const response = await anilistPost({ query: ANILIST_AIRING_SCHEDULE_QUERY, variables: { page: 1, from: dayStartSec, to: dayEndSec } }, { timeout: 15000 });
 
     const schedules = response.data?.data?.Page?.airingSchedules || [];
     return schedules
@@ -10385,11 +10406,7 @@ async function fetchAniListRangeScheduleByDate(startIso, endIso) {
     // handful of pages; this just guards against an unbounded loop if AniList's
     // pageInfo ever misbehaves.
     while (page <= 20) {
-        const response = await axios.post(
-            'https://graphql.anilist.co',
-            { query: ANILIST_AIRING_SCHEDULE_QUERY, variables: { page, from: fromSec, to: toSec } },
-            { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
-        );
+        const response = await anilistPost({ query: ANILIST_AIRING_SCHEDULE_QUERY, variables: { page, from: fromSec, to: toSec } }, { timeout: 15000 });
 
         const pageData = response.data?.data?.Page;
         const schedules = pageData?.airingSchedules || [];
@@ -13895,11 +13912,7 @@ function isAnikotoVariantDivergence(query, candidateTitle) {
 async function validateAnikotoFuzzyMatchAgainstAniList(title, candidateTotal) {
     try {
         const query = `query($search: String) { Media(search: $search, type: ANIME) { episodes status } }`;
-        const response = await axios.post(
-            'https://graphql.anilist.co',
-            { query, variables: { search: title } },
-            { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 8000 }
-        );
+        const response = await anilistPost({ query, variables: { search: title } }, { timeout: 8000 });
         const media = response.data?.data?.Media;
         if (!media) return { accept: false, reason: 'AniList has no entry for this title - cannot corroborate' };
 
@@ -20474,11 +20487,7 @@ async function aniListGetMediaWithRelations(anilistId) {
     let delay = 500;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            const response = await axios.post(
-                'https://graphql.anilist.co',
-                { query, variables: { id: anilistId } },
-                { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 10000 }
-            );
+            const response = await anilistPost({ query, variables: { id: anilistId } }, { timeout: 10000 });
             if (response.data?.errors) {
                 throw new Error(`AniList error: ${JSON.stringify(response.data.errors)}`);
             }
@@ -22007,14 +22016,11 @@ async function fetchAniListMediaForSeasonCards(anilistId) {
     let delay = 600;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            const response = await axios.post(
-                'https://graphql.anilist.co',
-                { query: ANIME_SEASON_CARDS_QUERY, variables: { id: anilistId } },
-                { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, timeout: 15000 }
-            );
+            const response = await anilistPost({ query: ANIME_SEASON_CARDS_QUERY, variables: { id: anilistId } }, { timeout: 15000 });
             if (response.data?.errors) throw new Error(`AniList error: ${JSON.stringify(response.data.errors)}`);
             return response.data?.data?.Media || null;
         } catch (err) {
+            if (err.anilistBreakerOpen) throw err; // breaker's already tripped - don't burn retries
             const status = err.response?.status;
             const retryable = status === 429 || status === 403 || (status >= 500 && status < 600);
             if (retryable && attempt < maxAttempts) {
