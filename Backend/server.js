@@ -5089,7 +5089,7 @@ async function withAniListFallback(primaryFn, fallbackFn, label) {
 // object per item (genres, studios, stats, websites{mal,aniList}, names, description...), so one
 // call fills a whole row - no per-item detail fetch. Only /timetables needs the free API token.
 const ANIMESCHEDULE_BASE = 'https://animeschedule.net/api/v3';
-const ANIMESCHEDULE_TOKEN = process.env.ANIMESCHEDULE_API_TOKEN || '';
+const ANIMESCHEDULE_TOKEN = process.env.ANIMESCHEDULE_API_TOKEN || '7o8cafUBs5MmeKAZkY18TUNElw8XNX';
 const ANIMESCHEDULE_POSTER_BASE = 'https://img.animeschedule.net/production/assets/public/img/';
 const _asCache = new Map(); // `${path}?${qs}` -> { at, data }
 const AS_CACHE_TTL_MS = 10 * 60 * 1000;
