@@ -36,6 +36,12 @@ puppeteerExtra.use(puppeteerStealthPlugin());
 // the automation tells (navigator.webdriver, plugin/permission shapes, etc.) that expose a
 // vanilla Puppeteer session, and fixes it.
 const puppeteer = puppeteerExtra;
+// puppeteer-real-browser: rebrowser-patched Chrome that closes the Runtime.Enable CDP leak the
+// stealth plugin above still exposes - a stronger fingerprint. Used ONLY by allanimeCaptureCrypto
+// (AllAnime's bot-detection flags a plain stealth session). Its `turnstile` auto-clicker is
+// deliberately left off: a hard-required solved-captcha token is a real wall, not something to
+// automate past.
+const { connect: connectRealBrowser } = require('puppeteer-real-browser');
 const zlib = require('zlib');
 const iconv = require('iconv-lite');
 const app = express();
@@ -18366,9 +18372,16 @@ function allanimeScheduleNextRefresh() {
 // more engineering risk than this box's infrequent-enough usage here justifies; see the scheme
 // doc's own notes).
 async function allanimeCaptureCrypto() {
-    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+    // headless:false is puppeteer-real-browser's most reliable mode - on a headless Linux host it
+    // renders into an auto-managed Xvfb virtual display (needs the `Xvfb` binary on PATH), on a
+    // desktop it briefly shows a real window. This capture is transient (~weekly + reactive), so
+    // the cost is a short spike, not standing load.
+    const { browser, page } = await connectRealBrowser({
+        headless: false,
+        turnstile: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
     try {
-        const page = await browser.newPage();
         await page.setUserAgent(ALLANIME_UA);
 
         await page.evaluateOnNewDocument(() => {
@@ -18527,10 +18540,17 @@ async function allanimeFindBestMatch(title) {
 // stream. Tries every allowlisted provider in order rather than assuming "Ak" (seen most often
 // in testing) is always present or always the first one offered.
 async function allanimeResolveSource(episode) {
-    for (const provider of episode.sourceUrls || []) {
-        if (!ALLANIME_PROVIDERS_ALLOWLIST.has(provider.sourceName)) continue;
+    const allProviders = (episode.sourceUrls || []).filter(p => ALLANIME_PROVIDERS_ALLOWLIST.has(p.sourceName));
+    // fast4speed.rsvp URLs are direct/ready-to-use but confirmed short-lived (can 404 within
+    // minutes of minting). Try the DASH-shaped (Akamai) providers first - they resolve to a
+    // clock.json we fetch fresh right before returning, so there's no staleness window between
+    // resolve and the browser's actual fetch. Only fall back to fast4speed if nothing else works.
+    const isFast4speed = (p) => p.sourceUrl.includes('tools.fast4speed.rsvp');
+    const orderedProviders = [...allProviders.filter(p => !isFast4speed(p)), ...allProviders.filter(isFast4speed)];
+
+    for (const provider of orderedProviders) {
         try {
-            if (provider.sourceUrl.includes('tools.fast4speed.rsvp')) {
+            if (isFast4speed(provider)) {
                 // Already a direct, ready-to-use URL - confirmed short-lived (can 404 within
                 // minutes of being minted), so the caller must use this immediately, never cache it.
                 return { videoUrl: provider.sourceUrl, audioUrl: null, qualities: [], subtitles: [], provider: provider.sourceName };
