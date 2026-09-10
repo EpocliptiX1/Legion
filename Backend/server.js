@@ -5179,6 +5179,157 @@ async function fetchAnimeRowFromAnimeSchedule(rowKey, page = 1, perPage = 18) {
 
 const AS_AIRING_STATUS = { RELEASING: 'ongoing', FINISHED: 'finished', NOT_YET_RELEASED: 'upcoming' };
 
+// Kitsu - no auth, not blocked. Its `mappings` relationship is the universal cross-ID resolver
+// (Kitsu id <-> MAL id <-> AniList id <-> AniDB). Used to bridge a title (or a foreign id) back
+// to {mal, anilist} when AniList's own search is down.
+const KITSU_BASE = 'https://kitsu.io/api/edge';
+async function kitsuFindByTitle(title) {
+    const res = await axios.get(`${KITSU_BASE}/anime`, {
+        params: { 'filter[text]': title, 'page[limit]': 3, include: 'mappings' },
+        headers: { Accept: 'application/vnd.api+json' }, timeout: 12000
+    });
+    const anime = (res.data?.data || [])[0];
+    if (!anime) return null;
+    const maps = {};
+    for (const inc of (res.data?.included || [])) {
+        if (inc.type !== 'mappings') continue;
+        const site = inc.attributes?.externalSite;
+        const ext = inc.attributes?.externalId;
+        // Only this anime's own mappings (an included row belongs to whichever data row references it)
+        if (!(anime.relationships?.mappings?.data || []).some(m => m.id === inc.id)) continue;
+        if (site === 'myanimelist/anime') maps.mal = Number(ext);
+        else if (site === 'anilist/anime') maps.anilist = Number(ext);
+        else if (site === 'anidb') maps.anidb = Number(ext);
+    }
+    return {
+        kitsuId: anime.id,
+        malId: maps.mal || null,
+        anilistId: maps.anilist || null,
+        title: {
+            english: anime.attributes?.titles?.en || anime.attributes?.canonicalTitle || null,
+            romaji: anime.attributes?.titles?.en_jp || null,
+            native: anime.attributes?.titles?.ja_jp || null
+        },
+        episodes: anime.attributes?.episodeCount || null,
+        status: ({ finished: 'FINISHED', current: 'RELEASING', upcoming: 'NOT_YET_RELEASED' })[anime.attributes?.status] || null
+    };
+}
+
+// Fallback for searchAniListByTitle - callers only read .id (anilist) and .idMal.
+async function searchAnimeByTitleFallback(title) {
+    const k = await kitsuFindByTitle(title);
+    if (!k || (!k.anilistId && !k.malId)) return null;
+    console.log(`[AniListFallback] title->id "${title}": Kitsu bridged al=${k.anilistId} mal=${k.malId}`);
+    return { id: k.anilistId, idMal: k.malId };
+}
+
+// --- AnimeSchedule timetables (airing calendar + new-episode notifications) ------------------
+// The ONE AniList feature nothing else replaces cleanly: real per-date, per-episode airing
+// times. AS's /timetables/{sub|dub|raw} is exactly that, but needs the free API token
+// (ANIMESCHEDULE_API_TOKEN). Without it these fall back to empty and the routes serve stale
+// cache / notifications just skip - no crash.
+let _asTokenWarned = false;
+function asHaveToken() {
+    if (ANIMESCHEDULE_TOKEN) return true;
+    if (!_asTokenWarned) { console.warn('[AniListFallback] ANIMESCHEDULE_API_TOKEN not set - airing calendar / new-episode notifications stay degraded while AniList is down'); _asTokenWarned = true; }
+    return false;
+}
+
+// ISO-8601 week number + week-year for a date (AS timetables are keyed by year+week).
+function isoYearWeek(d) {
+    const dt = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    const day = dt.getUTCDay() || 7;
+    dt.setUTCDate(dt.getUTCDate() + 4 - day);
+    const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+    const week = Math.ceil((((dt - yearStart) / 86400000) + 1) / 7);
+    return { year: dt.getUTCFullYear(), week };
+}
+
+const _asRouteWebsitesCache = new Map(); // route -> { malId, anilistId }
+async function asRouteToMalId(route) {
+    if (!route) return null;
+    if (_asRouteWebsitesCache.has(route)) return _asRouteWebsitesCache.get(route).malId;
+    try {
+        const d = await asGet(`/anime/${encodeURIComponent(route)}`);
+        const rec = { malId: asExtractSiteId(d?.websites?.mal), anilistId: asExtractSiteId(d?.websites?.aniList) };
+        _asRouteWebsitesCache.set(route, rec);
+        return rec.malId;
+    } catch { return null; }
+}
+
+// One AS timetable row -> the airing-schedule item shape transformAniListAiringSchedule produces.
+async function asTimetableRowToItem(row) {
+    const when = new Date(row.episodeDate || row.airingTime || 0);
+    const hh = String(when.getUTCHours()).padStart(2, '0');
+    const mm = String(when.getUTCMinutes()).padStart(2, '0');
+    let idMal = asExtractSiteId(row.websites?.mal);
+    if (!idMal) idMal = await asRouteToMalId(row.route);
+    const poster = row.imageVersionRoute ? ANIMESCHEDULE_POSTER_BASE + row.imageVersionRoute : '';
+    return {
+        title: row.romaji || row.native || row.title || row.english || '',
+        title_english: row.english || row.title || null,
+        title_native: row.native || null,
+        images: { jpg: { image_url: poster, large_image_url: poster } },
+        broadcast: { time: `${hh}:${mm}` },
+        score: null,
+        episodes: row.episodes || null,
+        idMal: idMal || null,
+        episode: row.episodeNumber || row.episode || null,
+        _airDate: when.toISOString()
+    };
+}
+
+async function fetchAnimeScheduleWeek(dateIso) {
+    if (!asHaveToken()) return [];
+    const { year, week } = isoYearWeek(new Date(`${dateIso}T12:00:00Z`));
+    const rows = await asGet('/timetables/sub', { year, week }, { auth: true }).catch(err => {
+        console.warn(`[AniListFallback] AnimeSchedule timetable ${year}w${week} failed: ${err.response?.status || err.message}`);
+        return [];
+    });
+    const list = Array.isArray(rows) ? rows : (rows?.timetable || rows?.data || []);
+    return Promise.all(list.filter(r => !(r.mediaTypes || []).some(m => /movie/i.test(m.name || m.route || ''))).map(asTimetableRowToItem));
+}
+
+async function fetchAniListDayScheduleFallback(dateIso) {
+    const week = await fetchAnimeScheduleWeek(dateIso);
+    const items = week.filter(it => it._airDate && it._airDate.slice(0, 10) === dateIso);
+    console.log(`[AniListFallback] anime-schedule ${dateIso}: AnimeSchedule served ${items.length} item(s)`);
+    return items.map(({ _airDate, ...it }) => it);
+}
+
+async function fetchAniListRangeScheduleFallback(startIso, endIso) {
+    const grouped = {};
+    const weeks = new Set();
+    for (let d = new Date(`${startIso}T12:00:00Z`); d <= new Date(`${endIso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + 7)) {
+        weeks.add(d.toISOString().slice(0, 10));
+    }
+    weeks.add(endIso);
+    for (const w of weeks) {
+        for (const it of await fetchAnimeScheduleWeek(w)) {
+            const day = it._airDate?.slice(0, 10);
+            if (!day || day < startIso || day > endIso) continue;
+            (grouped[day] = grouped[day] || []).push((({ _airDate, ...x }) => x)(it));
+        }
+    }
+    console.log(`[AniListFallback] anime-schedule-range ${startIso}..${endIso}: ${Object.values(grouped).reduce((n, a) => n + a.length, 0)} item(s) over ${Object.keys(grouped).length} day(s)`);
+    return grouped;
+}
+
+// Notifications: next airing episode for a show, by MAL id, from the current + next AS week.
+async function nextAiringEpisodeFallback({ malId }) {
+    if (!malId || !asHaveToken()) return null;
+    const now = new Date();
+    const nextWk = new Date(now); nextWk.setUTCDate(nextWk.getUTCDate() + 7);
+    for (const wkDate of [now.toISOString().slice(0, 10), nextWk.toISOString().slice(0, 10)]) {
+        for (const it of await fetchAnimeScheduleWeek(wkDate)) {
+            if (it.idMal === malId && it._airDate) {
+                return { airingAt: Math.floor(new Date(it._airDate).getTime() / 1000), episode: it.episode };
+            }
+        }
+    }
+    return null;
+}
+
 // allMovies.html anime library filters -> AnimeSchedule /anime. AS only takes a SINGLE `years`
 // value (no range) and only `popularity`/`score` sort reliably - a year range is dropped (genre/
 // format/status still apply) and any other sort collapses to popularity.
@@ -5285,17 +5436,29 @@ async function generateNewEpisodeNotifications(userUID) {
 
         let info;
         try {
-            const response = await anilistPost({
-                    query: `query ($id: Int) { Media(id: $id, type: ANIME) {
-                        title { romaji english native }
-                        coverImage { large }
-                        nextAiringEpisode { airingAt episode }
-                    } }`,
-                    variables: { id: anilistId }
-                }, { timeout: 15000 });
-            info = response.data?.data?.Media;
+            info = await withAniListFallback(
+                async () => {
+                    const response = await anilistPost({
+                        query: `query ($id: Int) { Media(id: $id, type: ANIME) {
+                            title { romaji english native }
+                            coverImage { large }
+                            nextAiringEpisode { airingAt episode }
+                        } }`,
+                        variables: { id: anilistId }
+                    }, { timeout: 15000 });
+                    return response.data?.data?.Media || null;
+                },
+                async () => {
+                    const ids = await resolveAnimeIds(tmdbId, 1).catch(() => null);
+                    const nae = await nextAiringEpisodeFallback({ malId: ids?.malId });
+                    if (!nae) return null;
+                    const t = await getTmdbAnimeTitle(tmdbId).catch(() => ({}));
+                    return { title: { english: t?.title || null, romaji: null, native: null }, coverImage: null, nextAiringEpisode: nae };
+                },
+                `notif nextAiringEpisode tmdb=${tmdbId}`
+            );
         } catch (err) {
-            console.warn('[Notifications] AniList nextAiringEpisode lookup failed', err.message);
+            console.warn('[Notifications] nextAiringEpisode lookup failed', err.message);
             continue;
         }
 
@@ -9775,7 +9938,11 @@ async function resolveAnimeIds(tmdbId, season = 1) {
     if (!tmdb.title) return null;
 
     console.log(`[Anime MAL] Searching AniList for "${tmdb.title}" (${tmdb.year || 'unknown year'})`);
-    const ani = await searchAniListByTitle(tmdb.title, tmdb.year);
+    const ani = await withAniListFallback(
+        () => searchAniListByTitle(tmdb.title, tmdb.year),
+        () => searchAnimeByTitleFallback(tmdb.title),
+        `title->id "${tmdb.title}"`
+    );
 
     if (!ani) {
         await animeTmdbMappingUpsert({ tmdbId, malId: null, anilistId: null, title: tmdb.title });
@@ -10633,7 +10800,11 @@ app.get('/api/anime-schedule', async (req, res) => {
     }
 
     try {
-        const items = await fetchAniListDaySchedule(dateParam);
+        const items = await withAniListFallback(
+            () => fetchAniListDaySchedule(dateParam),
+            () => fetchAniListDayScheduleFallback(dateParam),
+            'anime-schedule ' + dateParam
+        );
         const payload = { data: items };
         await animeScheduleUpsert(dateParam, day, JSON.stringify(payload));
         return res.json(payload);
@@ -10692,7 +10863,11 @@ app.get('/api/anime-schedule-range', async (req, res) => {
 
     if (missing.length) {
         try {
-            const grouped = await fetchAniListRangeScheduleByDate(missing[0], missing[missing.length - 1]);
+            const grouped = await withAniListFallback(
+                () => fetchAniListRangeScheduleByDate(missing[0], missing[missing.length - 1]),
+                () => fetchAniListRangeScheduleFallback(missing[0], missing[missing.length - 1]),
+                'anime-schedule-range'
+            );
             for (const iso of missing) {
                 const items = grouped[iso] || [];
                 result[iso] = items;
@@ -14077,9 +14252,18 @@ function isAnikotoVariantDivergence(query, candidateTitle) {
 // score with no way to corroborate it is exactly the unsafe case this whole check exists for.
 async function validateAnikotoFuzzyMatchAgainstAniList(title, candidateTotal) {
     try {
-        const query = `query($search: String) { Media(search: $search, type: ANIME) { episodes status } }`;
-        const response = await anilistPost({ query, variables: { search: title } }, { timeout: 8000 });
-        const media = response.data?.data?.Media;
+        const media = await withAniListFallback(
+            async () => {
+                const query = `query($search: String) { Media(search: $search, type: ANIME) { episodes status } }`;
+                const response = await anilistPost({ query, variables: { search: title } }, { timeout: 8000 });
+                return response.data?.data?.Media || null;
+            },
+            async () => {
+                const k = await kitsuFindByTitle(title);
+                return k ? { episodes: k.episodes, status: k.status } : null;
+            },
+            `anikoto-validate "${title}"`
+        );
         if (!media) return { accept: false, reason: 'AniList has no entry for this title - cannot corroborate' };
 
         if (media.status === 'NOT_YET_RELEASED') {
@@ -22006,7 +22190,11 @@ async function runFinishedShowScheduleAudit() {
         // of the month before it.
         const endIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 0)).toISOString().slice(0, 10);
 
-        const grouped = await fetchAniListRangeScheduleByDate(todayIso, endIso);
+        const grouped = await withAniListFallback(
+            () => fetchAniListRangeScheduleByDate(todayIso, endIso),
+            () => fetchAniListRangeScheduleFallback(todayIso, endIso),
+            'anime-schedule-range (audit)'
+        );
         // Persist what this walk just paid for, so the calendar's own endpoints (now
         // cache-forever, see /api/anime-schedule above) don't need to re-fetch these same
         // dates later just because a user happens to browse to them.
