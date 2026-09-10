@@ -5223,6 +5223,43 @@ async function searchAnimeByTitleFallback(title) {
     return { id: k.anilistId, idMal: k.malId };
 }
 
+// Fallback for aniListGetMediaBasic - by-id lookup via Kitsu's /mappings endpoint. Returns the
+// same {id, idMal, title:{romaji,english,native}, coverImage, episodes, format} shape.
+const KITSU_SUBTYPE_TO_FORMAT = { TV: 'TV', movie: 'MOVIE', OVA: 'OVA', ONA: 'ONA', special: 'SPECIAL', music: 'MUSIC' };
+async function kitsuGetBasicByIds({ anilistId, malId }) {
+    const lookups = [];
+    if (malId) lookups.push(['myanimelist/anime', malId]);
+    if (anilistId) lookups.push(['anilist/anime', anilistId]);
+    for (const [site, extId] of lookups) {
+        try {
+            const res = await axios.get(`${KITSU_BASE}/mappings`, {
+                params: { 'filter[externalSite]': site, 'filter[externalId]': extId, include: 'item' },
+                headers: { Accept: 'application/vnd.api+json' }, timeout: 12000
+            });
+            const it = (res.data?.included || [])[0];
+            if (!it) continue;
+            const a = it.attributes || {};
+            console.log(`[AniListFallback] media-basic ${site}:${extId}: Kitsu -> "${a.canonicalTitle}" (${a.episodeCount || '?'} eps)`);
+            return {
+                id: anilistId || null,
+                idMal: malId || null,
+                title: {
+                    romaji: a.titles?.en_jp || a.canonicalTitle || null,
+                    english: a.titles?.en || a.canonicalTitle || null,
+                    native: a.titles?.ja_jp || null
+                },
+                coverImage: {
+                    large: a.posterImage?.small || a.posterImage?.medium || null,
+                    extraLarge: a.posterImage?.large || a.posterImage?.original || null
+                },
+                episodes: a.episodeCount || null,
+                format: KITSU_SUBTYPE_TO_FORMAT[a.subtype] || (a.subtype ? String(a.subtype).toUpperCase() : null)
+            };
+        } catch { /* try the next id */ }
+    }
+    return null;
+}
+
 // --- AnimeSchedule timetables (airing calendar + new-episode notifications) ------------------
 // The ONE AniList feature nothing else replaces cleanly: real per-date, per-episode airing
 // times. AS's /timetables/{sub|dub|raw} is exactly that, but needs the free API token
@@ -10022,24 +10059,29 @@ function animeTmdbMappingGetByMalId(malId) {
 // (title variants + cover) to search TMDB with when neither Fribb's list nor the
 // anime_tmdb_mapping cache already has a tmdb_id for that id.
 async function aniListGetMediaBasic({ anilistId, malId }) {
-    const query = `
-        query ($id: Int, $idMal: Int) {
-            Media(id: $id, idMal: $idMal, type: ANIME) {
-                id
-                idMal
-                title { romaji english native }
-                coverImage { extraLarge large }
-                episodes
-                format
-            }
-        }
-    `;
-    const variables = {};
-    if (anilistId) variables.id = anilistId;
-    if (malId) variables.idMal = malId;
-
-    const response = await anilistPost({ query, variables }, { timeout: 15000 });
-    return response.data?.data?.Media || null;
+    return withAniListFallback(
+        async () => {
+            const query = `
+                query ($id: Int, $idMal: Int) {
+                    Media(id: $id, idMal: $idMal, type: ANIME) {
+                        id
+                        idMal
+                        title { romaji english native }
+                        coverImage { extraLarge large }
+                        episodes
+                        format
+                    }
+                }
+            `;
+            const variables = {};
+            if (anilistId) variables.id = anilistId;
+            if (malId) variables.idMal = malId;
+            const response = await anilistPost({ query, variables }, { timeout: 15000 });
+            return response.data?.data?.Media || null;
+        },
+        () => kitsuGetBasicByIds({ anilistId, malId }),
+        `media-basic ${anilistId ? 'al:' + anilistId : 'mal:' + malId}`
+    );
 }
 
 function animeTmdbMappingUpsert({ tmdbId, malId = null, anilistId = null, title = null }) {
