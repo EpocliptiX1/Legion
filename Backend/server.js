@@ -2628,34 +2628,85 @@ function nextOutboundHttpsAgent() {
     return agent;
 }
 
-// --- Upstream fetch adapter: plain axios for everything ---------------------------------------
-// Used to special-case cdn.imgnex.top (MegaPlay's CDN) through got-scraping, then a persistent
-// real browser (see fetchViaMegaplayBrowser/getMegaplayBrowserPage further down, and
-// investigation-t1m-megaplay-2026-09-07.md for the full story) chasing what looked like a
-// TLS-fingerprint/bot-management block. Neither was the actual problem: the real gate turned out
-// to be trustWatch (see that section's own comment) - a plain IP/session registration heartbeat,
-// unrelated to how sophisticated the requesting client looks. Once that's called, a completely
-// plain axios request succeeds - confirmed live, repeatedly, across different titles. This
-// function is back to a simple axios passthrough as a result; fetchViaMegaplayBrowser/
-// getMegaplayBrowserPage are kept defined (unused for now) as a real, working fallback in case
-// trustWatch itself ever stops being sufficient - not deleted, just not on the hot path.
+// --- Upstream fetch adapter --------------------------------------------------------------------
+// Most hosts: plain axios. MegaPlay's CDNs (cdn.imgnex.top for playlists, *.snapcdn.top for the
+// actual .ts segments, kryntal.top for its subtitle/older CDN): routed through got-scraping.
+//
+// History (investigation-t1m-megaplay-2026-09-07.md): the trustWatch IP heartbeat was found and
+// believed to be THE fix, so this was simplified back to pure axios. It wasn't enough - MegaPlay
+// stayed "usually works, sometimes doesn't", the failures arriving as bursts of 403s (their CDN
+// TLS/HTTP2-fingerprints the client on top of the IP check; plain axios/Node can't answer a JA3
+// challenge, got-scraping's browser impersonation can). trustWatch is still required and still
+// runs - got-scraping here is the second half of the same lock. A per-request browser was
+// correctly ruled out as too heavy; got-scraping is a per-request HTTP-client swap, not a
+// browser. fetchViaMegaplayBrowser/getMegaplayBrowserPage stay defined as a last-resort fallback.
 const BROWSER_RELAY_HOSTS = new Set(); // kept as a hook, currently empty - see comment above
 
 function hostNeedsBrowserRelay(url) {
     try { return BROWSER_RELAY_HOSTS.has(new URL(url).hostname); } catch { return false; }
 }
 
-// Separate from hostNeedsBrowserRelay above - MegaPlay's CDN still needs its own signed ?token=
-// on every request (the trustWatch fix above is a DIFFERENT, additional requirement, not a
-// replacement for this one) regardless of which HTTP client ends up fetching it.
+// Separate from hostNeedsMegaplayGotScraping below - only cdn.imgnex.top needs the signed
+// ?token= appended (the segment/subtitle CDNs carry their auth in the path already).
 const MEGAPLAY_CDN_SIGNING_HOSTS = new Set(['cdn.imgnex.top']);
 
 function hostNeedsMegaplaySigning(url) {
     try { return MEGAPLAY_CDN_SIGNING_HOSTS.has(new URL(url).hostname); } catch { return false; }
 }
 
+// Any subdomain of these - the whole MegaPlay CDN family, all behind the same fingerprinting.
+const MEGAPLAY_GOTSCRAPING_HOST_RE = /(^|\.)(imgnex\.top|snapcdn\.top|kryntal\.top)$/i;
+function hostNeedsMegaplayGotScraping(url) {
+    try { return MEGAPLAY_GOTSCRAPING_HOST_RE.test(new URL(url).hostname); } catch { return false; }
+}
+
+// Normalises got-scraping's response/error into the axios shape the callers expect:
+// { status, headers, data } on success (data = Node stream for responseType 'stream', else the
+// body); a thrown Error with err.response.status on any >= 400 so the existing retry loops
+// (which special-case `status === 403 && isMegaplayCdn`) keep working unchanged.
+async function fetchViaGotScraping(url, fullHeaders, responseType, timeout) {
+    const gotScraping = await getGotScraping();
+    const common = {
+        headers: fullHeaders,
+        timeout: { request: timeout || 20000 },
+        throwHttpErrors: false,
+        retry: { limit: 0 },
+        followRedirect: true
+    };
+    if (responseType === 'stream') {
+        const stream = gotScraping.stream(url, common);
+        return await new Promise((resolve, reject) => {
+            stream.once('response', (res) => {
+                if (res.statusCode >= 400) {
+                    stream.destroy();
+                    const err = new Error(`got-scraping upstream ${res.statusCode}`);
+                    err.response = { status: res.statusCode, headers: res.headers };
+                    return reject(err);
+                }
+                resolve({ status: res.statusCode, headers: res.headers, data: stream });
+            });
+            stream.once('error', (err) => {
+                if (!err.response && err.response?.statusCode) {
+                    err.response = { status: err.response.statusCode, headers: err.response.headers };
+                }
+                reject(err);
+            });
+        });
+    }
+    const res = await gotScraping(url, { ...common, responseType: responseType === 'text' ? 'text' : (responseType || 'text') });
+    if (res.statusCode >= 400) {
+        const err = new Error(`got-scraping upstream ${res.statusCode}`);
+        err.response = { status: res.statusCode, headers: res.headers, data: res.body };
+        throw err;
+    }
+    return { status: res.statusCode, headers: res.headers, data: res.body };
+}
+
 async function fetchUpstream(url, { headers, responseType, timeout, rangeHeader }) {
     const fullHeaders = rangeHeader ? { ...headers, Range: rangeHeader } : headers;
+    if (hostNeedsMegaplayGotScraping(url)) {
+        return fetchViaGotScraping(url, fullHeaders, responseType, timeout);
+    }
     return axios({ method: 'GET', url, headers: fullHeaders, responseType, timeout, httpsAgent: nextOutboundHttpsAgent() });
 }
 
@@ -2726,7 +2777,7 @@ async function fetchAndCacheSegment(targetUrl, refererBase, originBase, req) {
     // escalated blocking, not steady noise). More tries buys more chances to land outside a
     // burst window; every other provider's 403 is still permanent, so their attempt count is
     // unaffected.
-    const isMegaplayCdn = hostNeedsMegaplaySigning(targetUrl);
+    const isMegaplayCdn = hostNeedsMegaplaySigning(targetUrl) || hostNeedsMegaplayGotScraping(targetUrl);
     const maxAttempts = isMegaplayCdn ? 6 : 3;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
@@ -12027,7 +12078,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         let upstreamFailure;
         // See fetchAndCacheSegment's own comment on this same pattern - MegaPlay's CDN gets more
         // attempts since its 403 comes in bursts, not as a flat rate.
-        const isMegaplayCdn = hostNeedsMegaplaySigning(targetUrl);
+        const isMegaplayCdn = hostNeedsMegaplaySigning(targetUrl) || hostNeedsMegaplayGotScraping(targetUrl);
         const maxAttempts = isMegaplayCdn ? 6 : 3;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
