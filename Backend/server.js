@@ -1354,6 +1354,18 @@ animeCacheDb.serialize(() => {
             PRIMARY KEY (tmdb_id, media_type)
         );
     `);
+    // validated_at: last time runTrailerCacheAudit checked every key in this row for liveness
+    // (and topped the row back up if it had dropped below target). Separate from cached_at
+    // (last time the key LIST changed) so the audit can sweep oldest-checked-first without a
+    // clean row's untouched cached_at pinning it to the front of the queue forever.
+    animeCacheDb.all(`PRAGMA table_info(anime_trailer_cache)`, [], (err, columns) => {
+        if (err) return;
+        if (!(columns || []).some(c => c.name === 'validated_at')) {
+            animeCacheDb.run(`ALTER TABLE anime_trailer_cache ADD COLUMN validated_at INTEGER`, (alterErr) => {
+                if (alterErr) console.error('[TrailerCache] Failed to add validated_at column', alterErr.message);
+            });
+        }
+    });
     animeCacheDb.run(`
         CREATE TABLE IF NOT EXISTS anime_comments (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -11404,7 +11416,7 @@ async function fetchTrailerKeysFromTmdb(tmdbId, mediaType) {
 // region-locked (JP-only) or blocked from embedding outside youtube.com - so a hero relying on
 // "the first TMDB key" frequently has nothing playable. Top up to a target pool via YouTube
 // search scraping, skipping any videoId TMDB already gave us.
-const ANIME_TRAILER_TARGET_COUNT = 5;
+const ANIME_TRAILER_TARGET_COUNT = 4; // 4 playable keys is plenty for the hero's fallback chain
 const ANIME_TRAILER_YT_SCRAPE_MAX = 3;
 
 async function fetchAnimeTitleForTrailerSearch(tmdbId, mediaType) {
@@ -11509,6 +11521,109 @@ app.post('/api/anime-trailer-prefetch', (req, res) => {
         }
     })().catch(() => {});
 });
+
+// --- Trailer-cache liveness audit ----------------------------------------------------------
+// YouTube trailer keys go stale (video deleted / made private). The hero's client-side
+// onError-try-the-next-key fallback masks a dead key one at a time, but a row that's rotted
+// down to 0-1 live keys leaves the hero with nothing. This sweep re-checks every key via the
+// no-API-key oEmbed endpoint (404 = gone), drops the dead ones, and if the row fell below
+// ANIME_TRAILER_TARGET_COUNT tops it back up from a YouTube search (skipping keys already in
+// the row). Runs as a slow background batch, NOT on startup (a boot-time sweep of the whole
+// table would fire hundreds of YouTube requests at once) and NOT on the hero's read path
+// (would add a network round-trip per hero render).
+const _ytKeyAliveCache = new Map(); // videoId -> { alive, at }
+const YT_KEY_ALIVE_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function isYoutubeKeyAlive(key) {
+    if (!key || typeof key !== 'string') return false;
+    const c = _ytKeyAliveCache.get(key);
+    if (c && Date.now() - c.at < YT_KEY_ALIVE_TTL_MS) return c.alive;
+    let alive = true;
+    try {
+        const r = await axios.get('https://www.youtube.com/oembed', {
+            params: { url: `https://www.youtube.com/watch?v=${key}`, format: 'json' },
+            timeout: 8000, validateStatus: () => true
+        });
+        // 404 = video is gone. 401 = exists but embedding disabled elsewhere - keep it, the
+        // hero's own onError fallback will skip past a non-embeddable one. Anything else: alive.
+        alive = r.status !== 404;
+    } catch {
+        alive = true; // a network hiccup on our side is not the video's fault
+    }
+    _ytKeyAliveCache.set(key, { alive, at: Date.now() });
+    return alive;
+}
+
+async function auditTrailerCacheRow(row) {
+    let keys;
+    try { keys = JSON.parse(row.trailer_keys); } catch { keys = []; }
+    if (!Array.isArray(keys)) keys = [];
+
+    const liveness = await Promise.all(keys.map(async k => [k, await isYoutubeKeyAlive(k)]));
+    let valid = liveness.filter(([, ok]) => ok).map(([k]) => k);
+    const removed = keys.length - valid.length;
+
+    if (valid.length < ANIME_TRAILER_TARGET_COUNT) {
+        const title = await fetchAnimeTitleForTrailerSearch(row.tmdb_id, row.media_type);
+        if (title) {
+            const have = new Set(valid);
+            const scraped = await scrapeYoutubeSearch(`${title} trailer`, ANIME_TRAILER_TARGET_COUNT + have.size + 5);
+            for (const id of scraped) {
+                if (valid.length >= ANIME_TRAILER_TARGET_COUNT) break;
+                if (have.has(id) || !(await isYoutubeKeyAlive(id))) continue;
+                valid.push(id); have.add(id);
+            }
+        }
+    }
+    valid = valid.slice(0, ANIME_TRAILER_TARGET_COUNT);
+
+    const listChanged = JSON.stringify(valid) !== JSON.stringify(keys);
+    if (valid.length === 0) {
+        animeCacheDb.run(`DELETE FROM anime_trailer_cache WHERE tmdb_id = ? AND media_type = ?`, [row.tmdb_id, row.media_type]);
+    } else {
+        animeCacheDb.run(
+            `UPDATE anime_trailer_cache SET trailer_keys = ?, validated_at = ?${listChanged ? ', cached_at = ?' : ''}
+             WHERE tmdb_id = ? AND media_type = ?`,
+            listChanged
+                ? [JSON.stringify(valid), Date.now(), Date.now(), row.tmdb_id, row.media_type]
+                : [JSON.stringify(valid), Date.now(), row.tmdb_id, row.media_type],
+            (err) => { if (err) console.error('[TrailerAudit] write failed', err.message); }
+        );
+    }
+    if (listChanged) {
+        console.log(`[TrailerAudit] tmdb ${row.tmdb_id}/${row.media_type}: ${keys.length} -> ${valid.length} key(s)${removed ? ` (${removed} dead)` : ''}`);
+    }
+}
+
+const TRAILER_AUDIT_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const TRAILER_AUDIT_BATCH = 25; // ~230 rows today -> full re-validation cycle every ~1.5 days
+let _trailerAuditRunning = false;
+
+async function runTrailerCacheAudit() {
+    if (_trailerAuditRunning) return;
+    _trailerAuditRunning = true;
+    try {
+        const rows = await new Promise((resolve, reject) => {
+            animeCacheDb.all(
+                `SELECT tmdb_id, media_type, trailer_keys FROM anime_trailer_cache
+                 ORDER BY (validated_at IS NULL) DESC, validated_at ASC LIMIT ?`,
+                [TRAILER_AUDIT_BATCH],
+                (err, r) => err ? reject(err) : resolve(r || [])
+            );
+        });
+        if (!rows.length) return;
+        for (const row of rows) {
+            try { await auditTrailerCacheRow(row); }
+            catch (err) { console.warn('[TrailerAudit] row failed', row.tmdb_id, err.message || err); }
+            await sleep(400); // gentle on YouTube
+        }
+        console.log(`[TrailerAudit] checked ${rows.length} row(s)`);
+    } catch (err) {
+        console.warn('[TrailerAudit] sweep failed:', err.message || err);
+    } finally {
+        _trailerAuditRunning = false;
+    }
+}
 
 function getAnimeCacheTitlesByMalId(malId) {
     return new Promise((resolve, reject) => {
@@ -24592,6 +24707,13 @@ const server = app.listen(PORT, 'localhost', () => {
     console.log(`   Anime TMDB mapping audit: every ${ANIME_TMDB_MAPPING_AUDIT_INTERVAL_MS / 60000}min, ${ANIME_TMDB_MAPPING_AUDIT_BATCH_SIZE}/batch`);
     setInterval(() => runAnimeTmdbMappingAudit().catch(err => logHealthStatus(`[TmdbMappingAudit] FAILED: ${err.message}`)), ANIME_TMDB_MAPPING_AUDIT_INTERVAL_MS);
     runAnimeTmdbMappingAudit().catch(err => logHealthStatus(`[TmdbMappingAudit] FAILED: ${err.message}`));
+
+    // Trailer-cache liveness sweep - drops dead YouTube keys, tops rows back up to 4 via YT
+    // search. Slow background batch (not on startup - see runTrailerCacheAudit's comment); first
+    // run deferred 5min so it doesn't pile onto boot traffic.
+    console.log(`   Trailer-cache audit: every ${TRAILER_AUDIT_INTERVAL_MS / 3600000}h, ${TRAILER_AUDIT_BATCH}/batch`);
+    setInterval(() => runTrailerCacheAudit().catch(err => console.warn('[TrailerAudit] FAILED:', err.message)), TRAILER_AUDIT_INTERVAL_MS);
+    setTimeout(() => runTrailerCacheAudit().catch(err => console.warn('[TrailerAudit] FAILED:', err.message)), 5 * 60 * 1000).unref();
 
     // anikoto_id_map: recurring refresh every 24h, same cadence as FinishedShowAudit. On boot,
     // only crawls if the table looks empty or stale (>24h old) rather than unconditionally -
