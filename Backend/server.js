@@ -5177,6 +5177,46 @@ async function fetchAnimeRowFromAnimeSchedule(rowKey, page = 1, perPage = 18) {
     return items;
 }
 
+const AS_AIRING_STATUS = { RELEASING: 'ongoing', FINISHED: 'finished', NOT_YET_RELEASED: 'upcoming' };
+
+// allMovies.html anime library filters -> AnimeSchedule /anime. AS only takes a SINGLE `years`
+// value (no range) and only `popularity`/`score` sort reliably - a year range is dropped (genre/
+// format/status still apply) and any other sort collapses to popularity.
+async function fetchAnimeLibraryFromAnimeSchedule(filters, page = 1, perPage = 25) {
+    const params = { page, sort: AS_SORT[filters.sort] || 'popularity' };
+    if (filters.search) params.q = filters.search;
+    const genreOrTag = filters.genre || filters.tag;
+    if (genreOrTag) params.genres = String(genreOrTag).toLowerCase().replace(/\s+/g, '-');
+    if (filters.format && AS_FORMAT_TO_MEDIATYPE[filters.format]) params['media-types'] = AS_FORMAT_TO_MEDIATYPE[filters.format];
+    if (filters.status && AS_AIRING_STATUS[filters.status]) params['airing-statuses'] = AS_AIRING_STATUS[filters.status];
+    if (filters.yearMin && String(filters.yearMin) === String(filters.yearMax)) params.years = filters.yearMin;
+    const data = await asGet('/anime', params);
+    const items = (Array.isArray(data?.anime) ? data.anime : []).map(animeScheduleToAniListItem).filter(Boolean).slice(0, perPage);
+    console.log(`[AniListFallback] anime-library: AnimeSchedule served ${items.length} item(s)`);
+    return items;
+}
+
+// The movieInfo "timeline" row is an inherently multi-year window - AS has no year-range param,
+// so pull each year in [startYear, endYear] (capped) and merge by popularity.
+async function fetchTimelineRowFromAnimeSchedule(startYear, endYear) {
+    const lo = Math.min(startYear, endYear), hi = Math.max(startYear, endYear);
+    const years = [];
+    for (let y = lo; y <= hi && years.length < 12; y++) years.push(y);
+    const perYear = await Promise.all(years.map(y => asGet('/anime', { years: y, sort: 'popularity', page: 1 }).catch(() => null)));
+    const seen = new Set();
+    const merged = [];
+    for (const d of perYear) {
+        for (const a of (d?.anime || [])) {
+            const item = animeScheduleToAniListItem(a);
+            if (item && !seen.has(item.id)) { seen.add(item.id); merged.push(item); }
+        }
+    }
+    merged.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+    const out = merged.slice(0, 18); // match AniList perPage - the route resolves a tmdbId per item
+    console.log(`[AniListFallback] anime-timeline-row ${lo}-${hi}: AnimeSchedule served ${out.length}/${merged.length} item(s)`);
+    return out;
+}
+
 // Resolves a TMDB id to {anilistId} only if it's a known anime, using the same
 // resolver the rest of the site trusts (Fribb mapping -> cache -> Jikan lookup).
 async function resolveAnilistIdIfAnime(tmdbId) {
@@ -9519,7 +9559,11 @@ app.get('/api/anime-library', async (req, res) => {
     // wouldn't pay off, and it'd bloat the cache table with one-off keys.
     if (filters.search) {
         try {
-            const items = await fetchAnimeLibraryFromAniList(filters, page, perPage);
+            const items = await withAniListFallback(
+            () => fetchAnimeLibraryFromAniList(filters, page, perPage),
+            () => fetchAnimeLibraryFromAnimeSchedule(filters, page, perPage),
+            'anime-library'
+        );
             return res.json(items);
         } catch (err) {
             console.error('[Anime Library] search fetch failed:', err.message || err);
@@ -9539,7 +9583,11 @@ app.get('/api/anime-library', async (req, res) => {
         }
 
         console.log(`[Anime Library] cache miss for ${cacheKey} page=${page}, fetching AniList`);
-        const items = await fetchAnimeLibraryFromAniList(filters, page, perPage);
+        const items = await withAniListFallback(
+            () => fetchAnimeLibraryFromAniList(filters, page, perPage),
+            () => fetchAnimeLibraryFromAnimeSchedule(filters, page, perPage),
+            'anime-library'
+        );
         if (!items.length) return res.json([]);
 
         // Was a strictly sequential for-of, awaiting each item's tmdbId resolution one at a
@@ -9639,7 +9687,11 @@ app.get('/api/anime-timeline-row', async (req, res) => {
             if (cached.length === ids.length) return res.json(cached);
         }
 
-        const items = await fetchTimelineRowFromAniList(startYear, endYear);
+        const items = await withAniListFallback(
+            () => fetchTimelineRowFromAniList(startYear, endYear),
+            () => fetchTimelineRowFromAnimeSchedule(startYear, endYear),
+            'anime-timeline-row'
+        );
         if (!items.length) return res.json([]);
 
         // Same bounded-concurrency tmdbId resolution as /api/anime-library, same reasoning: a
