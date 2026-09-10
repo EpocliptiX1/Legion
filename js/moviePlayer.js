@@ -1757,8 +1757,8 @@ document.addEventListener('DOMContentLoaded', function() {
                             </button>
                             <button id="srvMega1" class="server-btn">MVP</button>
                             <button id="srvVr1" class="server-btn">VR</button>
-                            <button id="srvMegaEmbed1" class="server-btn">MegaPlay</button>
                             <button id="srvAllAnime1" class="server-btn">AllAnime</button>
+                            <button id="srvMegaEmbed1" class="server-btn">MegaPlay</button>
                         </div>
                         <div id="subDubToggleRow" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                             <button id="btnSub" class="audio-btn active">SUB</button>
@@ -1906,8 +1906,8 @@ document.addEventListener('DOMContentLoaded', function() {
                                 style="display:none;width:100%;height:100%;"
                             ></video>
                             <div id="playerLoadingOverlay" class="player-loading-overlay" style="display:none;">
-                                <div class="player-loading-spinner"></div>
-                                <div class="player-loading-text">Fetching stream...</div>
+                                <div class="player-loading-spinner" id="playerLoadingSpinner"></div>
+                                <div class="player-loading-text" id="playerLoadingText">Fetching stream...</div>
                             </div>
                             <button id="btnBack10" title="Back 10s">
                                 <svg viewBox="0 0 24 24" width="20" height="20">
@@ -2312,9 +2312,13 @@ document.addEventListener('DOMContentLoaded', function() {
         // individually; a safety-net timeout guarantees it never gets stuck if a loader fails
         // through neither path (falls back to an error message instead of ever calling either).
         let playerLoadingHideTimeout = null;
-        function showPlayerLoadingOverlay() {
+        function showPlayerLoadingOverlay(message) {
             const overlay = document.getElementById('playerLoadingOverlay');
             if (!overlay) return;
+            const spinner = document.getElementById('playerLoadingSpinner');
+            const text = document.getElementById('playerLoadingText');
+            if (spinner) spinner.style.display = '';
+            if (text) text.textContent = message || 'Fetching stream...';
             overlay.style.display = 'flex';
             clearTimeout(playerLoadingHideTimeout);
             playerLoadingHideTimeout = setTimeout(hidePlayerLoadingOverlay, 20000);
@@ -2323,6 +2327,20 @@ document.addEventListener('DOMContentLoaded', function() {
             clearTimeout(playerLoadingHideTimeout);
             const overlay = document.getElementById('playerLoadingOverlay');
             if (overlay) overlay.style.display = 'none';
+        }
+        // A terminal notice on the same overlay (no spinner) - for "this server can't play this",
+        // shown big instead of only in the small serverInfoText line. Auto-clears after a bit so
+        // it doesn't sit forever once the user moves on to another server.
+        function showPlayerLoadingNotice(message) {
+            const overlay = document.getElementById('playerLoadingOverlay');
+            if (!overlay) return;
+            const spinner = document.getElementById('playerLoadingSpinner');
+            const text = document.getElementById('playerLoadingText');
+            if (spinner) spinner.style.display = 'none';
+            if (text) text.textContent = message;
+            overlay.style.display = 'flex';
+            clearTimeout(playerLoadingHideTimeout);
+            playerLoadingHideTimeout = setTimeout(hidePlayerLoadingOverlay, 8000);
         }
 
         function showIframePlayer(url) {
@@ -2937,8 +2955,17 @@ document.addEventListener('DOMContentLoaded', function() {
                     // whatever that newer call is doing.
                     if (myGen !== playbackRequestGen) return false;
                     // KAA is the last hop of the Neko -> MegaPlay -> KAA auto-fallback chain -
-                    // nothing left to fall further to.
-                    if (infoDiv) infoDiv.textContent = 'KaF: No playable stream found.';
+                    // nothing left to fall further to. data.animeId present = KAA has the show,
+                    // it just has no track for THIS audio/episode (overwhelmingly a missing dub);
+                    // absent = KAA doesn't carry this title at all.
+                    const kafHasShow = !!(data && data.animeId);
+                    if (audioType === 'dub' && kafHasShow) {
+                        if (infoDiv) infoDiv.textContent = 'KaF: no dub for this episode.';
+                        showPlayerLoadingNotice('KaF has no dub for this episode — switch to SUB, or try another server.');
+                    } else {
+                        if (infoDiv) infoDiv.textContent = 'KaF: No playable stream found.';
+                        showPlayerLoadingNotice('KaF has no stream for this episode — try another server.');
+                    }
                     return false;
                 }
 

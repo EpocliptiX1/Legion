@@ -2646,7 +2646,7 @@ function hostNeedsBrowserRelay(url) {
     try { return BROWSER_RELAY_HOSTS.has(new URL(url).hostname); } catch { return false; }
 }
 
-// Separate from hostNeedsMegaplayGotScraping below - only cdn.imgnex.top needs the signed
+// Separate from hostNeedsGotScraping below - only cdn.imgnex.top needs the signed
 // ?token= appended (the segment/subtitle CDNs carry their auth in the path already).
 const MEGAPLAY_CDN_SIGNING_HOSTS = new Set(['cdn.imgnex.top']);
 
@@ -2654,10 +2654,20 @@ function hostNeedsMegaplaySigning(url) {
     try { return MEGAPLAY_CDN_SIGNING_HOSTS.has(new URL(url).hostname); } catch { return false; }
 }
 
-// Any subdomain of these - the whole MegaPlay CDN family, all behind the same fingerprinting.
-const MEGAPLAY_GOTSCRAPING_HOST_RE = /(^|\.)(imgnex\.top|snapcdn\.top|kryntal\.top)$/i;
-function hostNeedsMegaplayGotScraping(url) {
-    try { return MEGAPLAY_GOTSCRAPING_HOST_RE.test(new URL(url).hostname); } catch { return false; }
+// Hosts that TLS/HTTP2-fingerprint the client and 403/404 a plain Node request while serving a
+// real browser fine - confirmed live for all of these. Fetched through got-scraping instead of
+// axios (a per-request HTTP-client swap, not a browser). Two families:
+//  - MegaPlay's CDN: cdn.imgnex.top (playlists), *.snapcdn.top (segments), kryntal.top (subs)
+//  - VidRock's stream hosts: *.workers.dev (Luna/Orion HLS - Cloudflare Workers), streamrk.site
+//    + hakunaymatata.com (Astra's mp4 chain), ngcorp.dad (older edges)
+const GOTSCRAPING_HOST_RE = /(^|\.)(imgnex\.top|snapcdn\.top|kryntal\.top|workers\.dev|streamrk\.site|hakunaymatata\.com|ngcorp\.dad)$/i;
+function hostNeedsGotScraping(url) {
+    try { return GOTSCRAPING_HOST_RE.test(new URL(url).hostname); } catch { return false; }
+}
+// MegaPlay CDN only - drives the more-generous burst-retry budget in the two proxy loops.
+const MEGAPLAY_CDN_RE = /(^|\.)(imgnex\.top|snapcdn\.top|kryntal\.top)$/i;
+function hostIsMegaplayCdn(url) {
+    try { return MEGAPLAY_CDN_RE.test(new URL(url).hostname); } catch { return false; }
 }
 
 // Normalises got-scraping's response/error into the axios shape the callers expect:
@@ -2704,7 +2714,7 @@ async function fetchViaGotScraping(url, fullHeaders, responseType, timeout) {
 
 async function fetchUpstream(url, { headers, responseType, timeout, rangeHeader }) {
     const fullHeaders = rangeHeader ? { ...headers, Range: rangeHeader } : headers;
-    if (hostNeedsMegaplayGotScraping(url)) {
+    if (hostNeedsGotScraping(url)) {
         return fetchViaGotScraping(url, fullHeaders, responseType, timeout);
     }
     return axios({ method: 'GET', url, headers: fullHeaders, responseType, timeout, httpsAgent: nextOutboundHttpsAgent() });
@@ -2777,7 +2787,7 @@ async function fetchAndCacheSegment(targetUrl, refererBase, originBase, req) {
     // escalated blocking, not steady noise). More tries buys more chances to land outside a
     // burst window; every other provider's 403 is still permanent, so their attempt count is
     // unaffected.
-    const isMegaplayCdn = hostNeedsMegaplaySigning(targetUrl) || hostNeedsMegaplayGotScraping(targetUrl);
+    const isMegaplayCdn = hostIsMegaplayCdn(targetUrl);
     const maxAttempts = isMegaplayCdn ? 6 : 3;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
@@ -12013,6 +12023,23 @@ app.get('/api/m3u8-proxy', async (req, res) => {
     }
     if (!targetUrl) return res.status(400).send('URL required');
 
+    // forcePlaylist = "treat as a playlist even though the URL carries no .m3u8" - needed for
+    // providers whose playlist URLs are opaque (VidRock's Cloudflare-worker HLS). It propagates
+    // to child URLs in the rewrite below so nested variant playlists (also .m3u8-less) get
+    // rewritten too - but some of those children are actually .ts segments. A tiny range peek
+    // settles which: only a real #EXTM3U body stays a playlist, everything else falls through to
+    // the normal media path.
+    if (forcePlaylist) {
+        const peekRef = refererOverride ? refererOverride.replace(/\/?$/, '/') : 'https://vidtube.site/';
+        try {
+            const peek = await fetchUpstream(targetUrl, {
+                headers: { 'User-Agent': req.headers['user-agent'] || KINO_UA, 'Referer': peekRef, 'Origin': peekRef.replace(/\/$/, '') },
+                responseType: 'text', timeout: 8000, rangeHeader: 'bytes=0-64'
+            });
+            if (!String(peek.data || '').trimStart().startsWith('#EXTM3U')) forcePlaylist = false;
+        } catch (e) { /* keep forcePlaylist true - the main fetch below surfaces any real error */ }
+    }
+
     const isMediaDataRequest = !forcePlaylist && !targetUrl.includes('.m3u8') && !/\.(vtt|srt)(\?|$)/i.test(targetUrl);
     let releaseLease = () => {};
     try {
@@ -12078,7 +12105,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
         let upstreamFailure;
         // See fetchAndCacheSegment's own comment on this same pattern - MegaPlay's CDN gets more
         // attempts since its 403 comes in bursts, not as a flat rate.
-        const isMegaplayCdn = hostNeedsMegaplaySigning(targetUrl) || hostNeedsMegaplayGotScraping(targetUrl);
+        const isMegaplayCdn = hostIsMegaplayCdn(targetUrl);
         const maxAttempts = isMegaplayCdn ? 6 : 3;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
@@ -12132,7 +12159,7 @@ app.get('/api/m3u8-proxy', async (req, res) => {
                 const resolved = new URL(uri, targetUrl).href;
                 return hostNeedsMegaplaySigning(resolved) ? signMegaplayCdnUrl(resolved) : resolved;
             };
-            const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null, req.sessionId, decodedLeaseId, false, decoded.scope);
+            const proxyUri = (uri) => buildM3u8ProxyUrl(resolveUri(uri), refererOverride || null, req.sessionId, decodedLeaseId, forcePlaylist, decoded.scope);
 
             const rewrittenM3u8 = response.data.split('\n').map(line => {
                 const trimmed = line.trim();
@@ -18725,24 +18752,58 @@ async function resolveVidrockServers(type, tmdbId, season, episode) {
 // it, rather than surfacing "Stream unavailable" the moment the first-picked server happens to
 // be the dead one this time - VidRock hands back several named servers per title specifically so
 // there's somewhere to fall back to.
-async function verifyVidrockSourceReachable(source) {
+// VidRock's stream hosts fingerprint the client - a plain axios GET of Luna/Orion's URL 403s/404s
+// while the real site plays them fine. Go through fetchUpstream, which routes these hosts through
+// got-scraping (confirmed live: axios 403 -> got-scraping 200 #EXTM3U on the same URL).
+async function vidrockGet(url, { rangeHeader } = {}) {
+    return fetchUpstream(url, {
+        headers: { 'User-Agent': KINO_UA, 'Referer': VIDROCK_REFERER, Origin: VIDROCK_ORIGIN },
+        responseType: 'text', timeout: 8000, rangeHeader
+    });
+}
+
+// Some VidRock "mp4" servers (e.g. Astra) don't hand back a playable file at all - the URL is a
+// JSON quality-descriptor: `[{ resolution, url }, ...]` where each `url` is the real per-quality
+// stream. Unwrap to the highest-resolution entry. Returns the original url unchanged for a normal
+// direct file. Null if the descriptor is present but empty/garbage.
+async function unwrapVidrockMp4Url(url) {
+    let res;
+    try { res = await vidrockGet(url, { rangeHeader: 'bytes=0-2047' }); }
+    catch (err) { return err.response?.data ? null : url; } // network error != definitely-JSON
+    const ct = String(res.headers['content-type'] || '').toLowerCase();
+    const looksJson = ct.includes('json') || /^\s*\[/.test(String(res.data || ''));
+    if (!looksJson) return url; // a real file (video/*, octet-stream, partial binary) - use as-is
+    let list;
+    try { list = JSON.parse(res.data); } catch { return null; }
+    if (!Array.isArray(list) || !list.length) return null;
+    const best = list
+        .filter(e => e && typeof e.url === 'string')
+        .sort((a, b) => (Number(b.resolution) || 0) - (Number(a.resolution) || 0))[0];
+    return best ? best.url : null;
+}
+
+// Returns a directly-playable URL for this candidate, or null if it doesn't resolve to real media
+// right now. hls: must actually serve an #EXTM3U manifest. mp4: unwrapped (see above), then the
+// real leaf is GET-checked so a JSON error page / dead origin (streamrk's 522s) doesn't pass the
+// way a bare HEAD used to.
+async function resolveVidrockPlayableUrl(source) {
     try {
         if (source.type === 'hls') {
-            const res = await axios.get(source.url, {
-                headers: { 'User-Agent': KINO_UA, 'Referer': VIDROCK_REFERER },
-                timeout: 8000, validateStatus: () => true
-            });
-            return res.status === 200 && typeof res.data === 'string' && res.data.includes('#EXTM3U');
+            const res = await vidrockGet(source.url);
+            return (typeof res.data === 'string' && res.data.includes('#EXTM3U')) ? source.url : null;
         }
-        // mp4 - a HEAD is enough to confirm the CDN edge actually has this object right now,
-        // without pulling the whole file just to check.
-        const res = await axios.head(source.url, {
-            headers: { 'User-Agent': KINO_UA, 'Referer': VIDROCK_REFERER },
-            timeout: 8000, validateStatus: () => true
-        });
-        return res.status >= 200 && res.status < 400;
+        const realUrl = await unwrapVidrockMp4Url(source.url);
+        if (!realUrl) return null;
+        let res;
+        try { res = await vidrockGet(realUrl, { rangeHeader: 'bytes=0-1023' }); }
+        catch (err) { return null; }
+        const ct = String(res.headers['content-type'] || '').toLowerCase();
+        // A JSON/HTML body here is an error envelope (streamrk returns `{...}` when its origin is
+        // down), not media.
+        if (ct.includes('json') || /^\s*[[{<]/.test(String(res.data || ''))) return null;
+        return realUrl;
     } catch (err) {
-        return false;
+        return null;
     }
 }
 
@@ -18758,12 +18819,16 @@ async function resolveVidrockBestSource(type, tmdbId, season, episode) {
     if (!servers.length) throw new Error('VidRock has no server for this title');
     const ordered = [...servers.filter(s => s.type === 'hls'), ...servers.filter(s => s.type !== 'hls')];
     for (const candidate of ordered) {
-        if (await verifyVidrockSourceReachable(candidate)) return candidate;
+        const playableUrl = await resolveVidrockPlayableUrl(candidate);
+        if (playableUrl) return { ...candidate, url: playableUrl };
     }
-    // Nothing verified reachable - return the first candidate anyway so the caller's own error
-    // path (and the real upstream error, not just a generic "no server") still surfaces.
-    console.warn('[VidRock] No server verified reachable, returning first candidate unverified', { type, tmdbId, season, episode, tried: ordered.map(s => s.name) });
-    return ordered[0];
+    // Every server checked, none resolved to real media - fail cleanly so the route returns a
+    // proper { ok:false } the frontend can surface, instead of handing back a URL that loads to
+    // a JSON error page and dies silently in the player.
+    console.warn('[VidRock] No server resolved to playable media', { type, tmdbId, season, episode, tried: ordered.map(s => s.name) });
+    const err = new Error('No working VidRock server for this title right now');
+    err.status = 502;
+    throw err;
 }
 
 app.get('/api/movie-vr-log', async (req, res) => {
@@ -18773,7 +18838,7 @@ app.get('/api/movie-vr-log', async (req, res) => {
         const source = await resolveVidrockBestSource('movie', tmdbId, null, null);
         return res.json({
             ok: true,
-            stream: buildM3u8ProxyUrl(source.url, VIDROCK_REFERER, req.sessionId),
+            stream: buildM3u8ProxyUrl(source.url, VIDROCK_REFERER, req.sessionId, undefined, source.type === 'hls'),
             server: source.name
         });
     } catch (err) {
@@ -18791,7 +18856,7 @@ app.get('/api/tv-vr-log', async (req, res) => {
         const source = await resolveVidrockBestSource('tv', tmdbId, season, episode);
         return res.json({
             ok: true,
-            stream: buildM3u8ProxyUrl(source.url, VIDROCK_REFERER, req.sessionId),
+            stream: buildM3u8ProxyUrl(source.url, VIDROCK_REFERER, req.sessionId, undefined, source.type === 'hls'),
             server: source.name
         });
     } catch (err) {
@@ -18824,7 +18889,7 @@ app.get('/api/anime-vr-log', async (req, res) => {
         const source = await resolveVidrockBestSource('tv', tmdbId, season, episode);
         return res.json({
             ok: true,
-            stream: buildM3u8ProxyUrl(source.url, VIDROCK_REFERER, req.sessionId),
+            stream: buildM3u8ProxyUrl(source.url, VIDROCK_REFERER, req.sessionId, undefined, source.type === 'hls'),
             server: source.name,
             skipSegments
         });
