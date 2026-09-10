@@ -5067,6 +5067,116 @@ async function anilistPost(body, { timeout = 15000 } = {}) {
     }
 }
 
+// --- AniList-down fallback layer (see anilist-fallback-plan.md) -------------------------------
+// AniList stays the primary "brain". withAniListFallback(primary, fallback) runs `primary`;
+// if it throws (breaker open, 403, network, or returns empty) it runs `fallback` instead, and
+// silently goes back to `primary` the moment AniList recovers. Fallback fetchers below return
+// the SAME item shape animeCacheUpsertFromAniListItem / the row routes already expect, so the
+// caches, routes and frontend need no changes.
+async function withAniListFallback(primaryFn, fallbackFn, label) {
+    try {
+        const out = await primaryFn();
+        if (Array.isArray(out) ? out.length : out) return out;
+        console.warn(`[AniListFallback] ${label}: AniList returned empty, trying fallback`);
+    } catch (err) {
+        const why = err.anilistBreakerOpen ? 'breaker open' : (err.response?.status || err.code || err.message);
+        console.warn(`[AniListFallback] ${label}: AniList failed (${why}), trying fallback`);
+    }
+    return fallbackFn();
+}
+
+// AnimeSchedule.net - the primary non-AniList source. Its /anime list endpoint returns the FULL
+// object per item (genres, studios, stats, websites{mal,aniList}, names, description...), so one
+// call fills a whole row - no per-item detail fetch. Only /timetables needs the free API token.
+const ANIMESCHEDULE_BASE = 'https://animeschedule.net/api/v3';
+const ANIMESCHEDULE_TOKEN = process.env.ANIMESCHEDULE_API_TOKEN || '';
+const ANIMESCHEDULE_POSTER_BASE = 'https://img.animeschedule.net/production/assets/public/img/';
+const _asCache = new Map(); // `${path}?${qs}` -> { at, data }
+const AS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+async function asGet(path, params = {}, { auth = false } = {}) {
+    const qs = new URLSearchParams(
+        Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')
+    ).toString();
+    const key = `${path}?${qs}`;
+    const hit = _asCache.get(key);
+    if (hit && Date.now() - hit.at < AS_CACHE_TTL_MS) return hit.data;
+    const headers = { 'User-Agent': KINO_UA, 'Accept': 'application/json' };
+    if (auth && ANIMESCHEDULE_TOKEN) headers.Authorization = `Bearer ${ANIMESCHEDULE_TOKEN}`;
+    const res = await axios.get(`${ANIMESCHEDULE_BASE}${path}${qs ? `?${qs}` : ''}`, { headers, timeout: 12000 });
+    _asCache.set(key, { at: Date.now(), data: res.data });
+    return res.data;
+}
+
+// numeric id out of "myanimelist.net/anime/52299/..." or "anilist.co/anime/151807/..."
+function asExtractSiteId(url) {
+    const m = String(url || '').match(/\/anime\/(\d+)/);
+    return m ? Number(m[1]) : null;
+}
+
+const AS_STATUS_TO_ANILIST = { Ongoing: 'RELEASING', Finished: 'FINISHED', Upcoming: 'NOT_YET_RELEASED' };
+
+// AnimeSchedule anime object -> the AniList Media item shape the rest of the app consumes.
+// Drops items with no resolvable AniList id (anime_cache is keyed on anilist_id) - those are
+// rare for current-catalogue titles and would need a Kitsu bridge hop we skip on the hot path.
+function animeScheduleToAniListItem(as) {
+    const anilistId = asExtractSiteId(as.websites?.aniList);
+    if (!anilistId) return null;
+    const malId = asExtractSiteId(as.websites?.mal);
+    const synonyms = Array.isArray(as.names?.synonyms) ? as.names.synonyms : [];
+    // AS `title` is the preferred/English form; pick a Latin-script synonym as romaji when there is one.
+    const romaji = synonyms.find(s => /[A-Za-z]/.test(s) && !/[　-鿿가-힯]/.test(s)) || as.title || null;
+    const yr = Number(as.season?.year) || as.year || null;
+    return {
+        id: anilistId,
+        idMal: malId || null,
+        title: { english: as.title || null, romaji, native: as.names?.native || null },
+        coverImage: as.imageVersionRoute
+            ? { extraLarge: ANIMESCHEDULE_POSTER_BASE + as.imageVersionRoute, large: ANIMESCHEDULE_POSTER_BASE + as.imageVersionRoute }
+            : null,
+        bannerImage: null,
+        averageScore: as.stats?.averageScore != null ? Math.round(as.stats.averageScore) : null,
+        popularity: as.stats?.trackedCount != null ? as.stats.trackedCount : null,
+        favourites: as.stats?.ratingCount != null ? as.stats.ratingCount : null,
+        description: as.description || null,
+        format: (as.mediaTypes?.[0]?.name || '').toUpperCase().replace(/\s+/g, '_') || 'TV',
+        status: AS_STATUS_TO_ANILIST[as.status] || null,
+        episodes: as.episodes || null,
+        genres: Array.isArray(as.genres) ? as.genres.map(g => g.name) : [],
+        tags: [],
+        season: as.season?.season ? as.season.season.toUpperCase() : null,
+        seasonYear: yr,
+        startDate: { year: yr },
+        duration: as.lengthMin || null,
+        studios: { nodes: Array.isArray(as.studios) ? as.studios.map(s => ({ name: s.name })) : [] },
+        source: null,
+        synonyms,
+        __fromAnimeSchedule: true
+    };
+}
+
+// Row key -> AnimeSchedule /anime query params. Genres/tags both live under `genres` on AS.
+const AS_SORT = { TRENDING_DESC: 'popularity', POPULARITY_DESC: 'popularity', SCORE_DESC: 'score' };
+const AS_FORMAT_TO_MEDIATYPE = { MOVIE: 'movie', OVA: 'ova', ONA: 'ona', SPECIAL: 'special', MUSIC: 'music', TV: 'tv', TV_SHORT: 'tv' };
+function asRowParams(rowKey) {
+    const p = buildAniListRowFetchParams(rowKey); // reuse the exact same row definitions
+    const out = { sort: AS_SORT[p.sort?.[0]] || 'popularity' };
+    if (p.genre) out.genres = p.genre.toLowerCase().replace(/\s+/g, '-');
+    if (p.tag) out.genres = p.tag.toLowerCase().replace(/\s+/g, '-');
+    if (p.status === 'RELEASING') out['airing-statuses'] = 'ongoing';
+    if (p.season && p.seasonYear) out.seasons = `${p.season.toLowerCase()}-${p.seasonYear}`;
+    if (p.format && AS_FORMAT_TO_MEDIATYPE[p.format]) out['media-types'] = AS_FORMAT_TO_MEDIATYPE[p.format];
+    return out;
+}
+
+async function fetchAnimeRowFromAnimeSchedule(rowKey, page = 1, perPage = 18) {
+    const data = await asGet('/anime', { ...asRowParams(rowKey), page });
+    const list = Array.isArray(data?.anime) ? data.anime : [];
+    const items = list.map(animeScheduleToAniListItem).filter(Boolean).slice(0, perPage);
+    console.log(`[AniListFallback] anime-row ${rowKey}: AnimeSchedule served ${items.length} item(s)`);
+    return items;
+}
+
 // Resolves a TMDB id to {anilistId} only if it's a known anime, using the same
 // resolver the rest of the site trusts (Fribb mapping -> cache -> Jikan lookup).
 async function resolveAnilistIdIfAnime(tmdbId) {
@@ -9246,8 +9356,12 @@ app.get('/api/anime-row', async (req, res) => {
         }
 
         console.log(`[Anime Row Cache] fetching AniList row ${rowKey}`);
-        const items = await fetchAniListRowFromAniList(rowKey, page, perPage);
-        console.log(`[Anime Row Cache] AniList returned ${items.length} items for ${rowKey}`);
+        const items = await withAniListFallback(
+            () => fetchAniListRowFromAniList(rowKey, page, perPage),
+            () => fetchAnimeRowFromAnimeSchedule(rowKey, page, perPage),
+            `anime-row ${rowKey}`
+        );
+        console.log(`[Anime Row Cache] returned ${items.length} items for ${rowKey}`);
         if (!items.length) {
             return res.json([]);
         }
