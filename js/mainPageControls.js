@@ -1998,21 +1998,27 @@ async function loadWatchStatusRows() {
 
         const [activeSettled, abandonedSettled, wantSettled] = await Promise.all([
             Promise.allSettled((buckets.active || []).map(classifyActiveEntry)),
-            Promise.allSettled((buckets.abandoned || []).map(enrichWithTmdb)),
+            // The server buckets a title as "abandoned" purely on "not touched in N days" - it
+            // has no episode count to know the user actually FINISHED it. Run the same TMDB-
+            // backed classifier here: anything that comes back "watched" is a completed show the
+            // user simply didn't return to, not an abandoned one, so it belongs in Watched.
+            Promise.allSettled((buckets.abandoned || []).map(classifyActiveEntry)),
             Promise.allSettled((buckets.wantToWatch || []).map(enrichWithTmdb))
         ]);
 
         const watching = [];
         const watched = [];
+        const abandoned = [];
         activeSettled.forEach(r => {
             if (r.status !== 'fulfilled' || !r.value) return;
             const card = buildContinueWatchingCard({ movie_id: r.value.entry.id, type: r.value.entry.type }, r.value.tmdb);
             (r.value.status === 'watched' ? watched : watching).push(card);
         });
-
-        const abandoned = abandonedSettled
-            .filter(r => r.status === 'fulfilled' && r.value)
-            .map(r => buildContinueWatchingCard({ movie_id: r.value.entry.id, type: r.value.entry.type }, r.value.tmdb));
+        abandonedSettled.forEach(r => {
+            if (r.status !== 'fulfilled' || !r.value) return;
+            const card = buildContinueWatchingCard({ movie_id: r.value.entry.id, type: r.value.entry.type }, r.value.tmdb);
+            (r.value.status === 'watched' ? watched : abandoned).push(card);
+        });
 
         const wantToWatch = wantSettled
             .filter(r => r.status === 'fulfilled' && r.value)
