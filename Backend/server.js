@@ -21313,6 +21313,11 @@ async function buildSeasonGroupsFromMalRelations(malId) {
     const queue = [Number(malId)];
     const metaList = [];
     let failedLookups = 0;
+    // Same role as buildSeasonGroupsFromAniList's own baseTitle: one stable identity for the
+    // franchise (from the SEED entry, not metaList[0] which can be a different season) so the
+    // finished-show audit can fuzzy-match this cached row against the daily airing schedule.
+    // MAL's <h1> ("titleNative" here) is its romaji main title; "English:" sidebar is titleEn.
+    let baseTitle = null;
 
     while (queue.length && metaList.length < 8) {
         const id = Number(queue.shift());
@@ -21326,6 +21331,10 @@ async function buildSeasonGroupsFromMalRelations(malId) {
             failedLookups++;
             console.warn(`[anime-season-groups] mal ${id} detail lookup failed (${err.message}); keeping ${metaList.length} season(s) already resolved`);
             continue;
+        }
+
+        if (id === Number(malId) && !baseTitle) {
+            baseTitle = { english: details.titleEn || null, romaji: details.titleNative || null, native: null };
         }
 
         // Same reasoning as the AniList/Jikan walkers: only TV entries are real seasons.
@@ -21360,7 +21369,7 @@ async function buildSeasonGroupsFromMalRelations(malId) {
         });
     }
 
-    return { metaList, failedLookups };
+    return { metaList, failedLookups, baseTitle };
 }
 
 // Season-cards' own MAL-direct fallback - same BFS-over-SEQUEL/PREQUEL shape as
@@ -22036,6 +22045,10 @@ async function resolveAnimeSeasonGroups(tmdbId) {
                     failedLookups = r.failedLookups;
                     source = 'mal-relations';
                 }
+                // Fill the franchise identity from MAL whenever AniList didn't (down, or found
+                // nothing) - otherwise the cache row's title_en/romaji/native stay null and the
+                // finished-show audit can't title-match it.
+                if (!baseTitle && r.baseTitle) baseTitle = r.baseTitle;
             } catch (err) {
                 console.warn(`[anime-season-groups] mal-relations fallback failed for tmdb ${tmdbId}:`, err.message);
             }
@@ -22713,6 +22726,16 @@ async function resolveAnimeSeasonCards(tmdbId) {
     });
 
     const seasons = [];
+    // Number the cards by chronological POSITION, not by whatever number the title carries.
+    // Most of the industry doesn't put "Season 3" in the title (SAO's "Alicization" / "War of
+    // Underworld"; Tower of God's arc titles), so parsing the title straight gave every
+    // markerless entry season 1 - "a fuckton of Season 1's". An explicit marker in the title
+    // still wins (a real "2nd Season" / "IV" must not be renumbered by position), and a bare
+    // "Part 2" / "Cour 2" with no season number of its own continues the previous card's season
+    // instead of starting a new one (two split cours ARE one season). The card subtitle still
+    // shows the real title, so a franchise that DOES self-number stays legible either way.
+    let runningSeason = 0;
+    let prevSeason = 0;
     for (let i = 0; i < found.length; i++) {
         const f = found[i];
         let seasonTmdbId = null;
@@ -22721,18 +22744,19 @@ async function resolveAnimeSeasonCards(tmdbId) {
         } catch (err) {
             // No TMDB match - card still renders, just isn't clickable.
         }
-        // The anime industry splits franchises up too inconsistently for a plain array
-        // index to mean anything (confirmed live: a franchise with entries titled "IV",
-        // "IV Part 2", and "V" showed as index-based "Season 6"/"Season 7"/"Season 8" -
-        // technically true by position, but meaningless against the show's OWN numbering,
-        // which the card's own subtitle already displays right next to it). Parse the
-        // real season number straight out of each entry's title instead (same numeral/
-        // ordinal detection KAA's candidate sorting already uses) so the label agrees
-        // with what the subtitle says. Two split-cour entries sharing one real season
-        // number (e.g. "IV" and "IV Part 2" both parsing to 4) is the correct, honest
-        // result, not a bug - they ARE the same season.
+        const parsed = parseAnimeTitle(f.title);
+        let seasonNumber;
+        if (parsed.hasSeasonMarker) {
+            seasonNumber = parsed.season;
+            runningSeason = Math.max(runningSeason, parsed.season);
+        } else if (parsed.hasPartMarker && prevSeason > 0) {
+            seasonNumber = prevSeason;
+        } else {
+            seasonNumber = ++runningSeason;
+        }
+        prevSeason = seasonNumber;
         seasons.push({
-            seasonNumber: parseAnimeTitle(f.title).season,
+            seasonNumber,
             title: f.title,
             coverImage: f.coverImage,
             anilistId: f.anilistId,
