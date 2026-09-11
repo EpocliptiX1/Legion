@@ -18737,7 +18737,19 @@ async function runKaaHealthCheck() {
 async function runNekoHealthCheck() {
     try {
         const epInfo = await resolveAnikotoEpisodeCached(ANIME_HEALTH_CHECK_TITLE, 1, 1);
-        const sources = await resolveNekoStreamSources({ serverToken: epInfo.serverToken, audio: 'dub', baseHeaders: epInfo.baseHeaders });
+        let sources;
+        try {
+            sources = await resolveNekoStreamSources({ serverToken: epInfo.serverToken, audio: 'dub', baseHeaders: epInfo.baseHeaders });
+        } catch (err) {
+            // err.noVidtube = resolveNekoMediaId's own "confirmed no VidTube stream for this
+            // audio type" signal - a real, narrow content gap for THIS title/episode/audio, not
+            // Neko being down (see its own comment). Retry SUB before giving up: still proves
+            // the real Neko -> VidTube -> CDN chain works end to end, just with a language every
+            // title on anikoto is far more likely to actually carry.
+            if (!err.noVidtube) throw err;
+            logHealthStatus('[Neko Health] no DUB for the probe episode (confirmed absent, not a fault) - retrying SUB');
+            sources = await resolveNekoStreamSources({ serverToken: epInfo.serverToken, audio: 'sub', baseHeaders: epInfo.baseHeaders });
+        }
         if (!sources?.stream) throw new Error('no stream in response');
         // Actually fetch the resolved CDN URL, not just check that resolution produced one -
         // confirmed live (2026-09-07): Neko's resolve step can succeed while the specific CDN
