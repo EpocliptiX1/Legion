@@ -5136,8 +5136,14 @@ function animeScheduleToAniListItem(as) {
     if (!anilistId) return null;
     const malId = asExtractSiteId(as.websites?.mal);
     const synonyms = Array.isArray(as.names?.synonyms) ? as.names.synonyms : [];
-    // AS `title` is the preferred/English form; pick a Latin-script synonym as romaji when there is one.
-    const romaji = synonyms.find(s => /[A-Za-z]/.test(s) && !/[　-鿿가-힯]/.test(s)) || as.title || null;
+    // AS doesn't label synonyms by language, so a "pick the first Latin-script synonym" romaji
+    // guess is unsafe - confirmed live: for Solo Leveling (Korean web-novel origin) that grabbed
+    // "Na Honjaman Level Up", a ROMANIZED KOREAN title, not the real Japanese romaji "Ore dake
+    // Level Up na Ken". Wrote a wrong romaji_title into anime_cache, which then broke RU-MV's
+    // animego title-matching (scoring the wrong string against animego's real listing). No safe
+    // way to script-detect "this Latin string is actually Korean" from the string alone, so
+    // just don't guess - fall back to the one title AS does label unambiguously.
+    const romaji = as.title || null;
     const yr = Number(as.season?.year) || as.year || null;
     return {
         id: anilistId,
